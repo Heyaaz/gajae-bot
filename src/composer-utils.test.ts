@@ -5,6 +5,8 @@ import {
   droppedImageAttachments,
   readableToolText,
   resolveModelPreset,
+  composerQueuePreview,
+  mergeComposerQueue,
 } from "./composer-utils";
 
 describe("composer utilities", () => {
@@ -72,5 +74,42 @@ describe("composer utilities", () => {
     await expect(droppedImageAttachments([image], 6)).rejects.toThrow(
       "at most 6 images",
     );
+  });
+  it("previews ordinary live-turn input as a follow-up chip, not a user bubble", () => {
+    expect(composerQueuePreview("steer 중요하다", [], [])).toEqual({
+      text: "steer 중요하다",
+      mode: "followUp",
+    });
+    expect(composerQueuePreview("/steer 지금 실행", [], [])).toEqual({
+      text: "지금 실행",
+      mode: "steer",
+    });
+    expect(
+      mergeComposerQueue(
+        [
+          {
+            id: "remote",
+            text: "steer 중요하다",
+            mode: "followUp",
+            label: "Queued",
+          },
+        ],
+        [
+          {
+            id: "local",
+            text: "steer 중요하다",
+            mode: "followUp",
+            label: "Queued",
+          },
+        ],
+      ),
+    ).toEqual([
+      {
+        id: "remote",
+        text: "steer 중요하다",
+        mode: "followUp",
+        label: "Queued",
+      },
+    ]);
   });
 });

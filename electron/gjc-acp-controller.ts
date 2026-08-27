@@ -2258,15 +2258,19 @@ export class GjcAcpController {
         });
       } catch (error) {
         if (!busyPromptError(error)) throw error;
-        await this.brokerControl(sessionId, "turn.follow_up", {
+        await this.brokerControl(sessionId, "turn.steer", {
           text: promptText,
+          clientRef: `gajae-steer-${randomUUID()}`,
         });
       }
       this.updateSessionStatus(sessionId, "running");
       return;
     }
-    if (this.activePromptSessions.has(sessionId)) {
-      await this.queueFollowUp(sessionId, { ...input, text: promptText });
+    if (
+      this.activePromptSessions.has(sessionId) ||
+      session?.status === "running"
+    ) {
+      await this.steerSession(sessionId, { ...input, text: promptText });
       return;
     }
     this.activePromptSessions.add(sessionId);
@@ -2289,7 +2293,7 @@ export class GjcAcpController {
     } catch (error) {
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
-        await this.queueFollowUp(sessionId, { ...input, text: promptText });
+        await this.steerSession(sessionId, { ...input, text: promptText });
         return;
       }
       this.finalizeThought(sessionId);

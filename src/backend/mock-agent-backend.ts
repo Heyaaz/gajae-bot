@@ -626,14 +626,6 @@ export class MockAgentBackend implements AgentBackend {
       label: "Queued",
     });
     this.queuedStore.set(sessionId, queue);
-    this.append({
-      id: `message-${this.nextId++}`,
-      kind: "message",
-      sessionId,
-      role: "user",
-      content: input.text,
-      createdAt: "queued",
-    });
   }
 
   async sendMessage(sessionId: string, input: MessageInput): Promise<void> {

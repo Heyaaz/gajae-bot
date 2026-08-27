@@ -52,6 +52,8 @@ import {
   compactToolCommand,
   compactToolText,
   resolveModelPreset,
+  composerQueuePreview,
+  mergeComposerQueue,
 } from "./composer-utils";
 import {
   cacheTranscript,
@@ -1494,18 +1496,7 @@ function Composer({
   const [configMenu, setConfigMenu] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
   const [localPending, setLocalPending] = useState<QueuedMessage[]>([]);
-  // GJC owns the queue. Locally submitted entries are shown only until the
-  // authoritative queue reports them, so a queue filled from the terminal and
-  // one filled from this window render identically.
-  const pendingQueue: QueuedMessage[] = [
-    ...queued,
-    ...localPending.filter(
-      (local) =>
-        !queued.some(
-          (entry) => entry.text === local.text && entry.mode === local.mode,
-        ),
-    ),
-  ];
+  const pendingQueue = mergeComposerQueue(queued, localPending);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const composerRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1757,38 +1748,21 @@ function Composer({
           [...history, content].slice(-100),
         );
     }
-    if (running) {
-      const displayText =
-        content ||
-        [
-          ...files.map((file) => file.name),
-          ...images.map((image) => image.name),
-        ].join(", ");
-      if (/^\/steer(?:\s+|$)/u.test(content)) {
-        const steerText = content.replace(/^\/steer(?:\s+|$)/u, "").trim();
-        onSteer({ text: steerText, images: [], files });
-        setLocalPending((current) => [
-          ...current,
-          {
-            id: `local-${crypto.randomUUID()}`,
-            text: steerText || displayText,
-            mode: "steer",
-            label: "Steer",
-          },
-        ]);
-      } else {
-        const queueText = content.replace(/^\/queue(?:\s+|$)/u, "").trim();
-        onQueue({ text: queueText, images: [], files });
-        setLocalPending((current) => [
-          ...current,
-          {
-            id: `local-${crypto.randomUUID()}`,
-            text: queueText || displayText,
-            mode: "followUp",
-            label: "Queued",
-          },
-        ]);
-      }
+    const liveTurn = running || pendingQueue.length > 0;
+    if (liveTurn) {
+      const preview = composerQueuePreview(content, files, images);
+      const queuedInput = { text: preview.text, images, files };
+      if (preview.mode === "steer") onSteer(queuedInput);
+      else onQueue(queuedInput);
+      setLocalPending((current) => [
+        ...current,
+        {
+          id: `local-${crypto.randomUUID()}`,
+          text: preview.text,
+          mode: preview.mode,
+          label: preview.mode === "steer" ? "Steer" : "Queued",
+        },
+      ]);
     } else {
       setLocalPending([]);
       onSend({ text: content, images, files });
@@ -2097,7 +2071,7 @@ function Composer({
       {attachmentError && (
         <small className="composer-error">{attachmentError}</small>
       )}
-      {running && pendingQueue.length > 0 && (
+      {pendingQueue.length > 0 && (
         <span className="composer-queue">
           <strong>{pendingQueue.length}개 대기 중</strong>
           <span className="composer-queue-items">
@@ -5153,7 +5127,8 @@ export default function App() {
                   running={
                     selectedSession.phase === "compacting" ||
                     selectedSession.status === "running" ||
-                    selectedSession.status === "waiting"
+                    selectedSession.status === "waiting" ||
+                    sessionQueue.length > 0
                   }
                   sessionTitle={selectedSession.title}
                   workspace={selectedSession.workspace}

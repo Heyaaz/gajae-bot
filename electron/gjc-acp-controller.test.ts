@@ -1981,7 +1981,7 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
-  it("queues a composer submission as follow-up while its prompt is active", async () => {
+  it("steers a composer submission while its prompt is active", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
       emit: () => undefined,
@@ -2009,8 +2009,8 @@ describe("sessionInfoToAgentSession", () => {
     expect(prompt).not.toHaveBeenCalled();
     expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
       sessionId: "session-1",
-      operation: "turn.follow_up",
-      input: { text: "check the narrower failure" },
+      operation: "turn.steer",
+      input: expect.objectContaining({ text: "check the narrower failure" }),
     });
     expect(brokerControl).not.toHaveBeenCalled();
     controller.dispose();
@@ -2044,7 +2044,7 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
-  it("queues an ordinary prompt as follow-up when the remote session became busy without adding a failure notice", async () => {
+  it("steers an ordinary prompt when the remote session became busy without adding a failure notice", async () => {
     const events: AgentEvent[] = [];
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
@@ -2090,8 +2090,8 @@ describe("sessionInfoToAgentSession", () => {
 
     expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
       sessionId: session.id,
-      operation: "turn.follow_up",
-      input: { text: "focus the active run" },
+      operation: "turn.steer",
+      input: expect.objectContaining({ text: "focus the active run" }),
     });
     expect(brokerControl).not.toHaveBeenCalled();
     expect(events).not.toContainEqual(

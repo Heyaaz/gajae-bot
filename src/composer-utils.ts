@@ -1,3 +1,4 @@
+import type { QueuedMessage } from "../shared/agent-contract";
 export interface CompactText {
   text: string;
   omittedLines: number;
@@ -138,4 +139,32 @@ export function resolveModelPreset(
     return value.startsWith(needle) || name.startsWith(needle);
   });
   return prefixed.length === 1 ? prefixed[0]?.value : undefined;
+}
+export function composerQueuePreview(
+  content: string,
+  files: ReadonlyArray<{ name: string }>,
+  images: ReadonlyArray<{ name: string }>,
+): { text: string; mode: "steer" | "followUp" } {
+  const explicitSteer = /^\/steer(?:\s+|$)/u.test(content);
+  const text =
+    content.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim() ||
+    [...files.map((file) => file.name), ...images.map((image) => image.name)]
+      .join(", ")
+      .trim();
+  return { text, mode: explicitSteer ? "steer" : "followUp" };
+}
+
+export function mergeComposerQueue(
+  queued: readonly QueuedMessage[],
+  localPending: readonly QueuedMessage[],
+): QueuedMessage[] {
+  return [
+    ...queued,
+    ...localPending.filter(
+      (local) =>
+        !queued.some(
+          (entry) => entry.text === local.text && entry.mode === local.mode,
+        ),
+    ),
+  ];
 }
