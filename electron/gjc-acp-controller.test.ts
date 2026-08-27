@@ -667,6 +667,38 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("does not mark an owned active prompt idle from stale session metadata", () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = {
+      ...sessionInfoToAgentSession({
+        sessionId: "session-1",
+        cwd: "/tmp/project",
+      }),
+      status: "running" as const,
+    };
+    const internals = controller as unknown as {
+      activePromptSessions: Set<string>;
+      sessions: Map<string, typeof session>;
+      handleSessionUpdate(notification: SessionNotification): void;
+    };
+    internals.activePromptSessions.add(session.id);
+    internals.sessions.set(session.id, session);
+
+    internals.handleSessionUpdate({
+      sessionId: session.id,
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { gjcRunning: false },
+      },
+    });
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
+  });
+
   it("sends text and image blocks through the ACP prompt", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",

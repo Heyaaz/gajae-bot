@@ -4410,7 +4410,11 @@ export class GjcAcpController {
     }
     if (running === true && !this.locallyAbortedSessions.has(sessionId))
       session.status = "running";
-    if (running === false && session.status !== "failed") {
+    if (
+      running === false &&
+      session.status !== "failed" &&
+      !this.activePromptSessions.has(sessionId)
+    ) {
       session.status = "idle";
       if (session.phase === "compacting") session.phase = undefined;
     }

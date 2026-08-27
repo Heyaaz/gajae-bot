@@ -4615,6 +4615,15 @@ export default function App() {
       )
     : EMPTY_TRANSCRIPT;
   const selectedTranscriptLength = selectedTranscript.length;
+  const transcriptHasLiveWork = selectedTranscript.some((item) => {
+    if (item.kind === "message" || item.kind === "thought")
+      return item.streaming === true;
+    if (item.kind === "tool")
+      return item.status === "running" || item.status === "approval-required";
+    if (item.kind === "plan")
+      return item.entries.some((entry) => entry.status === "in_progress");
+    return false;
+  });
   useEffect(() => {
     if (!selectedId) return;
     let active = true;
@@ -5132,6 +5141,7 @@ export default function App() {
                     selectedSession.phase === "compacting" ||
                     selectedSession.status === "running" ||
                     selectedSession.status === "waiting" ||
+                    transcriptHasLiveWork ||
                     sessionQueue.length > 0
                   }
                   sessionTitle={selectedSession.title}
