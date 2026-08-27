@@ -942,6 +942,23 @@ export function brokerFailureMessage(error: unknown): string {
     : String(error);
 }
 
+// Shown when a session cannot be controlled because it never published an SDK
+// endpoint. It names the fix rather than the internal reason.
+export const TERMINAL_ONLY_CONTROL_MESSAGE =
+  "터미널에서 실행 중인 세션이라 앱에서 제어할 수 없습니다. Gajae에서 새 세션을 만들어 주세요.";
+
+// A session that never published an SDK endpoint cannot be controlled at all: the
+// Router attaches through that endpoint record, so there is nothing to attach to.
+// A plain `gjc --resume` in a terminal is the usual case -- it is alive and
+// heartbeating, which is why it appears in the session list, but it exposes no
+// control surface. The broker reports this as session_unavailable.
+export function sessionUnreachableError(error: unknown): boolean {
+  const text = error instanceof Error ? error.message : String(error);
+  return /session_unavailable|unavailable through the session Router|no current Router attachment|provider_lease_conflict/iu.test(
+    text,
+  );
+}
+
 export function sdkControlNeedsBrokerFallback(
   response: Record<string, unknown>,
 ): boolean {
@@ -1210,7 +1227,11 @@ export class GjcAcpController {
     // opened. Without it a session started by the CLI elsewhere stayed invisible.
     const liveWorkspaces = new Set<string>();
     const deadSessionIds = new Set<string>();
-    this.terminalOnlySessions.clear();
+    // Not cleared here. A rescan re-derives terminal-only from broker liveness,
+    // but a session that already failed a control operation is proven
+    // uncontrollable by evidence the index does not carry -- discarding that made
+    // the row advertise controls that fail again on the next click. Entries are
+    // dropped when the session row itself goes away (removeLocalSession).
     const brokerRows = await this.brokerSessions(connection);
     // Without the index there is no liveness or placeholder evidence, so the
     // previous result stands rather than republishing every historical session.
@@ -1984,15 +2005,9 @@ export class GjcAcpController {
       });
       this.captureSessionState(sessionId, response.configOptions);
     } catch (error) {
-      if (
-        /no current Router attachment|provider_lease_conflict/iu.test(
-          error instanceof Error ? error.message : String(error),
-        )
-      ) {
-        this.terminalOnlySessions.add(sessionId);
-        throw new Error(
-          "This session is controlled by Ghostty. Open or create a Gajae session to change its reasoning effort.",
-        );
+      if (sessionUnreachableError(error)) {
+        this.markTerminalOnly(sessionId);
+        throw new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
       }
       throw error;
     }
@@ -2018,10 +2033,29 @@ export class GjcAcpController {
     return level;
   }
 
+  // A session proven uncontrollable is recorded so the row stops advertising a
+  // control surface it does not have, instead of failing again on the next action.
+  private markTerminalOnly(sessionId: string): void {
+    this.terminalOnlySessions.add(sessionId);
+    // The reuse fingerprint only covers broker liveness, which this discovery does
+    // not change. Without invalidating it the next scan replays the snapshot taken
+    // before the failure and the row goes back to advertising controls.
+    this.lastLiveFingerprint = undefined;
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    session.attachment = "terminal-only";
+    session.ownership = "external";
+    this.lastDiscovered = this.lastDiscovered.map((row) =>
+      row.id === sessionId ? { ...session } : row,
+    );
+    this.emitEvent({ type: "session.updated", session: { ...session } });
+  }
+
   async compactSession(sessionId: string): Promise<void> {
     // Compaction is a session control operation, not an ACP provider attachment.
     // Terminal-owned sessions must route through the persistent control plane (or
     // broker fallback) instead of being rejected for lacking a second attachment.
+    const statusBefore = this.sessions.get(sessionId)?.status;
     this.patchSessionRuntime(sessionId, {
       phase: "compacting",
       status: "running",
@@ -2037,7 +2071,16 @@ export class GjcAcpController {
       });
       await this.refreshContextUsage(sessionId);
     } finally {
-      this.patchSessionRuntime(sessionId, { phase: undefined });
+      // Compaction marked the row running. Leaving it there after a failure keeps
+      // the composer queueing behind a turn that never started, so the status it
+      // replaced is restored -- and only that one, or a real turn running
+      // underneath would be reported idle.
+      this.patchSessionRuntime(sessionId, {
+        phase: undefined,
+        ...(statusBefore && statusBefore !== "running"
+          ? { status: statusBefore }
+          : {}),
+      });
     }
   }
 
@@ -2281,7 +2324,18 @@ export class GjcAcpController {
         if (uncertainAfterSendError(error)) return undefined;
       }
     }
-    return await this.brokerControl(sessionId, operation, input);
+    try {
+      return await this.brokerControl(sessionId, operation, input);
+    } catch (error) {
+      // Every control operation ends here, so a session with no SDK endpoint is
+      // reported once, in terms the user can act on, instead of each caller
+      // surfacing the broker's "unavailable through the session Router".
+      if (sessionUnreachableError(error)) {
+        this.markTerminalOnly(sessionId);
+        throw new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
+      }
+      throw error;
+    }
   }
 
   async listQueuedMessages(sessionId: string): Promise<QueuedMessage[]> {

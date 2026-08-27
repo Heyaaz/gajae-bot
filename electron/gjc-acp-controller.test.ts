@@ -30,6 +30,7 @@ import {
   readableModelLabel,
   sdkControlNeedsBrokerFallback,
   sessionInfoToAgentSession,
+  sessionUnreachableError,
   sharedTranscriptItems,
   taskSubagents,
   thinkingOptionsForModelCatalog,
@@ -47,6 +48,31 @@ import type {
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 
 const execFile = promisify(execFileCallback);
+
+describe("sessionUnreachableError", () => {
+  it("recognizes a session with no published SDK endpoint", () => {
+    expect(
+      sessionUnreachableError(
+        new Error(
+          "SDK session 8ce8041a-fdab-4dcd-91f8-b7050fa9619c is unavailable through the session Router.",
+        ),
+      ),
+    ).toBe(true);
+    expect(sessionUnreachableError(new Error("session_unavailable"))).toBe(true);
+    expect(
+      sessionUnreachableError(new Error("no current Router attachment")),
+    ).toBe(true);
+  });
+
+  it("does not claim an ordinary failure is an unreachable session", () => {
+    // Misreading a real error as "terminal session" would hide the actual cause
+    // and permanently mark a controllable row as uncontrollable.
+    expect(sessionUnreachableError(new Error("GJC compaction.run failed"))).toBe(
+      false,
+    );
+    expect(sessionUnreachableError(new Error("Operation aborted"))).toBe(false);
+  });
+});
 
 describe("sdkControlNeedsBrokerFallback", () => {
   it("keeps a busy agent on the live connection instead of the broker CLI", () => {
@@ -2126,6 +2152,188 @@ describe("sessionInfoToAgentSession", () => {
       }),
     });
     expect(brokerControl).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("explains an uncontrollable session instead of leaking the broker error", async () => {
+    // A plain `gjc --resume` in a terminal is alive and heartbeating, so it shows
+    // up in the session list, but it never publishes an SDK endpoint. The Router
+    // attaches through that endpoint record, so every control operation fails
+    // with "unavailable through the session Router" -- which told the user
+    // nothing about what to do.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "terminal-session",
+      cwd: "/tmp/project",
+    } as never);
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      brokerControl: () => Promise<never>;
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, { ...session, status: "idle" });
+    internals.brokerControl = () =>
+      Promise.reject(
+        new Error(
+          "SDK session terminal-session is unavailable through the session Router.",
+        ),
+      );
+
+    await expect(controller.compactSession(session.id)).rejects.toThrow(
+      /터미널에서 실행 중인 세션/u,
+    );
+
+    // The row stops advertising a control surface it does not have.
+    expect(internals.terminalOnlySessions.has(session.id)).toBe(true);
+    expect(internals.sessions.get(session.id)?.attachment).toBe(
+      "terminal-only",
+    );
+    // A failed compaction must not leave the session pinned as running, or the
+    // composer queues every later message behind a turn that never started.
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+  });
+
+  it("stops advertising controls on the row after one fails", async () => {
+    // Discovery reuses its previous result when broker liveness is unchanged, and
+    // proving a session uncontrollable does not change liveness. Without
+    // invalidating that reuse the sidebar replayed the snapshot taken before the
+    // failure, so the row kept offering compaction that fails every time.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = {
+      ...sessionInfoToAgentSession({
+        sessionId: "terminal-session",
+        cwd: "/tmp/project",
+      } as never),
+      status: "idle" as const,
+    };
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      brokerControl: () => Promise<never>;
+      sessions: Map<string, typeof session>;
+      lastDiscovered: Array<typeof session>;
+      lastLiveFingerprint: string | undefined;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, { ...session });
+    internals.lastDiscovered = [{ ...session }];
+    internals.lastLiveFingerprint = "unchanged-liveness";
+    internals.brokerControl = () =>
+      Promise.reject(new Error("session_unavailable"));
+
+    expect(internals.lastDiscovered[0]?.attachment).toBe("attachable");
+    await expect(controller.compactSession(session.id)).rejects.toThrow();
+
+    expect(internals.lastDiscovered[0]?.attachment).toBe("terminal-only");
+    // A stale fingerprint would let the next scan serve the pre-failure snapshot.
+    expect(internals.lastLiveFingerprint).toBeUndefined();
+    controller.dispose();
+  });
+
+  it("keeps a proven-uncontrollable session marked across a rescan", async () => {
+    // Discovery re-derives terminal-only from broker liveness. A session that
+    // already failed a control operation is proven uncontrollable by evidence the
+    // index does not carry, so clearing the set per scan made the row advertise
+    // controls that fail again on the next click.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      terminalOnlySessions: Set<string>;
+      brokerSessions: () => Promise<undefined>;
+      requireConnection: () => Promise<unknown>;
+      discoverSessions: () => Promise<unknown>;
+    };
+    internals.startup = Promise.resolve();
+    internals.requireConnection = () => Promise.resolve({});
+    internals.brokerSessions = () => Promise.resolve(undefined);
+    internals.terminalOnlySessions.add("terminal-session");
+
+    await internals.discoverSessions();
+
+    expect(internals.terminalOnlySessions.has("terminal-session")).toBe(true);
+    controller.dispose();
+  });
+
+  it("keeps a running turn running when compaction fails under it", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "busy-session",
+      cwd: "/tmp/project",
+    } as never);
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      brokerControl: () => Promise<never>;
+      sessions: Map<string, typeof session>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, { ...session, status: "running" });
+    internals.brokerControl = () =>
+      Promise.reject(new Error("session_unavailable"));
+
+    await expect(controller.compactSession(session.id)).rejects.toThrow();
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+  });
+
+  it("shows a steer as a user bubble before the control round trip resolves", async () => {
+    // Without a local echo the bubble waits for GJC to stream its own
+    // user_message_chunk back, which lands seconds later on a busy turn and
+    // reads as the composer having swallowed the message.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    let releaseControl: (() => void) | undefined;
+    const extMethod = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseControl = () => resolve({ ok: true, accepted: true });
+        }),
+    );
+    const internals = controller as unknown as {
+      brokerControl: () => Promise<undefined>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+    };
+    internals.brokerControl = vi.fn();
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    const steered = controller.steerSession("session-1", {
+      text: "지금 바로 확인해",
+      images: [],
+      files: [],
+    });
+    await Promise.resolve();
+
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "transcript.appended",
+        item: expect.objectContaining({
+          role: "user",
+          content: "지금 바로 확인해",
+        }),
+      }),
+    );
+    releaseControl?.();
+    await steered;
     controller.dispose();
   });
 
