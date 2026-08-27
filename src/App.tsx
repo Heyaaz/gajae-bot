@@ -4202,7 +4202,9 @@ export default function App() {
   // A submitted live-turn prompt is waiting work, not a chat request. GJC echoes it
   // back as a user message before its queue listing catches up, so track it locally
   // until the turn that consumes it ends.
-  const [pendingQueueTexts, setPendingQueueTexts] = useState<string[]>([]);
+  const [queuedRequestTexts, setQueuedRequestTexts] = useState<
+    Record<string, string[]>
+  >({});
   const [goal, setGoal] = useState<GoalSnapshot>({
     enabled: false,
     completed: 0,
@@ -4342,6 +4344,12 @@ export default function App() {
           delete next[event.sessionId];
           return next;
         });
+        setQueuedRequestTexts((current) => {
+          if (!(event.sessionId in current)) return current;
+          const next = { ...current };
+          delete next[event.sessionId];
+          return next;
+        });
       } else if (event.type === "transcript.appended") {
         setTranscripts((current) => {
           const items = current[event.item.sessionId];
@@ -4477,21 +4485,9 @@ export default function App() {
   useEffect(() => {
     if (!selectedSessionId) return;
     return () => {
-      queueMicrotask(() => {
-        setSessionQueue([]);
-        setPendingQueueTexts([]);
-      });
+      queueMicrotask(() => setSessionQueue([]));
     };
   }, [selectedSessionId]);
-
-  useEffect(() => {
-    if (
-      selectedSessionStatus === "running" ||
-      selectedSessionStatus === "waiting"
-    )
-      return;
-    queueMicrotask(() => setPendingQueueTexts([]));
-  }, [selectedSessionStatus]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -4606,7 +4602,7 @@ export default function App() {
 
   const waitingTexts = [
     ...sessionQueue.map((entry) => entry.text),
-    ...pendingQueueTexts,
+    ...(selectedId ? (queuedRequestTexts[selectedId] ?? []) : []),
   ];
   const selectedTranscript = selectedId
     ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT).filter(
@@ -4966,19 +4962,21 @@ export default function App() {
       .catch(() => undefined);
   }
 
-  function rememberWaitingText(text: string): void {
+  function rememberQueuedRequest(sessionId: string, text: string): void {
     const body = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
     if (!body) return;
-    setPendingQueueTexts((current) =>
-      current.includes(body) ? current : [...current, body],
-    );
+    setQueuedRequestTexts((current) => {
+      const existing = current[sessionId] ?? [];
+      if (existing.includes(body)) return current;
+      return { ...current, [sessionId]: [...existing, body] };
+    });
   }
 
   async function steerSession(
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
-    rememberWaitingText(input.text);
+    rememberQueuedRequest(sessionId, input.text);
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.steerSession(resolved, input);
@@ -4992,7 +4990,7 @@ export default function App() {
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
-    rememberWaitingText(input.text);
+    rememberQueuedRequest(sessionId, input.text);
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.queueFollowUp(resolved, input);
