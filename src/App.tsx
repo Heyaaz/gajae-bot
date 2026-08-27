@@ -5005,7 +5005,8 @@ export default function App() {
   async function flushQueuedNow(sessionId: string): Promise<void> {
     try {
       const resolved = await resolveSessionId(sessionId);
-      await backend.flushQueuedNow(resolved);
+      // The composer only offers this while it shows waiting work.
+      await backend.flushQueuedNow(resolved, true);
       refreshSessionQueue(resolved);
     } catch (error) {
       setAppError(humanErrorMessage(error));

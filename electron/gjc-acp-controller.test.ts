@@ -1973,6 +1973,38 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("interrupts on the caller's word when the durable queue listing is slow", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const brokerControl = vi.fn();
+    const extMethod = vi.fn().mockImplementation((_method, params) => {
+      if (params.query === "queue.messages.list") {
+        return new Promise(() => undefined);
+      }
+      return Promise.resolve({ ok: true, accepted: true, aborted: true });
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      brokerControl: typeof brokerControl;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+    };
+    internals.startup = Promise.resolve();
+    internals.brokerControl = brokerControl;
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    await expect(controller.flushQueuedNow("session-1", true)).resolves.toBe(
+      true,
+    );
+    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
+      sessionId: "session-1",
+      operation: "turn.abort",
+      input: {},
+    });
+    controller.dispose();
+  });
+
   it("treats an abort ACK drop as a successful flush instead of retrying through the broker", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",

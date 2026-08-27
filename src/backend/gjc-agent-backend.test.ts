@@ -16,16 +16,14 @@ import type {
 } from "../../shared/agent-contract";
 
 class FakeGjcBridge implements GjcDesktopBridge {
-  previewFile = vi
-    .fn()
-    .mockResolvedValue({
-      path: "/tmp/file.md",
-      name: "file.md",
-      kind: "markdown",
-      mimeType: "text/markdown",
-      content: "# Preview",
-      size: 9,
-    });
+  previewFile = vi.fn().mockResolvedValue({
+    path: "/tmp/file.md",
+    name: "file.md",
+    kind: "markdown",
+    mimeType: "text/markdown",
+    content: "# Preview",
+    size: 9,
+  });
   getGoal = vi
     .fn()
     .mockResolvedValue({ enabled: false, completed: 0, total: 0 });
@@ -102,7 +100,10 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async listQueuedMessages(_sessionId: string): Promise<[]> {
     return [];
   }
-  async flushQueuedNow(_sessionId: string): Promise<boolean> {
+  async flushQueuedNow(
+    _sessionId: string,
+    _waitingKnown?: boolean,
+  ): Promise<boolean> {
     return false;
   }
   async steerSession(_sessionId: string, _input: MessageInput): Promise<void> {}

@@ -594,7 +594,10 @@ export class MockAgentBackend implements AgentBackend {
     }));
   }
 
-  async flushQueuedNow(sessionId: string): Promise<boolean> {
+  async flushQueuedNow(
+    sessionId: string,
+    _waitingKnown?: boolean,
+  ): Promise<boolean> {
     const queued = this.queuedStore.get(sessionId) ?? [];
     if (queued.length === 0) return false;
     this.queuedStore.set(sessionId, []);

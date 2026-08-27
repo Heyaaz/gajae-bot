@@ -2216,19 +2216,27 @@ export class GjcAcpController {
    * consumed once by steer-on-interrupt. Wait briefly if the first Enter's
    * steer has not landed in the durable queue yet.
    */
-  async flushQueuedNow(sessionId: string): Promise<boolean> {
+  async flushQueuedNow(
+    sessionId: string,
+    waitingKnown = false,
+  ): Promise<boolean> {
     if (this.flushingSessions.has(sessionId)) return true;
     this.flushingSessions.add(sessionId);
     try {
       const pendingSteer = this.pendingSteers.get(sessionId);
       if (pendingSteer) await pendingSteer.catch(() => undefined);
-      const deadline = Date.now() + 1000;
-      let queued = await this.listQueuedMessages(sessionId);
-      while (queued.length === 0 && Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 40));
-        queued = await this.listQueuedMessages(sessionId);
+      // Listing the durable queue can fall back to a broker CLI spawn that
+      // outlives this deadline, which used to swallow the second Enter. When
+      // the caller already shows waiting work, interrupt on its word instead.
+      if (!waitingKnown) {
+        const deadline = Date.now() + 1000;
+        let queued = await this.listQueuedMessages(sessionId);
+        while (queued.length === 0 && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          queued = await this.listQueuedMessages(sessionId);
+        }
+        if (queued.length === 0) return false;
       }
-      if (queued.length === 0) return false;
       await this.controlSession(sessionId, "turn.abort", {});
       this.updateSessionStatus(sessionId, "running");
       return true;
