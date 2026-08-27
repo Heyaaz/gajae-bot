@@ -169,13 +169,15 @@ export function mergeComposerQueue(
   ];
 }
 
-export function isQueuedComposerText(
+export function isWaitingComposerText(
   content: string,
-  queued: readonly QueuedMessage[],
+  waitingTexts: readonly string[],
 ): boolean {
-  const body = content.replace(/\s+/gu, " ").trim();
+  const body = normalizeComposerText(content);
   if (!body) return false;
-  return queued.some(
-    (entry) => entry.text.replace(/\s+/gu, " ").trim() === body,
-  );
+  return waitingTexts.some((text) => normalizeComposerText(text) === body);
+}
+
+function normalizeComposerText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim();
 }

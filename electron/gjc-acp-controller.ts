@@ -1060,7 +1060,6 @@ export class GjcAcpController {
   private readonly cancellingSessions = new Set<string>();
   private readonly flushingSessions = new Set<string>();
   private readonly pendingSteers = new Map<string, Promise<void>>();
-  private readonly pendingQueueTexts = new Map<string, Set<string>>();
   private readonly locallyAbortedSessions = new Set<string>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
@@ -1154,7 +1153,6 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
-    this.pendingQueueTexts.clear();
     child?.kill("SIGTERM");
     await this.ensureStarted();
     return true;
@@ -1924,29 +1922,11 @@ export class GjcAcpController {
     }
   }
 
-  private rememberQueuedText(sessionId: string, text: string): void {
-    const body = text.replace(/\s+/gu, " ").trim();
-    if (!body) return;
-    const queued = this.pendingQueueTexts.get(sessionId) ?? new Set<string>();
-    queued.add(body);
-    this.pendingQueueTexts.set(sessionId, queued);
-  }
-
-  private forgetQueuedText(sessionId: string, text: string): boolean {
-    const body = text.replace(/\s+/gu, " ").trim();
-    const queued = this.pendingQueueTexts.get(sessionId);
-    if (!queued?.has(body)) return false;
-    queued.delete(body);
-    if (queued.size === 0) this.pendingQueueTexts.delete(sessionId);
-    return true;
-  }
-
   async steerSession(sessionId: string, input: MessageInput): Promise<void> {
     const text = messageTextWithFiles(input)
       .replace(/^\/steer(?:\s+|$)/u, "")
       .trim();
     if (!text) throw new Error("Steering instructions are required");
-    this.rememberQueuedText(sessionId, text);
     const pending = this.controlSession(sessionId, "turn.steer", {
       text,
       clientRef: `gajae-steer-${randomUUID()}`,
@@ -1970,7 +1950,6 @@ export class GjcAcpController {
   async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
     const text = messageTextWithFiles(input);
     if (!text) throw new Error("Follow-up text is required");
-    this.rememberQueuedText(sessionId, text);
     const connection = await this.requireConnection();
     try {
       await this.ensureAttached(sessionId, false);
@@ -3253,7 +3232,6 @@ export class GjcAcpController {
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
-    this.pendingQueueTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
     this.sessionConfig.delete(sessionId);
@@ -3292,7 +3270,6 @@ export class GjcAcpController {
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
-    this.pendingQueueTexts.clear();
     this.sessionCommands.clear();
     this.sessionConfig.clear();
     this.terminalOnlySessions.clear();
@@ -3374,7 +3351,6 @@ export class GjcAcpController {
       this.activePromptSessions.clear();
       this.activeAssistantMessages.clear();
       this.activeThoughts.clear();
-      this.pendingQueueTexts.clear();
       for (const session of this.sessions.values()) {
         session.attachment = "recovering";
         session.status = "failed";
@@ -4062,8 +4038,6 @@ export class GjcAcpController {
         ? imageFromContent(update.content, `acp-image-${this.nextLocalId++}`)
         : undefined;
     if (!text && !image) return;
-    if (role === "user" && text && this.forgetQueuedText(sessionId, text))
-      return;
     const activeAssistantId =
       role === "assistant"
         ? this.activeAssistantMessages.get(sessionId)

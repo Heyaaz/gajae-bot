@@ -53,7 +53,7 @@ import {
   compactToolText,
   resolveModelPreset,
   composerQueuePreview,
-  isQueuedComposerText,
+  isWaitingComposerText,
   mergeComposerQueue,
 } from "./composer-utils";
 import {
@@ -4199,6 +4199,10 @@ export default function App() {
     null,
   );
   const [sessionQueue, setSessionQueue] = useState<QueuedMessage[]>([]);
+  // A submitted live-turn prompt is waiting work, not a chat request. GJC echoes it
+  // back as a user message before its queue listing catches up, so track it locally
+  // until the turn that consumes it ends.
+  const [pendingQueueTexts, setPendingQueueTexts] = useState<string[]>([]);
   const [goal, setGoal] = useState<GoalSnapshot>({
     enabled: false,
     completed: 0,
@@ -4473,9 +4477,21 @@ export default function App() {
   useEffect(() => {
     if (!selectedSessionId) return;
     return () => {
-      queueMicrotask(() => setSessionQueue([]));
+      queueMicrotask(() => {
+        setSessionQueue([]);
+        setPendingQueueTexts([]);
+      });
     };
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    if (
+      selectedSessionStatus === "running" ||
+      selectedSessionStatus === "waiting"
+    )
+      return;
+    queueMicrotask(() => setPendingQueueTexts([]));
+  }, [selectedSessionStatus]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -4588,13 +4604,17 @@ export default function App() {
     [filteredSessions],
   );
 
+  const waitingTexts = [
+    ...sessionQueue.map((entry) => entry.text),
+    ...pendingQueueTexts,
+  ];
   const selectedTranscript = selectedId
     ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT).filter(
         (item) =>
           !(
             item.kind === "message" &&
             item.role === "user" &&
-            isQueuedComposerText(item.content, sessionQueue)
+            isWaitingComposerText(item.content, waitingTexts)
           ),
       )
     : EMPTY_TRANSCRIPT;
@@ -4936,10 +4956,19 @@ export default function App() {
     }
   }
 
+  function rememberWaitingText(text: string): void {
+    const body = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
+    if (!body) return;
+    setPendingQueueTexts((current) =>
+      current.includes(body) ? current : [...current, body],
+    );
+  }
+
   async function steerSession(
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
+    rememberWaitingText(input.text);
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.steerSession(resolved, input);
@@ -4953,6 +4982,7 @@ export default function App() {
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
+    rememberWaitingText(input.text);
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.queueFollowUp(resolved, input);
