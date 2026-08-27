@@ -1175,6 +1175,10 @@ export class GjcAcpController {
     const connection = await this.requireConnection();
     const liveRanks = new Map<string, number>();
     const controlSessionIds = new Set<string>();
+    // Every live GJC session is worth controlling from this window, so discovery
+    // follows the broker's own repositories instead of only folders this app has
+    // opened. Without it a session started by the CLI elsewhere stayed invisible.
+    const liveWorkspaces = new Set<string>();
     this.terminalOnlySessions.clear();
     for (const session of await this.brokerSessions(connection)) {
       if (
@@ -1188,11 +1192,13 @@ export class GjcAcpController {
       const attachable = (session.endpointGeneration ?? 0) > 0;
       liveRanks.set(session.sessionId, attachable ? 2 : 1);
       if (!attachable) this.terminalOnlySessions.add(session.sessionId);
+      if (session.repo) liveWorkspaces.add(session.repo);
     }
     const workspaces = [
       ...new Set([
         this.workspace,
         ...(this.sessionMetadata?.listWorkspaces() ?? []),
+        ...liveWorkspaces,
       ]),
     ];
     const pages = await Promise.all(

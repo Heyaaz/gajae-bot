@@ -6,6 +6,7 @@ import {
   groupTranscriptItems,
   initialSessionId,
   isNearTranscriptBottom,
+  mergeDiscoveredSessions,
   orderedSessionsForShortcuts,
   recentUserRequests,
   updateTranscriptItem,
@@ -333,5 +334,40 @@ describe("orderedSessionsForShortcuts", () => {
         { id: "pinned-2", pinned: true },
       ]).map((session) => session.id),
     ).toEqual(["pinned-1", "pinned-2", "recent-1", "recent-2"]);
+  });
+});
+
+describe("mergeDiscoveredSessions", () => {
+  const session = (id: string, status: string, unread = false) => ({
+    id,
+    status,
+    unread,
+  });
+
+  it("adds newly discovered CLI sessions without overwriting live local state", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [session("open", "running")],
+        [session("open", "idle"), session("cli-new", "idle")],
+      ),
+    ).toEqual([session("open", "running"), session("cli-new", "idle")]);
+  });
+
+  it("keeps a session that is still being created locally", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [session("draft-1", "starting")],
+        [session("kept", "idle")],
+      ).map((entry) => entry.id),
+    ).toEqual(["draft-1", "kept"]);
+  });
+
+  it("removes a session discovery no longer reports", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [session("closed", "idle"), session("kept", "idle")],
+        [session("kept", "idle")],
+      ).map((entry) => entry.id),
+    ).toEqual(["kept"]);
   });
 });

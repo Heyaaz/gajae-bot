@@ -2933,6 +2933,63 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions discovery reach", () => {
+  it("lists a live CLI session from a workspace this app never opened", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const foreign = {
+      sessionId: "cli-session",
+      cwd: "/tmp/elsewhere",
+      title: "CLI session",
+    };
+    const extMethod = vi.fn().mockResolvedValue({
+      result: {
+        sessions: [
+          {
+            sessionId: "cli-session",
+            live: true,
+            endpointGeneration: 1,
+            pid: 4321,
+            locator: { repo: "/tmp/elsewhere" },
+          },
+        ],
+      },
+    });
+    const listSessions = vi.fn().mockImplementation((input: { cwd: string }) =>
+      Promise.resolve({
+        sessions: input.cwd === "/tmp/elsewhere" ? [foreign] : [],
+      }),
+    );
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({
+        id: "cli-session",
+        workspace: "/tmp/elsewhere",
+      }),
+    ]);
+    expect(listSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: "/tmp/elsewhere" }),
+    );
+    controller.dispose();
+  });
+});
+
 describe("inferToolName", () => {
   it("recovers CLI tool identities hidden by generic ACP kinds", () => {
     expect(

@@ -230,3 +230,29 @@ export function updateTranscriptItem(
 
   return transcripts;
 }
+
+/**
+ * Discovery only reports identity and workspace. Local runtime state (status,
+ * phase, model, usage) is authoritative while a session is open, so a refresh
+ * adds newly discovered sessions and drops closed ones without overwriting the
+ * live rows this window already tracks.
+ */
+export function mergeDiscoveredSessions<
+  T extends { id: string; unread: boolean; status?: string },
+>(current: readonly T[], discovered: readonly T[]): T[] {
+  const known = new Map(current.map((session) => [session.id, session]));
+  const discoveredIds = new Set(discovered.map((session) => session.id));
+  // A session being created locally is not discoverable yet, so it survives a
+  // refresh. Anything else discovery stopped reporting is gone and must leave
+  // the list instead of lingering as a dead row.
+  const pendingLocal = current.filter(
+    (session) =>
+      !discoveredIds.has(session.id) &&
+      (session.status === "starting" || session.status === "failed"),
+  );
+  const merged = discovered.map((session) => {
+    const existing = known.get(session.id);
+    return existing ? { ...session, ...existing } : session;
+  });
+  return [...pendingLocal, ...merged];
+}

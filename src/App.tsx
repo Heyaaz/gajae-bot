@@ -62,6 +62,7 @@ import {
   groupTranscriptItems,
   initialSessionId,
   isNearTranscriptBottom,
+  mergeDiscoveredSessions,
   orderedSessionsForShortcuts,
   recentUserRequests,
   updateTranscriptItem,
@@ -4335,11 +4336,27 @@ export default function App() {
     void backend.getConnection().then((currentConnection) => {
       if (active) setConnection(currentConnection);
     });
-    void backend.listSessions().then((loadedSessions) => {
-      if (!active) return;
-      setSessions(loadedSessions);
-      setSelectedId((current) => initialSessionId(loadedSessions, current));
-    });
+    // A GJC session started from the CLI after this window opened only shows up if
+    // discovery runs again, so the list refreshes instead of loading once.
+    const loadSessions = (initial: boolean): void => {
+      void backend
+        .listSessions()
+        .then((loadedSessions) => {
+          if (!active) return;
+          setSessions((current) =>
+            mergeDiscoveredSessions(current, loadedSessions),
+          );
+          if (initial)
+            setSelectedId((selected) =>
+              initialSessionId(loadedSessions, selected),
+            );
+        })
+        .catch(() => undefined);
+    };
+    loadSessions(true);
+    const discoveryTimer = window.setInterval(() => loadSessions(false), 4_000);
+    const refreshOnFocus = (): void => loadSessions(false);
+    window.addEventListener("focus", refreshOnFocus);
 
     const unsubscribe = backend.subscribe((event: AgentEvent) => {
       if (event.type === "connection.updated") {
@@ -4477,6 +4494,8 @@ export default function App() {
 
     return () => {
       active = false;
+      window.clearInterval(discoveryTimer);
+      window.removeEventListener("focus", refreshOnFocus);
       unsubscribe();
     };
   }, [backend]);
