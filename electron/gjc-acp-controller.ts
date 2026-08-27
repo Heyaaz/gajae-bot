@@ -1362,7 +1362,9 @@ export class GjcAcpController {
       for (let page = 0; page < 128; page += 1) {
         const response = await connection.extMethod("_gjc/sdk/global", {
           operation: "session.list",
-          input: { ...(cursor ? { cursor } : {}), limit: 1000 },
+          // The broker rejects a limit above 100 and leaks a pagination cursor on
+          // every rejected call until session.list stops working entirely.
+          input: { ...(cursor ? { cursor } : {}), limit: 100 },
         });
         if (response.ok === false) return sessions;
         const result =

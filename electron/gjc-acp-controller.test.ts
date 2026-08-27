@@ -3964,11 +3964,11 @@ describe("GjcAcpController MUST surfaces", () => {
     ]);
     expect(extMethod).toHaveBeenNthCalledWith(1, "_gjc/sdk/global", {
       operation: "session.list",
-      input: { limit: 1000 },
+      input: { limit: 100 },
     });
     expect(extMethod).toHaveBeenNthCalledWith(2, "_gjc/sdk/global", {
       operation: "session.list",
-      input: { cursor: "cursor-1", limit: 1000 },
+      input: { cursor: "cursor-1", limit: 100 },
     });
     controller.dispose();
   });
