@@ -981,10 +981,12 @@ export function sessionInfoToAgentSession(info: SessionInfo): AgentSession {
 export function isControllerSession(
   session: { repo?: string; endpointGeneration?: number; pid?: number },
   childPid: number | undefined,
-  workspace: string,
 ): boolean {
   if (childPid !== undefined && session.pid === childPid) return true;
-  return (session.endpointGeneration ?? 0) <= 0 && session.repo === workspace;
+  // A generation-0 endpoint is a control placeholder with no attachable turn and
+  // no transcript. Discovery reaches every repository now, so these are filtered
+  // everywhere instead of only inside this app's own workspace.
+  return (session.endpointGeneration ?? 0) <= 0;
 }
 
 export function thinkingOptionsForModelCatalog(
@@ -1179,16 +1181,22 @@ export class GjcAcpController {
     // follows the broker's own repositories instead of only folders this app has
     // opened. Without it a session started by the CLI elsewhere stayed invisible.
     const liveWorkspaces = new Set<string>();
+    const deadSessionIds = new Set<string>();
     this.terminalOnlySessions.clear();
     for (const session of await this.brokerSessions(connection)) {
       if (
-        isControllerSession(session, this.child?.pid, this.workspace) &&
+        isControllerSession(session, this.child?.pid) &&
         this.sessionMetadata?.getOwnership(session.sessionId) !== "gajae"
       ) {
         controlSessionIds.add(session.sessionId);
         continue;
       }
-      if (!session.live) continue;
+      if (!session.live) {
+        // The broker keeps every historical session id. Only live ones can be
+        // controlled or replayed from here, so a dead id must not become a row.
+        deadSessionIds.add(session.sessionId);
+        continue;
+      }
       const attachable = (session.endpointGeneration ?? 0) > 0;
       liveRanks.set(session.sessionId, attachable ? 2 : 1);
       if (!attachable) this.terminalOnlySessions.add(session.sessionId);
@@ -1228,6 +1236,7 @@ export class GjcAcpController {
     ]
       .filter((session) => !this.sessionMetadata?.isHidden(session.sessionId))
       .filter((session) => !controlSessionIds.has(session.sessionId))
+      .filter((session) => !deadSessionIds.has(session.sessionId))
       .sort(
         (left, right) =>
           (liveRanks.get(right.sessionId) ?? 0) -

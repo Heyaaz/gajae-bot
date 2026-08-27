@@ -2933,6 +2933,59 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions dead session pruning", () => {
+  it("omits dead broker session ids instead of listing empty rows", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const alive = {
+      sessionId: "alive",
+      cwd: "/tmp/project",
+      title: "Alive",
+    };
+    const dead = { sessionId: "dead", cwd: "/tmp/project", title: "Dead" };
+    const extMethod = vi.fn().mockResolvedValue({
+      result: {
+        sessions: [
+          {
+            sessionId: "alive",
+            live: true,
+            endpointGeneration: 1,
+            locator: { repo: "/tmp/project" },
+          },
+          {
+            sessionId: "dead",
+            live: false,
+            endpointGeneration: 1,
+            locator: { repo: "/tmp/project" },
+          },
+        ],
+      },
+    });
+    const listSessions = vi.fn().mockResolvedValue({ sessions: [alive, dead] });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "alive" }),
+    ]);
+    controller.dispose();
+  });
+});
+
 describe("listSessions discovery reach", () => {
   it("lists a live CLI session from a workspace this app never opened", async () => {
     const controller = new GjcAcpController({
@@ -3041,32 +3094,27 @@ describe("isControllerSession", () => {
       isControllerSession(
         { repo: "/tmp/project", endpointGeneration: 2, pid: 42 },
         42,
-        "/tmp/project",
       ),
     ).toBe(true);
     expect(
       isControllerSession(
         { repo: "/tmp/project", endpointGeneration: 2, pid: 99 },
         42,
-        "/tmp/project",
       ),
     ).toBe(false);
   });
 
-  it("filters the non-attachable control placeholder in the app workspace", () => {
+  it("filters non-attachable control placeholders in every repository", () => {
     expect(
-      isControllerSession(
-        { repo: "/tmp/project", endpointGeneration: 0 },
-        42,
-        "/tmp/project",
-      ),
+      isControllerSession({ repo: "/tmp/project", endpointGeneration: 0 }, 42),
+    ).toBe(true);
+    // Discovery reaches other repositories now, and their placeholders carry no
+    // transcript either, so they must not reach the session list.
+    expect(
+      isControllerSession({ repo: "/tmp/other", endpointGeneration: 0 }, 42),
     ).toBe(true);
     expect(
-      isControllerSession(
-        { repo: "/tmp/other", endpointGeneration: 0 },
-        42,
-        "/tmp/project",
-      ),
+      isControllerSession({ repo: "/tmp/other", endpointGeneration: 1 }, 42),
     ).toBe(false);
   });
 });
