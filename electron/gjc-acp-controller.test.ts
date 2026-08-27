@@ -3091,6 +3091,81 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions broker index failure", () => {
+  it("keeps the previous list when the broker index cannot be read", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    let brokerOk = true;
+    const extMethod = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        brokerOk
+          ? {
+              result: {
+                sessions: [
+                  {
+                    sessionId: "alive",
+                    live: true,
+                    endpointGeneration: 1,
+                    locator: { repo: "/tmp/project" },
+                  },
+                  {
+                    sessionId: "dead",
+                    live: false,
+                    endpointGeneration: 1,
+                    locator: { repo: "/tmp/project" },
+                  },
+                ],
+              },
+            }
+          : {
+              ok: false,
+              error: {
+                code: "invalid_input",
+                message: "session.list cursor capacity is exhausted",
+              },
+            },
+      ),
+    );
+    const listSessions = vi.fn().mockResolvedValue({
+      sessions: [
+        { sessionId: "alive", cwd: "/tmp/project", title: "Alive" },
+        { sessionId: "dead", cwd: "/tmp/project", title: "Dead" },
+      ],
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "alive" }),
+    ]);
+
+    // The index is the only source of liveness. A failed read must not be taken
+    // as "nothing is dead", which would republish every historical session.
+    brokerOk = false;
+    (
+      controller as unknown as { lastLiveFingerprint?: string }
+    ).lastLiveFingerprint = undefined;
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "alive" }),
+    ]);
+    controller.dispose();
+  });
+});
+
 describe("listSessions scan reuse", () => {
   const liveBroker = () => ({
     result: {

@@ -1213,7 +1213,12 @@ export class GjcAcpController {
     const liveWorkspaces = new Set<string>();
     const deadSessionIds = new Set<string>();
     this.terminalOnlySessions.clear();
-    for (const session of await this.brokerSessions(connection)) {
+    const brokerRows = await this.brokerSessions(connection);
+    // Without the index there is no liveness or placeholder evidence, so the
+    // previous result stands rather than republishing every historical session.
+    if (!brokerRows)
+      return this.lastDiscovered.map((session) => ({ ...session }));
+    for (const session of brokerRows) {
       if (
         isControllerSession(session, this.child?.pid) &&
         this.sessionMetadata?.getOwnership(session.sessionId) !== "gajae"
@@ -1341,14 +1346,16 @@ export class GjcAcpController {
     return this.lastDiscovered.map((session) => ({ ...session }));
   }
 
+  /** Undefined when the broker index could not be read in full. */
   private async brokerSessions(connection: ClientSideConnection): Promise<
-    Array<{
-      sessionId: string;
-      repo?: string;
-      live: boolean;
-      endpointGeneration?: number;
-      pid?: number;
-    }>
+    | Array<{
+        sessionId: string;
+        repo?: string;
+        live: boolean;
+        endpointGeneration?: number;
+        pid?: number;
+      }>
+    | undefined
   > {
     const sessions: Array<{
       sessionId: string;
@@ -1366,7 +1373,10 @@ export class GjcAcpController {
           // every rejected call until session.list stops working entirely.
           input: { ...(cursor ? { cursor } : {}), limit: 100 },
         });
-        if (response.ok === false) return sessions;
+        // Liveness classification comes only from this index. An empty result on
+        // failure reads as "nothing is dead", which republishes every historical
+        // session as a row, so an incomplete scan is reported as unusable instead.
+        if (response.ok === false) return undefined;
         const result =
           response.result &&
           typeof response.result === "object" &&
@@ -1408,7 +1418,7 @@ export class GjcAcpController {
       }
       return sessions;
     } catch {
-      return sessions;
+      return undefined;
     }
   }
 
@@ -1456,7 +1466,7 @@ export class GjcAcpController {
     }
     const knownSessionIds = new Set([
       ...this.sessions.keys(),
-      ...(await this.brokerSessions(connection)).map(
+      ...((await this.brokerSessions(connection)) ?? []).map(
         (session) => session.sessionId,
       ),
     ]);
@@ -1469,7 +1479,7 @@ export class GjcAcpController {
     } catch (error) {
       if (lifecycleUncertainError(error)) {
         for (let attempt = 0; attempt < 20 && !response; attempt += 1) {
-          const retained = (await this.brokerSessions(connection)).find(
+          const retained = (await this.brokerSessions(connection))?.find(
             (session) =>
               !knownSessionIds.has(session.sessionId) &&
               session.live &&
@@ -3313,8 +3323,10 @@ export class GjcAcpController {
     if (!connection || connection.signal.aborted) return false;
     try {
       const listed = await this.brokerSessions(connection);
-      return listed.some(
-        (session) => session.sessionId === sessionId && session.live,
+      return (
+        listed?.some(
+          (session) => session.sessionId === sessionId && session.live,
+        ) ?? false
       );
     } catch {
       return false;
