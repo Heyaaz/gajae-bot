@@ -191,6 +191,10 @@ export function messageTextWithFiles(input: MessageInput): string {
   return `${input.text.trim()}${attachedPathsText(input)}`.trim();
 }
 
+function normalizeQueuedRequestText(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
 /** Unified diff produced by an edit/write tool, wherever the transport parked it. */
 export function toolDiffText(...candidates: unknown[]): string | undefined {
   for (const candidate of candidates) {
@@ -1064,6 +1068,8 @@ export class GjcAcpController {
   private readonly cancellingSessions = new Set<string>();
   private readonly flushingSessions = new Set<string>();
   private readonly pendingSteers = new Map<string, Promise<void>>();
+  private readonly queuedRequestTexts = new Map<string, Set<string>>();
+  private readonly suppressedUserMessageKeys = new Map<string, Set<string>>();
   private readonly locallyAbortedSessions = new Set<string>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
@@ -1157,6 +1163,8 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
+    this.queuedRequestTexts.clear();
+    this.suppressedUserMessageKeys.clear();
     child?.kill("SIGTERM");
     await this.ensureStarted();
     return true;
@@ -1583,7 +1591,7 @@ export class GjcAcpController {
     sessionId: string,
   ): Promise<TranscriptItem[]> {
     const persisted = await this.readPersistedTranscript(sessionId);
-    if (persisted) return persisted;
+    if (persisted) return this.withoutQueuedRequests(sessionId, persisted);
     const connection = await this.requireConnection();
     const rows: unknown[] = [];
     let cursor: string | undefined;
@@ -1611,7 +1619,10 @@ export class GjcAcpController {
             : undefined;
       if (page.complete === true || !cursor) break;
     }
-    return sharedTranscriptItems(sessionId, rows);
+    return this.withoutQueuedRequests(
+      sessionId,
+      sharedTranscriptItems(sessionId, rows),
+    );
   }
 
   private async readPersistedTranscript(
@@ -1926,11 +1937,41 @@ export class GjcAcpController {
     }
   }
 
+  private rememberQueuedRequest(sessionId: string, text: string): void {
+    const normalized = normalizeQueuedRequestText(text);
+    if (!normalized) return;
+    const requests =
+      this.queuedRequestTexts.get(sessionId) ?? new Set<string>();
+    requests.add(normalized);
+    this.queuedRequestTexts.set(sessionId, requests);
+  }
+
+  private queuedRequestMatches(sessionId: string, text: string): boolean {
+    const normalized = normalizeQueuedRequestText(text);
+    if (!normalized) return false;
+    return this.queuedRequestTexts.get(sessionId)?.has(normalized) ?? false;
+  }
+
+  private withoutQueuedRequests(
+    sessionId: string,
+    items: TranscriptItem[],
+  ): TranscriptItem[] {
+    return items.filter(
+      (item) =>
+        !(
+          item.kind === "message" &&
+          item.role === "user" &&
+          this.queuedRequestMatches(sessionId, item.content)
+        ),
+    );
+  }
+
   async steerSession(sessionId: string, input: MessageInput): Promise<void> {
     const text = messageTextWithFiles(input)
       .replace(/^\/steer(?:\s+|$)/u, "")
       .trim();
     if (!text) throw new Error("Steering instructions are required");
+    this.rememberQueuedRequest(sessionId, text);
     const pending = this.controlSession(sessionId, "turn.steer", {
       text,
       clientRef: `gajae-steer-${randomUUID()}`,
@@ -1954,6 +1995,7 @@ export class GjcAcpController {
   async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
     const text = messageTextWithFiles(input);
     if (!text) throw new Error("Follow-up text is required");
+    this.rememberQueuedRequest(sessionId, text);
     const connection = await this.requireConnection();
     try {
       await this.ensureAttached(sessionId, false);
@@ -2270,6 +2312,7 @@ export class GjcAcpController {
         });
       } catch (error) {
         if (!busyPromptError(error)) throw error;
+        this.rememberQueuedRequest(sessionId, promptText);
         await this.brokerControl(sessionId, "turn.steer", {
           text: promptText,
           clientRef: `gajae-steer-${randomUUID()}`,
@@ -2344,17 +2387,17 @@ export class GjcAcpController {
     this.appendCancelledNotice(sessionId);
     this.locallyAbortedSessions.add(sessionId);
     this.updateSessionStatus(sessionId, "idle");
-    this.fireAbort(sessionId);
+    await this.fireAbort(sessionId);
     this.cancellingSessions.delete(sessionId);
   }
 
-  private fireAbort(sessionId: string): void {
+  private async fireAbort(sessionId: string): Promise<void> {
     const connection = this.connection;
     const idempotencyKey = `gajae-abort-${randomUUID()}`;
     const terminal = {
       mode: "terminal" as const,
       scope: "owned" as const,
-      operator: true,
+      operator: true as const,
     };
     if (connection && !connection.signal.aborted) {
       if (this.activePromptSessions.has(sessionId)) {
@@ -2365,14 +2408,34 @@ export class GjcAcpController {
           })
           .catch(() => undefined);
       }
-      void connection
-        .extMethod("_gjc/sdk/control", {
-          sessionId,
-          operation: "turn.abort",
-          input: { ...terminal, confirm: true, idempotencyKey },
-        })
-        .catch(() => undefined);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let response: unknown;
+      try {
+        response = await Promise.race([
+          connection.extMethod("_gjc/sdk/control", {
+            sessionId,
+            operation: "turn.abort",
+            input: { ...terminal, confirm: true, idempotencyKey },
+          }),
+          new Promise<undefined>((resolve) => {
+            timer = setTimeout(() => resolve(undefined), 750);
+          }),
+        ]);
+      } catch {
+        response = undefined;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      if (this.abortControlResult(response)?.turn === "stopped") return;
     }
+    this.fireBrokerAbort(sessionId, terminal, idempotencyKey);
+  }
+
+  private fireBrokerAbort(
+    sessionId: string,
+    terminal: { mode: "terminal"; scope: "owned"; operator: true },
+    idempotencyKey: string,
+  ): void {
     void this.brokerControl(sessionId, "turn.abort", terminal, idempotencyKey);
     void this.brokerControl(sessionId, "turn.abort", {});
   }
@@ -3244,6 +3307,8 @@ export class GjcAcpController {
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
+    this.queuedRequestTexts.delete(sessionId);
+    this.suppressedUserMessageKeys.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
     this.sessionConfig.delete(sessionId);
@@ -3282,6 +3347,8 @@ export class GjcAcpController {
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
+    this.queuedRequestTexts.clear();
+    this.suppressedUserMessageKeys.clear();
     this.sessionCommands.clear();
     this.sessionConfig.clear();
     this.terminalOnlySessions.clear();
@@ -3363,6 +3430,8 @@ export class GjcAcpController {
       this.activePromptSessions.clear();
       this.activeAssistantMessages.clear();
       this.activeThoughts.clear();
+      this.queuedRequestTexts.clear();
+      this.suppressedUserMessageKeys.clear();
       for (const session of this.sessions.values()) {
         session.attachment = "recovering";
         session.status = "failed";
@@ -4049,6 +4118,34 @@ export class GjcAcpController {
       update.content.type === "image"
         ? imageFromContent(update.content, `acp-image-${this.nextLocalId++}`)
         : undefined;
+    const userMessageKey =
+      role === "user" && update.messageId
+        ? `user:${update.messageId}`
+        : undefined;
+    if (
+      userMessageKey &&
+      this.suppressedUserMessageKeys.get(sessionId)?.has(userMessageKey)
+    )
+      return;
+    if (role === "user" && text) {
+      const normalized = normalizeQueuedRequestText(text);
+      const requests = this.queuedRequestTexts.get(sessionId);
+      const queuedEcho =
+        requests?.has(normalized) ||
+        (Boolean(userMessageKey) &&
+          [...(requests ?? [])].some((request) =>
+            request.startsWith(normalized),
+          ));
+      if (queuedEcho) {
+        if (userMessageKey) {
+          const suppressed =
+            this.suppressedUserMessageKeys.get(sessionId) ?? new Set<string>();
+          suppressed.add(userMessageKey);
+          this.suppressedUserMessageKeys.set(sessionId, suppressed);
+        }
+        return;
+      }
+    }
     if (!text && !image) return;
     const activeAssistantId =
       role === "assistant"

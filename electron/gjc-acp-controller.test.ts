@@ -2073,6 +2073,46 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("keeps a busy prompt retry out of the user transcript", async () => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      activePromptSessions: Set<string>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      handleSessionUpdate(notification: SessionNotification): void;
+    };
+    internals.startup = Promise.resolve();
+    internals.activePromptSessions.add("session-1");
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    await controller.sendMessage("session-1", {
+      text: "자꾸 말풍선으로 가잖아",
+      images: [],
+      files: [],
+    });
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        messageId: "queued-user-echo",
+        content: { type: "text", text: "자꾸 말풍선으로 가잖아" },
+      },
+    });
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        type: "transcript.appended",
+        item: expect.objectContaining({ role: "user" }),
+      }),
+    );
+    controller.dispose();
+  });
+
   it("routes an explicit steer directly even when external run status is stale", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
@@ -2371,13 +2411,7 @@ describe("sessionInfoToAgentSession", () => {
         idempotencyKey: expect.stringMatching(/^gajae-abort-/u),
       },
     });
-    expect(brokerControl).toHaveBeenCalledWith(
-      session.id,
-      "turn.abort",
-      { mode: "terminal", scope: "owned", operator: true },
-      expect.stringMatching(/^gajae-abort-/u),
-    );
-    expect(brokerControl).toHaveBeenCalledWith(session.id, "turn.abort", {});
+    expect(brokerControl).not.toHaveBeenCalled();
     expect(internals.sessions.get(session.id)?.status).toBe("idle");
     controller.dispose();
   });

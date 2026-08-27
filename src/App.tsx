@@ -4838,54 +4838,11 @@ export default function App() {
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
-    const optimisticId = appendOptimisticUserMessage(sessionId, input);
     try {
       await backend.sendMessage(await resolveSessionId(sessionId), input);
     } catch (error) {
-      removeOptimisticUserMessage(sessionId, optimisticId);
       setAppError(humanErrorMessage(error));
     }
-  }
-
-  function appendOptimisticUserMessage(
-    sessionId: string,
-    input: MessageInput,
-  ): string {
-    const id = `local-user-${crypto.randomUUID()}`;
-    const content = input.text.replace(/^\/steer(?:\s+|$)/u, "").trim();
-    const item: TranscriptItem = {
-      id,
-      kind: "message",
-      sessionId,
-      role: "user",
-      content,
-      images: input.images,
-      createdAt: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    };
-    setTranscripts((current) =>
-      cacheTranscript(current, sessionId, [
-        ...(current[sessionId] ?? []),
-        item,
-      ]),
-    );
-    return id;
-  }
-
-  function removeOptimisticUserMessage(
-    sessionId: string,
-    itemId: string,
-  ): void {
-    setTranscripts((current) => {
-      const items = current[sessionId];
-      if (!items?.some((item) => item.id === itemId)) return current;
-      return {
-        ...current,
-        [sessionId]: items.filter((item) => item.id !== itemId),
-      };
-    });
   }
 
   async function setSessionConfig(
