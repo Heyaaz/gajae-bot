@@ -1059,6 +1059,7 @@ export class GjcAcpController {
   private readonly activePromptSessions = new Set<string>();
   private readonly cancellingSessions = new Set<string>();
   private readonly flushingSessions = new Set<string>();
+  private readonly pendingSteers = new Map<string, Promise<void>>();
   private readonly locallyAbortedSessions = new Set<string>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
@@ -1916,13 +1917,24 @@ export class GjcAcpController {
       .replace(/^\/steer(?:\s+|$)/u, "")
       .trim();
     if (!text) throw new Error("Steering instructions are required");
-    // The first Enter queues durable steering. A later empty Enter calls
-    // flushQueuedNow(), which atomically aborts the current turn and promotes it.
-    // Reuse the persistent ACP transport so queueing does not spawn a process.
-    await this.controlSession(sessionId, "turn.steer", {
+    const pending = this.controlSession(sessionId, "turn.steer", {
       text,
       clientRef: `gajae-steer-${randomUUID()}`,
-    });
+    }).then(() => undefined);
+    const previous = this.pendingSteers.get(sessionId);
+    const chained = previous
+      ? previous.then(
+          () => pending,
+          () => pending,
+        )
+      : pending;
+    this.pendingSteers.set(sessionId, chained);
+    try {
+      await pending;
+    } finally {
+      if (this.pendingSteers.get(sessionId) === chained)
+        this.pendingSteers.delete(sessionId);
+    }
   }
 
   async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
@@ -2194,6 +2206,8 @@ export class GjcAcpController {
     if (this.flushingSessions.has(sessionId)) return true;
     this.flushingSessions.add(sessionId);
     try {
+      const pendingSteer = this.pendingSteers.get(sessionId);
+      if (pendingSteer) await pendingSteer.catch(() => undefined);
       const deadline = Date.now() + 1000;
       let queued = await this.listQueuedMessages(sessionId);
       while (queued.length === 0 && Date.now() < deadline) {

@@ -1851,6 +1851,60 @@ describe("sessionInfoToAgentSession", () => {
     expect(brokerControl).not.toHaveBeenCalled();
     controller.dispose();
   });
+  it("waits for an in-flight steer before flushing the queue", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const brokerControl = vi.fn();
+    let resolveSteer: (() => void) | undefined;
+    const steer = new Promise<void>((resolve) => {
+      resolveSteer = resolve;
+    });
+    let listedAfterSteer = false;
+    const extMethod = vi.fn().mockImplementation((_method, params) => {
+      if (params.operation === "turn.steer")
+        return steer.then(() => ({ ok: true }));
+      if (params.query === "queue.messages.list") {
+        if (!listedAfterSteer) {
+          return Promise.resolve({ page: { items: [], complete: true } });
+        }
+        return Promise.resolve({
+          page: {
+            items: [{ id: "steer-1", text: "focus now", mode: "steer" }],
+            complete: true,
+          },
+        });
+      }
+      return Promise.resolve({ ok: true, accepted: true, aborted: true });
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      brokerControl: typeof brokerControl;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+    };
+    internals.startup = Promise.resolve();
+    internals.brokerControl = brokerControl;
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    const steered = controller.steerSession("session-1", {
+      text: "focus now",
+      images: [],
+      files: [],
+    });
+    const flushed = controller.flushQueuedNow("session-1");
+    listedAfterSteer = true;
+    resolveSteer?.();
+    await steered;
+    await expect(flushed).resolves.toBe(true);
+    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
+      sessionId: "session-1",
+      operation: "turn.abort",
+      input: {},
+    });
+    expect(brokerControl).not.toHaveBeenCalled();
+    controller.dispose();
+  });
   it("waits for a just-queued steer before flushing instead of no-opping", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",

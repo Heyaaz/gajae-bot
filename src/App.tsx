@@ -1497,6 +1497,8 @@ function Composer({
   const submitAfterCompositionRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
   const compositionSubmitScheduledRef = useRef(false);
+  const pendingQueueCountRef = useRef(0);
+  pendingQueueCountRef.current = pendingQueue.length;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptHistoryRef = useRef(new Map<string, string[]>());
@@ -1593,6 +1595,7 @@ function Composer({
   }, [sessionId]);
 
   useEffect(() => {
+    if (queued.length === 0) return;
     queueMicrotask(() => setLocalPending([]));
   }, [queued]);
 
@@ -1703,6 +1706,7 @@ function Composer({
     // GJC CLI semantics: an empty submit during a live turn flushes the queue by
     // aborting the run, and the session decides whether anything is queued.
     if (running && !content && images.length === 0 && files.length === 0) {
+      if (pendingQueueCountRef.current === 0) return;
       setLocalPending([]);
       onFlushQueued();
       return;
@@ -1906,11 +1910,8 @@ function Composer({
         event.keyCode === 229 ||
         composingRef.current)
     ) {
-      // An empty composer has nothing to compose, so a lingering IME flag must not
-      // swallow the queue-flush gesture. Only a real draft waits for composition end.
       if (!(textareaRef.current?.value ?? value).trim()) {
         event.preventDefault();
-        submit();
         return;
       }
       event.preventDefault();
@@ -1936,6 +1937,7 @@ function Composer({
       performance.now() - compositionEndedAtRef.current < 100
     ) {
       event.preventDefault();
+      if (!(textareaRef.current?.value ?? value).trim()) return;
       if (!compositionSubmitScheduledRef.current) {
         compositionSubmitScheduledRef.current = true;
         requestAnimationFrame(() => {
