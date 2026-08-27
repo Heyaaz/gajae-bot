@@ -147,6 +147,14 @@ function requestText(content: string): string {
   return copyableMessageText(content).replace(/\s+/gu, " ").trim();
 }
 
+// A user bubble the app rendered itself, before GJC confirmed the request. The
+// controller echoes prompts and steers as `local-prompt-`; the renderer used to
+// add its own `local-user-` bubbles. Both must survive a transcript sync until a
+// matching remote message arrives, or a just-sent message disappears mid-turn.
+function isLocalEcho(id: string): boolean {
+  return id.startsWith("local-user-") || id.startsWith("local-prompt-");
+}
+
 export function cacheTranscript(
   transcripts: Record<string, TranscriptItem[]>,
   sessionId: string,
@@ -156,13 +164,11 @@ export function cacheTranscript(
   const previous = transcripts[sessionId];
   if (previous) {
     const previousRemoteIds = new Set(
-      previous
-        .filter((item) => !item.id.startsWith("local-user-"))
-        .map((item) => item.id),
+      previous.filter((item) => !isLocalEcho(item.id)).map((item) => item.id),
     );
     const optimistic = previous.filter(
       (item): item is Extract<TranscriptItem, { kind: "message" }> =>
-        item.kind === "message" && item.id.startsWith("local-user-"),
+        item.kind === "message" && isLocalEcho(item.id),
     );
     for (const local of optimistic) {
       const confirmed = items.some(

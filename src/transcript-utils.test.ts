@@ -210,6 +210,35 @@ describe("cacheTranscript", () => {
       confirmed["session-1"].some((item) => item.id === optimistic.id),
     ).toBe(false);
   });
+  it("keeps a controller-echoed prompt or steer until the sync confirms it", () => {
+    // The controller echoes its own bubbles as `local-prompt-`; a persisted
+    // transcript sync that has not caught up yet must not erase them, or a
+    // just-sent message vanishes for seconds mid-turn.
+    const echo = {
+      ...message,
+      id: "local-prompt-7",
+      role: "user" as const,
+      content: "지금 바로 확인해",
+    };
+    const transcripts = { "session-1": [message, echo] };
+
+    const pending = cacheTranscript(transcripts, "session-1", [{ ...message }]);
+    expect(pending["session-1"].at(-1)).toBe(echo);
+
+    const confirmed = cacheTranscript(pending, "session-1", [
+      { ...message },
+      {
+        ...message,
+        id: "acp-message-9",
+        role: "user" as const,
+        content: "지금 바로 확인해",
+      },
+    ]);
+    expect(confirmed["session-1"].some((item) => item.id === echo.id)).toBe(
+      false,
+    );
+  });
+
   it("keeps an unmatched image or steer request at the end until it is confirmed", () => {
     const optimistic = {
       ...message,
