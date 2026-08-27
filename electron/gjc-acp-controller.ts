@@ -1183,8 +1183,11 @@ export class GjcAcpController {
     // user's own requests. Running it while a prompt, steer, or abort is in
     // flight puts those behind a full session scan, so it yields and the caller
     // keeps the list it already has.
-    if (this.activePromptSessions.size > 0 || this.pendingSteers.size > 0)
-      return [...this.sessions.values()].map((session) => ({ ...session }));
+    if (
+      this.lastDiscovered.length > 0 &&
+      (this.activePromptSessions.size > 0 || this.pendingSteers.size > 0)
+    )
+      return this.lastDiscovered.map((session) => ({ ...session }));
     if (this.discoveryInFlight) return this.discoveryInFlight;
     const discovery = this.discoverSessions().finally(() => {
       this.discoveryInFlight = undefined;
@@ -1194,6 +1197,10 @@ export class GjcAcpController {
   }
 
   private discoveryInFlight: Promise<AgentSession[]> | undefined;
+  // The session map is a durable cache keyed by every id ever seen, including
+  // rows discovery later filtered out. Yielding must replay the last discovered
+  // list instead, or skipping a scan resurrects dead sessions in the sidebar.
+  private lastDiscovered: AgentSession[] = [];
 
   private async discoverSessions(): Promise<AgentSession[]> {
     const connection = await this.requireConnection();
@@ -1313,7 +1320,10 @@ export class GjcAcpController {
       this.sessionCwds.set(session.id, info.cwd);
     }
 
-    return listed.map((info) => ({ ...this.sessions.get(info.sessionId)! }));
+    this.lastDiscovered = listed.map((info) => ({
+      ...this.sessions.get(info.sessionId)!,
+    }));
+    return this.lastDiscovered.map((session) => ({ ...session }));
   }
 
   private async brokerSessions(connection: ClientSideConnection): Promise<

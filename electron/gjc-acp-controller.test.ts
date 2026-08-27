@@ -3091,6 +3091,66 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions yield fidelity", () => {
+  it("does not resurrect filtered sessions while yielding to a live turn", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const extMethod = vi.fn().mockResolvedValue({
+      result: {
+        sessions: [
+          {
+            sessionId: "alive",
+            live: true,
+            endpointGeneration: 1,
+            locator: { repo: "/tmp/project" },
+          },
+          {
+            sessionId: "dead",
+            live: false,
+            endpointGeneration: 1,
+            locator: { repo: "/tmp/project" },
+          },
+        ],
+      },
+    });
+    const listSessions = vi.fn().mockResolvedValue({
+      sessions: [
+        { sessionId: "alive", cwd: "/tmp/project", title: "Alive" },
+        { sessionId: "dead", cwd: "/tmp/project", title: "Dead" },
+      ],
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      activePromptSessions: Set<string>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "alive" }),
+    ]);
+
+    // The session map still holds "dead" as a cache entry, so yielding must
+    // replay the filtered result rather than dumping that map.
+    internals.activePromptSessions.add("alive");
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "alive" }),
+    ]);
+    controller.dispose();
+  });
+});
+
 describe("listSessions channel contention", () => {
   it("yields discovery while the user's own turn is in flight", async () => {
     const controller = new GjcAcpController({
@@ -3115,13 +3175,16 @@ describe("listSessions channel contention", () => {
       extMethod,
       listSessions,
     };
-    internals.sessions.set("session-1", {
-      id: "session-1",
-      title: "Busy",
-      workspace: "/tmp/project",
-      status: "running",
-      unread: false,
-    });
+    // Yielding replays the previous scan, so seed one instead of the raw cache.
+    (controller as unknown as { lastDiscovered: unknown[] }).lastDiscovered = [
+      {
+        id: "session-1",
+        title: "Busy",
+        workspace: "/tmp/project",
+        status: "running",
+        unread: false,
+      },
+    ];
     internals.activePromptSessions.add("session-1");
 
     // A full scan costs many round trips on the one ACP channel the prompt uses.
