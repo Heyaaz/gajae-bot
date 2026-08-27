@@ -1,0 +1,147 @@
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
+
+export class SessionMetadataStore {
+  private readonly filePath: string
+  private aliases: Record<string, string>
+  private workspaces: Record<string, string>
+  private hidden: Set<string>
+  private ownership: Record<string, 'gajae' | 'external' | 'available'>
+  private unread: Record<string, boolean>
+  private worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }>
+
+  constructor(userDataDirectory: string) {
+    this.filePath = path.join(userDataDirectory, 'agent-control-sessions.json')
+    const stored = this.read()
+    this.aliases = stored.aliases
+    this.workspaces = stored.workspaces
+    this.hidden = new Set(stored.hidden)
+    this.ownership = stored.ownership
+    this.unread = stored.unread
+    this.worktrees = stored.worktrees
+  }
+
+  getAlias(sessionId: string): string | undefined {
+    return this.aliases[sessionId]
+  }
+
+  setAlias(sessionId: string, title: string): void {
+    const value = title.trim()
+    if (!value) throw new Error('Session title cannot be empty')
+    this.aliases[sessionId] = value
+    this.write()
+  }
+
+  setWorkspace(sessionId: string, workspace: string): void {
+    this.workspaces[sessionId] = path.resolve(workspace)
+    this.hidden.delete(sessionId)
+    this.write()
+  }
+
+  listWorkspaces(): string[] {
+    return [...new Set(Object.values(this.workspaces))]
+  }
+
+  isHidden(sessionId: string): boolean {
+    return this.hidden.has(sessionId)
+  }
+
+  getOwnership(sessionId: string): 'gajae' | 'external' | 'available' | undefined { return this.ownership[sessionId] }
+  setOwnership(sessionId: string, value: 'gajae' | 'external' | 'available'): void { this.ownership[sessionId] = value; this.write() }
+  getUnread(sessionId: string): boolean { return this.unread[sessionId] === true }
+  setUnread(sessionId: string, value: boolean): void { this.unread[sessionId] = value; this.write() }
+  getWorktree(sessionId: string) { return this.worktrees[sessionId] }
+  setWorktree(sessionId: string, value: { sourceWorkspace: string; path: string; branch: string; managed: true }): void { this.worktrees[sessionId] = value; this.write() }
+
+  hideSession(sessionId: string): void {
+    this.hidden.add(sessionId)
+    delete this.aliases[sessionId]
+    delete this.workspaces[sessionId]
+    delete this.ownership[sessionId]
+    delete this.unread[sessionId]
+    delete this.worktrees[sessionId]
+    this.write()
+  }
+
+  retainOnly(allSessionIds: Iterable<string>, retained: ReadonlySet<string>): void {
+    for (const sessionId of allSessionIds) {
+      if (retained.has(sessionId)) this.hidden.delete(sessionId)
+      else {
+        this.hidden.add(sessionId)
+        delete this.aliases[sessionId]
+        delete this.workspaces[sessionId]
+        delete this.ownership[sessionId]
+        delete this.unread[sessionId]
+        delete this.worktrees[sessionId]
+      }
+    }
+    this.write()
+  }
+
+  deleteAlias(sessionId: string): void {
+    if (!(sessionId in this.aliases)
+      && !(sessionId in this.workspaces)
+      && !(sessionId in this.ownership)
+      && !(sessionId in this.unread)
+      && !(sessionId in this.worktrees)) return
+    delete this.aliases[sessionId]
+    delete this.workspaces[sessionId]
+    delete this.ownership[sessionId]
+    delete this.unread[sessionId]
+    delete this.worktrees[sessionId]
+    this.write()
+  }
+
+  private read(): { aliases: Record<string, string>; workspaces: Record<string, string>; hidden: string[]; ownership: Record<string, 'gajae' | 'external' | 'available'>; unread: Record<string, boolean>; worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }> } {
+    try {
+      const value = JSON.parse(readFileSync(this.filePath, 'utf8')) as unknown
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {} }
+      const candidate = value as { aliases?: unknown; workspaces?: unknown; hidden?: unknown; ownership?: unknown; unread?: unknown; worktrees?: unknown }
+      const rawAliases = candidate.aliases && typeof candidate.aliases === 'object' && !Array.isArray(candidate.aliases)
+        ? candidate.aliases as Record<string, unknown>
+        : value as Record<string, unknown>
+      const rawWorkspaces = candidate.workspaces && typeof candidate.workspaces === 'object' && !Array.isArray(candidate.workspaces)
+        ? candidate.workspaces as Record<string, unknown>
+        : {}
+      const aliases = Object.fromEntries(
+        Object.entries(rawAliases)
+          .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && Boolean(entry[1].trim()))
+          .map(([sessionId, title]) => [sessionId, title.trim()]),
+      )
+      const workspaces = Object.fromEntries(
+        Object.entries(rawWorkspaces)
+          .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && path.isAbsolute(entry[1]))
+          .map(([sessionId, workspace]) => [sessionId, path.resolve(workspace)]),
+      )
+      const hidden = Array.isArray(candidate.hidden)
+        ? candidate.hidden.filter((sessionId): sessionId is string => typeof sessionId === 'string' && Boolean(sessionId))
+        : []
+      const ownership = candidate.ownership && typeof candidate.ownership === 'object' ? Object.fromEntries(Object.entries(candidate.ownership).filter(([,v]) => v === 'gajae' || v === 'external' || v === 'available')) as typeof this.ownership : {}
+      const unread = candidate.unread && typeof candidate.unread === 'object' ? Object.fromEntries(Object.entries(candidate.unread).filter(([,v]) => typeof v === 'boolean')) as Record<string, boolean> : {}
+      const worktrees = candidate.worktrees && typeof candidate.worktrees === 'object' && !Array.isArray(candidate.worktrees)
+        ? Object.fromEntries(Object.entries(candidate.worktrees as Record<string, unknown>).filter((entry): entry is [string, { sourceWorkspace: string; path: string; branch: string; managed: true }] => {
+            const record = entry[1]
+            if (!record || typeof record !== 'object' || Array.isArray(record)) return false
+            const value = record as Record<string, unknown>
+            return value.managed === true
+              && typeof value.sourceWorkspace === 'string'
+              && path.isAbsolute(value.sourceWorkspace)
+              && typeof value.path === 'string'
+              && path.isAbsolute(value.path)
+              && typeof value.branch === 'string'
+              && Boolean(value.branch)
+          }))
+        : {}
+      return { aliases, workspaces, hidden, ownership, unread, worktrees }
+    } catch {
+      return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {} }
+    }
+  }
+
+  private write(): void {
+    mkdirSync(path.dirname(this.filePath), { recursive: true })
+    const temporaryPath = `${this.filePath}.tmp`
+    writeFileSync(temporaryPath, `${JSON.stringify({ aliases: this.aliases, workspaces: this.workspaces, hidden: [...this.hidden], ownership: this.ownership, unread: this.unread, worktrees: this.worktrees }, null, 2)}\n`, { mode: 0o600 })
+    renameSync(temporaryPath, this.filePath)
+  }
+}

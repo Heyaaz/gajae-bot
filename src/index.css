@@ -1,0 +1,88 @@
+:root {
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  color: #ececef;
+  background: #09090a;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --bg-app: #09090a;
+  --bg-sidebar: #111113;
+  --bg-panel: #151517;
+  --bg-raised: #1b1b1e;
+  --bg-hover: #202023;
+  --bg-selected: #27272b;
+  --border: rgba(255, 255, 255, 0.085);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text-primary: #f1f1f3;
+  --text-secondary: #a6a6ad;
+  --text-tertiary: #707077;
+  --accent: #f06416;
+  --accent-bright: #ff9238;
+  --success: #67d6a5;
+  --warning: #e3b36a;
+  --danger: #ee7b7b;
+  --radius-sm: 7px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-lg: 0 28px 80px rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-width: 320px;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background:
+    radial-gradient(circle at 72% -20%, rgba(240, 100, 22, 0.075), transparent 34%),
+    var(--bg-app);
+}
+
+button,
+input,
+textarea {
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(240, 100, 22, 0.66);
+  outline-offset: 1px;
+}
+
+::selection {
+  color: #fff;
+  background: rgba(240, 100, 22, 0.46);
+}
+
+::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}

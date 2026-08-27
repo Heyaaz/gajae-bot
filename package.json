@@ -1,0 +1,48 @@
+{
+  "name": "agent-control",
+  "productName": "Gajae",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "dev:desktop": "VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "typecheck": "tsc -b && tsc -p electron/tsconfig.json --noEmit",
+    "clean": "node scripts/clean-desktop.mjs",
+    "build": "npm run clean && npm run typecheck && vite build && tsc -p electron/tsconfig.json && npm run build:preload",
+    "build:preload": "esbuild electron/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist-electron/electron/preload.cjs",
+    "desktop": "electron .",
+    "desktop:smoke": "electron . --smoke",
+    "desktop:gjc-smoke": "electron . --gjc-smoke",
+    "package:mac": "npm run build && electron-packager . Gajae --platform=darwin --arch=arm64 --out=release --overwrite --app-bundle-id=com.gajae.desktop --app-version=0.0.0 --icon=src/assets/gajae-icon.icns --prune=true --asar --ignore='^/(artifacts|release|\\.git|\\.gjc)$' && codesign --force --deep --sign - release/Gajae-darwin-arm64/Gajae.app",
+    "gjc:e2e": "npm run build && node scripts/gjc-acp-e2e.mjs",
+    "lint": "oxlint",
+    "test": "vitest run",
+    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke",
+    "verify:gjc": "npm run build && npm run desktop:gjc-smoke && node scripts/gjc-acp-e2e.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.3.0",
+    "lucide-react": "^1.34.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "electron": "^44.0.0",
+    "esbuild": "^0.28.2",
+    "oxlint": "^1.79.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.2",
+    "vitest": "^3.2.7"
+  }
+}

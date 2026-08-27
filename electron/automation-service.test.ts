@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest'
+import { EventEmitter } from 'node:events'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { PassThrough } from 'node:stream'
+import { AutomationService, automationPlist, launchCalendarInterval, validateAutomationInput } from './automation-service.js'
+
+describe('automation service contracts', () => {
+  it('validates absolute workspace and bounded schedule', () => {
+    expect(() => validateAutomationInput({ name: 'x', prompt: 'p', workspace: 'relative', schedule: { kind: 'daily', time: '09:00' }, enabled: true, worktree: false })).toThrow()
+    expect(validateAutomationInput({ name: 'x', prompt: 'p', workspace: '/tmp/project', schedule: { kind: 'weekly', time: '09:00', weekday: 2 }, enabled: true, worktree: false }).schedule.weekday).toBe(2)
+  })
+  it('maps schedule and never embeds prompt in plist', () => {
+    expect(launchCalendarInterval({ kind: 'weekly', time: '03:04', weekday: 6 })).toEqual({ Weekday: 6, Hour: 3, Minute: 4 })
+    expect(launchCalendarInterval({ kind: 'weekdays', time: '03:04' })).toEqual([1, 2, 3, 4, 5].map((Weekday) => ({ Weekday, Hour: 3, Minute: 4 })))
+    const plist = automationPlist('com.gajae.x', '/Applications/Electron', '/tmp/worker.js', '/tmp/config.json', { kind: 'daily', time: '03:04' })
+    expect(plist).toContain('ELECTRON_RUN_AS_NODE')
+    expect(plist).not.toContain('prompt')
+  })
+  it('persists lifecycle, prevents overlap, and constructs bounded GJC arguments', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-'))
+    const launchCalls: string[][] = []
+    const spawnCalls: Array<{ executable: string; args: string[]; options: Record<string, unknown> }> = []
+    const spawnProcess = ((executable: string, args: string[], options: Record<string, unknown>) => {
+      spawnCalls.push({ executable, args, options })
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill(): boolean }
+      child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true
+      setTimeout(() => child.emit('close', 0), 20)
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'darwin', launchctl: (args) => { launchCalls.push(args) }, spawnProcess })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'weekdays', time: '09:30' }, enabled: true, modelProfile: 'codex-medium', thinking: 'high', worktree: true })
+    expect((await service.list()).map((item) => item.id)).toEqual([created.id])
+    expect(launchCalls.some((call) => call[0] === 'load')).toBe(true)
+    const concurrent = await Promise.all([service.runNow(created.id), service.runNow(created.id)])
+    expect(concurrent.map((run) => run.status).sort()).toEqual(['completed', 'skipped'])
+    expect(concurrent.find((run) => run.status === 'completed')).toMatchObject({ exitCode: 0 })
+    expect(spawnCalls[0]).toMatchObject({ executable: '/usr/local/bin/gjc', args: ['--print', '--mpreset', 'codex-medium', '--thinking', 'high', '--worktree', 'Review changes'], options: { cwd: '/tmp', shell: false } })
+    await service.updateEnabled(created.id, false)
+    expect((await service.list())[0]?.enabled).toBe(false)
+    await service.delete(created.id)
+    expect(await service.list()).toEqual([])
+  })
+})
