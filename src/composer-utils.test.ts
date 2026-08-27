@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { PendingRequest } from "./composer-utils";
 import {
   compactToolCommand,
   compactToolText,
@@ -6,7 +7,10 @@ import {
   appendPendingRequest,
   isDuplicateSubmission,
   SUBMISSION_DEDUPE_MS,
+  IME_COMMIT_WINDOW_MS,
+  imeCommitSubmits,
   nextRequestToRelease,
+  releaseRequests,
   withoutReleasedRequest,
   droppedImageAttachments,
   readableToolText,
@@ -126,6 +130,92 @@ describe("composer-owned pending queue", () => {
 
   it("reports nothing to release once the queue is drained", () => {
     expect(nextRequestToRelease([])).toBeUndefined();
+  });
+
+  it("sends each released request exactly once", async () => {
+    // Reproduces the duplicate steer: the queue lives behind a ref that only
+    // refreshes on render, so a loop reading a stale snapshot after its await
+    // re-selected the request it had just sent.
+    let live: PendingRequest[] = [request("a", "지시 하나")];
+    let rendered: PendingRequest[] = live;
+    const sent: string[] = [];
+
+    await releaseRequests({
+      read: () => rendered,
+      write: (pending) => {
+        live = pending;
+        // React refreshes the render-time view asynchronously; the loop must not
+        // depend on it landing before the next iteration.
+        void Promise.resolve().then(() => {
+          rendered = live;
+        });
+      },
+      send: async (entry) => {
+        sent.push(entry.text);
+      },
+    });
+
+    expect(sent).toEqual(["지시 하나"]);
+    expect(live).toEqual([]);
+  });
+
+  it("drains the whole queue in order", async () => {
+    let live: PendingRequest[] = [
+      request("a", "first"),
+      request("b", "second"),
+      request("c", "third"),
+    ];
+    const sent: string[] = [];
+
+    await releaseRequests({
+      read: () => live,
+      write: (pending) => {
+        live = pending;
+      },
+      send: async (entry) => {
+        sent.push(entry.text);
+      },
+    });
+
+    expect(sent).toEqual(["first", "second", "third"]);
+    expect(live).toEqual([]);
+  });
+
+  it("keeps a failed request at the front instead of losing the text", async () => {
+    let live: PendingRequest[] = [request("a", "fails"), request("b", "later")];
+    const sent: string[] = [];
+
+    await releaseRequests({
+      read: () => live,
+      write: (pending) => {
+        live = pending;
+      },
+      send: async (entry) => {
+        sent.push(entry.text);
+        throw new Error("send failed");
+      },
+    });
+
+    expect(sent).toEqual(["fails"]);
+    expect(live.map((entry) => entry.id)).toEqual(["a", "b"]);
+  });
+});
+
+describe("imeCommitSubmits", () => {
+  it("submits the commit that follows its own Enter", () => {
+    expect(imeCommitSubmits(1_000, 1_016)).toBe(true);
+  });
+
+  it("never submits when no Enter is waiting", () => {
+    expect(imeCommitSubmits(undefined, 1_016)).toBe(false);
+  });
+
+  it("ignores a commit for text typed after that Enter", () => {
+    // The old implementation submitted whatever the textarea held 80ms after an
+    // IME Enter, which sent text the user typed later as a second message they
+    // never submitted.
+    expect(imeCommitSubmits(1_000, 1_000 + IME_COMMIT_WINDOW_MS)).toBe(false);
+    expect(imeCommitSubmits(1_000, 9_000)).toBe(false);
   });
 });
 

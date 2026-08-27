@@ -188,6 +188,32 @@ export function nextRequestToRelease(
   return pending[0];
 }
 
+// Hand held requests over one at a time, oldest first.
+//
+// The queue lives behind a ref because the loop awaits between sends, and React
+// only refreshes a ref on render -- which lands after the await. Reading the
+// rendered value re-selected the request that was just sent and steered it a
+// second time, so the entry is claimed from the live queue *before* awaiting.
+// A send that throws puts its request back at the front and stops, so a failed
+// release never silently loses the user's text.
+export async function releaseRequests(queue: {
+  read: () => readonly PendingRequest[];
+  write: (pending: PendingRequest[]) => void;
+  send: (request: PendingRequest) => Promise<unknown>;
+}): Promise<void> {
+  for (;;) {
+    const next = nextRequestToRelease(queue.read());
+    if (!next) return;
+    queue.write(withoutReleasedRequest(queue.read(), next.id));
+    try {
+      await queue.send(next);
+    } catch {
+      queue.write([next, ...queue.read()]);
+      return;
+    }
+  }
+}
+
 // Submitting the same draft twice must produce two independent entries, while a
 // duplicated event for one keystroke must not. The composer clears the textarea
 // synchronously so a repeated read yields an empty draft, and this helper keeps
@@ -205,6 +231,25 @@ export function appendPendingRequest(
 // the second is dropped. A deliberate resend is always further apart than one
 // frame, and pressing Enter twice quickly on *different* text is never suppressed.
 export const SUBMISSION_DEDUPE_MS = 120;
+
+// How long an Enter pressed mid-composition waits for the IME to commit. The
+// commit for that keystroke lands within a frame or two; anything later is a
+// different edit and must not be submitted on the earlier Enter's behalf.
+export const IME_COMMIT_WINDOW_MS = 400;
+
+// Whether an IME commit may submit on behalf of an earlier Enter.
+//
+// The Korean IME delivers Enter while the final syllable is still composing, so
+// the submission has to wait for the commit that follows. It must not wait
+// indefinitely: a commit arriving much later belongs to text typed after that
+// Enter, and submitting it sends a message the user never asked to send.
+export function imeCommitSubmits(
+  armedAt: number | undefined,
+  now: number,
+): boolean {
+  if (armedAt === undefined) return false;
+  return now - armedAt < IME_COMMIT_WINDOW_MS;
+}
 
 export function isDuplicateSubmission(
   last: { text: string; at: number },
