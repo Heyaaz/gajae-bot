@@ -125,11 +125,12 @@ describe("composer utilities", () => {
 });
 
 describe("releaseSettledChips", () => {
-  const chip = (text: string) => ({
+  const chip = (text: string, deliveredBaseline = 0) => ({
     id: `local-${text}`,
     text,
     mode: "steer" as const,
     label: "Steer",
+    deliveredBaseline,
   });
   const listed = (text: string) => ({
     id: `q-${text}`,
@@ -143,6 +144,24 @@ describe("releaseSettledChips", () => {
     // chip has no settle condition and the composer shows a permanent
     // "1개 대기 중".
     expect(releaseSettledChips([chip("steered")], [], ["steered"])).toEqual([]);
+  });
+
+  it("keeps a queued request whose words already appear earlier in the history", () => {
+    // Repeating yourself must not retire the new chip: the matching bubble here
+    // predates it, so GJC has not consumed this request yet.
+    const history = ["steered", "some reply prompt"];
+    expect(
+      releaseSettledChips([chip("steered", history.length)], [], history),
+    ).toEqual([chip("steered", history.length)]);
+  });
+
+  it("releases the chip only once a bubble arrives after it was created", () => {
+    const history = ["steered"];
+    const pending = [chip("steered", history.length)];
+    expect(releaseSettledChips(pending, [], history)).toEqual(pending);
+    expect(releaseSettledChips(pending, [], [...history, "steered"])).toEqual(
+      [],
+    );
   });
 
   it("keeps a steer chip that the transcript has not echoed yet", () => {

@@ -55,6 +55,7 @@ import {
   composerQueuePreview,
   isWaitingComposerText,
   mergeComposerQueue,
+  type LocalChip,
   releaseSettledChips,
 } from "./composer-utils";
 import {
@@ -1501,7 +1502,7 @@ function Composer({
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [configMenu, setConfigMenu] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
-  const [localPending, setLocalPending] = useState<QueuedMessage[]>([]);
+  const [localPending, setLocalPending] = useState<LocalChip[]>([]);
   const pendingQueue = mergeComposerQueue(queued, localPending);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const composerRef = useRef<HTMLFormElement>(null);
@@ -1777,6 +1778,7 @@ function Composer({
           text: preview.text,
           mode: preview.mode,
           label: preview.mode === "steer" ? "Steer" : "Queued",
+          deliveredBaseline: deliveredTexts.length,
         },
       ]);
     } else {
@@ -1785,6 +1787,7 @@ function Composer({
       // state for the backend round trip on an ordinary chat message, so the chip
       // is only added if the backend actually had to steer a turn we missed.
       const pendingId = `local-${crypto.randomUUID()}`;
+      const baseline = deliveredTexts.length;
       const preview = composerQueuePreview(content, files, images);
       void onSend({ text: content, images, files }).then((delivery) => {
         if (delivery !== "steer") return;
@@ -1795,6 +1798,7 @@ function Composer({
             text: preview.text,
             mode: "steer",
             label: "Steer",
+            deliveredBaseline: baseline,
           },
         ]);
       });

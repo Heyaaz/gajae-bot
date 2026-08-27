@@ -172,19 +172,28 @@ export function mergeComposerQueue(
 // A local chip stands in for work the authoritative queue has not listed yet.
 // Only the entries GJC now reports are released; chips the listing predated stay,
 // otherwise a submission made just before a refresh vanishes from the window.
+// A provisional chip carries the number of user bubbles that existed when it was
+// created. Matching a chip against the whole transcript retired it as soon as the
+// same words appeared anywhere in the history -- including a bubble the app itself
+// echoed for an earlier prompt -- so a queued request vanished the moment the user
+// repeated themselves. Only a bubble that arrives after the chip is proof.
+export interface LocalChip extends QueuedMessage {
+  deliveredBaseline: number;
+}
+
 export function releaseSettledChips(
-  localPending: readonly QueuedMessage[],
+  localPending: readonly LocalChip[],
   queued: readonly QueuedMessage[],
   deliveredTexts: readonly string[] = [],
-): QueuedMessage[] {
-  const delivered = new Set(deliveredTexts.map(normalizeComposerText));
+): LocalChip[] {
   return localPending.filter((local) => {
     const body = normalizeComposerText(local.text);
+    const consumedAfterChip = deliveredTexts
+      .slice(local.deliveredBaseline)
+      .some((text) => normalizeComposerText(text) === body);
+    if (consumedAfterChip) return false;
     // A follow-up chip stands in for a listing that has not arrived yet, so the
-    // authoritative queue releases it. A steer never enters that queue at all --
-    // GJC consumes it at the next turn boundary -- so its only settle signal is
-    // the request surfacing in the transcript as an ordinary user bubble.
-    if (delivered.has(body)) return false;
+    // authoritative queue releases it once GJC reports the request.
     return !queued.some((entry) => normalizeComposerText(entry.text) === body);
   });
 }
