@@ -183,7 +183,7 @@ function LinkPreviewCard({
 const BUNDLED_GJC_COMMANDS: AgentCommand[] = [
   {
     name: "steer",
-    description: "진행 중인 Gajae 작업에 지시 추가",
+    description: "대기 중인 지시를 지금 실행 (빈 Enter와 같음)",
     hint: "[지시]",
   },
   {
@@ -1748,7 +1748,19 @@ function Composer({
           ...files.map((file) => file.name),
           ...images.map((image) => image.name),
         ].join(", ");
-      if (/^\/queue(?:\s+|$)/u.test(content)) {
+      if (/^\/steer(?:\s+|$)/u.test(content)) {
+        const steerText = content.replace(/^\/steer(?:\s+|$)/u, "").trim();
+        onSteer({ text: steerText, images: [], files });
+        setLocalPending((current) => [
+          ...current,
+          {
+            id: `local-${crypto.randomUUID()}`,
+            text: steerText || displayText,
+            mode: "steer",
+            label: "Steer",
+          },
+        ]);
+      } else {
         const queueText = content.replace(/^\/queue(?:\s+|$)/u, "").trim();
         onQueue({ text: queueText, images: [], files });
         setLocalPending((current) => [
@@ -1758,19 +1770,6 @@ function Composer({
             text: queueText || displayText,
             mode: "followUp",
             label: "Queued",
-          },
-        ]);
-      } else {
-        onSteer({ text: content, images: [], files });
-        const steerText =
-          content.replace(/^\/steer(?:\s+|$)/u, "").trim() || displayText;
-        setLocalPending((current) => [
-          ...current,
-          {
-            id: `local-${crypto.randomUUID()}`,
-            text: steerText,
-            mode: "steer",
-            label: "Steer",
           },
         ]);
       }
@@ -2091,7 +2090,7 @@ function Composer({
                 key={entry.id}
                 className={`composer-queue-item composer-queue-item--${entry.mode}`}
               >
-                <em>{entry.mode === "steer" ? "조종" : "대기"}</em>
+                <em>{entry.mode === "steer" ? "즉시" : "대기"}</em>
                 {entry.text}
               </span>
             ))}

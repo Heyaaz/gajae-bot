@@ -2236,7 +2236,8 @@ export class GjcAcpController {
       await this.steerSession(sessionId, input);
       return;
     }
-    const promptText = value + attachedPathsText(input);
+    const promptText =
+      value.replace(/^\/queue(?:\s+|$)/u, "").trim() + attachedPathsText(input);
     if (!promptText) return;
     const session = this.sessions.get(sessionId);
     if (this.sessionMetadata && session?.ownership !== "gajae") {
@@ -2247,16 +2248,15 @@ export class GjcAcpController {
         });
       } catch (error) {
         if (!busyPromptError(error)) throw error;
-        await this.brokerControl(sessionId, "turn.steer", {
+        await this.brokerControl(sessionId, "turn.follow_up", {
           text: promptText,
-          clientRef: `gajae-steer-${randomUUID()}`,
         });
       }
       this.updateSessionStatus(sessionId, "running");
       return;
     }
     if (this.activePromptSessions.has(sessionId)) {
-      await this.steerSession(sessionId, input);
+      await this.queueFollowUp(sessionId, { ...input, text: promptText });
       return;
     }
     this.activePromptSessions.add(sessionId);
@@ -2279,7 +2279,7 @@ export class GjcAcpController {
     } catch (error) {
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
-        await this.steerSession(sessionId, input);
+        await this.queueFollowUp(sessionId, { ...input, text: promptText });
         return;
       }
       this.finalizeThought(sessionId);

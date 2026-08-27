@@ -44,14 +44,15 @@ Type a request and press Enter. Files and images are sent as local paths. Images
 
 ### While a turn is running
 
-| Action | Result |
-|---|---|
-| Text + Enter | Queue a steer on the current turn |
-| Empty Enter | Abort the current turn and run the queued steer immediately |
-| `/queue …` | Schedule follow-up work after this turn |
-| Esc or Stop | Stop the current turn and owned background/subagent work. The session stays open |
+| Action       | Result                                                                                     |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| Text + Enter | Queue follow-up work. It waits until the current turn ends, or until you press empty Enter |
+| Empty Enter  | Abort the current turn and run the waiting work immediately                                |
+| `/steer …`   | Same as empty Enter: interrupt now                                                         |
+| `/queue …`   | Same as Text + Enter: wait                                                                 |
+| Esc or Stop  | Stop the current turn and owned background/subagent work. The session stays open           |
 
-The first Enter does not interrupt. The second empty Enter promotes the queued steer. `/steer` is optional.
+GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait queue. Waiting work uses `turn.follow_up`. Empty Enter aborts so the queued follow-up is promoted now.
 
 ### Model / effort
 
@@ -61,12 +62,12 @@ The first Enter does not interrupt. The second empty Enter promotes the queued s
 
 ### Shortcuts
 
-| Key | Action |
-|---|---|
-| `⌘T` | New session |
-| `⌘1`–`⌘9` | Select session |
-| Esc | Abort the current run |
-| `Shift+Tab` | Cycle effort |
+| Key         | Action                |
+| ----------- | --------------------- |
+| `⌘T`        | New session           |
+| `⌘1`–`⌘9`   | Select session        |
+| Esc         | Abort the current run |
+| `Shift+Tab` | Cycle effort          |
 
 ### Session delete
 

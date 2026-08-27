@@ -1980,19 +1980,24 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
-  it("routes a composer submission to steer while its prompt is active", async () => {
+  it("queues a composer submission as follow-up while its prompt is active", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
       emit: () => undefined,
     });
     const brokerControl = vi.fn().mockResolvedValue({ turn: "stopped" });
     const prompt = vi.fn();
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
     const internals = controller as unknown as {
+      startup: Promise<void>;
       activePromptSessions: Set<string>;
       brokerControl: typeof brokerControl;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
     };
+    internals.startup = Promise.resolve();
     internals.activePromptSessions.add("session-1");
     internals.brokerControl = brokerControl;
+    internals.connection = { signal: { aborted: false }, extMethod };
 
     await controller.sendMessage("session-1", {
       text: "check the narrower failure",
@@ -2001,14 +2006,12 @@ describe("sessionInfoToAgentSession", () => {
     });
 
     expect(prompt).not.toHaveBeenCalled();
-    expect(brokerControl).toHaveBeenCalledWith(
-      "session-1",
-      "turn.steer",
-      expect.objectContaining({
-        text: "check the narrower failure",
-        clientRef: expect.stringMatching(/^gajae-steer-/u),
-      }),
-    );
+    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
+      sessionId: "session-1",
+      operation: "turn.follow_up",
+      input: { text: "check the narrower failure" },
+    });
+    expect(brokerControl).not.toHaveBeenCalled();
     controller.dispose();
   });
 
@@ -2040,7 +2043,7 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
-  it("steers an ordinary prompt when the remote session became busy without adding a failure notice", async () => {
+  it("queues an ordinary prompt as follow-up when the remote session became busy without adding a failure notice", async () => {
     const events: AgentEvent[] = [];
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
@@ -2086,11 +2089,8 @@ describe("sessionInfoToAgentSession", () => {
 
     expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
       sessionId: session.id,
-      operation: "turn.steer",
-      input: expect.objectContaining({
-        text: "focus the active run",
-        clientRef: expect.stringMatching(/^gajae-steer-/u),
-      }),
+      operation: "turn.follow_up",
+      input: { text: "focus the active run" },
     });
     expect(brokerControl).not.toHaveBeenCalled();
     expect(events).not.toContainEqual(
