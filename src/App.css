@@ -1086,6 +1086,9 @@
 .presence-inline--running {
   background: var(--success);
 }
+.presence-inline--compacting {
+  background: #ff8a34;
+}
 .presence-inline--waiting,
 .presence-inline--cancelling {
   background: var(--warning);
@@ -2033,6 +2036,18 @@
   background: rgba(255, 138, 52, 0.05);
   border: 1px solid rgba(255, 138, 52, 0.18);
   border-radius: 9px;
+}
+.compaction-card--progress {
+  border-style: dashed;
+}
+.compaction-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 11px 11px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 .compaction-card header {
   display: flex;
@@ -3004,6 +3019,10 @@
 .status-chip--running {
   color: var(--success);
   background: rgba(103, 214, 165, 0.08);
+}
+.status-chip--compacting {
+  color: #ffad6f;
+  background: rgba(255, 138, 52, 0.08);
 }
 .status-chip--waiting {
   color: var(--warning);

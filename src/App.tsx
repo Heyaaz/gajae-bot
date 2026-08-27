@@ -218,7 +218,8 @@ const BUNDLED_GJC_COMMANDS: AgentCommand[] = [
   },
 ];
 
-function statusLabel(status: AgentSession["status"]): string {
+function statusLabel(status: AgentSession["status"], phase?: string): string {
+  if (phase === "compacting") return "압축 중";
   if (status === "starting") return "시작 중";
   if (status === "running") return "작업 중";
   if (status === "waiting") return "확인 필요";
@@ -306,7 +307,7 @@ function SessionRow({
             title={session.phase === "compacting" ? "압축 중" : undefined}
           >
             {session.phase === "compacting"
-              ? "?"
+              ? "압축 중"
               : session.status === "running"
                 ? "진행 중"
                 : session.status === "waiting"
@@ -632,6 +633,7 @@ function Sidebar({
 
 interface TranscriptProps {
   items: TranscriptItem[];
+  compacting?: boolean;
   revealItemId?: string;
   onRevealComplete?: (itemId: string) => void;
   onResolveTool: (toolId: string, optionId: string) => void;
@@ -641,6 +643,7 @@ interface TranscriptProps {
 
 function Transcript({
   items,
+  compacting = false,
   revealItemId,
   onRevealComplete,
   onResolveTool,
@@ -700,7 +703,7 @@ function Transcript({
     transcript.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" });
   }
 
-  if (items.length === 0) {
+  if (items.length === 0 && !compacting) {
     return (
       <div className="empty-conversation">
         <span className="empty-conversation__mark">
@@ -751,6 +754,19 @@ function Transcript({
               ))}
             </div>
           ),
+        )}
+        {compacting && (
+          <article className="compaction-card compaction-card--progress">
+            <header>
+              <Shrink size={15} />
+              <strong>compaction</strong>
+              <span>압축 중</span>
+            </header>
+            <p className="compaction-progress">
+              <span className="mini-spinner" />
+              세션 context를 압축하고 있습니다
+            </p>
+          </article>
         )}
         <div ref={endRef} />
       </div>
@@ -2430,8 +2446,10 @@ function Inspector({
         </span>
         <h2>{session.title}</h2>
         <p>{session.subtitle}</p>
-        <span className={`status-chip status-chip--${session.status}`}>
-          {statusLabel(session.status)}
+        <span
+          className={`status-chip status-chip--${session.phase === "compacting" ? "compacting" : session.status}`}
+        >
+          {statusLabel(session.status, session.phase)}
         </span>
       </section>
       <section className="inspector-section inspector-subagents">
@@ -5049,9 +5067,9 @@ export default function App() {
                 <strong>{selectedSession.title}</strong>
                 <small>
                   <span
-                    className={`presence-inline presence-inline--${selectedSession.status}`}
+                    className={`presence-inline presence-inline--${selectedSession.phase === "compacting" ? "compacting" : selectedSession.status}`}
                   />
-                  {statusLabel(selectedSession.status)}
+                  {statusLabel(selectedSession.status, selectedSession.phase)}
                   {selectedSession.attachment === "terminal-only" && (
                     <span className="chat-sync">터미널 읽기 전용 동기화</span>
                   )}
@@ -5113,6 +5131,7 @@ export default function App() {
               />
               <Transcript
                 items={selectedTranscript}
+                compacting={selectedSession.phase === "compacting"}
                 revealItemId={
                   revealTarget?.sessionId === selectedSession.id
                     ? revealTarget.itemId
@@ -5132,6 +5151,7 @@ export default function App() {
                 <Composer
                   sessionId={selectedSession.id}
                   running={
+                    selectedSession.phase === "compacting" ||
                     selectedSession.status === "running" ||
                     selectedSession.status === "waiting"
                   }

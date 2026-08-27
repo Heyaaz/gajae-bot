@@ -1718,6 +1718,7 @@ describe("sessionInfoToAgentSession", () => {
           session: expect.objectContaining({
             id: "session-1",
             phase: "compacting",
+            status: "running",
           }),
         }),
       ),

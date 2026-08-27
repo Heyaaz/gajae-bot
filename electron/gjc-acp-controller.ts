@@ -1242,6 +1242,13 @@ export class GjcAcpController {
         ...existing,
         ...listedSession,
         status: existing?.status ?? "idle",
+        phase: existing?.phase,
+        mode: existing?.mode,
+        model: existing?.model,
+        modelDisplay: existing?.modelDisplay,
+        thinking: existing?.thinking,
+        usagePercent: existing?.usagePercent,
+        usagePending: existing?.usagePending,
         ownership,
         attachment,
         unread:
@@ -1896,7 +1903,10 @@ export class GjcAcpController {
     // Compaction is a session control operation, not an ACP provider attachment.
     // Terminal-owned sessions must route through the persistent control plane (or
     // broker fallback) instead of being rejected for lacking a second attachment.
-    this.patchSessionRuntime(sessionId, { phase: "compacting" });
+    this.patchSessionRuntime(sessionId, {
+      phase: "compacting",
+      status: "running",
+    });
     try {
       await this.controlSession(sessionId, "compaction.run", {});
       // GJC intentionally reports null usage after compaction until a later model
@@ -3994,6 +4004,7 @@ export class GjcAcpController {
       Pick<
         AgentSession,
         | "phase"
+        | "status"
         | "mode"
         | "model"
         | "modelDisplay"
@@ -4276,11 +4287,20 @@ export class GjcAcpController {
         ? update._meta.gjcPhase
         : undefined;
     const running = update._meta?.gjcRunning;
-    if (phase) session.phase = phase;
+    if (phase === "compacting") {
+      session.phase = "compacting";
+      if (!this.locallyAbortedSessions.has(sessionId))
+        session.status = "running";
+    } else if (phase) {
+      session.phase =
+        phase === "responding" || phase === "idle" ? undefined : phase;
+    }
     if (running === true && !this.locallyAbortedSessions.has(sessionId))
       session.status = "running";
-    if (running === false && session.status !== "failed")
+    if (running === false && session.status !== "failed") {
       session.status = "idle";
+      if (session.phase === "compacting") session.phase = undefined;
+    }
     if (typeof update._meta?.gjcThinkingLevel === "string")
       session.thinking = update._meta.gjcThinkingLevel;
     this.emitEvent({ type: "session.updated", session: { ...session } });

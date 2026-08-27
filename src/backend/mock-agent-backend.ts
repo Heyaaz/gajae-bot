@@ -561,7 +561,14 @@ export class MockAgentBackend implements AgentBackend {
       (candidate) => candidate.id === sessionId,
     );
     if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    session.phase = "compacting";
+    session.status = "running";
+    this.emit({ type: "session.updated", session: cloneSession(session) });
+    await new Promise((resolve) => setTimeout(resolve, 40));
     session.usagePercent = 8.4;
+    session.usagePending = false;
+    session.phase = undefined;
+    session.status = "idle";
     this.emit({ type: "session.updated", session: cloneSession(session) });
   }
 
