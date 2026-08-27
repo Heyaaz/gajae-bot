@@ -65,7 +65,7 @@ import type {
   ToolImage,
 } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
-import { runtimeEnvironment } from "./runtime-path.js";
+import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 
 const GJC_ACCENT = "#ff8a34";
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -3958,20 +3958,22 @@ export class GjcAcpController {
   }
 
   private async resolveExecutable(): Promise<string> {
+    // Resolve the same GJC the user's shell resolves. A fixed preference list
+    // silently disagreed with PATH: `~/.bun/bin` was checked before
+    // `~/.local/bin`, so the app ran an older install than the terminal did
+    // (0.15.2 against 0.15.3) and an upgrade to the PATH-visible one changed
+    // nothing here. An explicit setting or GJC_BIN still wins.
     const candidates = [
       this.configuredExecutable,
       process.env.GJC_BIN,
-      path.join(homedir(), ".bun/bin/gjc"),
-      path.join(homedir(), ".local/bin/gjc"),
-      "/opt/homebrew/bin/gjc",
-      "/usr/local/bin/gjc",
+      ...gjcPathCandidates(),
     ].filter((candidate): candidate is string => Boolean(candidate));
     for (const candidate of candidates) {
       try {
         await access(candidate, constants.X_OK);
         return candidate;
       } catch {
-        // Try the next explicit installation path.
+        // Try the next installation path.
       }
     }
     return "gjc";

@@ -7,6 +7,9 @@ import path from 'node:path'
 // child process must be spawned with these locations appended.
 const INTERPRETER_DIRECTORIES = [
   path.join(homedir(), '.bun/bin'),
+  // GJC's installer default (scripts/install.sh: GJC_INSTALL_DIR, default
+  // ~/.local/bin). A Finder launch inherits no user directories, so this must be
+  // present for a normally installed gjc to be found at all.
   path.join(homedir(), '.local/bin'),
   path.join(homedir(), '.nvm/current/bin'),
   path.join(homedir(), '.volta/bin'),
@@ -23,6 +26,35 @@ export function runtimePath(basePath = process.env.PATH ?? ''): string {
     entries.push(directory)
   }
   return entries.join(path.delimiter)
+}
+
+/**
+ * GJC's own installer puts the executable in `$GJC_INSTALL_DIR` (default
+ * `~/.local/bin`) and then tells the user to put that directory on PATH, so PATH
+ * is where an installed GJC is found. This mirrors that contract: the installer's
+ * target is searched first, then PATH in its own order.
+ *
+ * The app previously preferred a fixed list that put `~/.bun/bin` ahead of
+ * `~/.local/bin` regardless of PATH, so a stale install shadowed the newer one the
+ * terminal ran and `gjc` upgrades did not reach the app.
+ */
+export function gjcPathCandidates(
+  basePath?: string,
+  installDirectory = process.env.GJC_INSTALL_DIR,
+): string[] {
+  const directories = [
+    ...(installDirectory ? [installDirectory] : []),
+    ...runtimePath(basePath).split(path.delimiter),
+  ].filter(Boolean)
+  const seen = new Set<string>()
+  const candidates: string[] = []
+  for (const directory of directories) {
+    const candidate = path.join(directory, 'gjc')
+    if (seen.has(candidate)) continue
+    seen.add(candidate)
+    candidates.push(candidate)
+  }
+  return candidates
 }
 
 export function runtimeEnvironment(extra: Record<string, string> = {}): Record<string, string> {
