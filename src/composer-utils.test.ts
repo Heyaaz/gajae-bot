@@ -6,6 +6,7 @@ import {
   readableToolText,
   resolveModelPreset,
   composerQueuePreview,
+  isQueuedComposerText,
   mergeComposerQueue,
 } from "./composer-utils";
 
@@ -111,5 +112,18 @@ describe("composer utilities", () => {
         label: "Queued",
       },
     ]);
+  });
+
+  it("matches queued composer text against a later user echo", () => {
+    expect(
+      isQueuedComposerText("안고쳐졌는데 ?", [
+        { id: "q1", text: "안고쳐졌는데 ?", mode: "followUp", label: "Queued" },
+      ]),
+    ).toBe(true);
+    expect(
+      isQueuedComposerText("다른 요청", [
+        { id: "q1", text: "안고쳐졌는데 ?", mode: "followUp", label: "Queued" },
+      ]),
+    ).toBe(false);
   });
 });

@@ -168,3 +168,14 @@ export function mergeComposerQueue(
     ),
   ];
 }
+
+export function isQueuedComposerText(
+  content: string,
+  queued: readonly QueuedMessage[],
+): boolean {
+  const body = content.replace(/\s+/gu, " ").trim();
+  if (!body) return false;
+  return queued.some(
+    (entry) => entry.text.replace(/\s+/gu, " ").trim() === body,
+  );
+}

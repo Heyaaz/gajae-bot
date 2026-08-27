@@ -53,6 +53,7 @@ import {
   compactToolText,
   resolveModelPreset,
   composerQueuePreview,
+  isQueuedComposerText,
   mergeComposerQueue,
 } from "./composer-utils";
 import {
@@ -4588,7 +4589,14 @@ export default function App() {
   );
 
   const selectedTranscript = selectedId
-    ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT)
+    ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT).filter(
+        (item) =>
+          !(
+            item.kind === "message" &&
+            item.role === "user" &&
+            isQueuedComposerText(item.content, sessionQueue)
+          ),
+      )
     : EMPTY_TRANSCRIPT;
   const selectedTranscriptLength = selectedTranscript.length;
   useEffect(() => {

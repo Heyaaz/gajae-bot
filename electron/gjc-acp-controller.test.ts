@@ -2016,6 +2016,55 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("does not render a steered live-turn prompt as a user bubble", async () => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      activePromptSessions: Set<string>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      handleSessionUpdate(notification: {
+        sessionId: string;
+        update: {
+          sessionUpdate: string;
+          content: { type: string; text: string };
+        };
+      }): void;
+    };
+    internals.startup = Promise.resolve();
+    internals.activePromptSessions.add("session-1");
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    await controller.sendMessage("session-1", {
+      text: "안고쳐졌는데 ?",
+      images: [],
+      files: [],
+    });
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        content: { type: "text", text: "안고쳐졌는데 ?" },
+      },
+    });
+
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        type: "transcript.appended",
+        item: expect.objectContaining({
+          kind: "message",
+          role: "user",
+          content: "안고쳐졌는데 ?",
+        }),
+      }),
+    );
+    controller.dispose();
+  });
+
   it("routes an explicit steer directly even when external run status is stale", async () => {
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
