@@ -4,6 +4,8 @@ import {
   compactToolText,
   composerQueuePreview,
   appendPendingRequest,
+  isDuplicateSubmission,
+  SUBMISSION_DEDUPE_MS,
   nextRequestToRelease,
   withoutReleasedRequest,
   droppedImageAttachments,
@@ -151,5 +153,37 @@ describe("appendPendingRequest", () => {
     expect(
       appendPendingRequest(once, request("b", "같은 말")).map((e) => e.id),
     ).toEqual(["a", "b"]);
+  });
+});
+
+describe("isDuplicateSubmission", () => {
+  it("drops the second delivery of one Enter", () => {
+    // The form handler and the IME composition callback both fire for a single
+    // keypress, a few milliseconds apart, with identical text.
+    const last = { text: "steer 테스트", at: 1_000 };
+    expect(isDuplicateSubmission(last, "steer 테스트", 1_004)).toBe(true);
+  });
+
+  it("allows the same text again once the frame has passed", () => {
+    const last = { text: "steer 테스트", at: 1_000 };
+    expect(
+      isDuplicateSubmission(last, "steer 테스트", 1_000 + SUBMISSION_DEDUPE_MS),
+    ).toBe(false);
+  });
+
+  it("never suppresses different text", () => {
+    const last = { text: "steer 테스트", at: 1_000 };
+    expect(isDuplicateSubmission(last, "다른 요청", 1_002)).toBe(false);
+  });
+
+  it("matches across the whitespace the IME leaves behind", () => {
+    const last = { text: "steer 테스트", at: 1_000 };
+    expect(isDuplicateSubmission(last, "steer  테스트 ", 1_002)).toBe(true);
+  });
+
+  it("ignores an empty draft", () => {
+    expect(isDuplicateSubmission({ text: "", at: 1_000 }, "   ", 1_001)).toBe(
+      false,
+    );
   });
 });

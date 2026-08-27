@@ -3672,6 +3672,7 @@ export class GjcAcpController {
         this.emitEvent({
           type: "session.activity",
           sessionId: session.id,
+          title: session.title,
           unread: true,
           category: "recovered",
         });
@@ -4733,6 +4734,7 @@ export class GjcAcpController {
     this.emitEvent({
       type: "session.activity",
       sessionId,
+      title: session.title,
       unread: true,
       category,
     });

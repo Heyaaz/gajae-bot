@@ -55,6 +55,7 @@ import {
   composerQueuePreview,
   type PendingRequest,
   appendPendingRequest,
+  isDuplicateSubmission,
   nextRequestToRelease,
   withoutReleasedRequest,
 } from "./composer-utils";
@@ -1504,6 +1505,11 @@ function Composer({
   const submitAfterCompositionRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
   const compositionSubmitScheduledRef = useRef(false);
+  // The Korean IME delivers one Enter through several handlers, each scheduling its
+  // own rAF, so no ordering of guard flags closes every window -- two attempts to
+  // tune them both still double-submitted. Identify the submission by its draft
+  // instead: the same text submitted inside one input frame is the duplicate.
+  const lastSubmissionRef = useRef({ text: "", at: 0 });
   // The release loop reads the queue between awaits, so it needs the live value
   // rather than the render-time closure.
   const pendingQueueRef = useRef<PendingRequest[]>([]);
@@ -1732,6 +1738,17 @@ function Composer({
 
   function submit(): void {
     const content = (textareaRef.current?.value ?? value).trim();
+    if (
+      content &&
+      isDuplicateSubmission(
+        lastSubmissionRef.current,
+        content,
+        performance.now(),
+      )
+    )
+      return;
+    if (content)
+      lastSubmissionRef.current = { text: content, at: performance.now() };
     // GJC CLI semantics: an empty submit during a live turn interrupts the run and
     // releases the queue this composer has been holding.
     if (running && !content && images.length === 0 && files.length === 0) {
@@ -1941,14 +1958,8 @@ function Composer({
         composingRef.current = false;
         compositionSubmitScheduledRef.current = true;
         requestAnimationFrame(() => {
-          // Released only after the submission runs. Clearing it first reopened the
-          // window the other IME paths test against, so a single Enter could queue
-          // the request twice.
-          try {
-            submit();
-          } finally {
-            compositionSubmitScheduledRef.current = false;
-          }
+          compositionSubmitScheduledRef.current = false;
+          submit();
         });
       }, 80);
       return;
@@ -1962,14 +1973,8 @@ function Composer({
       if (!compositionSubmitScheduledRef.current) {
         compositionSubmitScheduledRef.current = true;
         requestAnimationFrame(() => {
-          // Released only after the submission runs. Clearing it first reopened the
-          // window the other IME paths test against, so a single Enter could queue
-          // the request twice.
-          try {
-            submit();
-          } finally {
-            compositionSubmitScheduledRef.current = false;
-          }
+          compositionSubmitScheduledRef.current = false;
+          submit();
         });
       }
       return;
@@ -2152,11 +2157,8 @@ function Composer({
           submitAfterCompositionRef.current = false;
           compositionSubmitScheduledRef.current = true;
           requestAnimationFrame(() => {
-            try {
-              submit();
-            } finally {
-              compositionSubmitScheduledRef.current = false;
-            }
+            compositionSubmitScheduledRef.current = false;
+            submit();
           });
         }}
         onKeyDown={handleKeyDown}

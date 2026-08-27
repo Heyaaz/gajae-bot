@@ -698,6 +698,7 @@ export class MockAgentBackend implements AgentBackend {
             this.emit({
               type: "session.activity",
               sessionId,
+              title: session.title,
               unread: true,
               category: "completed",
             });
@@ -739,6 +740,7 @@ export class MockAgentBackend implements AgentBackend {
     this.emit({
       type: "session.activity",
       sessionId,
+      title: session.title,
       unread: false,
       category: "message",
     });

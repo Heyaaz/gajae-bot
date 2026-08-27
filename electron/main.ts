@@ -12,7 +12,10 @@ import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import type { AgentEvent } from "../shared/agent-contract.js";
+import {
+  type AgentEvent,
+  sessionActivityBody,
+} from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
 import { GjcAcpController } from "./gjc-acp-controller.js";
 import { registerGjcIpcHandlers } from "./gjc-ipc-handlers.js";
@@ -76,19 +79,9 @@ function broadcastAgentEvent(event: AgentEvent): void {
     event.category === "failed" ||
     event.category === "permission";
   if (!alwaysAnnounce && windows.some((window) => window.isFocused())) return;
-  const body =
-    event.category === "permission"
-      ? "승인이 필요한 작업이 있습니다."
-      : event.category === "failed"
-        ? "작업이 실패했습니다."
-        : event.category === "recovered"
-          ? "GJC 세션 연결이 복구되었습니다."
-          : event.category === "completed"
-            ? "백그라운드 작업이 완료되었습니다."
-            : "새 응답이 도착했습니다.";
   const notification = new Notification({
     title: "Gajae",
-    body,
+    body: sessionActivityBody(event),
     silent: event.category === "message",
   });
   notification.on("click", () => {

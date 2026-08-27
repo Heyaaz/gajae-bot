@@ -743,12 +743,13 @@ describe("sessionInfoToAgentSession", () => {
       },
     });
 
-    expect(
-      events.filter(
-        (event) =>
-          event.type === "session.activity" && event.category === "completed",
-      ),
-    ).toHaveLength(1);
+    const completed = events.filter(
+      (event) =>
+        event.type === "session.activity" && event.category === "completed",
+    );
+    expect(completed).toHaveLength(1);
+    // The notification names the session, so the event has to carry its title.
+    expect(completed[0]).toMatchObject({ title: "Chat session" });
     controller.dispose();
   });
 
@@ -1021,6 +1022,7 @@ describe("sessionInfoToAgentSession", () => {
         {
           type: "session.activity",
           sessionId: "session-1",
+          title: "Notification session",
           unread: true,
           category: "completed",
         },

@@ -377,6 +377,8 @@ export type AgentEvent =
   | {
       type: "session.activity";
       sessionId: string;
+      /** Session title, so a notification can name the work that finished. */
+      title: string;
       unread: boolean;
       category: "completed" | "failed" | "permission" | "message" | "recovered";
     }
@@ -519,4 +521,27 @@ export interface ManagementDesktopBridge {
     scope: "user" | "project",
   ): Promise<ManagementSnapshot>;
   uninstallPlugin(workspace: string, name: string): Promise<ManagementSnapshot>;
+}
+
+/**
+ * Notification text for a session activity. Several sessions run at once, so the
+ * body names the one that changed instead of saying "백그라운드 작업".
+ */
+export function sessionActivityBody(event: {
+  title: string;
+  category: "completed" | "failed" | "permission" | "message" | "recovered";
+}): string {
+  const name = event.title.trim() || "세션";
+  switch (event.category) {
+    case "permission":
+      return `${name} 승인이 필요합니다.`;
+    case "failed":
+      return `${name} 작업이 실패했습니다.`;
+    case "recovered":
+      return `${name} 연결이 복구되었습니다.`;
+    case "completed":
+      return `${name} 작업이 완료되었습니다.`;
+    default:
+      return `${name} 새 응답이 도착했습니다.`;
+  }
 }

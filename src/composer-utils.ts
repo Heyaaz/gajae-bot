@@ -199,3 +199,22 @@ export function appendPendingRequest(
   if (!normalizeComposerText(request.text)) return [...pending];
   return [...pending, request];
 }
+
+// One physical Enter can reach submit() from the form handler and from an IME
+// composition callback in the same input frame. Those are the same submission, so
+// the second is dropped. A deliberate resend is always further apart than one
+// frame, and pressing Enter twice quickly on *different* text is never suppressed.
+export const SUBMISSION_DEDUPE_MS = 120;
+
+export function isDuplicateSubmission(
+  last: { text: string; at: number },
+  text: string,
+  now: number,
+): boolean {
+  const body = normalizeComposerText(text);
+  if (!body) return false;
+  return (
+    normalizeComposerText(last.text) === body &&
+    now - last.at < SUBMISSION_DEDUPE_MS
+  );
+}
