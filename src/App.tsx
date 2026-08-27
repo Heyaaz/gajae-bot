@@ -1446,6 +1446,7 @@ interface ComposerProps {
   onQueue: (input: MessageInput) => void;
   onSteer: (input: MessageInput) => void;
   queued: QueuedMessage[];
+  deliveredTexts: readonly string[];
   onCompact: () => void;
   onNewSession: () => void;
   onWorkspaceChange: (workspace: string) => void;
@@ -1484,6 +1485,7 @@ function Composer({
   onQueue,
   onSteer,
   queued,
+  deliveredTexts,
   onCompact,
   onNewSession,
   onWorkspaceChange,
@@ -1609,11 +1611,13 @@ function Composer({
   // yet. Clearing every chip whenever a listing arrived also dropped chips the
   // listing predated, so only the entries GJC now reports are released.
   useEffect(() => {
-    if (queued.length === 0) return;
+    if (queued.length === 0 && deliveredTexts.length === 0) return;
     queueMicrotask(() =>
-      setLocalPending((current) => releaseSettledChips(current, queued)),
+      setLocalPending((current) =>
+        releaseSettledChips(current, queued, deliveredTexts),
+      ),
     );
-  }, [queued]);
+  }, [queued, deliveredTexts]);
 
   useEffect(() => {
     function applyEffortCycle(): void {
@@ -4663,6 +4667,16 @@ export default function App() {
           ),
       )
     : EMPTY_TRANSCRIPT;
+  // A steer never appears in the authoritative queue, so a request that has
+  // surfaced as an ordinary user bubble is the proof GJC consumed it. The
+  // composer uses this to retire its provisional chips.
+  const deliveredTexts = useMemo(
+    () =>
+      selectedTranscript
+        .filter((item) => item.kind === "message" && item.role === "user")
+        .map((item) => (item.kind === "message" ? item.content : "")),
+    [selectedTranscript],
+  );
   const transcriptHasLiveWork = selectedTranscript.some((item) => {
     if (item.kind === "message" || item.kind === "thought")
       return item.streaming === true;
@@ -5205,6 +5219,7 @@ export default function App() {
                     void steerSession(selectedSession.id, input)
                   }
                   queued={sessionQueue}
+                  deliveredTexts={deliveredTexts}
                   onCompact={() => void compactSession(selectedSession.id)}
                   onNewSession={() =>
                     createSession({

@@ -175,15 +175,18 @@ export function mergeComposerQueue(
 export function releaseSettledChips(
   localPending: readonly QueuedMessage[],
   queued: readonly QueuedMessage[],
+  deliveredTexts: readonly string[] = [],
 ): QueuedMessage[] {
-  return localPending.filter(
-    (local) =>
-      !queued.some(
-        (entry) =>
-          normalizeComposerText(entry.text) ===
-          normalizeComposerText(local.text),
-      ),
-  );
+  const delivered = new Set(deliveredTexts.map(normalizeComposerText));
+  return localPending.filter((local) => {
+    const body = normalizeComposerText(local.text);
+    // A follow-up chip stands in for a listing that has not arrived yet, so the
+    // authoritative queue releases it. A steer never enters that queue at all --
+    // GJC consumes it at the next turn boundary -- so its only settle signal is
+    // the request surfacing in the transcript as an ordinary user bubble.
+    if (delivered.has(body)) return false;
+    return !queued.some((entry) => normalizeComposerText(entry.text) === body);
+  });
 }
 
 export function isWaitingComposerText(

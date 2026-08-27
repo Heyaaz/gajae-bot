@@ -138,6 +138,19 @@ describe("releaseSettledChips", () => {
     label: "Steer",
   });
 
+  it("releases a consumed steer once it appears in the transcript", () => {
+    // A steer bypasses the queue entirely, so without the transcript signal this
+    // chip has no settle condition and the composer shows a permanent
+    // "1개 대기 중".
+    expect(releaseSettledChips([chip("steered")], [], ["steered"])).toEqual([]);
+  });
+
+  it("keeps a steer chip that the transcript has not echoed yet", () => {
+    expect(
+      releaseSettledChips([chip("steered")], [], ["something else"]),
+    ).toEqual([chip("steered")]);
+  });
+
   it("releases only the chips the queue now lists", () => {
     expect(
       releaseSettledChips(
