@@ -410,6 +410,8 @@ export interface QueuedMessage {
   label: string;
 }
 
+export type MessageDelivery = "prompt" | "steer";
+
 export interface GoalSnapshot {
   enabled: boolean;
   mode?: "active" | "paused" | "complete";
@@ -448,7 +450,7 @@ export interface GjcDesktopBridge {
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]>;
   flushQueuedNow(sessionId: string, waitingKnown?: boolean): Promise<boolean>;
   steerSession(sessionId: string, input: MessageInput): Promise<void>;
-  sendMessage(sessionId: string, input: MessageInput): Promise<void>;
+  sendMessage(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   cancelRun(sessionId: string): Promise<void>;
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;
   markSessionRead(sessionId: string): Promise<void>;

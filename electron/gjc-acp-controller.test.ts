@@ -2215,7 +2215,7 @@ describe("sessionInfoToAgentSession", () => {
         images: [],
         files: [],
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("steer");
 
     expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
       sessionId: session.id,
@@ -2268,7 +2268,7 @@ describe("sessionInfoToAgentSession", () => {
         images: [],
         files: [],
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toBe("prompt");
 
     expect(events).toContainEqual(
       expect.objectContaining({

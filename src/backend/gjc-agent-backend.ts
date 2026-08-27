@@ -17,6 +17,7 @@ import type {
   GitStatusSnapshot,
   GoalOperation,
   GoalSnapshot,
+  MessageDelivery,
   QueuedMessage,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
@@ -140,7 +141,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.steerSession(sessionId, input);
   }
 
-  sendMessage(sessionId: string, input: MessageInput): Promise<void> {
+  sendMessage(
+    sessionId: string,
+    input: MessageInput,
+  ): Promise<MessageDelivery> {
     return this.bridge.sendMessage(sessionId, input);
   }
 

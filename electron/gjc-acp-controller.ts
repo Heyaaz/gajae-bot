@@ -44,6 +44,7 @@ import type {
   ChatMessage,
   CreateSessionInput,
   ImageAttachment,
+  MessageDelivery,
   MessageInput,
   NoticeActivity,
   PlanActivity,
@@ -2104,6 +2105,7 @@ export class GjcAcpController {
   private async controlSession(
     sessionId: string,
     operation:
+      | "turn.prompt"
       | "turn.steer"
       | "turn.abort"
       | "turn.abort_and_prompt"
@@ -2144,6 +2146,7 @@ export class GjcAcpController {
           );
         }
       } catch (error) {
+        if (busyPromptError(error)) throw error;
         if (
           error instanceof Error &&
           error.message.startsWith(`GJC ${operation}`)
@@ -2293,16 +2296,19 @@ export class GjcAcpController {
     }
   }
 
-  async sendMessage(sessionId: string, input: MessageInput): Promise<void> {
+  async sendMessage(
+    sessionId: string,
+    input: MessageInput,
+  ): Promise<MessageDelivery> {
     this.locallyAbortedSessions.delete(sessionId);
     const value = input.text.trim();
     if (/^\/steer(?:\s+|$)/u.test(value)) {
       await this.steerSession(sessionId, input);
-      return;
+      return "steer";
     }
     const promptText =
       value.replace(/^\/queue(?:\s+|$)/u, "").trim() + attachedPathsText(input);
-    if (!promptText) return;
+    if (!promptText) return "prompt";
     const session = this.sessions.get(sessionId);
     if (this.sessionMetadata && session?.ownership !== "gajae") {
       try {
@@ -2317,16 +2323,18 @@ export class GjcAcpController {
           text: promptText,
           clientRef: `gajae-steer-${randomUUID()}`,
         });
+        this.updateSessionStatus(sessionId, "running");
+        return "steer";
       }
       this.updateSessionStatus(sessionId, "running");
-      return;
+      return "prompt";
     }
     if (
       this.activePromptSessions.has(sessionId) ||
       session?.status === "running"
     ) {
       await this.steerSession(sessionId, { ...input, text: promptText });
-      return;
+      return "steer";
     }
     this.activePromptSessions.add(sessionId);
 
@@ -2349,7 +2357,7 @@ export class GjcAcpController {
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
         await this.steerSession(sessionId, { ...input, text: promptText });
-        return;
+        return "steer";
       }
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
@@ -2357,7 +2365,7 @@ export class GjcAcpController {
       void this.refreshContextUsage(sessionId);
       if (cancelledOperationError(error)) {
         this.appendCancelledNotice(sessionId);
-        return;
+        return "prompt";
       }
       const notice: NoticeActivity = {
         id: `gjc-error-${this.nextLocalId++}`,
@@ -2374,6 +2382,7 @@ export class GjcAcpController {
     } finally {
       this.activePromptSessions.delete(sessionId);
     }
+    return "prompt";
   }
 
   async cancelRun(sessionId: string): Promise<void> {

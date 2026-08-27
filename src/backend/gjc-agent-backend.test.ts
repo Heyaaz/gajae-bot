@@ -113,7 +113,12 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async deleteSession(sessionId: string): Promise<void> {
     this.deleted.push(sessionId);
   }
-  async sendMessage(_sessionId: string, _input: MessageInput): Promise<void> {}
+  async sendMessage(
+    _sessionId: string,
+    _input: MessageInput,
+  ): Promise<"prompt"> {
+    return "prompt";
+  }
   async cancelRun(_sessionId: string): Promise<void> {}
   async resolveToolCall(
     _toolId: string,

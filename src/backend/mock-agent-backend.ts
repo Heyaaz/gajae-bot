@@ -631,9 +631,10 @@ export class MockAgentBackend implements AgentBackend {
     this.queuedStore.set(sessionId, queue);
   }
 
-  async sendMessage(sessionId: string, input: MessageInput): Promise<void> {
+  async sendMessage(sessionId: string, input: MessageInput): Promise<"prompt"> {
     const value = input.text.trim();
-    if (!value && input.images.length === 0 && input.files.length === 0) return;
+    if (!value && input.images.length === 0 && input.files.length === 0)
+      return "prompt";
 
     const userMessage: ChatMessage = {
       id: `message-${this.nextId++}`,
@@ -707,6 +708,7 @@ export class MockAgentBackend implements AgentBackend {
         }
       });
     });
+    return "prompt";
   }
 
   async cancelRun(sessionId: string): Promise<void> {
