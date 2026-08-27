@@ -1609,19 +1609,6 @@ function Composer({
     queueMicrotask(() => setLocalPending([]));
   }, [queued]);
 
-  // A submit made while the session status was stale starts as a provisional
-  // steer chip. A real new prompt immediately flips the session to running;
-  // clear only on that transition. A busy prompt becomes steer instead and
-  // keeps the chip until the authoritative queue arrives.
-  useEffect(() => {
-    if (!running || queued.length > 0) return;
-    queueMicrotask(() =>
-      setLocalPending((current) =>
-        current.filter((entry) => entry.label !== "Detecting"),
-      ),
-    );
-  }, [queued.length, running]);
-
   useEffect(() => {
     function applyEffortCycle(): void {
       setConfigMenu(null);
@@ -1780,21 +1767,23 @@ function Composer({
         },
       ]);
     } else {
+      // The composer already knows this session is idle, so the prompt path is the
+      // expected outcome. Showing a provisional chip here would flash a waiting
+      // state for the backend round trip on an ordinary chat message, so the chip
+      // is only added if the backend actually had to steer a turn we missed.
       const pendingId = `local-${crypto.randomUUID()}`;
       const preview = composerQueuePreview(content, files, images);
-      setLocalPending([
-        {
-          id: pendingId,
-          text: preview.text,
-          mode: "steer",
-          label: "Detecting",
-        },
-      ]);
       void onSend({ text: content, images, files }).then((delivery) => {
-        if (delivery === "steer") return;
-        setLocalPending((current) =>
-          current.filter((entry) => entry.id !== pendingId),
-        );
+        if (delivery !== "steer") return;
+        setLocalPending((current) => [
+          ...current,
+          {
+            id: pendingId,
+            text: preview.text,
+            mode: "steer",
+            label: "Steer",
+          },
+        ]);
       });
     }
     setValue("");
