@@ -239,20 +239,37 @@ export function updateTranscriptItem(
  */
 export function mergeDiscoveredSessions<
   T extends { id: string; unread: boolean; status?: string },
->(current: readonly T[], discovered: readonly T[]): T[] {
+>(
+  current: readonly T[],
+  discovered: readonly T[],
+  protectedId?: string | null,
+): T[] {
   const known = new Map(current.map((session) => [session.id, session]));
   const discoveredIds = new Set(discovered.map((session) => session.id));
   // A session being created locally is not discoverable yet, so it survives a
-  // refresh. Anything else discovery stopped reporting is gone and must leave
-  // the list instead of lingering as a dead row.
-  const pendingLocal = current.filter(
+  // refresh. The focused session is kept too: a refresh that momentarily misses
+  // it would otherwise drop the open conversation and move focus elsewhere.
+  // Anything else discovery stopped reporting is gone and must leave the list
+  // instead of lingering as a dead row.
+  const retained = current.filter(
     (session) =>
       !discoveredIds.has(session.id) &&
-      (session.status === "starting" || session.status === "failed"),
+      (session.status === "starting" ||
+        session.status === "failed" ||
+        session.id === protectedId),
   );
   const merged = discovered.map((session) => {
     const existing = known.get(session.id);
     return existing ? { ...session, ...existing } : session;
   });
-  return [...pendingLocal, ...merged];
+  // Discovery order is activity-ranked and churns between refreshes. Rows already
+  // on screen keep their position so the list does not reshuffle under the
+  // pointer, while newly discovered sessions arrive at the top.
+  const order = new Map(current.map((session, index) => [session.id, index]));
+  const seen = merged.filter((session) => order.has(session.id));
+  const fresh = merged.filter((session) => !order.has(session.id));
+  seen.sort(
+    (left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0),
+  );
+  return [...retained, ...seen, ...fresh];
 }

@@ -353,6 +353,37 @@ describe("mergeDiscoveredSessions", () => {
     ).toEqual([session("open", "running"), session("cli-new", "idle")]);
   });
 
+  it("keeps the focused session when a refresh momentarily misses it", () => {
+    // Losing the open conversation from the list moves focus to another session,
+    // so a refresh that does not report it must not drop it.
+    expect(
+      mergeDiscoveredSessions(
+        [session("open", "running"), session("other", "idle")],
+        [session("other", "idle")],
+        "open",
+      ).map((entry) => entry.id),
+    ).toEqual(["open", "other"]);
+  });
+
+  it("still removes an unfocused session that discovery stopped reporting", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [session("gone", "idle"), session("open", "running")],
+        [session("open", "idle")],
+        "open",
+      ).map((entry) => entry.id),
+    ).toEqual(["open"]);
+  });
+
+  it("holds row order steady when discovery reranks by activity", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [session("a", "idle"), session("b", "idle"), session("c", "idle")],
+        [session("c", "idle"), session("a", "idle"), session("b", "idle")],
+      ).map((entry) => entry.id),
+    ).toEqual(["a", "b", "c"]);
+  });
+
   it("keeps a session that is still being created locally", () => {
     expect(
       mergeDiscoveredSessions(

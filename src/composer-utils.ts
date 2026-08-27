@@ -169,6 +169,23 @@ export function mergeComposerQueue(
   ];
 }
 
+// A local chip stands in for work the authoritative queue has not listed yet.
+// Only the entries GJC now reports are released; chips the listing predated stay,
+// otherwise a submission made just before a refresh vanishes from the window.
+export function releaseSettledChips(
+  localPending: readonly QueuedMessage[],
+  queued: readonly QueuedMessage[],
+): QueuedMessage[] {
+  return localPending.filter(
+    (local) =>
+      !queued.some(
+        (entry) =>
+          normalizeComposerText(entry.text) ===
+          normalizeComposerText(local.text),
+      ),
+  );
+}
+
 export function isWaitingComposerText(
   content: string,
   waitingTexts: readonly string[],
@@ -178,6 +195,6 @@ export function isWaitingComposerText(
   return waitingTexts.some((text) => normalizeComposerText(text) === body);
 }
 
-function normalizeComposerText(value: string): string {
+export function normalizeComposerText(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }

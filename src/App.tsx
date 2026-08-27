@@ -55,6 +55,7 @@ import {
   composerQueuePreview,
   isWaitingComposerText,
   mergeComposerQueue,
+  releaseSettledChips,
 } from "./composer-utils";
 import {
   cacheTranscript,
@@ -1604,9 +1605,14 @@ function Composer({
     });
   }, [sessionId]);
 
+  // A local chip is a placeholder for work the authoritative queue has not listed
+  // yet. Clearing every chip whenever a listing arrived also dropped chips the
+  // listing predated, so only the entries GJC now reports are released.
   useEffect(() => {
     if (queued.length === 0) return;
-    queueMicrotask(() => setLocalPending([]));
+    queueMicrotask(() =>
+      setLocalPending((current) => releaseSettledChips(current, queued)),
+    );
   }, [queued]);
 
   useEffect(() => {
@@ -1717,7 +1723,10 @@ function Composer({
     // aborting the run, and the session decides whether anything is queued.
     if (running && !content && images.length === 0 && files.length === 0) {
       if (pendingQueueCountRef.current === 0) return;
-      setLocalPending([]);
+      // Dropping the local chip here used to erase the request from the window:
+      // the chip disappeared while the controller still hid the matching user
+      // message as waiting work. The chip is released by the authoritative queue
+      // once GJC consumes it, which is also when the bubble becomes visible.
       onFlushQueued();
       return;
     }
@@ -4327,7 +4336,11 @@ export default function App() {
         .then((loadedSessions) => {
           if (!active) return;
           setSessions((current) =>
-            mergeDiscoveredSessions(current, loadedSessions),
+            mergeDiscoveredSessions(
+              current,
+              loadedSessions,
+              selectedIdRef.current,
+            ),
           );
           if (initial)
             setSelectedId((selected) =>

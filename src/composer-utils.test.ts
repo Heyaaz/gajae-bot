@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   compactToolCommand,
   compactToolText,
-  droppedImageAttachments,
-  readableToolText,
-  resolveModelPreset,
   composerQueuePreview,
+  droppedImageAttachments,
   isWaitingComposerText,
   mergeComposerQueue,
+  readableToolText,
+  releaseSettledChips,
+  resolveModelPreset,
 } from "./composer-utils";
 
 describe("composer utilities", () => {
@@ -120,5 +121,41 @@ describe("composer utilities", () => {
     );
     expect(isWaitingComposerText("다른 요청", ["안고쳐졌는데 ?"])).toBe(false);
     expect(isWaitingComposerText("   ", ["안고쳐졌는데 ?"])).toBe(false);
+  });
+});
+
+describe("releaseSettledChips", () => {
+  const chip = (text: string) => ({
+    id: `local-${text}`,
+    text,
+    mode: "steer" as const,
+    label: "Steer",
+  });
+  const listed = (text: string) => ({
+    id: `q-${text}`,
+    text,
+    mode: "steer" as const,
+    label: "Steer",
+  });
+
+  it("releases only the chips the queue now lists", () => {
+    expect(
+      releaseSettledChips(
+        [chip("first"), chip("second")],
+        [listed("first")],
+      ).map((entry) => entry.text),
+    ).toEqual(["second"]);
+  });
+
+  it("keeps every chip when the listing is still empty", () => {
+    // The second Enter aborts the turn before GJC reports the promotion, so an
+    // empty listing must not erase the request from the window.
+    expect(releaseSettledChips([chip("pending")], [])).toHaveLength(1);
+  });
+
+  it("matches on whitespace-normalized text", () => {
+    expect(
+      releaseSettledChips([chip("hello   world")], [listed("hello world")]),
+    ).toEqual([]);
   });
 });
