@@ -1,80 +1,80 @@
 # Gajae
 
-GJC CLI 세션을 데스크톱에서 다루는 Electron 앱입니다. 채팅, transcript 동기화, steer, 취소, 모델 전환을 GJC와 같은 세션 위에서 돌립니다.
+Electron desktop client for [GJC](https://github.com/gajae-code) sessions. Chat, live transcript sync, steer, cancel, and model switching all run on the same GJC session files as the terminal CLI.
 
-터미널 `gjc`와 같은 세션 파일을 봅니다. 앱은 별도 SDK connection입니다.
+The app is a separate SDK connection from a TUI `gjc` process. They share session artifacts; they do not share a connection.
 
-## 필요 조건
+## Requirements
 
 - macOS arm64
 - Node.js 24+
-- [GJC](https://github.com/gajae-code) CLI (`gjc`)
+- GJC CLI (`gjc`) on `PATH` or at a known install location
 
-실행 파일 탐색 순서:
+Lookup order for the executable:
 
-1. 앱 설정의 GJC 경로
+1. Path set in app settings
 2. `GJC_BIN`
 3. `~/.bun/bin/gjc`
 4. `~/.local/bin/gjc`
 5. `/opt/homebrew/bin/gjc`
 6. `/usr/local/bin/gjc`
 
-기본 모델 프리셋은 `GOAT` (`codex-lb/gpt-5.6-sol:medium`). `~/.gjc/agent/models.yml`에 있으면 그걸 씁니다.
+Default model preset is `GOAT` (`codex-lb/gpt-5.6-sol:medium`). If `~/.gjc/agent/models.yml` defines it, that mapping wins.
 
-## 실행
+## Run
 
 ```bash
 npm install
 npm test
-npm run dev          # Vite
+npm run dev          # Vite renderer
 npm run dev:desktop  # Electron + Vite
 ```
 
-패키징:
+Package:
 
 ```bash
 npm run package:mac
 ```
 
-결과는 `release/Gajae-darwin-arm64/Gajae.app`입니다. `/Applications/Gajae.app`으로 복사해서 쓰면 됩니다.
+Output is `release/Gajae-darwin-arm64/Gajae.app`. Copy it to `/Applications/Gajae.app` to install.
 
-## 사용
+## Use
 
-입력창에 요청을 쓰고 Enter. 파일·이미지는 경로로 넘기고, 이미지는 GJC가 `read`로 엽니다.
+Type a request and press Enter. Files and images are sent as local paths. Images are opened with GJC `read` before the model answers.
 
-### 작업 중
+### While a turn is running
 
-| 동작 | 결과 |
+| Action | Result |
 |---|---|
-| 내용 + Enter | 현재 turn에 steer 대기 |
-| 빈 Enter | 현재 turn을 끊고 대기 steer를 즉시 실행 |
-| `/queue …` | 이번 turn 다음 후속 작업 |
-| Esc 또는 중지 | 현재 turn + owned 백그라운드/서브에이전트 중단. 세션은 유지 |
+| Text + Enter | Queue a steer on the current turn |
+| Empty Enter | Abort the current turn and run the queued steer immediately |
+| `/queue …` | Schedule follow-up work after this turn |
+| Esc or Stop | Stop the current turn and owned background/subagent work. The session stays open |
 
-첫 Enter는 끊지 않습니다. 두 번째 빈 Enter가 실행입니다. `/steer`를 붙일 필요는 없습니다.
+The first Enter does not interrupt. The second empty Enter promotes the queued steer. `/steer` is optional.
 
-### 모델 / effort
+### Model / effort
 
-- `/model` — 프리셋 목록
-- `/model GOAT` — 바로 전환. `gajae-code/GOAT`, 유일한 prefix도 됩니다. 없으면 채팅으로 보내지 않고 오류만 냅니다.
-- `Shift+Tab` — effort 순환
+- `/model` — open the preset picker
+- `/model GOAT` — switch immediately. `gajae-code/GOAT` and a unique prefix also match. Unknown names are not sent as chat; they show an error
+- `Shift+Tab` — cycle thinking effort
 
-### 단축키
+### Shortcuts
 
-| 키 | 동작 |
+| Key | Action |
 |---|---|
-| `⌘T` | 새 세션 |
-| `⌘1`–`⌘9` | 세션 선택 |
-| Esc | 현재 작업 중단 |
-| `Shift+Tab` | effort |
+| `⌘T` | New session |
+| `⌘1`–`⌘9` | Select session |
+| Esc | Abort the current run |
+| `Shift+Tab` | Cycle effort |
 
-### 세션 삭제
+### Session delete
 
-목록에서만 숨기지 않습니다. 살아 있으면 `session.close`로 프로세스를 끈 뒤 `session.delete`로 transcript/상태 파일을 지웁니다. 클릭한 세션만 대상입니다.
+Delete is close-then-delete, not hide-from-list. A live session is closed with `session.close`, then artifacts are removed with `session.delete`. Only the clicked session is targeted.
 
-## GJC 런타임
+## GJC runtime patches
 
-데스크톱 Esc/중지는 이 요청을 보냅니다.
+Desktop Esc/Stop sends:
 
 ```ts
 turn.abort {
@@ -86,15 +86,15 @@ confirm: true
 idempotencyKey: "gajae-abort-<uuid>"
 ```
 
-앱과 터미널 GJC는 다른 SDK connection입니다. stock GJC의 terminal owned abort는 **요청 connection == turn owner**일 때만 통합니다. 데스크톱은 owner가 아니라 no-effect가 됩니다.
+Stock GJC terminal owned abort only works when the requesting connection owns the turn. The desktop app does not, so that path returns `no_active_turn` / `terminal_no_effect`.
 
-그걸 위해 GJC 쪽에 넣은 패치:
+GJC changes required for this app (in `gajae-code`):
 
-1. CLI `control_request`에 `idempotencyKey` 전달
-2. `turn.abort` `operator: true` — 다른 connection이 owned 작업을 끊을 수 있음. `confirm: true` 필수
-3. 일반 `turn.abort {}`를 세션 범위로 — 요청 connection이 owner가 아니어도 현재 turn을 끊음 (빈 Enter flush)
+1. Forward `idempotencyKey` on CLI `control_request` envelopes
+2. `turn.abort` `operator: true` — another connection can stop owned work. Requires `confirm: true`
+3. Plain `turn.abort {}` is session-scoped — stops the current turn even when the requester is not the owner (empty-Enter flush)
 
-패치 위치 (`gajae-code`):
+Patched files:
 
 - `packages/coding-agent/src/sdk/cli/session-cli.ts`
 - `packages/coding-agent/src/sdk/host/control/dispatch.ts`
@@ -102,18 +102,20 @@ idempotencyKey: "gajae-abort-<uuid>"
 - `packages/coding-agent/src/sdk/host/session-runtime.ts`
 - `packages/coding-agent/src/sdk/bus/index.ts`
 
-실행 중인 구형 `gjc`/`gjc --resume`는 hot reload되지 않습니다. 세션 호스트를 다시 띄워야 합니다. 전역 설치본을 직접 고치면 패키지 재설치 때 사라집니다.
+A running `gjc` / `gjc --resume` process does not hot-reload these patches. Restart the session host. Editing a global install is overwritten on the next package install.
 
-구형 CLI가 `operator`를 모르면 부분 취소를 성공으로 치지 않습니다.
+If the CLI rejects the `operator` field, the app reports failure instead of pretending the run stopped.
 
-## 하지 않는 것
+Steer itself is unchanged in GJC. The desktop uses the existing `turn.steer` surface. Empty Enter only aborts so queued steer is consumed once (steer-on-interrupt). Do not dequeue and `abort_and_prompt` the same text.
 
-- 취소에 `SIGINT` / 프로세스 kill
-- 취소 fallback으로 `turn.abort_and_prompt` (제어 문장이 실제 user message가 됨)
-- abort 응답만으로 `idle` / `작업 취소됨` 강제 표시
-- 세션 삭제를 목록 hide로 처리
+## Do not
 
-## 개발
+- `SIGINT` / kill the GJC process to cancel
+- Use `turn.abort_and_prompt` as a cancel fallback (the control sentence becomes a real user message)
+- Force `idle` / “cancelled” UI from the abort ACK alone
+- Treat session delete as hiding a row in the list
+
+## Develop
 
 ```bash
 npm run lint
@@ -121,6 +123,6 @@ npm test
 npm run verify
 ```
 
-Electron 메인: `electron/`
-렌더러: `src/`
-IPC 계약: `shared/`
+- Electron main: `electron/`
+- Renderer: `src/`
+- IPC contract: `shared/`
