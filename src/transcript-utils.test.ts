@@ -209,7 +209,7 @@ describe("cacheTranscript", () => {
       confirmed["session-1"].some((item) => item.id === optimistic.id),
     ).toBe(false);
   });
-  it("keeps an unmatched image or steer request ahead of newly arrived tools", () => {
+  it("keeps an unmatched image or steer request at the end until it is confirmed", () => {
     const optimistic = {
       ...message,
       id: "local-user-1",
@@ -229,8 +229,8 @@ describe("cacheTranscript", () => {
     ]);
     expect(pending["session-1"].map((item) => item.id)).toEqual([
       "assistant-1",
-      "local-user-1",
       "search-1",
+      "local-user-1",
     ]);
 
     const confirmed = cacheTranscript(pending, "session-1", [

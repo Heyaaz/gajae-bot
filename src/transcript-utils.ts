@@ -172,15 +172,7 @@ export function cacheTranscript(
           !previousRemoteIds.has(item.id) &&
           sameUserRequest(item, local),
       );
-      if (!confirmed) {
-        const insertAt = items.findIndex(
-          (item) => !previousRemoteIds.has(item.id),
-        );
-        items =
-          insertAt === -1
-            ? [...items, local]
-            : [...items.slice(0, insertAt), local, ...items.slice(insertAt)];
-      }
+      if (!confirmed) items = [...items, local];
     }
   }
   if (previous && previous !== items) {
