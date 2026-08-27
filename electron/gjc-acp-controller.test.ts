@@ -3091,6 +3091,104 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions scan reuse", () => {
+  const liveBroker = () => ({
+    result: {
+      sessions: [
+        {
+          sessionId: "alive",
+          live: true,
+          endpointGeneration: 1,
+          locator: { repo: "/tmp/project" },
+        },
+      ],
+    },
+  });
+
+  it("skips the per-workspace listing when the live set is unchanged", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const extMethod = vi.fn().mockResolvedValue(liveBroker());
+    const listSessions = vi.fn().mockResolvedValue({
+      sessions: [{ sessionId: "alive", cwd: "/tmp/project", title: "Alive" }],
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    await expect(controller.listSessions()).resolves.toHaveLength(1);
+    expect(listSessions).toHaveBeenCalledTimes(1);
+
+    // Nothing about the live set changed, so the expensive stage is not repeated.
+    await expect(controller.listSessions()).resolves.toHaveLength(1);
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+
+  it("rescans when a new live session appears", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    let broker = liveBroker();
+    const extMethod = vi.fn().mockImplementation(() => Promise.resolve(broker));
+    const listSessions = vi.fn().mockImplementation(() =>
+      Promise.resolve({
+        sessions: broker.result.sessions.map((entry) => ({
+          sessionId: entry.sessionId,
+          cwd: "/tmp/project",
+          title: entry.sessionId,
+        })),
+      }),
+    );
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    await expect(controller.listSessions()).resolves.toHaveLength(1);
+    broker = {
+      result: {
+        sessions: [
+          ...liveBroker().result.sessions,
+          {
+            sessionId: "cli-new",
+            live: true,
+            endpointGeneration: 1,
+            locator: { repo: "/tmp/project" },
+          },
+        ],
+      },
+    };
+    await expect(controller.listSessions()).resolves.toHaveLength(2);
+    expect(listSessions).toHaveBeenCalledTimes(2);
+    controller.dispose();
+  });
+});
+
 describe("listSessions yield fidelity", () => {
   it("does not resurrect filtered sessions while yielding to a live turn", async () => {
     const controller = new GjcAcpController({

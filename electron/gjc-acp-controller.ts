@@ -1201,6 +1201,7 @@ export class GjcAcpController {
   // rows discovery later filtered out. Yielding must replay the last discovered
   // list instead, or skipping a scan resurrects dead sessions in the sidebar.
   private lastDiscovered: AgentSession[] = [];
+  private lastLiveFingerprint: string | undefined;
 
   private async discoverSessions(): Promise<AgentSession[]> {
     const connection = await this.requireConnection();
@@ -1238,6 +1239,20 @@ export class GjcAcpController {
         ...liveWorkspaces,
       ]),
     ];
+    // The broker index only grows, so a scan costs the same whether or not
+    // anything changed. When the live session set and its repositories are
+    // identical to the previous scan there is nothing new to list, so the
+    // per-workspace stage is skipped and the previous result is reused.
+    const liveFingerprint = JSON.stringify([
+      [...liveRanks.entries()].sort(),
+      workspaces.slice().sort(),
+    ]);
+    if (
+      this.lastDiscovered.length > 0 &&
+      liveFingerprint === this.lastLiveFingerprint
+    )
+      return this.lastDiscovered.map((session) => ({ ...session }));
+    this.lastLiveFingerprint = liveFingerprint;
     const pages = await Promise.all(
       workspaces.map(async (cwd) => {
         try {
@@ -1347,9 +1362,6 @@ export class GjcAcpController {
       for (let page = 0; page < 128; page += 1) {
         const response = await connection.extMethod("_gjc/sdk/global", {
           operation: "session.list",
-          // One large page instead of eight sequential round trips. Discovery
-          // shares the single ACP channel with prompts, so every extra request
-          // here delays the next chat, steer, or abort.
           input: { ...(cursor ? { cursor } : {}), limit: 1000 },
         });
         if (response.ok === false) return sessions;
@@ -3440,6 +3452,12 @@ export class GjcAcpController {
     this.cancelPermissionsForSession(sessionId);
     if (hide) this.sessionMetadata?.hideSession?.(sessionId);
     else this.sessionMetadata?.deleteAlias?.(sessionId);
+    // Removing a row changes what the next scan should produce even though the
+    // broker's live set is untouched, so the reuse fingerprint is invalidated.
+    this.lastLiveFingerprint = undefined;
+    this.lastDiscovered = this.lastDiscovered.filter(
+      (session) => session.id !== sessionId,
+    );
     this.emitEvent({ type: "session.deleted", sessionId });
   }
 
