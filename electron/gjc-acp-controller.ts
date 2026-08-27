@@ -1071,8 +1071,12 @@ export class GjcAcpController {
   private readonly cancellingSessions = new Set<string>();
   private readonly flushingSessions = new Set<string>();
   private readonly pendingSteers = new Map<string, Promise<void>>();
-  private readonly queuedRequestTexts = new Map<string, Set<string>>();
+  private readonly queuedRequestTexts = new Map<string, Map<string, number>>();
   private readonly suppressedUserMessageKeys = new Map<string, Set<string>>();
+  // A prompt renders its own user bubble immediately so an ordinary chat message
+  // appears without waiting for the agent round trip. GJC echoes the same prompt
+  // back as a user update, so the first echo of each text is dropped.
+  private readonly echoedPromptTexts = new Map<string, string[]>();
   private readonly locallyAbortedSessions = new Set<string>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
@@ -1168,6 +1172,7 @@ export class GjcAcpController {
     this.activeThoughts.clear();
     this.queuedRequestTexts.clear();
     this.suppressedUserMessageKeys.clear();
+    this.echoedPromptTexts.clear();
     child?.kill("SIGTERM");
     await this.ensureStarted();
     return true;
@@ -1953,19 +1958,74 @@ export class GjcAcpController {
     }
   }
 
+  private appendLocalUserMessage(
+    sessionId: string,
+    text: string,
+    input: MessageInput,
+  ): void {
+    const echoes = this.echoedPromptTexts.get(sessionId) ?? [];
+    echoes.push(normalizeQueuedRequestText(text));
+    this.echoedPromptTexts.set(sessionId, echoes);
+    const message: ChatMessage = {
+      id: `local-prompt-${this.nextLocalId++}`,
+      kind: "message",
+      sessionId,
+      role: "user",
+      content: text,
+      ...(input.images?.length ? { images: input.images } : {}),
+      createdAt: nowLabel(),
+      streaming: false,
+    };
+    this.appendTranscript(message);
+  }
+
+  // Returns true when this user update is GJC repeating a prompt already shown.
+  private consumePromptEcho(sessionId: string, text: string): boolean {
+    const echoes = this.echoedPromptTexts.get(sessionId);
+    if (!echoes?.length) return false;
+    const normalized = normalizeQueuedRequestText(text);
+    const index = echoes.indexOf(normalized);
+    if (index < 0) return false;
+    echoes.splice(index, 1);
+    if (echoes.length === 0) this.echoedPromptTexts.delete(sessionId);
+    return true;
+  }
+
+  // Waiting work is hidden from the transcript only while it is still waiting.
+  // The count is what makes this correct: two identical queued requests must
+  // survive one being consumed, and the last release must un-hide the bubble so a
+  // consumed steer reads like any other user message.
   private rememberQueuedRequest(sessionId: string, text: string): void {
     const normalized = normalizeQueuedRequestText(text);
     if (!normalized) return;
     const requests =
-      this.queuedRequestTexts.get(sessionId) ?? new Set<string>();
-    requests.add(normalized);
+      this.queuedRequestTexts.get(sessionId) ?? new Map<string, number>();
+    requests.set(normalized, (requests.get(normalized) ?? 0) + 1);
     this.queuedRequestTexts.set(sessionId, requests);
+  }
+
+  // The authoritative queue is the only thing that says what is still waiting.
+  // Anything the app once hid but GJC no longer lists has been consumed, so its
+  // suppression is dropped and the message becomes a visible user bubble.
+  private reconcileQueuedRequests(
+    sessionId: string,
+    queued: QueuedMessage[],
+  ): void {
+    const requests = this.queuedRequestTexts.get(sessionId);
+    if (!requests?.size) return;
+    const waiting = new Set(
+      queued.map((entry) => normalizeQueuedRequestText(entry.text)),
+    );
+    for (const text of [...requests.keys()]) {
+      if (!waiting.has(text)) requests.delete(text);
+    }
+    if (requests.size === 0) this.queuedRequestTexts.delete(sessionId);
   }
 
   private queuedRequestMatches(sessionId: string, text: string): boolean {
     const normalized = normalizeQueuedRequestText(text);
     if (!normalized) return false;
-    return this.queuedRequestTexts.get(sessionId)?.has(normalized) ?? false;
+    return (this.queuedRequestTexts.get(sessionId)?.get(normalized) ?? 0) > 0;
   }
 
   private withoutQueuedRequests(
@@ -2217,6 +2277,7 @@ export class GjcAcpController {
             : undefined;
         if (page.complete === true || !cursor) break;
       }
+      this.reconcileQueuedRequests(sessionId, queued);
       return queued;
     } catch {
       try {
@@ -2358,6 +2419,7 @@ export class GjcAcpController {
       await this.ensureAttached(sessionId, false);
       this.activeAssistantMessages.delete(sessionId);
       this.finalizeThought(sessionId);
+      this.appendLocalUserMessage(sessionId, promptText, input);
       this.updateSessionStatus(sessionId, "running");
       await connection.prompt({
         sessionId,
@@ -3333,6 +3395,7 @@ export class GjcAcpController {
     this.activePromptSessions.delete(sessionId);
     this.queuedRequestTexts.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
+    this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
     this.sessionConfig.delete(sessionId);
@@ -3373,6 +3436,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.queuedRequestTexts.clear();
     this.suppressedUserMessageKeys.clear();
+    this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
     this.sessionConfig.clear();
     this.terminalOnlySessions.clear();
@@ -3456,6 +3520,7 @@ export class GjcAcpController {
       this.activeThoughts.clear();
       this.queuedRequestTexts.clear();
       this.suppressedUserMessageKeys.clear();
+      this.echoedPromptTexts.clear();
       for (const session of this.sessions.values()) {
         session.attachment = "recovering";
         session.status = "failed";
@@ -4151,13 +4216,22 @@ export class GjcAcpController {
       this.suppressedUserMessageKeys.get(sessionId)?.has(userMessageKey)
     )
       return;
+    if (role === "user" && text && this.consumePromptEcho(sessionId, text)) {
+      if (userMessageKey) {
+        const suppressed =
+          this.suppressedUserMessageKeys.get(sessionId) ?? new Set<string>();
+        suppressed.add(userMessageKey);
+        this.suppressedUserMessageKeys.set(sessionId, suppressed);
+      }
+      return;
+    }
     if (role === "user" && text) {
       const normalized = normalizeQueuedRequestText(text);
       const requests = this.queuedRequestTexts.get(sessionId);
       const queuedEcho =
-        requests?.has(normalized) ||
+        (requests?.get(normalized) ?? 0) > 0 ||
         (Boolean(userMessageKey) &&
-          [...(requests ?? [])].some((request) =>
+          [...(requests?.keys() ?? [])].some((request) =>
             request.startsWith(normalized),
           ));
       if (queuedEcho) {

@@ -4217,12 +4217,6 @@ export default function App() {
     null,
   );
   const [sessionQueue, setSessionQueue] = useState<QueuedMessage[]>([]);
-  // A submitted live-turn prompt is waiting work, not a chat request. GJC echoes it
-  // back as a user message before its queue listing catches up, so track it locally
-  // until the turn that consumes it ends.
-  const [queuedRequestTexts, setQueuedRequestTexts] = useState<
-    Record<string, string[]>
-  >({});
   const [goal, setGoal] = useState<GoalSnapshot>({
     enabled: false,
     completed: 0,
@@ -4374,12 +4368,6 @@ export default function App() {
           return remaining;
         });
         setTranscripts((current) => {
-          const next = { ...current };
-          delete next[event.sessionId];
-          return next;
-        });
-        setQueuedRequestTexts((current) => {
-          if (!(event.sessionId in current)) return current;
           const next = { ...current };
           delete next[event.sessionId];
           return next;
@@ -4636,10 +4624,11 @@ export default function App() {
     [filteredSessions],
   );
 
-  const waitingTexts = [
-    ...sessionQueue.map((entry) => entry.text),
-    ...(selectedId ? (queuedRequestTexts[selectedId] ?? []) : []),
-  ];
+  // Only work that is still waiting may be hidden from the transcript. The
+  // per-session request log is deliberately durable, so it must not be used as a
+  // hide list: once GJC consumes a steer or follow-up it becomes an ordinary user
+  // message and has to appear as a bubble like any other prompt.
+  const waitingTexts = sessionQueue.map((entry) => entry.text);
   const selectedTranscript = selectedId
     ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT).filter(
         (item) =>
@@ -4968,21 +4957,10 @@ export default function App() {
       .catch(() => undefined);
   }
 
-  function rememberQueuedRequest(sessionId: string, text: string): void {
-    const body = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
-    if (!body) return;
-    setQueuedRequestTexts((current) => {
-      const existing = current[sessionId] ?? [];
-      if (existing.includes(body)) return current;
-      return { ...current, [sessionId]: [...existing, body] };
-    });
-  }
-
   async function steerSession(
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
-    rememberQueuedRequest(sessionId, input.text);
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.steerSession(resolved, input);
@@ -4996,7 +4974,6 @@ export default function App() {
     sessionId: string,
     input: MessageInput,
   ): Promise<void> {
-    rememberQueuedRequest(sessionId, input.text);
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.queueFollowUp(resolved, input);

@@ -29,7 +29,11 @@ import {
   uncertainAfterSendError,
 } from "./gjc-acp-controller.js";
 import { GjcAcpController } from "./gjc-acp-controller.js";
-import type { AgentEvent, TranscriptItem } from "../shared/agent-contract.js";
+import type {
+  AgentEvent,
+  ChatMessage,
+  TranscriptItem,
+} from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 
 const execFile = promisify(execFileCallback);
@@ -696,6 +700,88 @@ describe("sessionInfoToAgentSession", () => {
     });
 
     expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
+  });
+
+  it("renders a chat prompt as a user bubble before the agent responds", async () => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    let releasePrompt: (() => void) | undefined;
+    const prompt = vi.fn().mockImplementation(
+      () =>
+        new Promise<{ stopReason: string }>((resolve) => {
+          releasePrompt = () => resolve({ stopReason: "end_turn" });
+        }),
+    );
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: { signal: { aborted: boolean }; prompt: typeof prompt };
+      attachedSessions: Set<string>;
+      sessions: Map<string, unknown>;
+      handleSessionUpdate: (payload: unknown) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = { signal: { aborted: false }, prompt };
+    internals.attachedSessions.add("session-1");
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      title: "Chat session",
+      subtitle: "project",
+      workspace: "/tmp/project",
+      runtime: "gjc",
+      status: "idle",
+      updatedAt: "now",
+      pinned: false,
+      unread: false,
+      accent: "#ff8a34",
+    });
+
+    const sent = controller.sendMessage("session-1", {
+      text: "Hello there",
+      images: [],
+      files: [],
+    });
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalled());
+
+    const bubbles = () =>
+      events
+        .filter((event) => event.type === "transcript.appended")
+        .map((event) => (event as { item: TranscriptItem }).item)
+        .filter(
+          (item): item is ChatMessage =>
+            item.kind === "message" && item.role === "user",
+        );
+
+    // The bubble is visible while the turn is still open, not after it ends.
+    expect(bubbles().map((item) => item.content)).toEqual(["Hello there"]);
+
+    // GJC echoes the same prompt back; it must not become a second bubble.
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        messageId: "echo-1",
+        content: { type: "text", text: "Hello there" },
+      },
+    });
+    expect(bubbles().map((item) => item.content)).toEqual(["Hello there"]);
+
+    releasePrompt?.();
+    await expect(sent).resolves.toBe("prompt");
+
+    // A later identical message is a real new turn and gets its own bubble.
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        messageId: "echo-2",
+        content: { type: "text", text: "Hello there" },
+      },
+    });
+    expect(bubbles()).toHaveLength(2);
     controller.dispose();
   });
 
@@ -2142,6 +2228,78 @@ describe("sessionInfoToAgentSession", () => {
         item: expect.objectContaining({ role: "user" }),
       }),
     );
+    controller.dispose();
+  });
+
+  it("shows a consumed steer as an ordinary user bubble once it leaves the queue", async () => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    let queueItems: unknown[] = [
+      { id: "q1", text: "작업중인데 대기라고 뜬다", mode: "steer" },
+    ];
+    const extMethod = vi.fn().mockImplementation((_method, params) => {
+      const query = (params as { query?: string }).query;
+      if (query === "queue.messages.list")
+        return Promise.resolve({
+          ok: true,
+          page: { items: queueItems, complete: true },
+        });
+      return Promise.resolve({ ok: true, accepted: true });
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      activePromptSessions: Set<string>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      handleSessionUpdate(notification: SessionNotification): void;
+    };
+    internals.startup = Promise.resolve();
+    internals.activePromptSessions.add("session-1");
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    await controller.sendMessage("session-1", {
+      text: "작업중인데 대기라고 뜬다",
+      images: [],
+      files: [],
+    });
+
+    // While GJC still lists it as waiting, the chip owns it and no bubble appears.
+    await expect(
+      controller.listQueuedMessages("session-1"),
+    ).resolves.toHaveLength(1);
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        messageId: "echo-while-waiting",
+        content: { type: "text", text: "작업중인데 대기라고 뜬다" },
+      },
+    });
+    const userBubbles = (): unknown[] =>
+      events.filter(
+        (event) =>
+          event.type === "transcript.appended" &&
+          (event as { item: TranscriptItem }).item.kind === "message" &&
+          (event as { item: ChatMessage }).item.role === "user",
+      );
+    expect(userBubbles()).toHaveLength(0);
+
+    // GJC consumed it: the queue is empty, so the suppression must be released.
+    queueItems = [];
+    await expect(controller.listQueuedMessages("session-1")).resolves.toEqual(
+      [],
+    );
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "user_message_chunk",
+        messageId: "echo-after-consume",
+        content: { type: "text", text: "작업중인데 대기라고 뜬다" },
+      },
+    });
+    expect(userBubbles()).toHaveLength(1);
     controller.dispose();
   });
 
