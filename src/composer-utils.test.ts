@@ -3,6 +3,7 @@ import {
   compactToolCommand,
   compactToolText,
   composerQueuePreview,
+  appendPendingRequest,
   nextRequestToRelease,
   withoutReleasedRequest,
   droppedImageAttachments,
@@ -123,5 +124,32 @@ describe("composer-owned pending queue", () => {
 
   it("reports nothing to release once the queue is drained", () => {
     expect(nextRequestToRelease([])).toBeUndefined();
+  });
+});
+
+describe("appendPendingRequest", () => {
+  const request = (id: string, text: string) => ({
+    id,
+    text,
+    mode: "followUp" as const,
+    label: "Queued",
+    images: [],
+    files: [],
+  });
+
+  it("ignores an empty draft so a duplicated submit cannot re-queue", () => {
+    // The Korean IME routes one Enter through both a rAF callback and the form
+    // handler. submit() clears the textarea synchronously, so the second read sees
+    // an empty draft -- and that must not append anything.
+    expect(
+      appendPendingRequest([request("a", "first")], request("b", "  ")),
+    ).toEqual([request("a", "first")]);
+  });
+
+  it("keeps two deliberate submissions of the same text apart", () => {
+    const once = appendPendingRequest([], request("a", "같은 말"));
+    expect(
+      appendPendingRequest(once, request("b", "같은 말")).map((e) => e.id),
+    ).toEqual(["a", "b"]);
   });
 });

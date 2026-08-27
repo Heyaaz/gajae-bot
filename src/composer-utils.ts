@@ -187,3 +187,15 @@ export function nextRequestToRelease(
 ): PendingRequest | undefined {
   return pending[0];
 }
+
+// Submitting the same draft twice must produce two independent entries, while a
+// duplicated event for one keystroke must not. The composer clears the textarea
+// synchronously so a repeated read yields an empty draft, and this helper keeps
+// that contract observable: an empty draft never enqueues.
+export function appendPendingRequest(
+  pending: readonly PendingRequest[],
+  request: PendingRequest,
+): PendingRequest[] {
+  if (!normalizeComposerText(request.text)) return [...pending];
+  return [...pending, request];
+}

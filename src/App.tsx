@@ -54,6 +54,7 @@ import {
   resolveModelPreset,
   composerQueuePreview,
   type PendingRequest,
+  appendPendingRequest,
   nextRequestToRelease,
   withoutReleasedRequest,
 } from "./composer-utils";
@@ -1774,20 +1775,24 @@ function Composer({
       // moment it arrives, so submitting now would run the request against the
       // turn the user is still waiting on.
       const preview = composerQueuePreview(content, files, images);
-      setPendingQueue((current) => [
-        ...current,
-        {
+      setPendingQueue((current) =>
+        appendPendingRequest(current, {
           id: `local-${crypto.randomUUID()}`,
           text: preview.text,
           mode: preview.mode,
           label: preview.mode === "steer" ? "Steer" : "Queued",
           images,
           files,
-        },
-      ]);
+        }),
+      );
     } else {
       void onSend({ text: content, images, files });
     }
+    // submit() reads the textarea's DOM value, so clearing React state alone left
+    // the same text readable until the next render. A second Enter arriving in that
+    // window -- routine with the Korean IME, which submits from a rAF callback and
+    // from the form handler -- queued the request twice.
+    if (textareaRef.current) textareaRef.current.value = "";
     setValue("");
     setHistoryCursor(-1);
     historyDraftRef.current = "";
@@ -1936,8 +1941,14 @@ function Composer({
         composingRef.current = false;
         compositionSubmitScheduledRef.current = true;
         requestAnimationFrame(() => {
-          compositionSubmitScheduledRef.current = false;
-          submit();
+          // Released only after the submission runs. Clearing it first reopened the
+          // window the other IME paths test against, so a single Enter could queue
+          // the request twice.
+          try {
+            submit();
+          } finally {
+            compositionSubmitScheduledRef.current = false;
+          }
         });
       }, 80);
       return;
@@ -1951,8 +1962,14 @@ function Composer({
       if (!compositionSubmitScheduledRef.current) {
         compositionSubmitScheduledRef.current = true;
         requestAnimationFrame(() => {
-          compositionSubmitScheduledRef.current = false;
-          submit();
+          // Released only after the submission runs. Clearing it first reopened the
+          // window the other IME paths test against, so a single Enter could queue
+          // the request twice.
+          try {
+            submit();
+          } finally {
+            compositionSubmitScheduledRef.current = false;
+          }
         });
       }
       return;
@@ -2135,8 +2152,11 @@ function Composer({
           submitAfterCompositionRef.current = false;
           compositionSubmitScheduledRef.current = true;
           requestAnimationFrame(() => {
-            compositionSubmitScheduledRef.current = false;
-            submit();
+            try {
+              submit();
+            } finally {
+              compositionSubmitScheduledRef.current = false;
+            }
           });
         }}
         onKeyDown={handleKeyDown}
