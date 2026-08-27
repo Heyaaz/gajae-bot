@@ -2502,13 +2502,17 @@ export class GjcAcpController {
     }
     this.activePromptSessions.add(sessionId);
 
+    // The bubble is echoed before any await so the window shows the request the
+    // moment it is submitted. Connecting and attaching are round trips, and doing
+    // them first left the composer looking like it had swallowed the message.
+    this.activeAssistantMessages.delete(sessionId);
+    this.finalizeThought(sessionId);
+    this.appendLocalUserMessage(sessionId, promptText, input);
+    this.updateSessionStatus(sessionId, "running");
+
     try {
       const connection = await this.requireConnection();
       await this.ensureAttached(sessionId, false);
-      this.activeAssistantMessages.delete(sessionId);
-      this.finalizeThought(sessionId);
-      this.appendLocalUserMessage(sessionId, promptText, input);
-      this.updateSessionStatus(sessionId, "running");
       await connection.prompt({
         sessionId,
         prompt: [{ type: "text" as const, text: promptText }],
@@ -4609,8 +4613,13 @@ export class GjcAcpController {
       session.status !== "failed" &&
       !this.activePromptSessions.has(sessionId)
     ) {
+      // A turn this window did not start -- a steer, or work driven from the
+      // terminal -- ends here rather than in sendMessage, so this is the only
+      // place its completion can be announced.
+      const wasRunning = session.status === "running";
       session.status = "idle";
       if (session.phase === "compacting") session.phase = undefined;
+      if (wasRunning) this.emitActivity(sessionId, "completed");
     }
     if (typeof update._meta?.gjcThinkingLevel === "string")
       session.thinking = update._meta.gjcThinkingLevel;

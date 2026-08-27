@@ -31,6 +31,7 @@ import {
 import { GjcAcpController } from "./gjc-acp-controller.js";
 import type {
   AgentEvent,
+  AgentSession,
   ChatMessage,
   TranscriptItem,
 } from "../shared/agent-contract.js";
@@ -700,6 +701,100 @@ describe("sessionInfoToAgentSession", () => {
     });
 
     expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
+  });
+
+  it("announces a turn this window did not start when it goes idle", () => {
+    // A steer, or work driven from the terminal, never passes through
+    // sendMessage, so its completion has to be announced from the running ->
+    // idle transition or the user is never told the run finished.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, AgentSession>;
+      handleSessionUpdate: (payload: {
+        sessionId: string;
+        update: Record<string, unknown>;
+      }) => void;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      title: "Chat session",
+      subtitle: "project",
+      workspace: "/tmp/project",
+      runtime: "gjc",
+      status: "running",
+      updatedAt: "now",
+      pinned: false,
+      unread: false,
+      accent: "#ff8a34",
+      ownership: "gajae",
+      attachment: "attached",
+    });
+
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { gjcRunning: false },
+      },
+    });
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("does not repeat the completion signal while the session stays idle", () => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, AgentSession>;
+      handleSessionUpdate: (payload: {
+        sessionId: string;
+        update: Record<string, unknown>;
+      }) => void;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      title: "Chat session",
+      subtitle: "project",
+      workspace: "/tmp/project",
+      runtime: "gjc",
+      status: "idle",
+      updatedAt: "now",
+      pinned: false,
+      unread: false,
+      accent: "#ff8a34",
+      ownership: "gajae",
+      attachment: "attached",
+    });
+
+    for (let index = 0; index < 3; index += 1)
+      internals.handleSessionUpdate({
+        sessionId: "session-1",
+        update: {
+          sessionUpdate: "session_info_update",
+          _meta: { gjcRunning: false },
+        },
+      });
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(0);
     controller.dispose();
   });
 

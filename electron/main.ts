@@ -66,11 +66,16 @@ function broadcastAgentEvent(event: AgentEvent): void {
   for (const window of windows) {
     if (!window.isDestroyed()) window.webContents.send(GJC_IPC.event, event);
   }
-  if (
-    event.type !== "session.activity" ||
-    windows.some((window) => window.isFocused())
-  )
-    return;
+  if (event.type !== "session.activity") return;
+  // A finished, failed, or approval-blocked turn is the outcome the user is
+  // waiting for, so it is announced even while the window has focus: a long run
+  // usually ends while they are reading something else on screen. Only the
+  // incidental per-message ping stays suppressed for a focused window.
+  const alwaysAnnounce =
+    event.category === "completed" ||
+    event.category === "failed" ||
+    event.category === "permission";
+  if (!alwaysAnnounce && windows.some((window) => window.isFocused())) return;
   const body =
     event.category === "permission"
       ? "승인이 필요한 작업이 있습니다."
