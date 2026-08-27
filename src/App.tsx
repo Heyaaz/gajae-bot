@@ -67,6 +67,7 @@ import {
   initialSessionId,
   isNearTranscriptBottom,
   mergeDiscoveredSessions,
+  mergeTranscriptItem,
   orderedSessionsForShortcuts,
   recentUserRequests,
   updateTranscriptItem,
@@ -4455,10 +4456,11 @@ export default function App() {
         setTranscripts((current) => {
           const items = current[event.item.sessionId];
           if (!items) return current;
-          return cacheTranscript(current, event.item.sessionId, [
-            ...items,
-            event.item,
-          ]);
+          return cacheTranscript(
+            current,
+            event.item.sessionId,
+            mergeTranscriptItem(items, event.item),
+          );
         });
       } else if (event.type === "transcript.synced") {
         setTranscripts((current) =>

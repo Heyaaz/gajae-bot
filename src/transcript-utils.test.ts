@@ -7,6 +7,7 @@ import {
   initialSessionId,
   isNearTranscriptBottom,
   mergeDiscoveredSessions,
+  mergeTranscriptItem,
   orderedSessionsForShortcuts,
   recentUserRequests,
   updateTranscriptItem,
@@ -137,6 +138,46 @@ describe("updateTranscriptItem", () => {
         (item) => item,
       ),
     ).toBe(transcripts);
+  });
+});
+
+describe("mergeTranscriptItem", () => {
+  const message = (id: string, content: string): TranscriptItem =>
+    ({
+      kind: "message",
+      id,
+      sessionId: "s",
+      role: "assistant",
+      content,
+      createdAt: "00:00",
+    }) as TranscriptItem;
+
+  it("appends an item the history has not seen", () => {
+    const items = [message("a", "one")];
+    expect(mergeTranscriptItem(items, message("b", "two")).map((i) => i.id)).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("replaces a republished item instead of duplicating it", () => {
+    // A rescan re-sends a tool row when it finishes. Appending it again put the
+    // same call in the transcript twice.
+    const items = [message("a", "one"), message("b", "running")];
+    const merged = mergeTranscriptItem(items, message("b", "done"));
+    expect(merged.map((i) => i.id)).toEqual(["a", "b"]);
+    expect(
+      merged.find((i) => i.id === "b") as Extract<
+        TranscriptItem,
+        { kind: "message" }
+      >,
+    ).toMatchObject({ content: "done" });
+  });
+
+  it("keeps untouched items by reference so memoized rows do not re-render", () => {
+    const first = message("a", "one");
+    const merged = mergeTranscriptItem([first], message("b", "two"));
+    expect(merged[0]).toBe(first);
   });
 });
 

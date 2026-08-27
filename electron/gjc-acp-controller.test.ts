@@ -253,7 +253,414 @@ describe("brokerFailureMessage", () => {
   });
 });
 
+describe("patchSessionRuntime", () => {
+  const controllerWith = (
+    session: Record<string, unknown>,
+  ): {
+    patch: (patch: Record<string, unknown>) => void;
+    events: AgentEvent[];
+    dispose: () => void;
+  } => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, Record<string, unknown>>;
+      patchSessionRuntime: (
+        sessionId: string,
+        patch: Record<string, unknown>,
+      ) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set("s", session);
+    return {
+      patch: (patch) => internals.patchSessionRuntime("s", patch),
+      events,
+      dispose: () => controller.dispose(),
+    };
+  };
+
+  it("does not broadcast a patch that changes nothing", () => {
+    // A turn re-asserts the same status and usage repeatedly. Each broadcast
+    // re-renders the renderer's session subtree, so identical patches must be
+    // dropped rather than amplified into IPC traffic.
+    const { patch, events, dispose } = controllerWith({
+      id: "s",
+      status: "running",
+      usagePercent: 40,
+    });
+    try {
+      for (let index = 0; index < 20; index += 1) {
+        patch({ status: "running" });
+        patch({ usagePercent: 40 });
+      }
+      expect(
+        events.filter((event) => event.type === "session.updated"),
+      ).toHaveLength(0);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("still broadcasts a real change", () => {
+    const { patch, events, dispose } = controllerWith({
+      id: "s",
+      status: "running",
+      usagePercent: 40,
+    });
+    try {
+      patch({ usagePercent: 41 });
+      patch({ status: "idle" });
+      expect(
+        events.filter((event) => event.type === "session.updated"),
+      ).toHaveLength(2);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("broadcasts when a field is cleared", () => {
+    // Clearing a phase is a real transition even though the new value is falsy.
+    const { patch, events, dispose } = controllerWith({
+      id: "s",
+      status: "running",
+      phase: "compacting",
+    });
+    try {
+      patch({ phase: undefined });
+      expect(
+        events.filter((event) => event.type === "session.updated"),
+      ).toHaveLength(1);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe("refreshContextUsage", () => {
+  it("coalesces concurrent usage queries onto one round trip", async () => {
+    // The usage query shares the ACP channel with the user's prompt and steer, so
+    // a burst of transcript writes must not put a burst of queries ahead of them.
+    let calls = 0;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      requireConnection: () => Promise<{
+        extMethod: (name: string, input: unknown) => Promise<unknown>;
+      }>;
+      refreshContextUsage: (sessionId: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.requireConnection = () =>
+      Promise.resolve({
+        extMethod: async () => {
+          calls += 1;
+          await gate;
+          return { ok: true, page: { items: [] } };
+        },
+      });
+
+    const first = internals.refreshContextUsage("session-1");
+    const second = internals.refreshContextUsage("session-1");
+    const third = internals.refreshContextUsage("session-1");
+    // The query starts after awaiting the connection, so let those microtasks run
+    // before counting -- otherwise this asserts before any call was made.
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    release();
+    await Promise.all([first, second, third]);
+    expect(calls).toBe(1);
+
+    // Once settled, a later change is still allowed to query again.
+    await internals.refreshContextUsage("session-1");
+    expect(calls).toBe(2);
+    controller.dispose();
+  });
+});
+
+describe("publishTranscriptSync", () => {
+  const item = (id: string, content: string): TranscriptItem =>
+    ({
+      kind: "message",
+      id,
+      sessionId: "s",
+      role: "assistant",
+      content,
+      createdAt: "00:00",
+    }) as TranscriptItem;
+
+  const publish = (
+    previous: TranscriptItem[] | undefined,
+    next: TranscriptItem[],
+  ): AgentEvent[] => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      publishTranscriptSync: (
+        sessionId: string,
+        previous: TranscriptItem[] | undefined,
+        items: TranscriptItem[],
+      ) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.publishTranscriptSync("s", previous, next);
+    controller.dispose();
+    return events.filter((event) => event.type.startsWith("transcript."));
+  };
+
+  it("sends only the appended row instead of the whole history", () => {
+    const history = [item("a", "one"), item("b", "two")];
+    const events = publish(history, [...history, item("c", "three")]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("transcript.appended");
+    expect(
+      events[0]?.type === "transcript.appended" ? events[0].item.id : undefined,
+    ).toBe("c");
+  });
+
+  it("stays silent when a rescan changed nothing", () => {
+    // The watcher fires for writes that do not alter the parsed history, and
+    // republishing those re-rendered the transcript for no reason.
+    const history = [item("a", "one")];
+    expect(publish(history, [item("a", "one")])).toEqual([]);
+  });
+
+  it("republishes a row whose content changed in place", () => {
+    const events = publish(
+      [item("a", "one"), item("b", "partial")],
+      [item("a", "one"), item("b", "complete")],
+    );
+    expect(events).toHaveLength(1);
+    expect(
+      events[0]?.type === "transcript.appended"
+        ? events[0].item.id
+        : undefined,
+    ).toBe("b");
+  });
+
+  it("sends the full history when compaction rewrites it", () => {
+    // A shorter history is not an append, so the renderer has to replace it.
+    const events = publish([item("a", "one"), item("b", "two")], [item("z", "summary")]);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("transcript.synced");
+  });
+
+  it("sends the full history on the first load", () => {
+    const events = publish(undefined, [item("a", "one")]);
+    expect(events[0]?.type).toBe("transcript.synced");
+  });
+
+  it("does not rescan the whole history to find the appended row", () => {
+    // Rebuilt rows are never reference-equal to the ones they replace, so
+    // comparing every shared row cost a full structural compare per row (~9ms on
+    // a 2500-row transcript). Only recent rows can still change, so the scan must
+    // touch a bounded number of them regardless of history length.
+    const previous = Array.from({ length: 2000 }, (_unused, index) =>
+      item(`row-${index}`, `body ${index}`),
+    );
+    let compared = 0;
+    const counted = previous.map(
+      (item) =>
+        new Proxy(item, {
+          get(target, key, receiver) {
+            if (key === "content") compared += 1;
+            return Reflect.get(target, key, receiver) as unknown;
+          },
+        }) as TranscriptItem,
+    );
+    const events = publish(counted, [...previous, item("tail", "new")]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("transcript.appended");
+    // A full-prefix compare would touch all 2000 rows.
+    expect(compared).toBeLessThan(64);
+  });
+
+  it("prefers one array over a burst of many appends", () => {
+    const previous = [item("a", "one")];
+    const next = [
+      ...previous,
+      ...Array.from({ length: 20 }, (_unused, index) =>
+        item(`n${index}`, "row"),
+      ),
+    ];
+    const events = publish(previous, next);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe("transcript.synced");
+  });
+});
+
+describe("readTranscriptEnvelopes", () => {
+  const controllerFor = (): {
+    read: (filePath: string) => Promise<Record<string, unknown>[]>;
+    dispose: () => void;
+  } => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      readTranscriptEnvelopes: (
+        filePath: string,
+        info: Awaited<ReturnType<typeof stat>>,
+      ) => Promise<Record<string, unknown>[]>;
+    };
+    internals.startup = Promise.resolve();
+    return {
+      read: async (filePath) =>
+        internals.readTranscriptEnvelopes(filePath, await stat(filePath)),
+      dispose: () => controller.dispose(),
+    };
+  };
+
+  const line = (id: string): string =>
+    `${JSON.stringify({ type: "message", id, message: { role: "user", content: id } })}\n`;
+
+  it("returns appended rows without reparsing the whole file", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gjc-tail-"));
+    const file = path.join(directory, "session.jsonl");
+    const { read, dispose } = controllerFor();
+    try {
+      await writeFile(file, line("a") + line("b"), "utf8");
+      expect((await read(file)).map((row) => row.id)).toEqual(["a", "b"]);
+
+      await appendFile(file, line("c"), "utf8");
+      // Reading only the tail must still yield the full history.
+      expect((await read(file)).map((row) => row.id)).toEqual(["a", "b", "c"]);
+
+      // An unchanged file replays the cached parse.
+      expect((await read(file)).map((row) => row.id)).toEqual(["a", "b", "c"]);
+    } finally {
+      dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("joins a record split across two writes", async () => {
+    // The watcher can fire while only part of a line is on disk. Parsing that
+    // fragment as a whole record would drop the row permanently.
+    const directory = await mkdtemp(path.join(tmpdir(), "gjc-torn-"));
+    const file = path.join(directory, "session.jsonl");
+    const { read, dispose } = controllerFor();
+    try {
+      const full = line("a");
+      const cut = Math.floor(full.length / 2);
+      await writeFile(file, full.slice(0, cut), "utf8");
+      expect(await read(file)).toEqual([]);
+
+      await appendFile(file, full.slice(cut), "utf8");
+      expect((await read(file)).map((row) => row.id)).toEqual(["a"]);
+    } finally {
+      dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reparses from scratch when compaction rewrites the file", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gjc-compact-"));
+    const file = path.join(directory, "session.jsonl");
+    const { read, dispose } = controllerFor();
+    try {
+      await writeFile(file, line("a") + line("b") + line("c"), "utf8");
+      expect((await read(file)).map((row) => row.id)).toEqual(["a", "b", "c"]);
+
+      // Compaction replaces the transcript with a shorter one. Treating the new
+      // bytes as an append would concatenate two unrelated histories.
+      await writeFile(file, line("z"), "utf8");
+      expect((await read(file)).map((row) => row.id)).toEqual(["z"]);
+    } finally {
+      dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reparses when the path is replaced by a different file", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gjc-swap-"));
+    const file = path.join(directory, "session.jsonl");
+    const replacement = path.join(directory, "next.jsonl");
+    const { read, dispose } = controllerFor();
+    try {
+      await writeFile(file, line("a"), "utf8");
+      expect((await read(file)).map((row) => row.id)).toEqual(["a"]);
+
+      // Same path, same size, different inode: a size check alone would reuse
+      // the stale parse and never show the new history.
+      await writeFile(replacement, line("b"), "utf8");
+      await rename(replacement, file);
+      expect((await read(file)).map((row) => row.id)).toEqual(["b"]);
+    } finally {
+      dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("matches a full parse of the same file", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gjc-parity-"));
+    const file = path.join(directory, "session.jsonl");
+    const incremental = controllerFor();
+    const fresh = controllerFor();
+    try {
+      await writeFile(file, line("a") + line("b"), "utf8");
+      await incremental.read(file);
+      await appendFile(file, line("c") + line("d"), "utf8");
+      const tailRead = await incremental.read(file);
+      // A controller that never saw the earlier state parses the whole file.
+      const fullRead = await fresh.read(file);
+      expect(tailRead).toEqual(fullRead);
+    } finally {
+      incremental.dispose();
+      fresh.dispose();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("sharedTranscriptItems", () => {
+  it("labels every row from the row's own timestamp", () => {
+    // Rows are labelled with one shared Intl formatter rather than a new one per
+    // row. Reusing it must not leak state between rows or drift from the
+    // timestamp each row carries.
+    const reference = new Intl.DateTimeFormat("en", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    const stamps = [
+      "2026-08-25T01:05:00.000Z",
+      "2026-08-25T23:45:00.000Z",
+      "2026-08-25T12:00:00.000Z",
+    ];
+    const items = sharedTranscriptItems(
+      "shared-session",
+      stamps.map((ts, index) => ({
+        id: `user-${index}`,
+        role: "user",
+        ts,
+        content: [{ type: "text", text: `row ${index}` }],
+      })),
+    );
+    expect(items.map((item) => item.createdAt)).toEqual(
+      stamps.map((ts) => reference.format(new Date(ts))),
+    );
+  });
+
   it("projects terminal-owned messages and tool results into desktop transcript items", () => {
     const items = sharedTranscriptItems("shared-session", [
       {

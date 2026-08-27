@@ -17,6 +17,7 @@ import {
 import {
   access,
   mkdir,
+  open,
   readFile,
   readdir,
   realpath,
@@ -68,6 +69,10 @@ import { runtimeEnvironment } from "./runtime-path.js";
 
 const GJC_ACCENT = "#ff8a34";
 const STARTUP_TIMEOUT_MS = 30_000;
+// How far back a transcript rescan looks for rows that changed in place. A turn
+// settles its own recent rows; a disagreement older than this is republished as
+// a whole history instead of being reconciled row by row.
+const TRANSCRIPT_RESCAN_WINDOW = 32;
 const MAX_TOOL_TEXT = 12_000;
 const ATTACH_RETRY_INTERVAL_MS = 15_000;
 const MODEL_CATALOG_PAGE_LIMIT = 16;
@@ -97,12 +102,17 @@ interface GjcControllerOptions {
   emit: (event: AgentEvent) => void;
 }
 
+// Constructing a DateTimeFormat costs far more than formatting with one, and a
+// transcript rescan labels every row. Building one per row was ~59ms per 2500
+// rows against ~1.4ms shared, which was the bulk of a full transcript rebuild.
+const CLOCK_LABEL = new Intl.DateTimeFormat("en", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 function nowLabel(): string {
-  return new Intl.DateTimeFormat("en", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date());
+  return CLOCK_LABEL.format(new Date());
 }
 
 function recentLabel(timestamp: string | null | undefined): string {
@@ -144,14 +154,42 @@ function cloneTranscriptItem(item: TranscriptItem): TranscriptItem {
   return { ...item, images: item.images.map((image) => ({ ...image })) };
 }
 
+/**
+ * Whether a rescan produced an equivalent item, so it does not need to be
+ * republished. Transcript items are plain JSON-shaped records, so a structural
+ * compare is both correct and cheaper than the IPC hop it avoids.
+ */
+export function sameTranscriptItem(
+  left: TranscriptItem,
+  right: TranscriptItem,
+): boolean {
+  if (left === right) return true;
+  if (left.kind !== right.kind || left.id !== right.id) return false;
+  // A rebuilt row is never reference-equal to the one it replaces, so the cheap
+  // discriminators are checked before falling back to a structural compare.
+  if (left.kind === "message" && right.kind === "message") {
+    if (
+      left.content.length !== right.content.length ||
+      left.streaming !== right.streaming ||
+      left.role !== right.role
+    )
+      return false;
+  }
+  if (left.kind === "tool" && right.kind === "tool") {
+    if (
+      left.status !== right.status ||
+      left.output?.length !== right.output?.length
+    )
+      return false;
+  }
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 function transcriptTime(value: unknown): string {
-  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)))
-    return nowLabel();
-  return new Intl.DateTimeFormat("en", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(new Date(value));
+  if (typeof value !== "string") return nowLabel();
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return nowLabel();
+  return CLOCK_LABEL.format(new Date(parsed));
 }
 
 function sharedContentText(content: unknown): string {
@@ -1106,6 +1144,19 @@ export class GjcAcpController {
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly artifactWrites = new Map<string, Promise<void>>();
   private readonly sharedSessionFiles = new Map<string, string>();
+  // A transcript is append-only, so a rescan only has to parse the bytes added
+  // since the last one. Device/inode identify the file so a compaction that
+  // rewrites or truncates it is detected and falls back to a full parse.
+  private readonly sharedTranscriptReads = new Map<
+    string,
+    {
+      device: number;
+      inode: number;
+      size: number;
+      envelopes: Record<string, unknown>[];
+      partial: string;
+    }
+  >();
   private readonly sharedSessionWatchers = new Map<string, FSWatcher>();
   private readonly sharedSessionRefreshTimers = new Map<
     string,
@@ -1113,6 +1164,7 @@ export class GjcAcpController {
   >();
   private readonly imageDataUrls = new Map<string, string>();
   private readonly attachAttempts = new Map<string, number>();
+  private readonly contextUsageQueries = new Map<string, Promise<void>>();
 
   private connectionState: BackendConnection;
   private child?: ChildProcessWithoutNullStreams;
@@ -1750,6 +1802,87 @@ export class GjcAcpController {
     return sharedTranscriptItems(sessionId, rows);
   }
 
+  /**
+   * Parsed envelopes for an append-only transcript, reusing the previous parse
+   * and reading only the appended tail. Re-parsing the whole file on every write
+   * cost ~24ms per sync on a 14MB transcript, which several subagents writing at
+   * once turned into visible lag.
+   */
+  private async readTranscriptEnvelopes(
+    filePath: string,
+    info: Stats,
+  ): Promise<Record<string, unknown>[]> {
+    const parseInto = (
+      target: Record<string, unknown>[],
+      chunk: string,
+      carry: string,
+    ): string => {
+      const text = carry + chunk;
+      const lines = text.split("\n");
+      // A write can land mid-line, so the trailing fragment is held back until
+      // the newline that completes it arrives.
+      const tail = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          target.push(JSON.parse(line) as Record<string, unknown>);
+        } catch {
+          // A torn or malformed line is skipped, matching the full-file parse.
+        }
+      }
+      return tail;
+    };
+
+    const device = Number(info.dev);
+    const inode = Number(info.ino);
+    const previous = this.sharedTranscriptReads.get(filePath);
+    const reusable =
+      previous !== undefined &&
+      previous.device === device &&
+      previous.inode === inode &&
+      // Shrinking means the file was rewritten (compaction), so nothing carries over.
+      info.size >= previous.size;
+
+    if (reusable && info.size === previous.size)
+      return previous.envelopes.slice();
+
+    if (reusable) {
+      const handle = await open(filePath, "r");
+      try {
+        const length = info.size - previous.size;
+        const buffer = Buffer.alloc(length);
+        await handle.read(buffer, 0, length, previous.size);
+        const envelopes = previous.envelopes.slice();
+        const partial = parseInto(
+          envelopes,
+          buffer.toString("utf8"),
+          previous.partial,
+        );
+        this.sharedTranscriptReads.set(filePath, {
+          device,
+          inode,
+          size: info.size,
+          envelopes,
+          partial,
+        });
+        return envelopes.slice();
+      } finally {
+        await handle.close();
+      }
+    }
+
+    const envelopes: Record<string, unknown>[] = [];
+    const partial = parseInto(envelopes, await readFile(filePath, "utf8"), "");
+    this.sharedTranscriptReads.set(filePath, {
+      device,
+      inode,
+      size: info.size,
+      envelopes,
+      partial,
+    });
+    return envelopes.slice();
+  }
+
   private async readPersistedTranscript(
     sessionId: string,
   ): Promise<TranscriptItem[] | undefined> {
@@ -1759,16 +1892,7 @@ export class GjcAcpController {
     try {
       const info = await stat(filePath);
       if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
-      const envelopes = (await readFile(filePath, "utf8"))
-        .split("\n")
-        .flatMap((line) => {
-          if (!line.trim()) return [];
-          try {
-            return [JSON.parse(line) as Record<string, unknown>];
-          } catch {
-            return [];
-          }
-        });
+      const envelopes = await this.readTranscriptEnvelopes(filePath, info);
       const rows = envelopes.flatMap((envelope) => {
         if (
           envelope.type === "compaction" ||
@@ -1855,14 +1979,11 @@ export class GjcAcpController {
             setTimeout(() => {
               this.sharedSessionRefreshTimers.delete(sessionId);
               if (this.disposed) return;
+              const previousItems = this.transcripts.get(sessionId);
               void this.readPersistedTranscript(sessionId).then((items) => {
                 if (!items || this.disposed) return;
                 this.transcripts.set(sessionId, items);
-                this.emitEvent({
-                  type: "transcript.synced",
-                  sessionId,
-                  items: items.map(cloneTranscriptItem),
-                });
+                this.publishTranscriptSync(sessionId, previousItems, items);
                 // External terminal sessions do not publish ACP usage_update events to
                 // this renderer. Re-query after transcript changes so the first response
                 // following compaction replaces the pending usage indicator immediately.
@@ -1879,6 +2000,72 @@ export class GjcAcpController {
       this.sharedSessionWatchers.set(sessionId, watcher);
     } catch {
       // Initial transcript loading still works when the filesystem cannot be watched.
+    }
+  }
+
+  /**
+   * Publish a transcript rescan as the items that actually changed.
+   *
+   * A rescan usually adds one row to an unchanged history, so shipping the whole
+   * array cost a full clone plus a multi-megabyte IPC hop each time, and handed
+   * the renderer fresh objects for every row -- which defeats the memo on each
+   * transcript item and re-renders the entire list. Appends go out as individual
+   * items; a rewritten history (compaction) still needs the full array.
+   */
+  private publishTranscriptSync(
+    sessionId: string,
+    previous: TranscriptItem[] | undefined,
+    items: TranscriptItem[],
+  ): void {
+    const syncWholeHistory = (): void => {
+      this.emitEvent({
+        type: "transcript.synced",
+        sessionId,
+        items: items.map(cloneTranscriptItem),
+      });
+    };
+
+    // No prior history, or a shorter one because compaction rewrote it.
+    if (!previous || previous.length > items.length) {
+      syncWholeHistory();
+      return;
+    }
+
+    // Rows already published can still change -- a tool call gains its result, a
+    // streamed message settles -- but only recent ones do, so the scan walks back
+    // from the end and stops at the first row that still matches. Comparing the
+    // whole shared prefix instead cost ~9ms per rescan on a 2500-row transcript,
+    // because a rebuilt row is never reference-equal to the one it replaces.
+    let changedFrom = previous.length;
+    let steps = 0;
+    while (changedFrom > 0 && steps < TRANSCRIPT_RESCAN_WINDOW) {
+      const index = changedFrom - 1;
+      const before = previous[index];
+      const after = items[index];
+      if (before && after && sameTranscriptItem(before, after)) break;
+      changedFrom = index;
+      steps += 1;
+    }
+
+    // The shared rows disagree further back than a settling turn explains, so the
+    // history is republished rather than reconciled row by row.
+    if (steps >= TRANSCRIPT_RESCAN_WINDOW) {
+      syncWholeHistory();
+      return;
+    }
+
+    const changed = items.slice(changedFrom);
+    if (changed.length === 0) return;
+    // Replacing many rows is cheaper as one array than as a burst of events.
+    if (changed.length > 16) {
+      syncWholeHistory();
+      return;
+    }
+    for (const item of changed) {
+      this.emitEvent({
+        type: "transcript.appended",
+        item: cloneTranscriptItem(item),
+      });
     }
   }
 
@@ -3402,6 +3589,7 @@ export class GjcAcpController {
       });
     }
     this.sharedSessionFiles.delete(sessionId);
+    this.sharedTranscriptReads.delete(sessionPath);
   }
 
   private async locateSharedTranscriptFile(
@@ -4237,7 +4425,25 @@ export class GjcAcpController {
     }
   }
 
-  private async refreshContextUsage(sessionId: string): Promise<void> {
+  /**
+   * Context usage for a session, at most one query in flight per session.
+   *
+   * Every transcript write asked for this, and the query shares one ACP channel
+   * with the user's prompt, steer, and abort. Several subagents writing at once
+   * queued the user's own requests behind a burst of usage lookups, so a request
+   * that arrives while one is running joins it instead of adding another.
+   */
+  private refreshContextUsage(sessionId: string): Promise<void> {
+    const inFlight = this.contextUsageQueries.get(sessionId);
+    if (inFlight) return inFlight;
+    const query = this.queryContextUsage(sessionId).finally(() => {
+      this.contextUsageQueries.delete(sessionId);
+    });
+    this.contextUsageQueries.set(sessionId, query);
+    return query;
+  }
+
+  private async queryContextUsage(sessionId: string): Promise<void> {
     try {
       const connection = await this.requireConnection();
       const response = await connection.extMethod("_gjc/sdk/query", {
@@ -4304,6 +4510,13 @@ export class GjcAcpController {
   ): void {
     const session = this.sessions.get(sessionId);
     if (!session) return;
+    // A turn re-asserts the same runtime state repeatedly (status already running,
+    // unchanged usage percent). Every emit is an IPC broadcast that re-renders the
+    // renderer's whole session subtree, so a patch that changes nothing is dropped.
+    const changed = Object.entries(patch).some(
+      ([key, value]) => session[key as keyof AgentSession] !== value,
+    );
+    if (!changed) return;
     Object.assign(session, patch);
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }

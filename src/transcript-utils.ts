@@ -214,6 +214,22 @@ export function cacheTranscript(
   return cached;
 }
 
+/**
+ * Merge a single published item into a session's history.
+ *
+ * A transcript rescan republishes a row once its status or output changes, so an
+ * id that is already present is replaced rather than appended -- appending it
+ * again showed the same tool call twice.
+ */
+export function mergeTranscriptItem(
+  items: readonly TranscriptItem[],
+  item: TranscriptItem,
+): TranscriptItem[] {
+  const index = items.findIndex((existing) => existing.id === item.id);
+  if (index === -1) return [...items, item];
+  return items.map((existing, at) => (at === index ? item : existing));
+}
+
 export function updateTranscriptItem(
   transcripts: Record<string, TranscriptItem[]>,
   sessionId: string,
