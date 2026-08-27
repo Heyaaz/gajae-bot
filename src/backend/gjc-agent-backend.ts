@@ -133,8 +133,8 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.listQueuedMessages(sessionId);
   }
 
-  flushQueuedNow(sessionId: string, waitingKnown?: boolean): Promise<boolean> {
-    return this.bridge.flushQueuedNow(sessionId, waitingKnown);
+  flushQueuedNow(sessionId: string): Promise<boolean> {
+    return this.bridge.flushQueuedNow(sessionId);
   }
 
   steerSession(sessionId: string, input: MessageInput): Promise<void> {

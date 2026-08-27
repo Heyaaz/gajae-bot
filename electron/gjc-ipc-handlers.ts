@@ -286,13 +286,8 @@ export function registerGjcIpcHandlers(
   ipcMain.handle(GJC_IPC.listQueuedMessages, (_event, sessionId: unknown) =>
     controller.listQueuedMessages(requiredId(sessionId, "Session ID")),
   );
-  ipcMain.handle(
-    GJC_IPC.flushQueuedNow,
-    (_event, sessionId: unknown, waitingKnown: unknown) =>
-      controller.flushQueuedNow(
-        requiredId(sessionId, "Session ID"),
-        waitingKnown === true,
-      ),
+  ipcMain.handle(GJC_IPC.flushQueuedNow, (_event, sessionId: unknown) =>
+    controller.flushQueuedNow(requiredId(sessionId, "Session ID")),
   );
   ipcMain.handle(
     GJC_IPC.steerSession,

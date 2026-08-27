@@ -38,7 +38,7 @@ export interface AgentBackend {
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<void>;
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]>;
-  flushQueuedNow(sessionId: string, waitingKnown?: boolean): Promise<boolean>;
+  flushQueuedNow(sessionId: string): Promise<boolean>;
   steerSession(sessionId: string, input: MessageInput): Promise<void>;
   sendMessage(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   cancelRun(sessionId: string): Promise<void>;

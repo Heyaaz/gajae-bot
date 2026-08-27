@@ -3,11 +3,10 @@ import {
   compactToolCommand,
   compactToolText,
   composerQueuePreview,
+  nextRequestToRelease,
+  withoutReleasedRequest,
   droppedImageAttachments,
-  isWaitingComposerText,
-  mergeComposerQueue,
   readableToolText,
-  releaseSettledChips,
   resolveModelPreset,
 } from "./composer-utils";
 
@@ -86,108 +85,43 @@ describe("composer utilities", () => {
       text: "지금 실행",
       mode: "steer",
     });
-    expect(
-      mergeComposerQueue(
-        [
-          {
-            id: "remote",
-            text: "steer 중요하다",
-            mode: "followUp",
-            label: "Queued",
-          },
-        ],
-        [
-          {
-            id: "local",
-            text: "steer 중요하다",
-            mode: "followUp",
-            label: "Queued",
-          },
-        ],
-      ),
-    ).toEqual([
-      {
-        id: "remote",
-        text: "steer 중요하다",
-        mode: "followUp",
-        label: "Queued",
-      },
-    ]);
-  });
-
-  it("matches waiting composer text against a later user echo", () => {
-    expect(isWaitingComposerText("안고쳐졌는데 ?", ["안고쳐졌는데  ?"])).toBe(
-      true,
-    );
-    expect(isWaitingComposerText("다른 요청", ["안고쳐졌는데 ?"])).toBe(false);
-    expect(isWaitingComposerText("   ", ["안고쳐졌는데 ?"])).toBe(false);
   });
 });
 
-describe("releaseSettledChips", () => {
-  const chip = (text: string, deliveredBaseline = 0) => ({
-    id: `local-${text}`,
+describe("composer-owned pending queue", () => {
+  const request = (id: string, text: string) => ({
+    id,
     text,
-    mode: "steer" as const,
-    label: "Steer",
-    deliveredBaseline,
-  });
-  const listed = (text: string) => ({
-    id: `q-${text}`,
-    text,
-    mode: "steer" as const,
-    label: "Steer",
+    mode: "followUp" as const,
+    label: "Queued",
+    images: [],
+    files: [],
   });
 
-  it("releases a consumed steer once it appears in the transcript", () => {
-    // A steer bypasses the queue entirely, so without the transcript signal this
-    // chip has no settle condition and the composer shows a permanent
-    // "1개 대기 중".
-    expect(releaseSettledChips([chip("steered")], [], ["steered"])).toEqual([]);
+  it("releases the oldest request first", () => {
+    const pending = [request("a", "first"), request("b", "second")];
+    expect(nextRequestToRelease(pending)?.id).toBe("a");
   });
 
-  it("keeps a queued request whose words already appear earlier in the history", () => {
-    // Repeating yourself must not retire the new chip: the matching bubble here
-    // predates it, so GJC has not consumed this request yet.
-    const history = ["steered", "some reply prompt"];
-    expect(
-      releaseSettledChips([chip("steered", history.length)], [], history),
-    ).toEqual([chip("steered", history.length)]);
+  it("keeps a request until its own send resolves", () => {
+    // Clearing the whole queue on release lost every entry after the first when a
+    // later send failed, so only the released id may leave.
+    const pending = [request("a", "first"), request("b", "second")];
+    expect(withoutReleasedRequest(pending, "a").map((e) => e.id)).toEqual([
+      "b",
+    ]);
   });
 
-  it("releases the chip only once a bubble arrives after it was created", () => {
-    const history = ["steered"];
-    const pending = [chip("steered", history.length)];
-    expect(releaseSettledChips(pending, [], history)).toEqual(pending);
-    expect(releaseSettledChips(pending, [], [...history, "steered"])).toEqual(
-      [],
-    );
+  it("keeps duplicates apart by id rather than text", () => {
+    // The same words submitted twice used to collapse into one chip and then both
+    // vanished together; identity keeps them independent.
+    const pending = [request("a", "same"), request("b", "same")];
+    expect(withoutReleasedRequest(pending, "a").map((e) => e.id)).toEqual([
+      "b",
+    ]);
   });
 
-  it("keeps a steer chip that the transcript has not echoed yet", () => {
-    expect(
-      releaseSettledChips([chip("steered")], [], ["something else"]),
-    ).toEqual([chip("steered")]);
-  });
-
-  it("releases only the chips the queue now lists", () => {
-    expect(
-      releaseSettledChips(
-        [chip("first"), chip("second")],
-        [listed("first")],
-      ).map((entry) => entry.text),
-    ).toEqual(["second"]);
-  });
-
-  it("keeps every chip when the listing is still empty", () => {
-    // The second Enter aborts the turn before GJC reports the promotion, so an
-    // empty listing must not erase the request from the window.
-    expect(releaseSettledChips([chip("pending")], [])).toHaveLength(1);
-  });
-
-  it("matches on whitespace-normalized text", () => {
-    expect(
-      releaseSettledChips([chip("hello   world")], [listed("hello world")]),
-    ).toEqual([]);
+  it("reports nothing to release once the queue is drained", () => {
+    expect(nextRequestToRelease([])).toBeUndefined();
   });
 });

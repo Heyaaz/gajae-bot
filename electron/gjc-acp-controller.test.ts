@@ -2144,25 +2144,20 @@ describe("sessionInfoToAgentSession", () => {
     expect(brokerControl).not.toHaveBeenCalled();
     controller.dispose();
   });
-  it("waits for a just-queued steer before flushing instead of no-opping", async () => {
+  it("interrupts without consulting the remote queue when flushing", async () => {
+    // GJC never reports a waiting steer -- turn.steer is consumed by the open turn
+    // -- so polling queue.messages.list only delayed the interrupt. The window owns
+    // its pending queue and asks for the abort directly.
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
       emit: () => undefined,
     });
     const brokerControl = vi.fn();
-    let lists = 0;
+    let queueListings = 0;
     const extMethod = vi.fn().mockImplementation((_method, params) => {
       if (params.query === "queue.messages.list") {
-        lists += 1;
-        if (lists < 3) {
-          return Promise.resolve({ page: { items: [], complete: true } });
-        }
-        return Promise.resolve({
-          page: {
-            items: [{ id: "steer-1", text: "focus now", mode: "steer" }],
-            complete: true,
-          },
-        });
+        queueListings += 1;
+        return Promise.resolve({ page: { items: [], complete: true } });
       }
       return Promise.resolve({ ok: true, accepted: true, aborted: true });
     });
@@ -2176,45 +2171,13 @@ describe("sessionInfoToAgentSession", () => {
     internals.connection = { signal: { aborted: false }, extMethod };
 
     await expect(controller.flushQueuedNow("session-1")).resolves.toBe(true);
-    expect(lists).toBeGreaterThanOrEqual(3);
+    expect(queueListings).toBe(0);
     expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
       sessionId: "session-1",
       operation: "turn.abort",
       input: {},
     });
     expect(brokerControl).not.toHaveBeenCalled();
-    controller.dispose();
-  });
-
-  it("interrupts on the caller's word when the durable queue listing is slow", async () => {
-    const controller = new GjcAcpController({
-      workspace: "/tmp/project",
-      emit: () => undefined,
-    });
-    const brokerControl = vi.fn();
-    const extMethod = vi.fn().mockImplementation((_method, params) => {
-      if (params.query === "queue.messages.list") {
-        return new Promise(() => undefined);
-      }
-      return Promise.resolve({ ok: true, accepted: true, aborted: true });
-    });
-    const internals = controller as unknown as {
-      startup: Promise<void>;
-      brokerControl: typeof brokerControl;
-      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
-    };
-    internals.startup = Promise.resolve();
-    internals.brokerControl = brokerControl;
-    internals.connection = { signal: { aborted: false }, extMethod };
-
-    await expect(controller.flushQueuedNow("session-1", true)).resolves.toBe(
-      true,
-    );
-    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
-      sessionId: "session-1",
-      operation: "turn.abort",
-      input: {},
-    });
     controller.dispose();
   });
 
@@ -2286,22 +2249,37 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
-  it("keeps a busy prompt retry out of the user transcript", async () => {
+  it("shows a prompt once, swallowing only GJC's echo of it", async () => {
+    // The window now echoes a prompt itself and consumes exactly one matching
+    // update from GJC. Suppressing user text by matching a durable request log
+    // instead made a repeated request disappear for good.
     const events: AgentEvent[] = [];
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
       emit: (event) => events.push(event),
     });
     const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
+    const prompt = vi.fn().mockResolvedValue({ stopReason: "end_turn" });
     const internals = controller as unknown as {
       startup: Promise<void>;
-      activePromptSessions: Set<string>;
-      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
-      handleSessionUpdate(notification: SessionNotification): void;
+      attachedSessions: Set<string>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        prompt: typeof prompt;
+      };
+      handleSessionUpdate: (payload: {
+        sessionId: string;
+        update: Record<string, unknown>;
+      }) => void;
     };
     internals.startup = Promise.resolve();
-    internals.activePromptSessions.add("session-1");
-    internals.connection = { signal: { aborted: false }, extMethod };
+    internals.attachedSessions.add("session-1");
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      prompt,
+    };
 
     await controller.sendMessage("session-1", {
       text: "자꾸 말풍선으로 가잖아",
@@ -2312,89 +2290,54 @@ describe("sessionInfoToAgentSession", () => {
       sessionId: "session-1",
       update: {
         sessionUpdate: "user_message_chunk",
-        messageId: "queued-user-echo",
+        messageId: "gjc-user-echo",
         content: { type: "text", text: "자꾸 말풍선으로 가잖아" },
       },
     });
 
-    expect(events).not.toContainEqual(
-      expect.objectContaining({
-        type: "transcript.appended",
-        item: expect.objectContaining({ role: "user" }),
-      }),
+    const bubbles = events.filter(
+      (event) =>
+        event.type === "transcript.appended" &&
+        (event as { item: { role?: string } }).item.role === "user",
     );
+    expect(bubbles).toHaveLength(1);
     controller.dispose();
   });
 
-  it("shows a consumed steer as an ordinary user bubble once it leaves the queue", async () => {
+  it("shows a repeated request as its own bubble", async () => {
     const events: AgentEvent[] = [];
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
       emit: (event) => events.push(event),
     });
-    let queueItems: unknown[] = [
-      { id: "q1", text: "작업중인데 대기라고 뜬다", mode: "steer" },
-    ];
-    const extMethod = vi.fn().mockImplementation((_method, params) => {
-      const query = (params as { query?: string }).query;
-      if (query === "queue.messages.list")
-        return Promise.resolve({
-          ok: true,
-          page: { items: queueItems, complete: true },
-        });
-      return Promise.resolve({ ok: true, accepted: true });
-    });
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
+    const prompt = vi.fn().mockResolvedValue({ stopReason: "end_turn" });
     const internals = controller as unknown as {
       startup: Promise<void>;
-      activePromptSessions: Set<string>;
-      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
-      handleSessionUpdate(notification: SessionNotification): void;
+      attachedSessions: Set<string>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        prompt: typeof prompt;
+      };
     };
     internals.startup = Promise.resolve();
-    internals.activePromptSessions.add("session-1");
-    internals.connection = { signal: { aborted: false }, extMethod };
+    internals.attachedSessions.add("session-1");
+    internals.connection = { signal: { aborted: false }, extMethod, prompt };
 
-    await controller.sendMessage("session-1", {
-      text: "작업중인데 대기라고 뜬다",
-      images: [],
-      files: [],
-    });
+    for (let index = 0; index < 2; index += 1)
+      await controller.sendMessage("session-1", {
+        text: "같은 말 또 보냄",
+        images: [],
+        files: [],
+      });
 
-    // While GJC still lists it as waiting, the chip owns it and no bubble appears.
-    await expect(
-      controller.listQueuedMessages("session-1"),
-    ).resolves.toHaveLength(1);
-    internals.handleSessionUpdate({
-      sessionId: "session-1",
-      update: {
-        sessionUpdate: "user_message_chunk",
-        messageId: "echo-while-waiting",
-        content: { type: "text", text: "작업중인데 대기라고 뜬다" },
-      },
-    });
-    const userBubbles = (): unknown[] =>
-      events.filter(
-        (event) =>
-          event.type === "transcript.appended" &&
-          (event as { item: TranscriptItem }).item.kind === "message" &&
-          (event as { item: ChatMessage }).item.role === "user",
-      );
-    expect(userBubbles()).toHaveLength(0);
-
-    // GJC consumed it: the queue is empty, so the suppression must be released.
-    queueItems = [];
-    await expect(controller.listQueuedMessages("session-1")).resolves.toEqual(
-      [],
+    const bubbles = events.filter(
+      (event) =>
+        event.type === "transcript.appended" &&
+        (event as { item: { role?: string } }).item.role === "user",
     );
-    internals.handleSessionUpdate({
-      sessionId: "session-1",
-      update: {
-        sessionUpdate: "user_message_chunk",
-        messageId: "echo-after-consume",
-        content: { type: "text", text: "작업중인데 대기라고 뜬다" },
-      },
-    });
-    expect(userBubbles()).toHaveLength(1);
+    expect(bubbles).toHaveLength(2);
     controller.dispose();
   });
 

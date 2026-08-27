@@ -1071,7 +1071,6 @@ export class GjcAcpController {
   private readonly cancellingSessions = new Set<string>();
   private readonly flushingSessions = new Set<string>();
   private readonly pendingSteers = new Map<string, Promise<void>>();
-  private readonly queuedRequestTexts = new Map<string, Map<string, number>>();
   private readonly suppressedUserMessageKeys = new Map<string, Set<string>>();
   // A prompt renders its own user bubble immediately so an ordinary chat message
   // appears without waiting for the agent round trip. GJC echoes the same prompt
@@ -1170,7 +1169,6 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
-    this.queuedRequestTexts.clear();
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     child?.kill("SIGTERM");
@@ -1700,7 +1698,7 @@ export class GjcAcpController {
     sessionId: string,
   ): Promise<TranscriptItem[]> {
     const persisted = await this.readPersistedTranscript(sessionId);
-    if (persisted) return this.withoutQueuedRequests(sessionId, persisted);
+    if (persisted) return persisted;
     const connection = await this.requireConnection();
     const rows: unknown[] = [];
     let cursor: string | undefined;
@@ -1728,10 +1726,7 @@ export class GjcAcpController {
             : undefined;
       if (page.complete === true || !cursor) break;
     }
-    return this.withoutQueuedRequests(
-      sessionId,
-      sharedTranscriptItems(sessionId, rows),
-    );
+    return sharedTranscriptItems(sessionId, rows);
   }
 
   private async readPersistedTranscript(
@@ -2083,59 +2078,18 @@ export class GjcAcpController {
   // The count is what makes this correct: two identical queued requests must
   // survive one being consumed, and the last release must un-hide the bubble so a
   // consumed steer reads like any other user message.
-  private rememberQueuedRequest(sessionId: string, text: string): void {
-    const normalized = normalizeQueuedRequestText(text);
-    if (!normalized) return;
-    const requests =
-      this.queuedRequestTexts.get(sessionId) ?? new Map<string, number>();
-    requests.set(normalized, (requests.get(normalized) ?? 0) + 1);
-    this.queuedRequestTexts.set(sessionId, requests);
-  }
 
   // The authoritative queue is the only thing that says what is still waiting.
   // Anything the app once hid but GJC no longer lists has been consumed, so its
   // suppression is dropped and the message becomes a visible user bubble.
-  private reconcileQueuedRequests(
-    sessionId: string,
-    queued: QueuedMessage[],
-  ): void {
-    const requests = this.queuedRequestTexts.get(sessionId);
-    if (!requests?.size) return;
-    const waiting = new Set(
-      queued.map((entry) => normalizeQueuedRequestText(entry.text)),
-    );
-    for (const text of [...requests.keys()]) {
-      if (!waiting.has(text)) requests.delete(text);
-    }
-    if (requests.size === 0) this.queuedRequestTexts.delete(sessionId);
-  }
 
-  private queuedRequestMatches(sessionId: string, text: string): boolean {
-    const normalized = normalizeQueuedRequestText(text);
-    if (!normalized) return false;
-    return (this.queuedRequestTexts.get(sessionId)?.get(normalized) ?? 0) > 0;
-  }
 
-  private withoutQueuedRequests(
-    sessionId: string,
-    items: TranscriptItem[],
-  ): TranscriptItem[] {
-    return items.filter(
-      (item) =>
-        !(
-          item.kind === "message" &&
-          item.role === "user" &&
-          this.queuedRequestMatches(sessionId, item.content)
-        ),
-    );
-  }
 
   async steerSession(sessionId: string, input: MessageInput): Promise<void> {
     const text = messageTextWithFiles(input)
       .replace(/^\/steer(?:\s+|$)/u, "")
       .trim();
     if (!text) throw new Error("Steering instructions are required");
-    this.rememberQueuedRequest(sessionId, text);
     const pending = this.controlSession(sessionId, "turn.steer", {
       text,
       clientRef: `gajae-steer-${randomUUID()}`,
@@ -2159,7 +2113,6 @@ export class GjcAcpController {
   async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
     const text = messageTextWithFiles(input);
     if (!text) throw new Error("Follow-up text is required");
-    this.rememberQueuedRequest(sessionId, text);
     const connection = await this.requireConnection();
     try {
       await this.ensureAttached(sessionId, false);
@@ -2365,7 +2318,6 @@ export class GjcAcpController {
             : undefined;
         if (page.complete === true || !cursor) break;
       }
-      this.reconcileQueuedRequests(sessionId, queued);
       return queued;
     } catch {
       try {
@@ -2421,31 +2373,18 @@ export class GjcAcpController {
   }
 
   /**
-   * GJC CLI empty submit: abort the current stream so queued steer/follow-up is
-   * consumed once by steer-on-interrupt. Wait briefly if the first Enter's
-   * steer has not landed in the durable queue yet.
+   * GJC CLI empty submit: interrupt the current stream so the window can hand over
+   * the requests it is holding.
    */
-  async flushQueuedNow(
-    sessionId: string,
-    waitingKnown = false,
-  ): Promise<boolean> {
+  async flushQueuedNow(sessionId: string): Promise<boolean> {
     if (this.flushingSessions.has(sessionId)) return true;
     this.flushingSessions.add(sessionId);
     try {
       const pendingSteer = this.pendingSteers.get(sessionId);
       if (pendingSteer) await pendingSteer.catch(() => undefined);
-      // Listing the durable queue can fall back to a broker CLI spawn that
-      // outlives this deadline, which used to swallow the second Enter. When
-      // the caller already shows waiting work, interrupt on its word instead.
-      if (!waitingKnown) {
-        const deadline = Date.now() + 1000;
-        let queued = await this.listQueuedMessages(sessionId);
-        while (queued.length === 0 && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 40));
-          queued = await this.listQueuedMessages(sessionId);
-        }
-        if (queued.length === 0) return false;
-      }
+      // The window owns its pending queue, so it already knows there is work to
+      // release. GJC reports no waiting steer of its own -- turn.steer is consumed
+      // by the open turn -- so there is nothing here to confirm against.
       await this.controlSession(sessionId, "turn.abort", {});
       this.updateSessionStatus(sessionId, "running");
       return true;
@@ -2482,7 +2421,6 @@ export class GjcAcpController {
         });
       } catch (error) {
         if (!busyPromptError(error)) throw error;
-        this.rememberQueuedRequest(sessionId, promptText);
         await this.brokerControl(sessionId, "turn.steer", {
           text: promptText,
           clientRef: `gajae-steer-${randomUUID()}`,
@@ -3487,7 +3425,6 @@ export class GjcAcpController {
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
-    this.queuedRequestTexts.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
@@ -3534,7 +3471,6 @@ export class GjcAcpController {
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
-    this.queuedRequestTexts.clear();
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
@@ -3618,8 +3554,7 @@ export class GjcAcpController {
       this.activePromptSessions.clear();
       this.activeAssistantMessages.clear();
       this.activeThoughts.clear();
-      this.queuedRequestTexts.clear();
-      this.suppressedUserMessageKeys.clear();
+        this.suppressedUserMessageKeys.clear();
       this.echoedPromptTexts.clear();
       for (const session of this.sessions.values()) {
         session.attachment = "recovering";
@@ -4324,25 +4259,6 @@ export class GjcAcpController {
         this.suppressedUserMessageKeys.set(sessionId, suppressed);
       }
       return;
-    }
-    if (role === "user" && text) {
-      const normalized = normalizeQueuedRequestText(text);
-      const requests = this.queuedRequestTexts.get(sessionId);
-      const queuedEcho =
-        (requests?.get(normalized) ?? 0) > 0 ||
-        (Boolean(userMessageKey) &&
-          [...(requests?.keys() ?? [])].some((request) =>
-            request.startsWith(normalized),
-          ));
-      if (queuedEcho) {
-        if (userMessageKey) {
-          const suppressed =
-            this.suppressedUserMessageKeys.get(sessionId) ?? new Set<string>();
-          suppressed.add(userMessageKey);
-          this.suppressedUserMessageKeys.set(sessionId, suppressed);
-        }
-        return;
-      }
     }
     if (!text && !image) return;
     const activeAssistantId =

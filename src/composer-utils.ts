@@ -1,4 +1,4 @@
-import type { QueuedMessage } from "../shared/agent-contract";
+import type { FileAttachment, ImageAttachment } from "../shared/agent-contract";
 export interface CompactText {
   text: string;
   omittedLines: number;
@@ -154,59 +154,36 @@ export function composerQueuePreview(
   return { text, mode: explicitSteer ? "steer" : "followUp" };
 }
 
-export function mergeComposerQueue(
-  queued: readonly QueuedMessage[],
-  localPending: readonly QueuedMessage[],
-): QueuedMessage[] {
-  return [
-    ...queued,
-    ...localPending.filter(
-      (local) =>
-        !queued.some(
-          (entry) => entry.text === local.text && entry.mode === local.mode,
-        ),
-    ),
-  ];
-}
-
-// A local chip stands in for work the authoritative queue has not listed yet.
-// Only the entries GJC now reports are released; chips the listing predated stay,
-// otherwise a submission made just before a refresh vanishes from the window.
-// A provisional chip carries the number of user bubbles that existed when it was
-// created. Matching a chip against the whole transcript retired it as soon as the
-// same words appeared anywhere in the history -- including a bubble the app itself
-// echoed for an earlier prompt -- so a queued request vanished the moment the user
-// repeated themselves. Only a bubble that arrives after the chip is proof.
-export interface LocalChip extends QueuedMessage {
-  deliveredBaseline: number;
-}
-
-export function releaseSettledChips(
-  localPending: readonly LocalChip[],
-  queued: readonly QueuedMessage[],
-  deliveredTexts: readonly string[] = [],
-): LocalChip[] {
-  return localPending.filter((local) => {
-    const body = normalizeComposerText(local.text);
-    const consumedAfterChip = deliveredTexts
-      .slice(local.deliveredBaseline)
-      .some((text) => normalizeComposerText(text) === body);
-    if (consumedAfterChip) return false;
-    // A follow-up chip stands in for a listing that has not arrived yet, so the
-    // authoritative queue releases it once GJC reports the request.
-    return !queued.some((entry) => normalizeComposerText(entry.text) === body);
-  });
-}
-
-export function isWaitingComposerText(
-  content: string,
-  waitingTexts: readonly string[],
-): boolean {
-  const body = normalizeComposerText(content);
-  if (!body) return false;
-  return waitingTexts.some((text) => normalizeComposerText(text) === body);
+// The composer owns its pending queue outright: a request is held here and is
+// never handed to GJC until the user releases it, so nothing has to be inferred
+// from transcript text or from a server-side listing. GJC has no notion of a
+// waiting steer -- turn.steer is consumed by the open turn immediately -- which
+// is why every attempt to reconcile these chips against a remote queue failed.
+export interface PendingRequest {
+  id: string;
+  text: string;
+  mode: "steer" | "followUp";
+  label: string;
+  images: ImageAttachment[];
+  files: FileAttachment[];
 }
 
 export function normalizeComposerText(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
+}
+
+// A release hands requests over one at a time, oldest first, and drops an entry
+// only once its send resolves. Returning the remaining queue keeps that rule
+// testable without driving the composer through the DOM.
+export function withoutReleasedRequest(
+  pending: readonly PendingRequest[],
+  releasedId: string,
+): PendingRequest[] {
+  return pending.filter((entry) => entry.id !== releasedId);
+}
+
+export function nextRequestToRelease(
+  pending: readonly PendingRequest[],
+): PendingRequest | undefined {
+  return pending[0];
 }

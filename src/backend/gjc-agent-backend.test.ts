@@ -100,10 +100,7 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async listQueuedMessages(_sessionId: string): Promise<[]> {
     return [];
   }
-  async flushQueuedNow(
-    _sessionId: string,
-    _waitingKnown?: boolean,
-  ): Promise<boolean> {
+  async flushQueuedNow(_sessionId: string): Promise<boolean> {
     return false;
   }
   async steerSession(_sessionId: string, _input: MessageInput): Promise<void> {}

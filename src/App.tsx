@@ -53,10 +53,9 @@ import {
   compactToolText,
   resolveModelPreset,
   composerQueuePreview,
-  isWaitingComposerText,
-  mergeComposerQueue,
-  type LocalChip,
-  releaseSettledChips,
+  type PendingRequest,
+  nextRequestToRelease,
+  withoutReleasedRequest,
 } from "./composer-utils";
 import {
   cacheTranscript,
@@ -94,7 +93,6 @@ import type {
   GoalOperation,
   GoalSnapshot,
   MessageDelivery,
-  QueuedMessage,
   SubagentSnapshot,
 } from "../shared/agent-contract";
 import type {
@@ -1443,11 +1441,7 @@ interface ComposerProps {
   usagePercent?: number;
   onSend: (input: MessageInput) => Promise<MessageDelivery | undefined>;
   onCancel: () => void;
-  onFlushQueued: () => void;
-  onQueue: (input: MessageInput) => void;
-  onSteer: (input: MessageInput) => void;
-  queued: QueuedMessage[];
-  deliveredTexts: readonly string[];
+  onFlushQueued: () => Promise<void>;
   onCompact: () => void;
   onNewSession: () => void;
   onWorkspaceChange: (workspace: string) => void;
@@ -1483,10 +1477,6 @@ function Composer({
   onSend,
   onCancel,
   onFlushQueued,
-  onQueue,
-  onSteer,
-  queued,
-  deliveredTexts,
   onCompact,
   onNewSession,
   onWorkspaceChange,
@@ -1502,8 +1492,10 @@ function Composer({
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [configMenu, setConfigMenu] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
-  const [localPending, setLocalPending] = useState<LocalChip[]>([]);
-  const pendingQueue = mergeComposerQueue(queued, localPending);
+  // The composer is the single owner of pending work. GJC is only told about a
+  // request when it is actually released, so there is no remote queue to
+  // reconcile against and nothing can retire a chip behind the user's back.
+  const [pendingQueue, setPendingQueue] = useState<PendingRequest[]>([]);
   const [historyCursor, setHistoryCursor] = useState(-1);
   const composerRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1511,8 +1503,10 @@ function Composer({
   const submitAfterCompositionRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
   const compositionSubmitScheduledRef = useRef(false);
-  const pendingQueueCountRef = useRef(0);
-  pendingQueueCountRef.current = pendingQueue.length;
+  // The release loop reads the queue between awaits, so it needs the live value
+  // rather than the render-time closure.
+  const pendingQueueRef = useRef<PendingRequest[]>([]);
+  pendingQueueRef.current = pendingQueue;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptHistoryRef = useRef(new Map<string, string[]>());
@@ -1604,21 +1598,9 @@ function Composer({
     queueMicrotask(() => {
       setHistoryCursor(-1);
       historyDraftRef.current = "";
-      setLocalPending([]);
+      setPendingQueue([]);
     });
   }, [sessionId]);
-
-  // A local chip is a placeholder for work the authoritative queue has not listed
-  // yet. Clearing every chip whenever a listing arrived also dropped chips the
-  // listing predated, so only the entries GJC now reports are released.
-  useEffect(() => {
-    if (queued.length === 0 && deliveredTexts.length === 0) return;
-    queueMicrotask(() =>
-      setLocalPending((current) =>
-        releaseSettledChips(current, queued, deliveredTexts),
-      ),
-    );
-  }, [queued, deliveredTexts]);
 
   useEffect(() => {
     function applyEffortCycle(): void {
@@ -1722,17 +1704,38 @@ function Composer({
     };
   }, [addDroppedAttachments]);
 
+  const releasingRef = useRef(false);
+
+  // Interrupt the open turn, then hand the held requests over in order. Each entry
+  // leaves the queue only after onSend resolves for it, so a failed release keeps
+  // the request visible instead of losing the user's text.
+  async function releasePendingQueue(): Promise<void> {
+    if (releasingRef.current) return;
+    releasingRef.current = true;
+    try {
+      await onFlushQueued();
+      for (;;) {
+        const next = nextRequestToRelease(pendingQueueRef.current);
+        if (!next) break;
+        await onSend({
+          text: next.text,
+          images: next.images,
+          files: next.files,
+        });
+        setPendingQueue((current) => withoutReleasedRequest(current, next.id));
+      }
+    } finally {
+      releasingRef.current = false;
+    }
+  }
+
   function submit(): void {
     const content = (textareaRef.current?.value ?? value).trim();
-    // GJC CLI semantics: an empty submit during a live turn flushes the queue by
-    // aborting the run, and the session decides whether anything is queued.
+    // GJC CLI semantics: an empty submit during a live turn interrupts the run and
+    // releases the queue this composer has been holding.
     if (running && !content && images.length === 0 && files.length === 0) {
-      if (pendingQueueCountRef.current === 0) return;
-      // Dropping the local chip here used to erase the request from the window:
-      // the chip disappeared while the controller still hid the matching user
-      // message as waiting work. The chip is released by the authoritative queue
-      // once GJC consumes it, which is also when the bubble becomes visible.
-      onFlushQueued();
+      if (pendingQueue.length === 0) return;
+      void releasePendingQueue();
       return;
     }
     if (!content && images.length === 0 && files.length === 0) return;
@@ -1767,41 +1770,23 @@ function Composer({
     }
     const liveTurn = running || pendingQueue.length > 0;
     if (liveTurn) {
+      // Held locally, not sent. GJC consumes turn.steer into the open turn the
+      // moment it arrives, so submitting now would run the request against the
+      // turn the user is still waiting on.
       const preview = composerQueuePreview(content, files, images);
-      const queuedInput = { text: preview.text, images, files };
-      if (preview.mode === "steer") onSteer(queuedInput);
-      else onQueue(queuedInput);
-      setLocalPending((current) => [
+      setPendingQueue((current) => [
         ...current,
         {
           id: `local-${crypto.randomUUID()}`,
           text: preview.text,
           mode: preview.mode,
           label: preview.mode === "steer" ? "Steer" : "Queued",
-          deliveredBaseline: deliveredTexts.length,
+          images,
+          files,
         },
       ]);
     } else {
-      // The composer already knows this session is idle, so the prompt path is the
-      // expected outcome. Showing a provisional chip here would flash a waiting
-      // state for the backend round trip on an ordinary chat message, so the chip
-      // is only added if the backend actually had to steer a turn we missed.
-      const pendingId = `local-${crypto.randomUUID()}`;
-      const baseline = deliveredTexts.length;
-      const preview = composerQueuePreview(content, files, images);
-      void onSend({ text: content, images, files }).then((delivery) => {
-        if (delivery !== "steer") return;
-        setLocalPending((current) => [
-          ...current,
-          {
-            id: pendingId,
-            text: preview.text,
-            mode: "steer",
-            label: "Steer",
-            deliveredBaseline: baseline,
-          },
-        ]);
-      });
+      void onSend({ text: content, images, files });
     }
     setValue("");
     setHistoryCursor(-1);
@@ -1871,7 +1856,7 @@ function Composer({
       setValue("");
       if (running) {
         onCancel();
-        setLocalPending([]);
+        setPendingQueue([]);
       } else setAttachmentError("중단할 실행 작업이 없습니다");
       return;
     }
@@ -1917,7 +1902,7 @@ function Composer({
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     if (event.key === "Escape" || event.key === "Esc") {
-      setLocalPending([]);
+      setPendingQueue([]);
       setWorkspaceOpen(false);
       setConfigMenu(null);
       if (matchingCommands.length > 0) setValue("");
@@ -2358,7 +2343,7 @@ function Composer({
               type="button"
               onClick={() => {
                 onCancel();
-                setLocalPending([]);
+                setPendingQueue([]);
               }}
               title="작업 중단 (Esc)"
             >
@@ -4233,7 +4218,6 @@ export default function App() {
   const [selectedGit, setSelectedGit] = useState<GitStatusSnapshot | null>(
     null,
   );
-  const [sessionQueue, setSessionQueue] = useState<QueuedMessage[]>([]);
   const [goal, setGoal] = useState<GoalSnapshot>({
     enabled: false,
     completed: 0,
@@ -4535,13 +4519,6 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedSessionId) return;
-    return () => {
-      queueMicrotask(() => setSessionQueue([]));
-    };
-  }, [selectedSessionId]);
-
-  useEffect(() => {
-    if (!selectedSessionId) return;
     let active = true;
     const refresh = (): void => {
       void backend
@@ -4656,31 +4633,12 @@ export default function App() {
     [filteredSessions],
   );
 
-  // Only work that is still waiting may be hidden from the transcript. The
-  // per-session request log is deliberately durable, so it must not be used as a
-  // hide list: once GJC consumes a steer or follow-up it becomes an ordinary user
-  // message and has to appear as a bubble like any other prompt.
-  const waitingTexts = sessionQueue.map((entry) => entry.text);
+  // Nothing is hidden any more: a request the composer is still holding was never
+  // sent, so it cannot appear here, and anything that did reach GJC is an ordinary
+  // user message.
   const selectedTranscript = selectedId
-    ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT).filter(
-        (item) =>
-          !(
-            item.kind === "message" &&
-            item.role === "user" &&
-            isWaitingComposerText(item.content, waitingTexts)
-          ),
-      )
+    ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT)
     : EMPTY_TRANSCRIPT;
-  // A steer never appears in the authoritative queue, so a request that has
-  // surfaced as an ordinary user bubble is the proof GJC consumed it. The
-  // composer uses this to retire its provisional chips.
-  const deliveredTexts = useMemo(
-    () =>
-      selectedTranscript
-        .filter((item) => item.kind === "message" && item.role === "user")
-        .map((item) => (item.kind === "message" ? item.content : "")),
-    [selectedTranscript],
-  );
   const transcriptHasLiveWork = selectedTranscript.some((item) => {
     if (item.kind === "message" || item.kind === "thought")
       return item.streaming === true;
@@ -4693,19 +4651,6 @@ export default function App() {
   // Queue state changes when the turn starts or ends, not on every streamed
   // chunk. Keying this on transcript length re-listed the queue over the shared
   // ACP channel for each chunk, which is what made sending feel slow.
-  useEffect(() => {
-    if (!selectedId) return;
-    let active = true;
-    void backend
-      .listQueuedMessages(selectedId)
-      .then((items) => {
-        if (active) setSessionQueue(items);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [backend, selectedId, selectedSessionStatus]);
   const resolveToolCall = useCallback(
     (toolId: string, optionId: string) => {
       void backend.resolveToolCall(toolId, { optionId });
@@ -4991,48 +4936,10 @@ export default function App() {
     }
   }
 
-  // Listing the authoritative queue can fall back to a broker CLI spawn, which
-  // takes seconds. The composer already shows the local chip, so never make a
-  // submission wait on it.
-  function refreshSessionQueue(sessionId: string): void {
-    void backend
-      .listQueuedMessages(sessionId)
-      .then(setSessionQueue)
-      .catch(() => undefined);
-  }
-
-  async function steerSession(
-    sessionId: string,
-    input: MessageInput,
-  ): Promise<void> {
-    try {
-      const resolved = await resolveSessionId(sessionId);
-      await backend.steerSession(resolved, input);
-      refreshSessionQueue(resolved);
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-    }
-  }
-
-  async function queueFollowUp(
-    sessionId: string,
-    input: MessageInput,
-  ): Promise<void> {
-    try {
-      const resolved = await resolveSessionId(sessionId);
-      await backend.queueFollowUp(resolved, input);
-      refreshSessionQueue(resolved);
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-    }
-  }
-
   async function flushQueuedNow(sessionId: string): Promise<void> {
     try {
       const resolved = await resolveSessionId(sessionId);
-      // The composer only offers this while it shows waiting work.
-      await backend.flushQueuedNow(resolved, true);
-      refreshSessionQueue(resolved);
+      await backend.flushQueuedNow(resolved);
     } catch (error) {
       setAppError(humanErrorMessage(error));
     }
@@ -5203,7 +5110,7 @@ export default function App() {
                     selectedSession.status === "running" ||
                     selectedSession.status === "waiting" ||
                     transcriptHasLiveWork ||
-                    sessionQueue.length > 0
+                    transcriptHasLiveWork
                   }
                   sessionTitle={selectedSession.title}
                   workspace={selectedSession.workspace}
@@ -5215,15 +5122,7 @@ export default function App() {
                   usagePercent={selectedSession.usagePercent}
                   onSend={(input) => sendMessage(selectedSession.id, input)}
                   onCancel={() => void cancelRun(selectedSession.id)}
-                  onFlushQueued={() => void flushQueuedNow(selectedSession.id)}
-                  onQueue={(input) =>
-                    void queueFollowUp(selectedSession.id, input)
-                  }
-                  onSteer={(input) =>
-                    void steerSession(selectedSession.id, input)
-                  }
-                  queued={sessionQueue}
-                  deliveredTexts={deliveredTexts}
+                  onFlushQueued={() => flushQueuedNow(selectedSession.id)}
                   onCompact={() => void compactSession(selectedSession.id)}
                   onNewSession={() =>
                     createSession({
