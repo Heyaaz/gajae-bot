@@ -55,9 +55,10 @@ import {
   composerQueuePreview,
   type PendingRequest,
   appendPendingRequest,
+  droppedImageAttachments,
+  imeCommitSubmits,
   isDuplicateSubmission,
-  nextRequestToRelease,
-  withoutReleasedRequest,
+  releaseRequests,
 } from "./composer-utils";
 import {
   cacheTranscript,
@@ -1505,6 +1506,10 @@ function Composer({
   const submitAfterCompositionRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
   const compositionSubmitScheduledRef = useRef(false);
+  // When the Enter that is waiting for an IME commit was pressed. A commit that
+  // arrives later than this belongs to text typed after that Enter, so it must
+  // not inherit the submission.
+  const enterArmedAtRef = useRef(0);
   // The Korean IME delivers one Enter through several handlers, each scheduling its
   // own rAF, so no ordering of guard flags closes every window -- two attempts to
   // tune them both still double-submitted. Identify the submission by its draft
@@ -1557,11 +1562,28 @@ function Composer({
       try {
         if (images.length + files.length > 6)
           throw new Error("이미지는 메시지당 최대 6장까지 첨부할 수 있습니다");
-        const paths = Array.from(files).map((file) =>
-          settingsBridge.pathForFile(file),
+        const all = Array.from(files);
+        // Only a file dragged from the OS carries a path the main process can
+        // read. A drag from a browser or another app has none, so those are read
+        // in the renderer instead of failing the whole drop.
+        const withPath = all.filter((file) =>
+          Boolean(settingsBridge.pathForFile(file)),
         );
-        const attachments = await settingsBridge.readImages(paths);
-        setImages((current) => [...current, ...attachments]);
+        const withoutPath = all.filter(
+          (file) => !settingsBridge.pathForFile(file),
+        );
+        const attachments = withPath.length
+          ? await settingsBridge.readImages(
+              withPath.map((file) => settingsBridge.pathForFile(file)),
+            )
+          : [];
+        const inline = withoutPath.length
+          ? await droppedImageAttachments(
+              withoutPath,
+              images.length + attachments.length,
+            )
+          : [];
+        setImages((current) => [...current, ...attachments, ...inline]);
       } catch (error) {
         setAttachmentError(
           error instanceof Error ? error.message : String(error),
@@ -1608,6 +1630,23 @@ function Composer({
       setPendingQueue([]);
     });
   }, [sessionId]);
+
+  // Held requests exist only because a turn was open. Once that turn ends they
+  // are sent without waiting for another gesture -- otherwise the queue is
+  // unreachable (submit() keeps appending while anything is held) and every later
+  // message piles up behind it silently.
+  //
+  // This drains on the running -> idle transition only. Draining whenever
+  // `running` merely reads false would fire in the gap between a submit and the
+  // backend reporting the turn, releasing the queue into a turn that is still
+  // starting up.
+  const wasRunningRef = useRef(running);
+  useEffect(() => {
+    const turnEnded = wasRunningRef.current && !running;
+    wasRunningRef.current = running;
+    if (!turnEnded || pendingQueueRef.current.length === 0) return;
+    void releasePendingQueue();
+  }, [running]);
 
   useEffect(() => {
     function applyEffortCycle(): void {
@@ -1720,17 +1759,22 @@ function Composer({
     if (releasingRef.current) return;
     releasingRef.current = true;
     try {
-      await onFlushQueued();
-      for (;;) {
-        const next = nextRequestToRelease(pendingQueueRef.current);
-        if (!next) break;
-        await onSend({
-          text: next.text,
-          images: next.images,
-          files: next.files,
-        });
-        setPendingQueue((current) => withoutReleasedRequest(current, next.id));
-      }
+      // Only an open turn needs interrupting. Aborting an idle session would
+      // cancel nothing and emit a spurious cancellation notice.
+      if (running) await onFlushQueued();
+      await releaseRequests({
+        read: () => pendingQueueRef.current,
+        write: (pending) => {
+          pendingQueueRef.current = pending;
+          setPendingQueue(pending);
+        },
+        send: (request) =>
+          onSend({
+            text: request.text,
+            images: request.images,
+            files: request.files,
+          }),
+      });
     } finally {
       releasingRef.current = false;
     }
@@ -1749,14 +1793,13 @@ function Composer({
       return;
     if (content)
       lastSubmissionRef.current = { text: content, at: performance.now() };
-    // GJC CLI semantics: an empty submit during a live turn interrupts the run and
-    // releases the queue this composer has been holding.
-    if (running && !content && images.length === 0 && files.length === 0) {
+    // GJC CLI semantics: an empty submit interrupts a live run and releases the
+    // queue this composer has been holding. With nothing held it is a no-op.
+    if (!content && images.length === 0 && files.length === 0) {
       if (pendingQueue.length === 0) return;
       void releasePendingQueue();
       return;
     }
-    if (!content && images.length === 0 && files.length === 0) return;
     const modelCommand = content.match(/^\/(?:model|models)(?:\s+(.+))?$/iu);
     if (modelCommand && images.length === 0 && files.length === 0) {
       const query = modelCommand[1]?.trim();
@@ -1935,33 +1978,29 @@ function Composer({
     }
     // macOS Korean IME emits Enter while the final syllable is still composing.
     // Treating that keydown as submit sends the full sentence and then the last
-    // syllable again as a second steer (for example "steer 테스트" + "트").
+    // syllable again as a second steer (for example "steer 테스트" + "트"), so the
+    // submission waits for the IME to commit. It is armed here and fired from
+    // compositionend, which is the first moment the final text is readable.
+    //
+    // This used to be a timer that submitted whatever the textarea held 80ms
+    // later. That sent text the user typed *after* the Enter, with no submit of
+    // their own -- an uninvited second submission on top of their real one.
     if (
       event.key === "Enter" &&
       (event.nativeEvent.isComposing ||
         event.keyCode === 229 ||
         composingRef.current)
     ) {
+      event.preventDefault();
+      // An empty draft has nothing left to compose, so this is a real empty
+      // submit -- the gesture that interrupts the run and releases the queue.
       if (!(textareaRef.current?.value ?? value).trim()) {
-        event.preventDefault();
+        submitAfterCompositionRef.current = false;
+        submit();
         return;
       }
-      event.preventDefault();
       submitAfterCompositionRef.current = true;
-      window.setTimeout(() => {
-        if (
-          !submitAfterCompositionRef.current ||
-          compositionSubmitScheduledRef.current
-        )
-          return;
-        submitAfterCompositionRef.current = false;
-        composingRef.current = false;
-        compositionSubmitScheduledRef.current = true;
-        requestAnimationFrame(() => {
-          compositionSubmitScheduledRef.current = false;
-          submit();
-        });
-      }, 80);
+      enterArmedAtRef.current = performance.now();
       return;
     }
     if (
@@ -2154,7 +2193,14 @@ function Composer({
             compositionSubmitScheduledRef.current
           )
             return;
+          // Only the Enter that armed this commit may submit it. An Enter armed
+          // long ago belongs to text the user has since edited.
+          const armed = imeCommitSubmits(
+            enterArmedAtRef.current,
+            performance.now(),
+          );
           submitAfterCompositionRef.current = false;
+          if (!armed) return;
           compositionSubmitScheduledRef.current = true;
           requestAnimationFrame(() => {
             compositionSubmitScheduledRef.current = false;
@@ -4661,13 +4707,18 @@ export default function App() {
   const selectedTranscript = selectedId
     ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT)
     : EMPTY_TRANSCRIPT;
+  // Live work means the transcript is still producing output right now:
+  // something is streaming or a tool is mid-execution.
+  //
+  // Two states deliberately do NOT count, because both outlive their turn and
+  // treating either as running left the composer queueing every later message
+  // while the header read idle -- the message only went out after some unrelated
+  // interaction: a tool card awaiting approval, and a plan entry left at
+  // in_progress once the turn ended.
   const transcriptHasLiveWork = selectedTranscript.some((item) => {
     if (item.kind === "message" || item.kind === "thought")
       return item.streaming === true;
-    if (item.kind === "tool")
-      return item.status === "running" || item.status === "approval-required";
-    if (item.kind === "plan")
-      return item.entries.some((entry) => entry.status === "in_progress");
+    if (item.kind === "tool") return item.status === "running";
     return false;
   });
   // Queue state changes when the turn starts or ends, not on every streamed
@@ -5131,7 +5182,6 @@ export default function App() {
                     selectedSession.phase === "compacting" ||
                     selectedSession.status === "running" ||
                     selectedSession.status === "waiting" ||
-                    transcriptHasLiveWork ||
                     transcriptHasLiveWork
                   }
                   sessionTitle={selectedSession.title}
