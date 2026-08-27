@@ -1365,18 +1365,50 @@ export class GjcAcpController {
       pid?: number;
     }> = [];
     let cursor: string | undefined;
+    // 749 sessions at 100 per page is 8 pages. The broker keeps only 32 cursors
+    // for 15 minutes each, so a walk that stops early (page cap, error, throw)
+    // strands one and a few polls exhaust the pool, taking session.list down for
+    // everyone. The pool is the shared resource, so the walk is always drained.
+    const drain = async (token: string): Promise<void> => {
+      let next: string | undefined = token;
+      for (let page = 0; page < 4096 && next; page += 1) {
+        try {
+          const response = await connection.extMethod("_gjc/sdk/global", {
+            operation: "session.list",
+            input: { cursor: next, limit: 100 },
+          });
+          if (response.ok === false) return;
+          const result =
+            response.result &&
+            typeof response.result === "object" &&
+            !Array.isArray(response.result)
+              ? (response.result as Record<string, unknown>)
+              : response;
+          next =
+            typeof result.continuationCursor === "string"
+              ? result.continuationCursor
+              : undefined;
+        } catch {
+          return;
+        }
+      }
+    };
     try {
-      for (let page = 0; page < 128; page += 1) {
+      for (let page = 0; page < 4096; page += 1) {
         const response = await connection.extMethod("_gjc/sdk/global", {
           operation: "session.list",
-          // The broker rejects a limit above 100 and leaks a pagination cursor on
-          // every rejected call until session.list stops working entirely.
+          // 100 is the broker's maximum page size. Every unfinished walk strands a
+          // continuation cursor for 15 minutes and the broker only holds 32, so a
+          // scan must always be drained to its final page.
           input: { ...(cursor ? { cursor } : {}), limit: 100 },
         });
         // Liveness classification comes only from this index. An empty result on
         // failure reads as "nothing is dead", which republishes every historical
         // session as a row, so an incomplete scan is reported as unusable instead.
-        if (response.ok === false) return undefined;
+        if (response.ok === false) {
+          if (cursor) await drain(cursor);
+          return undefined;
+        }
         const result =
           response.result &&
           typeof response.result === "object" &&
@@ -1416,8 +1448,10 @@ export class GjcAcpController {
             : undefined;
         if (!cursor) break;
       }
+      if (cursor) await drain(cursor);
       return sessions;
     } catch {
+      if (cursor) await drain(cursor);
       return undefined;
     }
   }

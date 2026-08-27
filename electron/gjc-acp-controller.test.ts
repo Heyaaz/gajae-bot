@@ -3091,6 +3091,61 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions cursor hygiene", () => {
+  it("releases a stranded pagination cursor when a scan cannot finish", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    // Page 1 hands out a cursor, page 2 fails. The broker holds only 32 cursors
+    // for 15 minutes, so abandoning this one degrades session.list process-wide.
+    const seen: Array<string | undefined> = [];
+    let failNext = false;
+    const extMethod = vi.fn().mockImplementation((_method, params) => {
+      const input = (params as { input?: Record<string, unknown> }).input ?? {};
+      const cursor =
+        typeof input.cursor === "string" ? input.cursor : undefined;
+      seen.push(cursor);
+      if (cursor === undefined) {
+        failNext = true;
+        return Promise.resolve({
+          result: { sessions: [], continuationCursor: "cursor-1" },
+        });
+      }
+      if (failNext) {
+        failNext = false;
+        return Promise.resolve({
+          ok: false,
+          error: { code: "unavailable", message: "broker restarting" },
+        });
+      }
+      return Promise.resolve({ result: { sessions: [] } });
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: ReturnType<typeof vi.fn>;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions: vi.fn().mockResolvedValue({ sessions: [] }),
+    };
+
+    await controller.listSessions();
+
+    // The cursor must be walked again to release it rather than left to expire.
+    expect(seen.filter((entry) => entry === "cursor-1").length).toBeGreaterThan(
+      1,
+    );
+    controller.dispose();
+  });
+});
+
 describe("listSessions broker index failure", () => {
   it("keeps the previous list when the broker index cannot be read", async () => {
     const controller = new GjcAcpController({
