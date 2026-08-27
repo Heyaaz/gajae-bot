@@ -524,6 +524,27 @@ export interface ManagementDesktopBridge {
 }
 
 /**
+ * Whether a session activity is announced to the OS.
+ *
+ * A finished, failed, or approval-blocked turn is the outcome the user is waiting
+ * for, so it is announced even while the window has focus: a long run usually
+ * ends while they are reading something else on screen. Only the incidental
+ * per-message ping is suppressed for a focused window.
+ */
+export function announcesSessionActivity(
+  category: "completed" | "failed" | "permission" | "message" | "recovered",
+  windowFocused: boolean,
+): boolean {
+  if (
+    category === "completed" ||
+    category === "failed" ||
+    category === "permission"
+  )
+    return true;
+  return !windowFocused;
+}
+
+/**
  * Notification text for a session activity. Several sessions run at once, so the
  * body names the one that changed instead of saying "백그라운드 작업".
  */

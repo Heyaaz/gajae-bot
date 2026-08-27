@@ -1,5 +1,28 @@
 import { describe, expect, it } from "vitest";
-import { sessionActivityBody } from "../shared/agent-contract.js";
+import {
+  announcesSessionActivity,
+  sessionActivityBody,
+} from "../shared/agent-contract.js";
+
+describe("announcesSessionActivity", () => {
+  it("announces a finished turn even while the window has focus", () => {
+    // A long run usually ends while the user is reading something else on
+    // screen, so a focused window must not swallow the outcome they waited for.
+    expect(announcesSessionActivity("completed", true)).toBe(true);
+    expect(announcesSessionActivity("failed", true)).toBe(true);
+    expect(announcesSessionActivity("permission", true)).toBe(true);
+  });
+
+  it("suppresses the incidental per-message ping for a focused window", () => {
+    expect(announcesSessionActivity("message", true)).toBe(false);
+    expect(announcesSessionActivity("message", false)).toBe(true);
+  });
+
+  it("announces a recovered connection only when the window is away", () => {
+    expect(announcesSessionActivity("recovered", true)).toBe(false);
+    expect(announcesSessionActivity("recovered", false)).toBe(true);
+  });
+});
 
 describe("sessionActivityBody", () => {
   it("names the session that finished", () => {

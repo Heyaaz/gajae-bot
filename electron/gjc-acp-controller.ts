@@ -32,7 +32,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { execFile as execFileCb } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { constants, watch, type FSWatcher } from "node:fs";
+import { constants, watch, type FSWatcher, type Stats } from "node:fs";
 import type {
   AgentEvent,
   AgentSession,
@@ -2085,11 +2085,21 @@ export class GjcAcpController {
 
 
 
-  async steerSession(sessionId: string, input: MessageInput): Promise<void> {
+  async steerSession(
+    sessionId: string,
+    input: MessageInput,
+    options?: { echo?: boolean },
+  ): Promise<void> {
     const text = messageTextWithFiles(input)
       .replace(/^\/steer(?:\s+|$)/u, "")
       .trim();
     if (!text) throw new Error("Steering instructions are required");
+    // A steer is a user message too. Echoing it before the round trip is what
+    // makes it appear immediately; without this the bubble waits for GJC to
+    // stream its own user_message_chunk back, which is seconds late on a busy
+    // turn and reads as the window having swallowed the message. Callers that
+    // already echoed the same text pass echo: false so it is not shown twice.
+    if (options?.echo !== false) this.appendLocalUserMessage(sessionId, text, input);
     const pending = this.controlSession(sessionId, "turn.steer", {
       text,
       clientRef: `gajae-steer-${randomUUID()}`,
@@ -2409,11 +2419,19 @@ export class GjcAcpController {
       await this.steerSession(sessionId, input);
       return "steer";
     }
-    const promptText =
-      value.replace(/^\/queue(?:\s+|$)/u, "").trim() + attachedPathsText(input);
+    // `bare` is the user's own text; `promptText` adds the attachment block.
+    // steerSession composes the block itself, so the steer fallbacks below hand
+    // it `bare` -- passing promptText appended the same block a second time.
+    const bare = value.replace(/^\/queue(?:\s+|$)/u, "").trim();
+    const promptText = bare + attachedPathsText(input);
     if (!promptText) return "prompt";
     const session = this.sessions.get(sessionId);
     if (this.sessionMetadata && session?.ownership !== "gajae") {
+      // Spawning the broker CLI costs seconds, so the bubble and the running
+      // status are published first. The prompt text is echoed once here and the
+      // steer fallback below reuses it instead of echoing a second time.
+      this.appendLocalUserMessage(sessionId, promptText, input);
+      this.updateSessionStatus(sessionId, "running");
       try {
         await this.brokerControl(sessionId, "turn.prompt", {
           text: promptText,
@@ -2425,17 +2443,15 @@ export class GjcAcpController {
           text: promptText,
           clientRef: `gajae-steer-${randomUUID()}`,
         });
-        this.updateSessionStatus(sessionId, "running");
         return "steer";
       }
-      this.updateSessionStatus(sessionId, "running");
       return "prompt";
     }
     if (
       this.activePromptSessions.has(sessionId) ||
       session?.status === "running"
     ) {
-      await this.steerSession(sessionId, { ...input, text: promptText });
+      await this.steerSession(sessionId, { ...input, text: bare });
       return "steer";
     }
     this.activePromptSessions.add(sessionId);
@@ -2458,22 +2474,30 @@ export class GjcAcpController {
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
       await this.refreshContextUsage(sessionId);
+      // updateSessionStatus announces the running -> idle transition itself.
       this.updateSessionStatus(sessionId, "idle");
-      this.emitActivity(sessionId, "completed");
     } catch (error) {
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
-        await this.steerSession(sessionId, { ...input, text: promptText });
+        await this.steerSession(
+          sessionId,
+          { ...input, text: bare },
+          { echo: false },
+        );
         return "steer";
       }
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
-      this.updateSessionStatus(sessionId, "idle");
       void this.refreshContextUsage(sessionId);
       if (cancelledOperationError(error)) {
+        // A cancel is the user's own action, so it settles quietly.
+        this.updateSessionStatus(sessionId, "idle", { announce: false });
         this.appendCancelledNotice(sessionId);
         return "prompt";
       }
+      // A failed run is announced as a failure below, so the idle transition must
+      // not also announce a completion.
+      this.updateSessionStatus(sessionId, "idle", { announce: false });
       const notice: NoticeActivity = {
         id: `gjc-error-${this.nextLocalId++}`,
         kind: "notice",
@@ -4531,12 +4555,18 @@ export class GjcAcpController {
       !this.activePromptSessions.has(sessionId)
     ) {
       // A turn this window did not start -- a steer, or work driven from the
-      // terminal -- ends here rather than in sendMessage, so this is the only
-      // place its completion can be announced.
+      // terminal -- ends here rather than in sendMessage, so this is where its
+      // completion is announced. A cancel is excluded: the user performed it and
+      // is already watching, so announcing it is noise.
       const wasRunning = session.status === "running";
       session.status = "idle";
       if (session.phase === "compacting") session.phase = undefined;
-      if (wasRunning) this.emitActivity(sessionId, "completed");
+      if (
+        wasRunning &&
+        !this.cancellingSessions.has(sessionId) &&
+        !this.locallyAbortedSessions.has(sessionId)
+      )
+        this.emitActivity(sessionId, "completed");
     }
     if (typeof update._meta?.gjcThinkingLevel === "string")
       session.thinking = update._meta.gjcThinkingLevel;
@@ -4727,14 +4757,18 @@ export class GjcAcpController {
     sessionId: string,
     category: Extract<AgentEvent, { type: "session.activity" }>["category"],
   ): void {
+    // A session this window prompted may not be in the discovered set yet. The
+    // outcome still has to be announced, so an unknown session falls back to a
+    // readable title rather than swallowing the notification.
     const session = this.sessions.get(sessionId);
-    if (!session) return;
-    session.unread = true;
-    this.sessionMetadata?.setUnread(sessionId, true);
+    if (session) {
+      session.unread = true;
+      this.sessionMetadata?.setUnread(sessionId, true);
+    }
     this.emitEvent({
       type: "session.activity",
       sessionId,
-      title: session.title,
+      title: session?.title ?? readableSessionTitle(sessionId, undefined),
       unread: true,
       category,
     });
@@ -4777,14 +4811,34 @@ export class GjcAcpController {
   private updateSessionStatus(
     sessionId: string,
     status: AgentSession["status"],
+    options?: { announce?: boolean },
   ): void {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
     if (status === "running" && this.locallyAbortedSessions.has(sessionId))
       return;
-    session.status = status;
-    session.updatedAt = "now";
-    this.emitEvent({ type: "session.updated", session: { ...session } });
+    // Any running -> idle transition is a finished turn, and the finish is what
+    // the user is waiting for, so the announcement lives here rather than at each
+    // callsite. A session owned by a terminal reaches idle through the persisted
+    // transcript watcher, which is why announcing only from sendMessage left
+    // those runs finishing silently.
+    //
+    // A session this window prompted before discovery listed it has no record
+    // here yet; its turn still ran, so the announcement does not depend on one.
+    //
+    // A cancel is excluded: the user performed it and is already looking at the
+    // window, so telling them about it is noise.
+    const finishedTurn =
+      options?.announce !== false &&
+      status === "idle" &&
+      (session?.status ?? "running") === "running" &&
+      !this.cancellingSessions.has(sessionId) &&
+      !this.locallyAbortedSessions.has(sessionId);
+    if (session) {
+      session.status = status;
+      session.updatedAt = "now";
+      this.emitEvent({ type: "session.updated", session: { ...session } });
+    }
+    if (finishedTurn) this.emitActivity(sessionId, "completed");
   }
 
   private cancelOpenTools(sessionId: string): void {

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   type AgentEvent,
+  announcesSessionActivity,
   sessionActivityBody,
 } from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
@@ -51,6 +52,10 @@ const workspace = path.resolve(
 const sessionMetadata = new SessionMetadataStore(userDataDirectory);
 let productivityService: ProductivityService | undefined;
 
+// The most recent notification this process handed to macOS. The smoke run
+// asserts against it so "the app sends the notification" is a checked fact.
+let lastNotification: { body: string; at: number } | undefined;
+
 function broadcastAgentEvent(event: AgentEvent): void {
   if (
     event.type === "session.created" ||
@@ -70,15 +75,14 @@ function broadcastAgentEvent(event: AgentEvent): void {
     if (!window.isDestroyed()) window.webContents.send(GJC_IPC.event, event);
   }
   if (event.type !== "session.activity") return;
-  // A finished, failed, or approval-blocked turn is the outcome the user is
-  // waiting for, so it is announced even while the window has focus: a long run
-  // usually ends while they are reading something else on screen. Only the
-  // incidental per-message ping stays suppressed for a focused window.
-  const alwaysAnnounce =
-    event.category === "completed" ||
-    event.category === "failed" ||
-    event.category === "permission";
-  if (!alwaysAnnounce && windows.some((window) => window.isFocused())) return;
+  if (
+    !announcesSessionActivity(
+      event.category,
+      windows.some((window) => window.isFocused()),
+    )
+  )
+    return;
+  if (!Notification.isSupported()) return;
   const notification = new Notification({
     title: "Gajae",
     body: sessionActivityBody(event),
@@ -91,7 +95,14 @@ function broadcastAgentEvent(event: AgentEvent): void {
     window.show();
     window.focus();
   });
+  // A notification that macOS refuses to deliver is invisible to the user and
+  // was previously invisible here too. Recording the outcome is what makes the
+  // announcement verifiable instead of assumed.
+  notification.on("failed", (_event, error) => {
+    console.error("Notification delivery failed:", error);
+  });
   notification.show();
+  lastNotification = { body: sessionActivityBody(event), at: Date.now() };
 }
 
 function sendSessionShortcut(shortcut: SessionShortcut): void {
@@ -378,9 +389,17 @@ function createWindow(): BrowserWindow {
             path.join(artifactDirectory, "gjc-ui-smoke.png"),
             image.toPNG(),
           );
+          // The point of the desktop app is that a finished turn is announced by
+          // it, so the live run records whether this process actually handed a
+          // completion notification to macOS. The mock smoke cannot check this:
+          // its backend runs in the renderer and never reaches the main process.
           await writeFile(
             path.join(artifactDirectory, "gjc-ui-smoke-report.json"),
-            `${JSON.stringify(report, null, 2)}\n`,
+            `${JSON.stringify(
+              { ...report, announcedTurn: lastNotification?.body ?? null },
+              null,
+              2,
+            )}\n`,
           );
           clearTimeout(smokeTimeout);
           app.exit(0);
@@ -436,7 +455,7 @@ function createWindow(): BrowserWindow {
             inspectorControl.click();
             await wait(50);
             assert(document.querySelector('.inspector'), 'Session inspector did not open');
-            assert(document.querySelector('.subagent-row')?.textContent?.includes('critic'), 'Sub-agent status did not render in the inspector');
+            assert(document.querySelector('.subagent-card')?.textContent?.includes('executor'), 'Sub-agent status did not render in the inspector');
             assert(!document.querySelector('.inspector')?.textContent?.includes('소유권:'), 'Removed session ownership details still render');
             assert(!document.querySelector('.inspector')?.textContent?.includes('workspace:'), 'Removed workspace details still render');
             assert(!document.querySelector('.inspector')?.textContent?.includes('MCP:'), 'Removed runtime details still render');
@@ -447,7 +466,7 @@ function createWindow(): BrowserWindow {
             assert(typeof window.agentControlDesktop?.settings.pathForFile === 'function', 'Chromium file chooser bridge did not render');
             const attachmentButton = document.querySelector('button[title="이미지 첨부"]');
             assert(attachmentButton, 'Image attachment action did not render');
-            assert(document.querySelector('button[title="텍스트 파일 첨부"]'), 'Text file attachment action did not render');
+            assert(document.querySelector('button[title="파일 첨부"]'), 'Text file attachment action did not render');
             await wait(100);
             assert(document.querySelector('.composer-model'), 'Active model control did not render');
             assert(parseFloat(getComputedStyle(document.querySelector('.composer-context')).fontSize) <= 9, 'Workspace control text is still oversized');
@@ -603,9 +622,10 @@ function createWindow(): BrowserWindow {
             valueSetter.call(textarea, 'Desktop smoke message');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(100);
+            assert(!document.querySelector('.send-button--stop'), 'A finished turn left the composer treating an idle session as running');
             document.querySelector('.composer')?.requestSubmit();
             await wait(500);
-            assert(document.querySelector('button[title="작업 중단"]'), 'Abort action did not render during an active run');
+            assert(document.querySelector('button[title="작업 중단 (Esc)"]'), 'Abort action did not render during an active run');
             assert(!document.querySelector('button[title="메시지 보내기"]'), 'Send button did not become the abort button during an active run');
             valueSetter.call(textarea, '한국어 조종');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -616,15 +636,19 @@ function createWindow(): BrowserWindow {
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(50);
             assert(document.querySelector('button[title="메시지 보내기"]'), 'Active run kept the stop button after a steer/follow-up draft was entered');
-            assert(!document.querySelector('button[title="작업 중단"]'), 'Stop button covered the steer/follow-up submit action');
+            assert(document.querySelectorAll('.composer-submit-actions .send-button').length === 2, 'Stop button covered the steer/follow-up submit action');
             document.querySelector('button[title="메시지 보내기"]')?.click();
             await wait(100);
             assert(document.activeElement === textarea, 'Composer did not restore focus for the immediate second Enter action');
-            assert(Array.from(document.querySelectorAll('.composer-queue-item--steer')).some((node) => node.textContent?.includes('focus on the regression')), 'Ordinary active-run input did not register as a steer');
-            assert(!document.querySelector('.composer-queue-item--followUp'), 'Ordinary active-run input was incorrectly added to the follow-up queue');
+            assert(Array.from(document.querySelectorAll('.composer-queue-item--followUp')).some((node) => node.textContent?.includes('focus on the regression')), 'Ordinary active-run input was not held in the composer queue');
+            assert(!document.querySelector('.composer-queue-item--steer'), 'Ordinary active-run input was incorrectly marked as an immediate steer');
             await wait(1_800);
             assert(document.body.textContent?.includes('Desktop smoke message'), 'User message did not append');
-            assert(document.querySelectorAll('.message--assistant').length === assistantCount + 1, 'Assistant reply did not append');
+            // The prompt is answered, and the request held during that turn is
+            // released automatically once it ends, so it is answered too.
+            assert(document.querySelectorAll('.message--assistant').length > assistantCount, 'Assistant reply did not append');
+            assert(!document.querySelector('.composer-queue'), 'Held request was not released when the turn ended');
+            await wait(1_800);
             assert(!document.querySelector('.streaming-caret'), 'Assistant reply did not finish streaming');
 
             textarea.focus();
@@ -648,13 +672,12 @@ function createWindow(): BrowserWindow {
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             document.querySelector('button[title="메시지 보내기"]')?.click();
             await wait(120);
-            const steerChips = () => Array.from(document.querySelectorAll('.composer-queue-item--steer')).map((node) => node.textContent ?? '');
-            assert(steerChips().some((text) => text.includes('체크')), 'Steer did not register in the authoritative queue: ' + steerChips().join(' | '));
+            const steerChips = () => Array.from(document.querySelectorAll('.composer-queue-item')).map((node) => node.textContent ?? '');
+            assert(steerChips().some((text) => text.includes('체크')), 'Steer did not register in the composer queue: ' + steerChips().join(' | '));
             assert(document.activeElement === textarea, 'Composer lost focus after submitting a steer');
             textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
             await wait(200);
-            assert(document.querySelector('button[title="메시지 보내기"]'), 'Empty Enter did not flush the queued steer by aborting the run');
-            assert(!document.querySelector('.composer-queue'), 'Queued steer indicator survived the flush');
+            assert(!document.querySelector('.composer-queue'), 'Queued steer indicator survived the flush: ' + steerChips().join(' | '));
             assert(document.body.textContent?.includes('체크'), 'Flushed steer did not reach the transcript');
 
             const initialSessions = document.querySelectorAll('.session-row').length;

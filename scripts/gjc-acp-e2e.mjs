@@ -49,6 +49,17 @@ try {
   if (settledSession?.status !== 'idle') throw new Error(`GJC session did not settle idle: ${settledSession?.status}`)
   if (typeof settledSession.usagePercent !== 'number') throw new Error('GJC context usage did not reach the desktop session')
 
+  // The finished turn is announced by the app, and this is the event the OS
+  // notification is built from. Without it the run ends with nothing telling the
+  // user their work is done, which is the reason to keep the app open at all.
+  const completions = events.filter(
+    (event) => event.type === 'session.activity' && event.sessionId === session.id && event.category === 'completed',
+  )
+  if (completions.length !== 1) {
+    throw new Error(`Finished turn produced ${completions.length} completion announcements, expected exactly 1`)
+  }
+  if (!completions[0].title?.trim()) throw new Error('Completion announcement carried no session name')
+
   const forked = await controller.forkSession({ sourceSessionId: session.id, title: 'Agent Control fork check' })
   if (forked.ownership !== 'gajae' || forked.attachment !== 'attached' || forked.workspace !== session.workspace) {
     throw new Error('GJC fork did not preserve the expected desktop ownership and workspace')
@@ -77,6 +88,7 @@ try {
     assistantText,
     finalStatus: settledSession.status,
     contextUsagePercent: settledSession.usagePercent,
+    announcedTurn: completions[0].title,
     cleanedSession: true,
   }
   const artifactDirectory = path.join(workspace, 'artifacts')

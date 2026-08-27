@@ -1,5 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdtemp,
+  mkdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -750,6 +759,119 @@ describe("sessionInfoToAgentSession", () => {
     expect(completed).toHaveLength(1);
     // The notification names the session, so the event has to carry its title.
     expect(completed[0]).toMatchObject({ title: "Chat session" });
+    controller.dispose();
+  });
+
+  it("announces an externally owned turn when its transcript goes idle", () => {
+    // A terminal-owned session never reaches sendMessage and never emits an ACP
+    // session_info_update to this window: it settles through the persisted
+    // transcript watcher. Announcing only from those two paths left every run
+    // started from the app on such a session finishing silently -- the whole
+    // point of the app is that the notification comes from it.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, AgentSession>;
+      updateSessionStatus: (
+        sessionId: string,
+        status: AgentSession["status"],
+        options?: { announce?: boolean },
+      ) => void;
+    };
+    internals.sessions.set("external-1", {
+      ...sessionInfoToAgentSession({
+        sessionId: "external-1",
+        cwd: "/tmp/project",
+      } as never),
+      title: "Terminal run",
+      status: "running",
+    });
+
+    internals.updateSessionStatus("external-1", "idle");
+
+    const completed = events.filter(
+      (event) =>
+        event.type === "session.activity" && event.category === "completed",
+    );
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ title: "Terminal run" });
+    controller.dispose();
+  });
+
+  it("stays quiet when the user cancels the run themselves", () => {
+    // The user performed the cancel and is already looking at the window, so a
+    // notification about it is pure noise.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, AgentSession>;
+      locallyAbortedSessions: Set<string>;
+      updateSessionStatus: (
+        sessionId: string,
+        status: AgentSession["status"],
+      ) => void;
+    };
+    internals.sessions.set("session-1", {
+      ...sessionInfoToAgentSession({
+        sessionId: "session-1",
+        cwd: "/tmp/project",
+      } as never),
+      status: "running",
+    });
+    internals.locallyAbortedSessions.add("session-1");
+
+    internals.updateSessionStatus("session-1", "idle");
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it("announces a completed prompt exactly once", async () => {
+    // updateSessionStatus announces the transition, so sendMessage must not also
+    // announce it: the user would get two cards for one finished turn.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
+    const prompt = vi.fn().mockResolvedValue({ stopReason: "end_turn" });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      attachedSessions: Set<string>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        prompt: typeof prompt;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.attachedSessions.add("session-1");
+    internals.connection = { signal: { aborted: false }, extMethod, prompt };
+
+    await controller.sendMessage("session-1", {
+      text: "한 번만 알려줘",
+      images: [],
+      files: [],
+    });
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(1);
     controller.dispose();
   });
 
@@ -2303,6 +2425,55 @@ describe("sessionInfoToAgentSession", () => {
         (event as { item: { role?: string } }).item.role === "user",
     );
     expect(bubbles).toHaveLength(1);
+    controller.dispose();
+  });
+
+  it("shows an external-session prompt before the broker CLI returns", async () => {
+    // An externally owned session sends through a `gjc sdk` spawn that costs
+    // seconds. The bubble and the running status must be published first, and
+    // the busy fallback must not echo the same text a second time.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+      sessionMetadata: {} as unknown as SessionMetadataStore,
+    });
+    let releaseBroker: (() => void) | undefined;
+    const brokerControl = vi.fn().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseBroker = () => resolve({ ok: true });
+        }),
+    );
+    const session = sessionInfoToAgentSession({
+      sessionId: "external-session",
+      cwd: "/tmp/project",
+    } as never);
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      brokerControl: typeof brokerControl;
+      sessions: Map<string, typeof session>;
+    };
+    internals.startup = Promise.resolve();
+    internals.brokerControl = brokerControl;
+    internals.sessions.set(session.id, session);
+
+    const sent = controller.sendMessage(session.id, {
+      text: "새 지시를 바로 보여줘",
+      images: [],
+      files: [],
+    });
+    await Promise.resolve();
+
+    const bubbles = events.filter(
+      (event) =>
+        event.type === "transcript.appended" &&
+        (event as { item: { role?: string } }).item.role === "user",
+    );
+    expect(bubbles).toHaveLength(1);
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    releaseBroker?.();
+    await expect(sent).resolves.toBe("prompt");
     controller.dispose();
   });
 
