@@ -3091,6 +3091,88 @@ describe("listSessions runtime preservation", () => {
   });
 });
 
+describe("listSessions channel contention", () => {
+  it("yields discovery while the user's own turn is in flight", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const extMethod = vi.fn();
+    const listSessions = vi.fn();
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      activePromptSessions: Set<string>;
+      sessions: Map<string, unknown>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      title: "Busy",
+      workspace: "/tmp/project",
+      status: "running",
+      unread: false,
+    });
+    internals.activePromptSessions.add("session-1");
+
+    // A full scan costs many round trips on the one ACP channel the prompt uses.
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "session-1" }),
+    ]);
+    expect(extMethod).not.toHaveBeenCalled();
+    expect(listSessions).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("collapses overlapping discovery into one scan", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const extMethod = vi.fn().mockResolvedValue({ result: { sessions: [] } });
+    const listSessions = vi
+      .fn()
+      .mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(() => resolve({ sessions: [] }), 10),
+          ),
+      );
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+
+    // A slow scan plus a 15s poll must not stack overlapping scans.
+    await Promise.all([
+      controller.listSessions(),
+      controller.listSessions(),
+      controller.listSessions(),
+    ]);
+    expect(listSessions).toHaveBeenCalledTimes(1);
+    controller.dispose();
+  });
+});
+
 describe("listSessions dead session pruning", () => {
   it("omits dead broker session ids instead of listing empty rows", async () => {
     const controller = new GjcAcpController({
@@ -3721,11 +3803,11 @@ describe("GjcAcpController MUST surfaces", () => {
     ]);
     expect(extMethod).toHaveBeenNthCalledWith(1, "_gjc/sdk/global", {
       operation: "session.list",
-      input: { limit: 100 },
+      input: { limit: 1000 },
     });
     expect(extMethod).toHaveBeenNthCalledWith(2, "_gjc/sdk/global", {
       operation: "session.list",
-      input: { cursor: "cursor-1", limit: 100 },
+      input: { cursor: "cursor-1", limit: 1000 },
     });
     controller.dispose();
   });

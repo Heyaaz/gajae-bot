@@ -1179,6 +1179,23 @@ export class GjcAcpController {
   }
 
   async listSessions(): Promise<AgentSession[]> {
+    // Discovery is a background refresh that shares one ACP channel with the
+    // user's own requests. Running it while a prompt, steer, or abort is in
+    // flight puts those behind a full session scan, so it yields and the caller
+    // keeps the list it already has.
+    if (this.activePromptSessions.size > 0 || this.pendingSteers.size > 0)
+      return [...this.sessions.values()].map((session) => ({ ...session }));
+    if (this.discoveryInFlight) return this.discoveryInFlight;
+    const discovery = this.discoverSessions().finally(() => {
+      this.discoveryInFlight = undefined;
+    });
+    this.discoveryInFlight = discovery;
+    return discovery;
+  }
+
+  private discoveryInFlight: Promise<AgentSession[]> | undefined;
+
+  private async discoverSessions(): Promise<AgentSession[]> {
     const connection = await this.requireConnection();
     const liveRanks = new Map<string, number>();
     const controlSessionIds = new Set<string>();
@@ -1320,7 +1337,10 @@ export class GjcAcpController {
       for (let page = 0; page < 128; page += 1) {
         const response = await connection.extMethod("_gjc/sdk/global", {
           operation: "session.list",
-          input: { ...(cursor ? { cursor } : {}), limit: 100 },
+          // One large page instead of eight sequential round trips. Discovery
+          // shares the single ACP channel with prompts, so every extra request
+          // here delays the next chat, steer, or abort.
+          input: { ...(cursor ? { cursor } : {}), limit: 1000 },
         });
         if (response.ok === false) return sessions;
         const result =

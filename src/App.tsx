@@ -4350,7 +4350,13 @@ export default function App() {
         .catch(() => undefined);
     };
     loadSessions(true);
-    const discoveryTimer = window.setInterval(() => loadSessions(false), 4_000);
+    // A full scan costs seconds on a large broker index, so polling faster than
+    // that just queues overlapping scans. Focus refresh covers the case where the
+    // user switches to this window right after starting a CLI session.
+    const discoveryTimer = window.setInterval(
+      () => loadSessions(false),
+      15_000,
+    );
     const refreshOnFocus = (): void => loadSessions(false);
     window.addEventListener("focus", refreshOnFocus);
 
@@ -4652,7 +4658,6 @@ export default function App() {
           ),
       )
     : EMPTY_TRANSCRIPT;
-  const selectedTranscriptLength = selectedTranscript.length;
   const transcriptHasLiveWork = selectedTranscript.some((item) => {
     if (item.kind === "message" || item.kind === "thought")
       return item.streaming === true;
@@ -4662,6 +4667,9 @@ export default function App() {
       return item.entries.some((entry) => entry.status === "in_progress");
     return false;
   });
+  // Queue state changes when the turn starts or ends, not on every streamed
+  // chunk. Keying this on transcript length re-listed the queue over the shared
+  // ACP channel for each chunk, which is what made sending feel slow.
   useEffect(() => {
     if (!selectedId) return;
     let active = true;
@@ -4674,7 +4682,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [backend, selectedId, selectedSessionStatus, selectedTranscriptLength]);
+  }, [backend, selectedId, selectedSessionStatus]);
   const resolveToolCall = useCallback(
     (toolId: string, optionId: string) => {
       void backend.resolveToolCall(toolId, { optionId });
