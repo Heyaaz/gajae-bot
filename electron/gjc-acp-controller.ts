@@ -947,6 +947,10 @@ export function sdkControlNeedsBrokerFallback(
       ? (response.error as Record<string, unknown>)
       : undefined;
   const text = `${typeof error?.code === "string" ? error.code : ""} ${typeof error?.message === "string" ? error.message : ""}`;
+  // A busy agent is the right target on a live connection. Spawning the broker
+  // CLI for it costs seconds before the message reaches the queue, which is the
+  // opposite of what steering needs.
+  if (busyPromptError(text)) return false;
   return /not_found|unknown session|no current Router attachment|provider_lease_conflict|unavailable/iu.test(
     text,
   );

@@ -4956,6 +4956,16 @@ export default function App() {
     }
   }
 
+  // Listing the authoritative queue can fall back to a broker CLI spawn, which
+  // takes seconds. The composer already shows the local chip, so never make a
+  // submission wait on it.
+  function refreshSessionQueue(sessionId: string): void {
+    void backend
+      .listQueuedMessages(sessionId)
+      .then(setSessionQueue)
+      .catch(() => undefined);
+  }
+
   function rememberWaitingText(text: string): void {
     const body = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
     if (!body) return;
@@ -4972,7 +4982,7 @@ export default function App() {
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.steerSession(resolved, input);
-      setSessionQueue(await backend.listQueuedMessages(resolved));
+      refreshSessionQueue(resolved);
     } catch (error) {
       setAppError(humanErrorMessage(error));
     }
@@ -4986,7 +4996,7 @@ export default function App() {
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.queueFollowUp(resolved, input);
-      setSessionQueue(await backend.listQueuedMessages(resolved));
+      refreshSessionQueue(resolved);
     } catch (error) {
       setAppError(humanErrorMessage(error));
     }
@@ -4996,7 +5006,7 @@ export default function App() {
     try {
       const resolved = await resolveSessionId(sessionId);
       await backend.flushQueuedNow(resolved);
-      setSessionQueue(await backend.listQueuedMessages(resolved));
+      refreshSessionQueue(resolved);
     } catch (error) {
       setAppError(humanErrorMessage(error));
     }

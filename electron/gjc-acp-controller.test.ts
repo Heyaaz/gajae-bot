@@ -19,6 +19,7 @@ import {
   persistedTranscriptRunning,
   profileDefaultModelLabel,
   readableModelLabel,
+  sdkControlNeedsBrokerFallback,
   sessionInfoToAgentSession,
   sharedTranscriptItems,
   taskSubagents,
@@ -32,6 +33,30 @@ import type { AgentEvent, TranscriptItem } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 
 const execFile = promisify(execFileCallback);
+
+describe("sdkControlNeedsBrokerFallback", () => {
+  it("keeps a busy agent on the live connection instead of the broker CLI", () => {
+    expect(
+      sdkControlNeedsBrokerFallback({
+        ok: false,
+        error: {
+          code: "unavailable",
+          message:
+            "turn.prompt is unavailable while the agent is busy; use turn.steer explicitly.",
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("still falls back when the session is not reachable over the connection", () => {
+    expect(
+      sdkControlNeedsBrokerFallback({
+        ok: false,
+        error: { code: "not_found", message: "unknown session" },
+      }),
+    ).toBe(true);
+  });
+});
 
 describe("gitBranchFromHeader", () => {
   it("reads the branch of a repository whose first commit does not exist yet", () => {
