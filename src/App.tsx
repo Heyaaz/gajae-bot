@@ -4546,9 +4546,12 @@ export default function App() {
         });
     };
     queueMicrotask(refresh);
+    // Goal and todo state advance at tool-call pace, not at streaming pace. Two
+    // round trips every 1.5s on the shared ACP channel cost more than the
+    // freshness is worth while a turn is running.
     const timer = window.setInterval(
       refresh,
-      selectedSessionStatus === "running" ? 1_500 : 5_000,
+      selectedSessionStatus === "running" ? 4_000 : 10_000,
     );
     return () => {
       active = false;
@@ -4571,7 +4574,9 @@ export default function App() {
         .catch(() => undefined);
     };
     queueMicrotask(refresh);
-    const timer = window.setInterval(refresh, 1_500);
+    // Subagent rows only change when a delegated job starts or finishes, and the
+    // inspector is the only surface that shows them.
+    const timer = window.setInterval(refresh, 4_000);
     return () => {
       active = false;
       window.clearInterval(timer);
