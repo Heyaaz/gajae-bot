@@ -4352,6 +4352,58 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
+  it("notices work that started since the last list refresh", async () => {
+    // Discovery skips its scan when nothing about the live session set changed. An
+    // agent starting work changes no session id and no repository, so a list whose
+    // rows were first seen idle used to be replayed unchanged forever and the
+    // transcript was never consulted again -- the row stayed on 완료 while working.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    let runState: string = "idle";
+    internals.discoveredRunState = async () => runState;
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "idle" }),
+    ]);
+    runState = "running";
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "running" }),
+    ]);
+    runState = "idle";
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "idle" }),
+    ]);
+    controller.dispose();
+  });
+
   it("reports work in a session it opened but is not driving", async () => {
     // Opening a session attaches it. Attachment alone used to hand the row's status
     // to whatever was cached, but the live session_info_update that would move that

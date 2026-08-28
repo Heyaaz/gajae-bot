@@ -1602,9 +1602,31 @@ export class GjcAcpController {
     // anything changed. When the live session set and its repositories are
     // identical to the previous scan there is nothing new to list, so the
     // per-workspace stage is skipped and the previous result is reused.
+    //
+    // Session identity alone is not enough to decide that: an agent starting or
+    // finishing work changes no id and no repository, so a list whose rows were
+    // first seen idle was replayed unchanged for the rest of the session and the
+    // transcript was never consulted again. The transcript sizes of the rows this
+    // window is not driving are part of what the answer depends on, so they are
+    // part of the fingerprint.
+    const observedSessionIds = [...liveRanks.keys()].filter(
+      (sessionId) =>
+        !this.activePromptSessions.has(sessionId) &&
+        !this.liveRunningSessions.has(sessionId),
+    );
+    const runStates = await Promise.all(
+      observedSessionIds
+        .slice()
+        .sort()
+        .map(async (sessionId) => [
+          sessionId,
+          await this.discoveredRunState(sessionId),
+        ]),
+    );
     const liveFingerprint = JSON.stringify([
       [...liveRanks.entries()].sort(),
       workspaces.slice().sort(),
+      runStates,
     ]);
     if (
       this.lastDiscovered.length > 0 &&
