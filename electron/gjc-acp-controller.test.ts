@@ -2658,6 +2658,26 @@ describe("sessionInfoToAgentSession", () => {
     finishCompaction?.();
     await pending;
 
+    // The control call resolving only means GJC accepted the request. Compaction
+    // is still running, so the progress indicator has to stay up until GJC reports
+    // a phase of its own.
+    expect(
+      (
+        controller as unknown as {
+          sessions: Map<string, { phase?: string }>;
+        }
+      ).sessions.get("session-1")?.phase,
+    ).toBe("compacting");
+
+    (
+      controller as unknown as {
+        patchSessionInfo: (id: string, update: unknown) => void;
+      }
+    ).patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcPhase: "idle", gjcRunning: false },
+    });
+
     expect(events.at(-1)).toEqual(
       expect.objectContaining({
         type: "session.updated",
@@ -5604,5 +5624,126 @@ describe("thinkingOptionsForModelCatalog", () => {
         "GOAT",
       ),
     ).toBe("GPT-5.6 Sol");
+  });
+});
+
+describe("session status authority", () => {
+  it("keeps a live running signal when a lagging transcript still reads idle", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-status-"));
+    const file = path.join(root, "session.jsonl");
+    // The turn started, so the live signal says running. The persisted transcript
+    // has not flushed the new user row yet, so on its own it reads idle.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "first" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "done" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    // A terminal-driven turn: the live signal is the only thing that knows.
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcRunning: true },
+    });
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("accepts a finished turn reported for a prompt this window sent", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, typeof session>;
+      activePromptSessions: Set<string>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set(session.id, session);
+    internals.activePromptSessions.add(session.id);
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcRunning: true },
+    });
+
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcRunning: false },
+    });
+
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
+    controller.dispose();
+  });
+
+  it("holds the compacting phase until compaction is actually finished", async () => {
+    const extMethod = vi
+      .fn()
+      .mockImplementation((_method: string, params: { operation?: string }) => {
+        if (params.operation === "compaction.run")
+          return Promise.resolve({ ok: true, accepted: true });
+        return Promise.resolve({ page: { items: [] } });
+      });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      sessions: Map<string, typeof session>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = { signal: { aborted: false }, extMethod };
+    internals.sessions.set(session.id, session);
+
+    await controller.compactSession(session.id);
+
+    // The control call only means the request was accepted. GJC is still
+    // compacting until it says otherwise, so the phase must survive the return.
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcPhase: "idle", gjcRunning: false },
+    });
+
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
   });
 });

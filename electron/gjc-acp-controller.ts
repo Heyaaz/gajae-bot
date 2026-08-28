@@ -1218,6 +1218,12 @@ export class GjcAcpController {
   // back as a user update, so the first echo of each text is dropped.
   private readonly echoedPromptTexts = new Map<string, string[]>();
   private readonly locallyAbortedSessions = new Set<string>();
+  /** Compaction is finished only when GJC says so, never when the request returns. */
+  private readonly compactingSessions = new Set<string>();
+  // Sessions the live ACP signal currently reports as working. The persisted
+  // transcript lags behind that signal, so it is not allowed to report one of
+  // these idle until GJC itself says the turn ended.
+  private readonly liveRunningSessions = new Set<string>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
   /** Delay between broker polls while recovering a fork's session id. */
@@ -1324,6 +1330,8 @@ export class GjcAcpController {
     this.startup = undefined;
     this.attachedSessions.clear();
     this.activePromptSessions.clear();
+    this.liveRunningSessions.clear();
+    this.compactingSessions.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.suppressedUserMessageKeys.clear();
@@ -2029,7 +2037,14 @@ export class GjcAcpController {
         const status = turnRunning ? "running" : "idle";
         const current = this.sessions.get(sessionId)?.status;
         if (status === "idle") {
-          this.updateSessionStatus(sessionId, "idle");
+          // The transcript is written after the fact, so it reads idle for the gap
+          // between a turn starting and its first row reaching disk. The live ACP
+          // signal already knows that turn is running, and this snapshot is older
+          // than that signal, so it must not overrule it. Waiting for the transcript
+          // to agree costs one file write; believing it here showed a working
+          // session as finished.
+          if (!this.liveRunningSessions.has(sessionId))
+            this.updateSessionStatus(sessionId, "idle");
         } else if (
           current !== "idle" &&
           !this.locallyAbortedSessions.has(sessionId)
@@ -2332,6 +2347,7 @@ export class GjcAcpController {
     // Terminal-owned sessions must route through the persistent control plane (or
     // broker fallback) instead of being rejected for lacking a second attachment.
     const statusBefore = this.sessions.get(sessionId)?.status;
+    this.compactingSessions.add(sessionId);
     this.patchSessionRuntime(sessionId, {
       phase: "compacting",
       status: "running",
@@ -2346,18 +2362,24 @@ export class GjcAcpController {
         usagePending: true,
       });
       await this.refreshContextUsage(sessionId);
-    } finally {
+    } catch (error) {
       // Compaction marked the row running. Leaving it there after a failure keeps
       // the composer queueing behind a turn that never started, so the status it
       // replaced is restored -- and only that one, or a real turn running
       // underneath would be reported idle.
+      this.compactingSessions.delete(sessionId);
       this.patchSessionRuntime(sessionId, {
         phase: undefined,
         ...(statusBefore && statusBefore !== "running"
           ? { status: statusBefore }
           : {}),
       });
+      throw error;
     }
+    // The control call returning means GJC accepted the request, not that the
+    // history has been rewritten. Clearing the phase here reported compaction
+    // finished while it was still running, so the phase is left standing until
+    // GJC reports a non-compacting phase through patchSessionInfo.
   }
 
   private appendLocalUserMessage(
@@ -2856,6 +2878,10 @@ export class GjcAcpController {
     this.cancelPermissionsForSession(sessionId);
     this.appendCancelledNotice(sessionId);
     this.locallyAbortedSessions.add(sessionId);
+    // The user ended this turn, so clearing the live flags stops a late report
+    // about it from putting the row back to running.
+    this.liveRunningSessions.delete(sessionId);
+    this.compactingSessions.delete(sessionId);
     this.updateSessionStatus(sessionId, "idle");
     await this.fireAbort(sessionId);
     this.cancellingSessions.delete(sessionId);
@@ -3780,6 +3806,8 @@ export class GjcAcpController {
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
+    this.liveRunningSessions.delete(sessionId);
+    this.compactingSessions.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
@@ -3826,6 +3854,8 @@ export class GjcAcpController {
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
+    this.liveRunningSessions.clear();
+    this.compactingSessions.clear();
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
@@ -3907,6 +3937,8 @@ export class GjcAcpController {
       this.connection = undefined;
       this.attachedSessions.clear();
       this.activePromptSessions.clear();
+      this.liveRunningSessions.clear();
+      this.compactingSessions.clear();
       this.activeAssistantMessages.clear();
       this.activeThoughts.clear();
         this.suppressedUserMessageKeys.clear();
@@ -5075,18 +5107,37 @@ export class GjcAcpController {
     const running = update._meta?.gjcRunning;
     if (phase === "compacting") {
       session.phase = "compacting";
+      this.compactingSessions.add(sessionId);
       if (!this.locallyAbortedSessions.has(sessionId))
         session.status = "running";
     } else if (phase) {
+      // GJC reporting any other phase is the authority that compaction ended, so
+      // this is where a locally started compaction is released. Returning from the
+      // control call only meant the request was accepted.
+      if (phase === "responding" || phase === "idle")
+        this.compactingSessions.delete(sessionId);
       session.phase =
         phase === "responding" || phase === "idle" ? undefined : phase;
     }
-    if (running === true && !this.locallyAbortedSessions.has(sessionId))
+    if (running === true && !this.locallyAbortedSessions.has(sessionId)) {
       session.status = "running";
+      this.liveRunningSessions.add(sessionId);
+    }
+    // A prompt this window sent owns the status until its own round trip settles,
+    // because GJC reports gjcRunning:false for the state *before* the prompt was
+    // accepted. Telling the two apart needs one bit of history: a stale report
+    // arrives without GJC ever having confirmed the turn started, while a genuine
+    // completion always follows a gjcRunning:true for that same turn. Ignoring
+    // every report instead left the row running forever whenever the prompt never
+    // got its reply.
+    const staleForActivePrompt =
+      this.activePromptSessions.has(sessionId) &&
+      !this.liveRunningSessions.has(sessionId);
     if (
       running === false &&
       session.status !== "failed" &&
-      !this.activePromptSessions.has(sessionId)
+      !staleForActivePrompt &&
+      !this.compactingSessions.has(sessionId)
     ) {
       // A turn this window did not start -- a steer, or work driven from the
       // terminal -- ends here rather than in sendMessage, so this is where its
@@ -5094,6 +5145,8 @@ export class GjcAcpController {
       // is already watching, so announcing it is noise.
       const wasRunning = session.status === "running";
       session.status = "idle";
+      this.liveRunningSessions.delete(sessionId);
+      this.compactingSessions.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;
       if (
         wasRunning &&
