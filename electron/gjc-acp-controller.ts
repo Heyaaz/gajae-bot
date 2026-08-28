@@ -1744,7 +1744,89 @@ export class GjcAcpController {
     this.lastDiscovered = listed.map((info) => ({
       ...this.sessions.get(info.sessionId)!,
     }));
+    // Polling alone leaves a row wrong for up to a refresh interval, which is what a
+    // user watching an agent work actually sees. The sessions worth watching are the
+    // live ones, so each keeps a watcher that re-reads its run state when its
+    // transcript changes and publishes the row immediately.
+    this.syncRunStateWatchers(observedSessionIds);
     return this.lastDiscovered.map((session) => ({ ...session }));
+  }
+
+  private readonly runStateWatchers = new Map<string, FSWatcher>();
+  private readonly runStateTimers = new Map<string, NodeJS.Timeout>();
+
+  /**
+   * Keeps a run-state watcher for exactly the sessions handed in.
+   *
+   * A watcher is cheap next to a poll -- it reads only when the file changes -- but it
+   * is still one file descriptor per session, so the set is bounded to the live rows
+   * and pruned as soon as a session leaves them.
+   */
+  private syncRunStateWatchers(sessionIds: readonly string[]): void {
+    if (this.disposed) return;
+    const wanted = new Set(sessionIds);
+    for (const [sessionId, watcher] of this.runStateWatchers) {
+      if (wanted.has(sessionId)) continue;
+      watcher.close();
+      this.runStateWatchers.delete(sessionId);
+      const timer = this.runStateTimers.get(sessionId);
+      if (timer) clearTimeout(timer);
+      this.runStateTimers.delete(sessionId);
+    }
+    for (const sessionId of wanted) {
+      if (this.runStateWatchers.has(sessionId)) continue;
+      // An already-open transcript has its own watcher doing strictly more work, so a
+      // second one here would read the same file twice for the same change.
+      if (this.sharedSessionWatchers.has(sessionId)) continue;
+      const filePath = this.sharedSessionFiles.get(sessionId);
+      if (!filePath) continue;
+      try {
+        const fileName = path.basename(filePath);
+        const watcher = watch(
+          path.dirname(filePath),
+          { persistent: false },
+          (_event, changedFile) => {
+            if (changedFile && changedFile.toString() !== fileName) return;
+            const previous = this.runStateTimers.get(sessionId);
+            if (previous) clearTimeout(previous);
+            this.runStateTimers.set(
+              sessionId,
+              setTimeout(() => {
+                this.runStateTimers.delete(sessionId);
+                void this.republishRunState(sessionId);
+              }, 150),
+            );
+          },
+        );
+        watcher.on("error", () => {
+          watcher.close();
+          this.runStateWatchers.delete(sessionId);
+        });
+        this.runStateWatchers.set(sessionId, watcher);
+      } catch {
+        // Polling still covers the row when the filesystem cannot be watched.
+      }
+    }
+  }
+
+  /** Re-reads one session's run state and publishes the row if it moved. */
+  private async republishRunState(sessionId: string): Promise<void> {
+    if (this.disposed) return;
+    if (
+      this.activePromptSessions.has(sessionId) ||
+      this.liveRunningSessions.has(sessionId)
+    )
+      return;
+    const status = await this.discoveredRunState(sessionId);
+    if (!status) return;
+    const session = this.sessions.get(sessionId);
+    if (!session || session.status === status) return;
+    if (session.status === "failed" || session.status === "starting") return;
+    session.status = status;
+    this.lastDiscovered = this.lastDiscovered.map((row) =>
+      row.id === sessionId ? { ...row, status } : row,
+    );
+    this.emitEvent({ type: "session.updated", session: { ...session } });
   }
 
   /**
@@ -4218,6 +4300,10 @@ export class GjcAcpController {
     this.explicitSessionThinking.clear();
     this.artifactWrites.clear();
     for (const watcher of this.sharedSessionWatchers.values()) watcher.close();
+    for (const watcher of this.runStateWatchers.values()) watcher.close();
+    this.runStateWatchers.clear();
+    for (const timer of this.runStateTimers.values()) clearTimeout(timer);
+    this.runStateTimers.clear();
     for (const timer of this.sharedSessionRefreshTimers.values())
       clearTimeout(timer);
     this.sharedSessionWatchers.clear();

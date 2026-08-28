@@ -4425,6 +4425,98 @@ describe("listSessions status from the transcript", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("publishes a row the moment its transcript starts moving", async () => {
+    // Polling alone leaves the row wrong for up to a refresh interval, which is the
+    // window the user spends staring at 완료 while the agent works. A live session
+    // keeps a watcher so the change publishes instead of waiting for the next scan.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-republish-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      sharedSessionFiles: Map<string, string>;
+      republishRunState: (id: string) => Promise<void>;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "idle",
+      unread: false,
+    });
+    internals.sharedSessionFiles.set("session-1", file);
+
+    // The agent starts working and the transcript grows.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "next" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n`,
+    );
+    await internals.republishRunState("session-1");
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.updated" && event.session.status === "running",
+      ),
+    ).toHaveLength(1);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("leaves a turn this window drives to its own reporting", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-republish-own-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      sharedSessionFiles: Map<string, string>;
+      activePromptSessions: Set<string>;
+      republishRunState: (id: string) => Promise<void>;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+      unread: false,
+    });
+    internals.sharedSessionFiles.set("session-1", file);
+    internals.activePromptSessions.add("session-1");
+
+    await internals.republishRunState("session-1");
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("notices work that started since the last list refresh", async () => {
     // Discovery skips its scan when nothing about the live session set changed. An
     // agent starting work changes no session id and no repository, so a list whose
