@@ -263,3 +263,47 @@ export function isDuplicateSubmission(
     now - last.at < SUBMISSION_DEDUPE_MS
   );
 }
+
+/** Unsent composer contents belonging to one session. */
+export interface ComposerDraft {
+  value: string;
+  images: ImageAttachment[];
+  files: FileAttachment[];
+}
+
+export function isEmptyDraft(draft: ComposerDraft): boolean {
+  return (
+    draft.value.length === 0 &&
+    draft.images.length === 0 &&
+    draft.files.length === 0
+  );
+}
+
+/**
+ * Park a session's unsent draft.
+ *
+ * The composer is a single mounted component shared by every session, so its text
+ * state survives a session switch and would otherwise show up in -- and be sent
+ * from -- whichever session the user moved to. Drafts are stored per session id
+ * instead, and an empty draft is removed rather than stored so a session never
+ * holds an empty entry.
+ */
+export function parkDraft(
+  drafts: Map<string, ComposerDraft>,
+  sessionId: string,
+  draft: ComposerDraft,
+): Map<string, ComposerDraft> {
+  if (isEmptyDraft(draft)) drafts.delete(sessionId);
+  else drafts.set(sessionId, draft);
+  return drafts;
+}
+
+/** The draft to show for a session, or an empty one when it has never typed. */
+export function restoreDraft(
+  drafts: Map<string, ComposerDraft>,
+  sessionId: string,
+): ComposerDraft {
+  return (
+    drafts.get(sessionId) ?? { value: "", images: [], files: [] }
+  );
+}

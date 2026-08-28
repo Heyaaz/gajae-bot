@@ -760,6 +760,40 @@ function createWindow(): BrowserWindow {
             assert(document.querySelector('.empty-conversation'), 'New session did not select its empty transcript');
             assert(!document.querySelector('.prompt-suggestions'), 'Removed empty-chat suggestion buttons still render');
 
+            // An unsent draft belongs to the session it was typed in. One composer
+            // serves every session, so without parking it the text stays in the box
+            // and would be sent to whichever session the user switched to.
+            {
+              const box = document.querySelector('.composer textarea');
+              assert(box && valueSetter, 'Composer input is unavailable for the draft check');
+              assert(box.value === '', 'A fresh session opened with text already in the composer: ' + box.value);
+              valueSetter.call(box, '이 세션에서만 보여야 하는 초안');
+              box.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(60);
+              const rows = Array.from(document.querySelectorAll('.session-row'));
+              const drafting = rows.find((row) => row.classList.contains('is-selected'));
+              const other = rows.find((row) => !row.classList.contains('is-selected'));
+              assert(drafting && other, 'Need a selected and an unselected session row for the draft check');
+              // Rows are matched by title because row text also carries live status,
+              // which changes as sessions run.
+              const draftingTitle = drafting.querySelector('strong')?.textContent?.trim();
+              assert(draftingTitle, 'Drafting session row had no title');
+              other.click();
+              await wait(150);
+              const afterSwitch = document.querySelector('.composer textarea');
+              assert(afterSwitch, 'Composer disappeared after switching sessions');
+              assert(afterSwitch.value === '', 'Unsent draft leaked into another session: ' + afterSwitch.value);
+              const back = Array.from(document.querySelectorAll('.session-row')).find((row) => row.querySelector('strong')?.textContent?.trim() === draftingTitle);
+              assert(back, 'Could not switch back to the drafting session: ' + draftingTitle);
+              back.click();
+              await wait(150);
+              const restored = document.querySelector('.composer textarea');
+              assert(restored?.value === '이 세션에서만 보여야 하는 초안', 'Draft was lost instead of parked with its session: ' + restored?.value);
+              valueSetter.call(restored, '');
+              restored.dispatchEvent(new Event('input', { bubbles: true }));
+              await wait(60);
+            }
+
             const createdSession = document.querySelector('.session-row.is-selected');
             assert(createdSession, 'Created session was not selected');
             createdSession.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 180, clientY: 180 }));

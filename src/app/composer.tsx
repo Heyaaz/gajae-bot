@@ -6,8 +6,10 @@ import {
   droppedImageAttachments,
   imeCommitSubmits,
   isDuplicateSubmission,
+  parkDraft,
   releaseRequests,
   resolveModelPreset,
+  restoreDraft,
 } from "../composer-utils";
 import type { PendingRequest } from "../composer-utils";
 import {
@@ -81,6 +83,17 @@ export function Composer({
   // reconcile against and nothing can retire a chip behind the user's back.
   const [pendingQueue, setPendingQueue] = useState<PendingRequest[]>([]);
   const [historyCursor, setHistoryCursor] = useState(-1);
+  // A draft belongs to the session it was typed in. The composer is one mounted
+  // component for every session, so unsent text has to be parked per session or
+  // switching rows would carry it along and let it be sent to the wrong agent.
+  const draftsRef = useRef(
+    new Map<
+      string,
+      { value: string; images: ImageAttachment[]; files: FileAttachment[] }
+    >(),
+  );
+  const draftSessionRef = useRef(sessionId);
+  const pendingQueuesRef = useRef(new Map<string, PendingRequest[]>());
   // Anything the user could submit right now. This decides which single action the
   // submit slot exposes, so send and stop can never render together.
   const hasDraft =
@@ -104,6 +117,15 @@ export function Composer({
   // rather than the render-time closure.
   const pendingQueueRef = useRef<PendingRequest[]>([]);
   pendingQueueRef.current = pendingQueue;
+  // The session-switch effect parks whatever is in the composer, and it must read
+  // the draft as it stands at the switch rather than the value its own closure was
+  // created with.
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const imagesRef = useRef(images);
+  imagesRef.current = images;
+  const filesRef = useRef(files);
+  filesRef.current = files;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const promptHistoryRef = useRef(new Map<string, string[]>());
@@ -208,11 +230,31 @@ export function Composer({
     effortValueRef.current = currentEffort;
   }, [currentEffort]);
 
+  // Park the outgoing session's draft and restore the incoming one. Held requests
+  // move with it: they were never sent, so they belong to the session that typed
+  // them and must not be released into a different one.
   useEffect(() => {
+    const previous = draftSessionRef.current;
+    if (previous === sessionId) return;
+    draftSessionRef.current = sessionId;
+    parkDraft(draftsRef.current, previous, {
+      value: valueRef.current,
+      images: imagesRef.current,
+      files: filesRef.current,
+    });
+    if (pendingQueueRef.current.length > 0)
+      pendingQueuesRef.current.set(previous, pendingQueueRef.current);
+    else pendingQueuesRef.current.delete(previous);
+
+    const restored = restoreDraft(draftsRef.current, sessionId);
+    setValue(restored.value);
+    setImages(restored.images);
+    setFiles(restored.files);
+    setPendingQueue(pendingQueuesRef.current.get(sessionId) ?? []);
+    setAttachmentError("");
     queueMicrotask(() => {
       setHistoryCursor(-1);
       historyDraftRef.current = "";
-      setPendingQueue([]);
     });
   }, [sessionId]);
 

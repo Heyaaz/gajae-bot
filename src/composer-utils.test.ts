@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { PendingRequest } from "./composer-utils";
+import type { ComposerDraft, PendingRequest } from "./composer-utils";
 import {
+  parkDraft,
+  restoreDraft,
   compactToolCommand,
   compactToolText,
   composerQueuePreview,
@@ -275,5 +277,67 @@ describe("isDuplicateSubmission", () => {
     expect(isDuplicateSubmission({ text: "", at: 1_000 }, "   ", 1_001)).toBe(
       false,
     );
+  });
+});
+
+describe("session drafts", () => {
+  const draft = (value: string): ComposerDraft => ({
+    value,
+    images: [],
+    files: [],
+  });
+
+  it("keeps unsent text with the session it was typed in", () => {
+    // One composer serves every session, so text typed in A and left unsent used
+    // to still be sitting there after switching to B -- and would have been sent
+    // to B's agent.
+    const drafts = new Map<string, ComposerDraft>();
+    parkDraft(drafts, "session-a", draft("A에게 보낼 말"));
+    expect(restoreDraft(drafts, "session-b").value).toBe("");
+    expect(restoreDraft(drafts, "session-a").value).toBe("A에게 보낼 말");
+  });
+
+  it("gives a session its own draft back after a detour", () => {
+    const drafts = new Map<string, ComposerDraft>();
+    parkDraft(drafts, "session-a", draft("절반만 쓴 요청"));
+    parkDraft(drafts, "session-b", draft("다른 요청"));
+    expect(restoreDraft(drafts, "session-a").value).toBe("절반만 쓴 요청");
+    expect(restoreDraft(drafts, "session-b").value).toBe("다른 요청");
+  });
+
+  it("forgets a draft once it has been sent", () => {
+    // Submitting empties the composer, so the next park stores an empty draft.
+    // Storing it would resurrect the sent text the next time the session opened.
+    const drafts = new Map<string, ComposerDraft>();
+    parkDraft(drafts, "session-a", draft("보낸 뒤"));
+    parkDraft(drafts, "session-a", draft(""));
+    expect(drafts.has("session-a")).toBe(false);
+    expect(restoreDraft(drafts, "session-a").value).toBe("");
+  });
+
+  it("parks attachments even with no text", () => {
+    const drafts = new Map<string, ComposerDraft>();
+    parkDraft(drafts, "session-a", {
+      value: "",
+      images: [],
+      files: [
+        {
+          id: "file-1",
+          name: "note.md",
+          mimeType: "text/markdown",
+          size: 12,
+          path: "/tmp/note.md",
+        },
+      ],
+    });
+    expect(restoreDraft(drafts, "session-a").files).toHaveLength(1);
+  });
+
+  it("hands a never-typed session an empty draft, not undefined", () => {
+    expect(restoreDraft(new Map(), "fresh")).toEqual({
+      value: "",
+      images: [],
+      files: [],
+    });
   });
 });
