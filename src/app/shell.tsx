@@ -219,12 +219,23 @@ export default function App() {
     // A full scan costs seconds on a large broker index, so polling faster than
     // that just queues overlapping scans. Focus refresh covers the case where the
     // user switches to this window right after starting a CLI session.
-    const discoveryTimer = window.setInterval(
-      () => loadSessions(false),
-      15_000,
-    );
+    //
+    // The scan is skipped while the window is hidden. Run state now arrives on its
+    // own from the transcript watchers, so the only thing polling still discovers is
+    // a session started elsewhere -- which nobody can see until this window is
+    // visible again, and the focus listener below already refreshes for that.
+    const discoveryTimer = window.setInterval(() => {
+      if (document.hidden) return;
+      loadSessions(false);
+    }, 15_000);
     const refreshOnFocus = (): void => loadSessions(false);
     window.addEventListener("focus", refreshOnFocus);
+    // `focus` does not fire when the window is merely un-occluded on macOS, so
+    // visibility is tracked separately to catch up after a hidden stretch.
+    const refreshOnVisible = (): void => {
+      if (!document.hidden) loadSessions(false);
+    };
+    document.addEventListener("visibilitychange", refreshOnVisible);
 
     const unsubscribe = backend.subscribe((event: AgentEvent) => {
       if (event.type === "connection.updated") {
@@ -359,6 +370,7 @@ export default function App() {
       active = false;
       window.clearInterval(discoveryTimer);
       window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnVisible);
       unsubscribe();
     };
   }, [backend]);
@@ -408,14 +420,22 @@ export default function App() {
     queueMicrotask(refresh);
     // Goal and todo state advance at tool-call pace, not at streaming pace. Two
     // round trips every 1.5s on the shared ACP channel cost more than the
-    // freshness is worth while a turn is running.
+    // freshness is worth while a turn is running. A hidden window has nobody to
+    // show the result to, and it refreshes on the way back in.
     const timer = window.setInterval(
-      refresh,
+      () => {
+        if (!document.hidden) refresh();
+      },
       selectedSessionStatus === "running" ? 4_000 : 10_000,
     );
+    const refreshOnVisible = (): void => {
+      if (!document.hidden) refresh();
+    };
+    document.addEventListener("visibilitychange", refreshOnVisible);
     return () => {
       active = false;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshOnVisible);
     };
   }, [backend, selectedSessionId, selectedSessionStatus]);
 
@@ -435,11 +455,19 @@ export default function App() {
     };
     queueMicrotask(refresh);
     // Subagent rows only change when a delegated job starts or finishes, and the
-    // inspector is the only surface that shows them.
-    const timer = window.setInterval(refresh, 4_000);
+    // inspector is the only surface that shows them -- so a hidden window polls for
+    // rows nobody is looking at.
+    const timer = window.setInterval(() => {
+      if (!document.hidden) refresh();
+    }, 4_000);
+    const refreshOnVisible = (): void => {
+      if (!document.hidden) refresh();
+    };
+    document.addEventListener("visibilitychange", refreshOnVisible);
     return () => {
       active = false;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", refreshOnVisible);
     };
   }, [backend, inspectorOpen, selectedSessionId]);
 
