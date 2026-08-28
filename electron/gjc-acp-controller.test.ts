@@ -4569,6 +4569,146 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
+  it("keeps a disconnect visible when the transcript reads finished", async () => {
+    // The ACP child exiting marks every session failed. Those transcripts ended
+    // cleanly long ago, so the next list refresh read them as idle and erased the
+    // disconnect -- the sidebar went back to 완료 and the user never saw that the
+    // window had lost its agent.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { status: string }>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    internals.discoveredRunState = async () => "idle";
+
+    await controller.listSessions();
+    const session = internals.sessions.get("session-1");
+    if (!session) throw new Error("session was not listed");
+    session.status = "failed";
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "failed" }),
+    ]);
+    controller.dispose();
+  });
+
+  it("keeps a session that has not finished starting out of the transcript's hands", async () => {
+    // `starting` describes a first round trip that has not landed. A transcript
+    // from an earlier run of the same session would otherwise report idle and let
+    // the row claim it was ready before the agent answered.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { status: string }>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    internals.discoveredRunState = async () => "idle";
+
+    await controller.listSessions();
+    const session = internals.sessions.get("session-1");
+    if (!session) throw new Error("session was not listed");
+    session.status = "starting";
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "starting" }),
+    ]);
+    controller.dispose();
+  });
+
+  it("still lets the transcript move a session this window is not driving", async () => {
+    // The failed/starting exception must stay narrow: an ordinary idle row has to
+    // keep taking the transcript's verdict, which is the whole point of reading it.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { status: string }>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    let runState = "idle";
+    internals.discoveredRunState = async () => runState;
+
+    await controller.listSessions();
+    runState = "running";
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "running" }),
+    ]);
+    controller.dispose();
+  });
+
   it("reports work in a session it opened but is not driving", async () => {
     // Opening a session attaches it. Attachment alone used to hand the row's status
     // to whatever was cached, but the live session_info_update that would move that
@@ -6752,6 +6892,125 @@ describe("session status authority", () => {
     });
 
     expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+  });
+
+  it("asks the transcript before calling an attached session finished", async () => {
+    // Attaching clears the failure this window recorded when its agent exited, but
+    // it observes nothing about the turn. A session another process kept working on
+    // through the disconnect was reported as 완료 the moment the user opened it.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.status = "failed";
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      refreshModelProfiles: (id: string) => Promise<void>;
+      refreshContextUsage: (id: string) => Promise<void>;
+      ensureAttached: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.sessionCwds.set(session.id, "/tmp/project");
+    internals.connection = {
+      signal: { aborted: false },
+      resumeSession: async () => ({ configOptions: [], modes: undefined }),
+    };
+    internals.refreshModelProfiles = async () => undefined;
+    internals.refreshContextUsage = async () => undefined;
+    internals.discoveredRunState = async () => "running";
+
+    await internals.ensureAttached(session.id);
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
+  });
+
+  it("settles an attached session the transcript reports finished", async () => {
+    // The transcript stays authoritative in both directions: a session that really
+    // did finish must clear its failure rather than inherit a phantom running.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.status = "failed";
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      refreshModelProfiles: (id: string) => Promise<void>;
+      refreshContextUsage: (id: string) => Promise<void>;
+      ensureAttached: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.sessionCwds.set(session.id, "/tmp/project");
+    internals.connection = {
+      signal: { aborted: false },
+      resumeSession: async () => ({ configOptions: [], modes: undefined }),
+    };
+    internals.refreshModelProfiles = async () => undefined;
+    internals.refreshContextUsage = async () => undefined;
+    internals.discoveredRunState = async () => "idle";
+
+    await internals.ensureAttached(session.id);
+
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
+    controller.dispose();
+  });
+
+  it("asks the transcript before calling a recovered session finished", async () => {
+    // Reconnecting resumes every session this window owns. Work that continued in
+    // another process through the outage was flattened to idle on recovery.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.ownership = "gajae";
+    session.status = "failed";
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      refreshModelProfiles: (id: string) => Promise<void>;
+      refreshContextUsage: (id: string) => Promise<void>;
+      recoverOwnedSessions: () => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.sessionCwds.set(session.id, "/tmp/project");
+    internals.connection = {
+      signal: { aborted: false },
+      resumeSession: async () => ({ configOptions: [], modes: undefined }),
+    };
+    internals.refreshModelProfiles = async () => undefined;
+    internals.refreshContextUsage = async () => undefined;
+    internals.discoveredRunState = async () => "running";
+
+    await internals.recoverOwnedSessions();
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
     controller.dispose();
   });
 });

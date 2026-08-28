@@ -1634,10 +1634,26 @@ export class GjcAcpController {
           await this.discoveredRunState(sessionId),
         ]),
     );
+    // `failed` and `starting` are written by this window rather than derived from
+    // the transcript, so neither changes an id, a repository, or a transcript size.
+    // Without them here the ACP child exiting left the fingerprint untouched and the
+    // previous rows were replayed, hiding the disconnect the exit had just recorded.
+    const ownStatuses = observedSessionIds
+      .slice()
+      .sort()
+      .map((sessionId) => {
+        const status = this.sessions.get(sessionId)?.status;
+        return [
+          sessionId,
+          status === "failed" || status === "starting" ? status : "",
+        ];
+      })
+      .filter(([, status]) => status !== "");
     const liveFingerprint = JSON.stringify([
       [...liveRanks.entries()].sort(),
       workspaces.slice().sort(),
       runStates,
+      ownStatuses,
     ]);
     if (
       this.lastDiscovered.length > 0 &&
@@ -1715,11 +1731,19 @@ export class GjcAcpController {
         // opening a session, while the live `session_info_update` that would move the
         // status only arrives for prompts this process sent. A session someone else is
         // driving is attached, silent, and described solely by its transcript.
+        //
+        // `failed` and `starting` outrank the transcript. Both describe this window's
+        // own connection rather than the turn: `failed` is written for every session
+        // when the ACP child exits, and `starting` covers a session whose first round
+        // trip has not landed. A transcript that ended cleanly long ago would
+        // otherwise report `idle` and erase a disconnect the user has not seen yet.
         status:
           this.activePromptSessions.has(info.sessionId) ||
           this.liveRunningSessions.has(info.sessionId)
             ? (existing?.status ?? "idle")
-            : (transcriptStatus ?? existing?.status ?? "idle"),
+            : existing?.status === "failed" || existing?.status === "starting"
+              ? existing.status
+              : (transcriptStatus ?? existing?.status ?? "idle"),
         phase: existing?.phase,
         mode: existing?.mode,
         model: existing?.model,
@@ -4495,7 +4519,10 @@ export class GjcAcpController {
         await this.refreshModelProfiles(session.id);
         this.attachedSessions.add(session.id);
         session.attachment = "attached";
-        session.status = "idle";
+        // Re-attaching says this window can talk to the session again, not that its
+        // turn ended. Another process may have kept working through the disconnect,
+        // so the transcript decides; `idle` is only the answer when it has none.
+        session.status = (await this.discoveredRunState(session.id)) ?? "idle";
         session.unread = true;
         this.sessionMetadata?.setUnread(session.id, true);
         this.emitEvent({ type: "session.updated", session: { ...session } });
@@ -4758,7 +4785,11 @@ export class GjcAcpController {
     const session = this.sessions.get(sessionId);
     if (session) {
       session.attachment = "attached";
-      if (session.status === "failed") session.status = "idle";
+      // A successful attach clears the failure this window recorded, but it does not
+      // observe the turn. Opening a session someone else is driving must not report
+      // that work as finished, so the transcript answers and `idle` is the fallback.
+      if (session.status === "failed")
+        session.status = (await this.discoveredRunState(sessionId)) ?? "idle";
       this.emitEvent({ type: "session.updated", session: { ...session } });
     }
     void this.refreshContextUsage(sessionId);
