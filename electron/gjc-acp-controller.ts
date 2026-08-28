@@ -94,6 +94,89 @@ const EFFORT_LEVELS = new Set([
 ]);
 const execFile = promisify(execFileCb);
 
+/**
+ * Runs a GJC CLI control command and resolves as soon as its response is complete,
+ * without waiting for the process to exit.
+ *
+ * The CLI writes one JSON object and is done, but the process then lingers before
+ * exiting. Measured against the installed 0.15.3: the full response arrives at
+ * 728ms and the process exits at 5735ms, so waiting for exit charged every steer,
+ * follow-up, and abort an extra 5 seconds during which the window looked frozen.
+ * The fix landed upstream in gajae-code#5025, but only reaches users on the next
+ * release, and the delay is not the app's to pass on in the meantime.
+ *
+ * The child is left to exit on its own once its response has been read. Measured:
+ * such a process ends by itself within its linger window, so nothing accumulates.
+ */
+export async function brokerExec(
+  executable: string,
+  args: string[],
+  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
+): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
+    const child = spawn(executable, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    const finish = (error?: Error, value?: string): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout.removeAllListeners();
+      child.stderr.removeAllListeners();
+      // The response is in hand, so the process is free to take its time exiting.
+      if (error) {
+        child.kill("SIGTERM");
+        reject(error);
+        return;
+      }
+      resolve(value ?? "");
+    };
+    const timer = setTimeout(() => {
+      finish(new Error(`GJC control timed out after ${options.timeoutMs}ms`));
+    }, options.timeoutMs);
+    const settleIfComplete = (): void => {
+      const text = stdout.trim();
+      if (!text) return;
+      try {
+        JSON.parse(text);
+      } catch {
+        // Still mid-object; wait for the rest.
+        return;
+      }
+      finish(undefined, stdout);
+    };
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+      settleIfComplete();
+    });
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    child.once("error", (error) => finish(error));
+    // A process that exits without a parsable response failed; report what it said.
+    child.once("close", (code) => {
+      if (settled) return;
+      const text = stdout.trim();
+      if (text) {
+        finish(undefined, stdout);
+        return;
+      }
+      finish(
+        new Error(
+          stderr.trim() || `GJC control exited with code ${code ?? "unknown"}`,
+        ),
+      );
+    });
+  });
+}
+
 interface PendingPermission {
   request: RequestPermissionRequest;
   resolve: (response: RequestPermissionResponse) => void;
@@ -2617,6 +2700,9 @@ export class GjcAcpController {
     }
   }
 
+  /** Seam over the module-level runner so tests can drive it without a real CLI. */
+  private brokerExec = brokerExec;
+
   private async brokerControl(
     sessionId: string,
     operation:
@@ -2641,9 +2727,9 @@ export class GjcAcpController {
       (operation === "turn.abort" && input.mode === "terminal"
         ? `gajae-abort-${randomUUID()}`
         : undefined);
-    let result: { stdout: string };
+    let stdout: string;
     try {
-      result = await execFile(
+      stdout = await this.brokerExec(
         executable,
         [
           "sdk",
@@ -2664,14 +2750,14 @@ export class GjcAcpController {
           "--timeout-ms",
           "8000",
         ],
-        { cwd: repo, env: runtimeEnvironment(), maxBuffer: 1024 * 1024 },
+        { cwd: repo, env: runtimeEnvironment(), timeoutMs: 12_000 },
       );
     } catch (error) {
       throw new Error(brokerFailureMessage(error));
     }
     let response: Record<string, unknown>;
     try {
-      response = JSON.parse(result.stdout) as Record<string, unknown>;
+      response = JSON.parse(stdout) as Record<string, unknown>;
     } catch {
       throw new Error(`GJC ${operation} broker response was not valid JSON`);
     }

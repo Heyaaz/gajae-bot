@@ -15,6 +15,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 import {
+  brokerExec,
   brokerFailureMessage,
   busyPromptError,
   cancelledOperationError,
@@ -5680,6 +5681,138 @@ describe("persistedTranscriptRunning mid-turn activity", () => {
         },
       ]),
     ).toBe(false);
+  });
+});
+
+describe("brokerExec", () => {
+  it("returns the response while the process is still lingering", async () => {
+    // Stands in for the real CLI: prints its JSON, then stays alive. Waiting for
+    // exit would take the full linger; the runner must not.
+    const script =
+      'process.stdout.write(JSON.stringify({ok:true,result:{turn:"stopped"}}));' +
+      "setTimeout(() => process.exit(0), 4000);";
+    const started = Date.now();
+    const stdout = await brokerExec(
+      process.execPath,
+      ["-e", script],
+      { cwd: process.cwd(), env: process.env, timeoutMs: 10_000 },
+    );
+    const elapsed = Date.now() - started;
+
+    expect(JSON.parse(stdout)).toEqual({ ok: true, result: { turn: "stopped" } });
+    // Comfortably under the 4s linger; the point is that exit was not awaited.
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  it("joins a response split across writes before resolving", async () => {
+    const script =
+      'process.stdout.write(\'{"ok":true,"result":\');' +
+      "setTimeout(() => process.stdout.write('{\"turn\":\"stopped\"}}'), 60);" +
+      "setTimeout(() => process.exit(0), 3000);";
+    const stdout = await brokerExec(
+      process.execPath,
+      ["-e", script],
+      { cwd: process.cwd(), env: process.env, timeoutMs: 10_000 },
+    );
+
+    expect(JSON.parse(stdout)).toEqual({ ok: true, result: { turn: "stopped" } });
+  });
+
+  it("reports stderr when the process exits without a response", async () => {
+    const script =
+      'process.stderr.write("session is not reachable");' +
+      "process.exit(3);";
+    await expect(
+      brokerExec(process.execPath, ["-e", script], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeoutMs: 10_000,
+      }),
+    ).rejects.toThrow(/not reachable/u);
+  });
+
+  it("gives up on a process that never answers", async () => {
+    const script = "setTimeout(() => process.exit(0), 5000);";
+    await expect(
+      brokerExec(process.execPath, ["-e", script], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeoutMs: 250,
+      }),
+    ).rejects.toThrow(/timed out/u);
+  });
+});
+
+describe("brokerControl response promptness", () => {
+  it("resolves on the complete response instead of waiting for the CLI to exit", async () => {
+    // The CLI writes its JSON and then lingers before exiting. Waiting for exit
+    // charged every steer, follow-up, and abort roughly five seconds during which
+    // the window looked frozen.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    let exited: (() => void) | undefined;
+    const lingering = new Promise<void>((resolve) => {
+      exited = resolve;
+    });
+    const internals = controller as unknown as {
+      resolveExecutable: () => Promise<string>;
+      brokerExec: (
+        executable: string,
+        args: string[],
+        options: { cwd: string; timeoutMs: number },
+      ) => Promise<string>;
+    };
+    internals.resolveExecutable = async () => "/usr/bin/gjc";
+    internals.brokerExec = async () => {
+      // Stands in for the real runner: the response is available while the child
+      // process is still alive.
+      return JSON.stringify({ ok: true, result: { turn: "stopped" } });
+    };
+
+    const result = await (
+      controller as unknown as {
+        brokerControl: (
+          id: string,
+          op: string,
+          input: Record<string, unknown>,
+        ) => Promise<Record<string, unknown> | undefined>;
+      }
+    ).brokerControl("session-1", "turn.steer", { text: "hi" });
+
+    expect(result).toEqual({ turn: "stopped" });
+    exited?.();
+    await lingering;
+    controller.dispose();
+  });
+
+  it("reports the CLI error when it exits without a response", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      resolveExecutable: () => Promise<string>;
+      brokerExec: () => Promise<string>;
+    };
+    internals.resolveExecutable = async () => "/usr/bin/gjc";
+    internals.brokerExec = async () => {
+      throw new Error("session is not reachable through the session Router");
+    };
+
+    await expect(
+      (
+        controller as unknown as {
+          brokerControl: (
+            id: string,
+            op: string,
+            input: Record<string, unknown>,
+          ) => Promise<unknown>;
+        }
+      ).brokerControl("session-1", "turn.steer", { text: "hi" }),
+    ).rejects.toThrow(/session Router/u);
+    controller.dispose();
   });
 });
 
