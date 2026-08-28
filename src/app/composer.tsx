@@ -81,6 +81,10 @@ export function Composer({
   // reconcile against and nothing can retire a chip behind the user's back.
   const [pendingQueue, setPendingQueue] = useState<PendingRequest[]>([]);
   const [historyCursor, setHistoryCursor] = useState(-1);
+  // Anything the user could submit right now. This decides which single action the
+  // submit slot exposes, so send and stop can never render together.
+  const hasDraft =
+    value.trim().length > 0 || images.length > 0 || files.length > 0;
   const composerRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const composingRef = useRef(false);
@@ -986,10 +990,23 @@ export function Composer({
           )}
         </div>
         <div className="composer-submit-actions">
-          {running && (
+          {/* One button, two states. Something to submit always wins: while a turn
+              runs, typed text is queued or steered, so the arrow has to stay
+              reachable. With an empty composer during a turn the same slot stops
+              it. Rendering both at once left two buttons side by side. */}
+          {hasDraft ? (
+            <button
+              className="send-button"
+              type="submit"
+              title={running ? "이어서 보내기" : "메시지 보내기"}
+            >
+              <ArrowUp size={18} />
+            </button>
+          ) : (
             <button
               className="send-button send-button--stop"
               type="button"
+              disabled={!running}
               onClick={() => {
                 onCancel();
                 setPendingQueue([]);
@@ -997,21 +1014,6 @@ export function Composer({
               title="작업 중단 (Esc)"
             >
               <CircleStop size={18} />
-            </button>
-          )}
-          {(!running ||
-            value.trim() ||
-            images.length > 0 ||
-            files.length > 0) && (
-            <button
-              className="send-button"
-              type="submit"
-              disabled={
-                !value.trim() && images.length === 0 && files.length === 0
-              }
-              title="메시지 보내기"
-            >
-              <ArrowUp size={18} />
             </button>
           )}
         </div>
