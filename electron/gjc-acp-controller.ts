@@ -331,6 +331,17 @@ export function configuredProfileDefaultThinking(
   return undefined;
 }
 
+/**
+ * Stop reasons for a turn that ended without finishing. Tool rows written after
+ * one of these are leftovers from the abandoned turn, not a run still in flight.
+ */
+const ABANDONED_STOP_REASONS = new Set([
+  "aborted",
+  "cancelled",
+  "canceled",
+  "error",
+]);
+
 const TERMINAL_STOP_REASONS = new Set([
   "stop",
   "end_turn",
@@ -345,6 +356,8 @@ const TERMINAL_STOP_REASONS = new Set([
 export function persistedTranscriptRunning(rows: unknown[]): boolean {
   let lastUser = -1;
   let lastTerminalAssistant = -1;
+  let lastActivity = -1;
+  let abandoned = false;
   for (let index = 0; index < rows.length; index += 1) {
     const envelope = rows[index];
     if (!envelope || typeof envelope !== "object" || Array.isArray(envelope))
@@ -356,15 +369,36 @@ export function persistedTranscriptRunning(rows: unknown[]): boolean {
       !Array.isArray(value.message)
         ? (value.message as Record<string, unknown>)
         : value;
-    if (message.role === "user") lastUser = index;
+    if (message.role === "user") {
+      lastUser = index;
+      abandoned = false;
+    }
     if (
       message.role === "assistant" &&
       typeof message.stopReason === "string" &&
       TERMINAL_STOP_REASONS.has(message.stopReason)
     ) {
       lastTerminalAssistant = index;
+      abandoned = ABANDONED_STOP_REASONS.has(message.stopReason);
+    }
+    // An assistant row that stopped to call a tool, or a tool result, is work in
+    // progress. Tracking only the last user row missed the case where the request
+    // has not been flushed yet but the reply to it already has: the newest rows
+    // were mid-turn, while the last user row still pointed at the previous turn,
+    // so a working session read as finished.
+    if (
+      (message.role === "assistant" &&
+        typeof message.stopReason === "string" &&
+        !TERMINAL_STOP_REASONS.has(message.stopReason)) ||
+      value.type === "toolResult" ||
+      message.role === "toolResult"
+    ) {
+      // Rows after an abandoned turn are that turn's leftovers, not new work. Only a
+      // fresh request reopens the session, and that is handled by the user-row check.
+      if (!abandoned) lastActivity = index;
     }
   }
+  if (lastActivity > lastTerminalAssistant) return true;
   return lastUser >= 0 && lastUser > lastTerminalAssistant;
 }
 

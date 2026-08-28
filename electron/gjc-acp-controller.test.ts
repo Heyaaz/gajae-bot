@@ -5627,6 +5627,62 @@ describe("thinkingOptionsForModelCatalog", () => {
   });
 });
 
+describe("persistedTranscriptRunning mid-turn activity", () => {
+  it("stays running when the newest rows are a tool call the request has outrun", () => {
+    // The reply to a new request reached disk before the request row did, so the
+    // last user row still points at the previous turn while the newest rows are
+    // mid-turn. Comparing only user against terminal-assistant read this as
+    // finished, which showed a working session as complete.
+    expect(
+      persistedTranscriptRunning([
+        { type: "message", message: { role: "user", content: "earlier" } },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "done" },
+        },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "toolUse" },
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("stays running while a tool result is the newest row", () => {
+    expect(
+      persistedTranscriptRunning([
+        { type: "message", message: { role: "user", content: "earlier" } },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "done" },
+        },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "toolUse" },
+        },
+        { type: "toolResult", output: "ok" },
+      ]),
+    ).toBe(true);
+  });
+
+  it("settles once a terminal stop reason follows the mid-turn rows", () => {
+    expect(
+      persistedTranscriptRunning([
+        { type: "message", message: { role: "user", content: "work" } },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "toolUse" },
+        },
+        { type: "toolResult", output: "ok" },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "end_turn", content: "y" },
+        },
+      ]),
+    ).toBe(false);
+  });
+});
+
 describe("session status authority", () => {
   it("keeps a live running signal when a lagging transcript still reads idle", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gjc-status-"));
