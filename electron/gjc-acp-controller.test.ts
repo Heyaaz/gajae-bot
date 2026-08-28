@@ -5847,6 +5847,65 @@ describe("session status authority", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("settles a terminal-owned turn the transcript reports finished", async () => {
+    // The live signal marks the session running, then the terminal finishes the
+    // turn. A terminal-owned session receives no gjcRunning:false, so if the live
+    // flag is only cleared by that report the row stays running forever even
+    // though the transcript states the turn ended.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-stuck-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.terminalOnlySessions.add(session.id);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcRunning: true },
+    });
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+
+    // The turn finishes and the transcript records the terminal stop reason.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "done" },
+      })}\n`,
+    );
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("holds the compacting phase until compaction is actually finished", async () => {
     const extMethod = vi
       .fn()

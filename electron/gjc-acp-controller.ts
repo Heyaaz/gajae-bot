@@ -1239,6 +1239,10 @@ export class GjcAcpController {
   // transcript lags behind that signal, so it is not allowed to report one of
   // these idle until GJC itself says the turn ended.
   private readonly liveRunningSessions = new Set<string>();
+  // Transcript size at the moment the live signal reported work, keyed by session.
+  // Anything at that size is the snapshot the signal already superseded; a larger
+  // file is a newer account.
+  private readonly liveRunningDigests = new Map<string, number>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
   /** Delay between broker polls while recovering a fork's session id. */
@@ -1346,6 +1350,7 @@ export class GjcAcpController {
     this.attachedSessions.clear();
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
+    this.liveRunningDigests.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
     this.activeAssistantMessages.clear();
@@ -2043,6 +2048,14 @@ export class GjcAcpController {
       const turnRunning =
         persistedTranscriptRunning(envelopes) ||
         this.activePromptSessions.has(sessionId);
+      // A transcript that has not changed since the live signal reported work is the
+      // same snapshot that signal already superseded, so it carries no news. Once the
+      // file grows and still reports no active turn, it has observed the work end and
+      // becomes the newer account. A terminal-owned session never sends
+      // gjcRunning:false, so this is the only evidence its turn ended.
+      const seenSize = this.liveRunningDigests.get(sessionId);
+      const transcriptAdvanced =
+        seenSize !== undefined && info.size !== seenSize;
       const items = sharedTranscriptItems(sessionId, rows, { turnRunning });
       await this.resolveToolImages(items);
       const effectiveModel = persistedModelState(envelopes);
@@ -2064,13 +2077,21 @@ export class GjcAcpController {
         const current = this.sessions.get(sessionId)?.status;
         if (status === "idle") {
           // The transcript is written after the fact, so it reads idle for the gap
-          // between a turn starting and its first row reaching disk. The live ACP
-          // signal already knows that turn is running, and this snapshot is older
-          // than that signal, so it must not overrule it. Waiting for the transcript
-          // to agree costs one file write; believing it here showed a working
-          // session as finished.
-          if (!this.liveRunningSessions.has(sessionId))
+          // between a turn starting and its first row reaching disk. That snapshot is
+          // older than the live signal and must not overrule it.
+          //
+          // A transcript that records the turn's own stop reason is different: it is
+          // evidence the turn ended, not evidence it never started. A terminal-owned
+          // session never receives gjcRunning:false, so refusing this too left the row
+          // running for the rest of the session.
+          if (
+            transcriptAdvanced ||
+            !this.liveRunningSessions.has(sessionId)
+          ) {
+            this.liveRunningSessions.delete(sessionId);
+            this.liveRunningDigests.delete(sessionId);
             this.updateSessionStatus(sessionId, "idle");
+          }
         } else if (
           current !== "idle" &&
           !this.locallyAbortedSessions.has(sessionId)
@@ -2366,6 +2387,25 @@ export class GjcAcpController {
       row.id === sessionId ? { ...session } : row,
     );
     this.emitEvent({ type: "session.updated", session: { ...session } });
+  }
+
+  /**
+   * Notes the transcript size at the moment live work was reported. A read failure
+   * leaves no baseline, which makes the next transcript snapshot authoritative --
+   * the safe direction, since the alternative is a row stuck on running.
+   */
+  private async rememberLiveRunningTranscriptSize(
+    sessionId: string,
+  ): Promise<void> {
+    try {
+      const filePath = await this.locateSharedTranscriptFile(sessionId);
+      if (!filePath) return;
+      const info = await stat(filePath);
+      if (this.liveRunningSessions.has(sessionId))
+        this.liveRunningDigests.set(sessionId, info.size);
+    } catch {
+      // No baseline recorded: the transcript wins next time.
+    }
   }
 
   /**
@@ -2930,6 +2970,7 @@ export class GjcAcpController {
     // The user ended this turn, so clearing the live flags stops a late report
     // about it from putting the row back to running.
     this.liveRunningSessions.delete(sessionId);
+    this.liveRunningDigests.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
     this.updateSessionStatus(sessionId, "idle");
@@ -3857,6 +3898,7 @@ export class GjcAcpController {
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
     this.liveRunningSessions.delete(sessionId);
+    this.liveRunningDigests.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
@@ -3906,6 +3948,7 @@ export class GjcAcpController {
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
+    this.liveRunningDigests.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
     this.suppressedUserMessageKeys.clear();
@@ -3990,6 +4033,7 @@ export class GjcAcpController {
       this.attachedSessions.clear();
       this.activePromptSessions.clear();
       this.liveRunningSessions.clear();
+      this.liveRunningDigests.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
       this.activeAssistantMessages.clear();
@@ -5175,7 +5219,12 @@ export class GjcAcpController {
     }
     if (running === true && !this.locallyAbortedSessions.has(sessionId)) {
       session.status = "running";
-      this.liveRunningSessions.add(sessionId);
+      if (!this.liveRunningSessions.has(sessionId)) {
+        this.liveRunningSessions.add(sessionId);
+        // Record how much transcript existed when the work was reported, so a later
+        // read can tell an unchanged stale snapshot from one that watched it end.
+        void this.rememberLiveRunningTranscriptSize(sessionId);
+      }
     }
     // A prompt this window sent owns the status until its own round trip settles,
     // because GJC reports gjcRunning:false for the state *before* the prompt was
@@ -5200,6 +5249,7 @@ export class GjcAcpController {
       const wasRunning = session.status === "running";
       session.status = "idle";
       this.liveRunningSessions.delete(sessionId);
+      this.liveRunningDigests.delete(sessionId);
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;
