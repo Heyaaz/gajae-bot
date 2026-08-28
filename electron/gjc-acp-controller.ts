@@ -475,6 +475,7 @@ function customMessageTitle(customType: unknown): string {
 export function sharedTranscriptItems(
   sessionId: string,
   rows: unknown[],
+  options?: { turnRunning?: boolean },
 ): TranscriptItem[] {
   const records = rows.flatMap((row) =>
     row && typeof row === "object" && !Array.isArray(row)
@@ -488,6 +489,12 @@ export function sharedTranscriptItems(
         : [],
     ),
   );
+  // A tool call with no result row is only still running while the turn itself is.
+  // A finished turn leaves its last `toolUse` call resultless in the persisted
+  // file, and reporting that as running kept the composer showing stop and
+  // routing every later message into a steer long after the turn ended.
+  const unresolvedToolStatus: ToolActivity["status"] =
+    options?.turnRunning === false ? "completed" : "running";
   const abortedTurn = records.some((row) => {
     const message =
       row.message &&
@@ -623,10 +630,16 @@ export function sharedTranscriptItems(
       continue;
     }
     let emittedAssistantText = false;
+    // One assistant row can carry several text parts -- a short lead-in, a
+    // thinking part, then the full answer. Every part must get its own id: they
+    // all shared `shared-message-${sourceId}`, and a transcript keyed by id
+    // rendered the same row twice, once above and once below the tool card.
     const pushAssistantText = (value: string): void => {
       if (!value) return;
       items.push({
-        id: `shared-message-${sourceId}`,
+        id: emittedAssistantText
+          ? `shared-message-${sourceId}-${items.length}`
+          : `shared-message-${sourceId}`,
         kind: "message",
         sessionId,
         role: "assistant",
@@ -693,7 +706,7 @@ export function sharedTranscriptItems(
             : "completed"
           : abortedTurn
             ? "cancelled"
-            : "running",
+            : unresolvedToolStatus,
         createdAt,
         ...(output ? { output } : {}),
         ...(diff ? { diff } : {}),
@@ -709,7 +722,7 @@ export function sharedTranscriptItems(
                     : "completed"
                   : abortedTurn
                     ? "cancelled"
-                    : "running",
+                    : unresolvedToolStatus,
                 output,
               ),
             }
@@ -1928,16 +1941,17 @@ export class GjcAcpController {
           },
         ];
       });
-      const items = sharedTranscriptItems(sessionId, rows);
+      const turnRunning =
+        persistedTranscriptRunning(envelopes) ||
+        this.activePromptSessions.has(sessionId);
+      const items = sharedTranscriptItems(sessionId, rows, { turnRunning });
       await this.resolveToolImages(items);
       const effectiveModel = persistedModelState(envelopes);
       if (effectiveModel.model || effectiveModel.thinking) {
         this.patchSessionRuntime(sessionId, effectiveModel);
       }
       if (!this.activePromptSessions.has(sessionId)) {
-        const status = persistedTranscriptRunning(envelopes)
-          ? "running"
-          : "idle";
+        const status = turnRunning ? "running" : "idle";
         const current = this.sessions.get(sessionId)?.status;
         if (status === "idle") {
           this.updateSessionStatus(sessionId, "idle");
@@ -2823,12 +2837,12 @@ export class GjcAcpController {
 
   private appendCancelledNotice(sessionId: string): void {
     const items = this.transcripts.get(sessionId) ?? [];
+    // The persisted transcript reports an aborted turn as `shared-cancelled-`,
+    // so checking only for this window's own prefix announced the same
+    // cancellation a second time once the rebuild had already landed.
     if (
       items.some(
-        (item) =>
-          item.kind === "notice" &&
-          item.title === "작업 취소됨" &&
-          item.id.startsWith("gjc-cancelled-"),
+        (item) => item.kind === "notice" && item.title === "작업 취소됨",
       )
     )
       return;
