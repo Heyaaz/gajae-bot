@@ -73,6 +73,9 @@ const STARTUP_TIMEOUT_MS = 30_000;
 // settles its own recent rows; a disagreement older than this is republished as
 // a whole history instead of being reconciled row by row.
 const TRANSCRIPT_RESCAN_WINDOW = 32;
+// A fork whose lifecycle receipt could not be verified is looked up in the broker
+// index, which only lists the new session once it settles.
+const FORK_RECOVERY_ATTEMPTS = 20;
 const MAX_TOOL_TEXT = 12_000;
 const ATTACH_RETRY_INTERVAL_MS = 15_000;
 const MODEL_CATALOG_PAGE_LIMIT = 16;
@@ -1147,6 +1150,8 @@ export class GjcAcpController {
   private readonly locallyAbortedSessions = new Set<string>();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
+  /** Delay between broker polls while recovering a fork's session id. */
+  private forkRecoveryIntervalMs = 250;
   /** How long the escalated session abort gets to settle the turn. */
   private cancelEscalationMs = 6000;
   private readonly sessionCommands = new Map<string, AgentCommand[]>();
@@ -4879,11 +4884,37 @@ export class GjcAcpController {
         modes?: { currentModeId?: string | null };
       }>;
     };
-    const response = await (connection as ForkConnection).unstable_forkSession({
-      sessionId: source.id,
-      cwd,
-      mcpServers: [],
-    });
+    // The fork itself is what creates the session; the lifecycle receipt is only
+    // the evidence that it was recorded. A receipt that cannot be verified was
+    // reported as a failed fork even though the broker had already created the
+    // session -- which is why discovery listed it moments later. The broker index
+    // is the authority on whether that happened, so it is consulted instead of
+    // surfacing an error for a fork that succeeded.
+    const knownSessionIds = new Set([
+      ...this.sessions.keys(),
+      ...((await this.brokerSessions(connection)) ?? []).map(
+        (listed) => listed.sessionId,
+      ),
+    ]);
+    let response;
+    try {
+      response = await (connection as ForkConnection).unstable_forkSession({
+        sessionId: source.id,
+        cwd,
+        mcpServers: [],
+      });
+    } catch (error) {
+      if (!lifecycleUncertainError(error)) throw error;
+      response = await this.recoverForkedSession(
+        connection,
+        cwd,
+        knownSessionIds,
+      );
+      if (!response)
+        throw new Error(
+          "GJC가 세션을 포크했지만 lifecycle 영수증을 검증하지 못했습니다. 보존된 포크 자동 복구에도 실패했습니다. GJC lifecycle ledger reconciliation이 필요합니다.",
+        );
+    }
     const session: AgentSession = {
       id: response.sessionId,
       title: input.title?.trim() || `${source.title} (fork)`,
@@ -4911,6 +4942,65 @@ export class GjcAcpController {
     this.sessionMetadata?.setOwnership(session.id, "gajae");
     this.emitEvent({ type: "session.created", session: { ...session } });
     return { ...session };
+  }
+
+  /**
+   * The session a fork created, recovered from the broker index when the fork's
+   * own lifecycle receipt could not be verified. Undefined when no new session
+   * for this workspace appears, which means the fork really did not happen.
+   */
+  private async recoverForkedSession(
+    connection: ClientSideConnection,
+    cwd: string,
+    knownSessionIds: ReadonlySet<string>,
+  ): Promise<
+    | {
+        sessionId: string;
+        configOptions?: SessionConfigOption[];
+        modes?: { currentModeId?: string | null };
+      }
+    | undefined
+  > {
+    const workspace = path.resolve(cwd);
+    for (let attempt = 0; attempt < FORK_RECOVERY_ATTEMPTS; attempt += 1) {
+      const retained = (await this.brokerSessions(connection))?.find(
+        (listed) =>
+          !knownSessionIds.has(listed.sessionId) &&
+          listed.live &&
+          (listed.endpointGeneration ?? 0) > 0 &&
+          listed.repo !== undefined &&
+          path.resolve(listed.repo) === workspace,
+      );
+      if (retained) {
+        this.sessionCwds.set(retained.sessionId, workspace);
+        this.transcripts.set(retained.sessionId, []);
+        this.messageKeys.set(retained.sessionId, new Map());
+        try {
+          const loaded = await connection.loadSession({
+            sessionId: retained.sessionId,
+            cwd: workspace,
+            mcpServers: [],
+          });
+          this.attachedSessions.add(retained.sessionId);
+          return {
+            sessionId: retained.sessionId,
+            ...(loaded.configOptions
+              ? { configOptions: loaded.configOptions }
+              : {}),
+            ...(loaded.modes ? { modes: loaded.modes } : {}),
+          };
+        } catch {
+          this.sessionCwds.delete(retained.sessionId);
+          this.transcripts.delete(retained.sessionId);
+          this.messageKeys.delete(retained.sessionId);
+        }
+      }
+      if (attempt < FORK_RECOVERY_ATTEMPTS - 1)
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.forkRecoveryIntervalMs),
+        );
+    }
+    return undefined;
   }
 
   async getGitStatus(sessionId: string): Promise<GitStatusSnapshot> {
