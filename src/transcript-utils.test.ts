@@ -537,13 +537,23 @@ describe("mergeDiscoveredSessions", () => {
     unread,
   });
 
-  it("adds newly discovered CLI sessions without overwriting live local state", () => {
+  it("adds newly discovered CLI sessions while keeping live local state", () => {
+    // The named concern is that a refresh must not discard what this window
+    // tracks about an open row. Status is excluded: the main process already
+    // decides whether a row's own turn or its transcript is the authority, so
+    // preferring the on-screen copy here only re-pinned a stale value.
     expect(
       mergeDiscoveredSessions(
-        [session("open", "running")],
-        [session("open", "idle"), session("cli-new", "idle")],
+        [{ ...session("open", "running"), model: "opus" }],
+        [
+          { ...session("open", "idle"), model: undefined },
+          { ...session("cli-new", "idle"), model: undefined },
+        ],
       ),
-    ).toEqual([session("open", "running"), session("cli-new", "idle")]);
+    ).toEqual([
+      { ...session("open", "idle"), model: "opus" },
+      { ...session("cli-new", "idle"), model: undefined },
+    ]);
   });
 
   it("keeps the focused session when a refresh momentarily misses it", () => {
@@ -566,6 +576,27 @@ describe("mergeDiscoveredSessions", () => {
         "open",
       ).map((entry) => entry.id),
     ).toEqual(["open"]);
+  });
+
+  it("takes the status discovery derived from the transcript", () => {
+    // Discovery reads run state from the session's transcript, which is the only
+    // account of work another process is driving. Preferring the on-screen value
+    // pinned a row to whatever it was listed as, so a working session read 완료.
+    expect(
+      mergeDiscoveredSessions(
+        [session("a", "idle")],
+        [session("a", "running")],
+      ).map((entry) => entry.status),
+    ).toEqual(["running"]);
+  });
+
+  it("takes a settled status over a stale running row", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [session("a", "running")],
+        [session("a", "idle")],
+      ).map((entry) => entry.status),
+    ).toEqual(["idle"]);
   });
 
   it("holds row order steady when discovery reranks by activity", () => {

@@ -326,10 +326,15 @@ export function updateTranscriptItem(
 }
 
 /**
- * Discovery only reports identity and workspace. Local runtime state (status,
- * phase, model, usage) is authoritative while a session is open, so a refresh
- * adds newly discovered sessions and drops closed ones without overwriting the
- * live rows this window already tracks.
+ * Merges a discovery refresh into the rows already on screen.
+ *
+ * Local runtime state (phase, model, usage) is authoritative while a session is
+ * open, so a refresh adds newly discovered sessions and drops closed ones without
+ * overwriting what this window tracks. `status` is the exception: discovery now
+ * derives it from the session's transcript, which is the only account of work this
+ * window is not driving. Keeping the on-screen value there pinned a row to the
+ * state it happened to be listed in, so an agent working in another process stayed
+ * on 완료 for its whole run.
  */
 export function mergeDiscoveredSessions<
   T extends { id: string; unread: boolean; status?: string },
@@ -354,7 +359,8 @@ export function mergeDiscoveredSessions<
   );
   const merged = discovered.map((session) => {
     const existing = known.get(session.id);
-    return existing ? { ...session, ...existing } : session;
+    if (!existing) return session;
+    return { ...session, ...existing, status: session.status };
   });
   // Discovery order is activity-ranked and churns between refreshes. Rows already
   // on screen keep their position so the list does not reshuffle under the
