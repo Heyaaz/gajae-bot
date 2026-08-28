@@ -4630,6 +4630,65 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
+  it("forgets hidden ids the broker no longer lists", async () => {
+    // `hidden` keeps a deleted session out of the list, and discovery is the only
+    // place that learns which ids still exist. Without pruning here the set grew for
+    // the life of the install -- 629 entries against three aliases in practice --
+    // and the whole metadata file was rewritten on every change.
+    const forgetHiddenOutside = vi.fn().mockReturnValue(0);
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+      sessionMetadata: {
+        forgetHiddenOutside,
+        isHidden: () => false,
+        getOwnership: () => undefined,
+        getUnread: () => false,
+        getAlias: () => undefined,
+        getWorktree: () => undefined,
+        listWorkspaces: () => [],
+      } as unknown as SessionMetadataStore,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+            { sessionId: "session-dead", live: false },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    internals.discoveredRunState = async () => "idle";
+
+    await controller.listSessions();
+
+    expect(forgetHiddenOutside).toHaveBeenCalledTimes(1);
+    // Every id the broker reported, live or not, is still known and must be kept.
+    // Pruning against only the live rows would unhide sessions the user deleted.
+    expect(forgetHiddenOutside.mock.calls[0]?.[0]).toEqual(
+      new Set(["session-1", "session-dead"]),
+    );
+    controller.dispose();
+  });
+
   it("keeps a disconnect visible when the transcript reads finished", async () => {
     // The ACP child exiting marks every session failed. Those transcripts ended
     // cleanly long ago, so the next list refresh read them as idle and erased the

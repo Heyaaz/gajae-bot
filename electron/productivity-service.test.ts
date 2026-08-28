@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { describe, expect, it, vi } from 'vitest'
 import { ProductivityService, type ProductivitySource } from './productivity-service.js'
 import type { AgentSession, TranscriptItem } from '../shared/agent-contract.js'
 
@@ -30,5 +33,45 @@ describe('ProductivityService', () => {
     const results = await service.searchTranscripts('alpha OR *', 10)
     expect(results.map(result => result.itemId).sort()).toEqual(['m1', 't1'])
     expect(results[0]).toMatchObject({ sessionId: 's1', sessionTitle: 'First', workspace: '/workspace' })
+  })
+
+  it('rebuilds an unreadable index instead of taking the app down with it', async () => {
+    // The search index is derived data -- every row is reconstructed from the
+    // transcripts. It used to throw straight out of the constructor, which runs at
+    // module scope during startup, so a damaged cache meant no window opened at all.
+    // `DatabaseSync` also opens lazily, so the failure only surfaces once a
+    // statement runs; applying the schema is what proves the file is usable.
+    const directory = mkdtempSync(path.join(tmpdir(), 'gjc-search-index-'))
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const dbPath = path.join(directory, 'productivity.sqlite')
+      writeFileSync(dbPath, 'not a database, just bytes')
+
+      const service = new ProductivityService(source(), dbPath)
+      await service.rebuildSearch()
+      await expect(service.searchTranscripts('alpha', 10)).resolves.toHaveLength(1)
+      // The damaged file is kept for diagnosis rather than silently destroyed.
+      expect(existsSync(`${dbPath}.corrupt`)).toBe(true)
+    } finally {
+      warn.mockRestore()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps a healthy index across reopens', async () => {
+    // The recovery path must not fire for a good file: quarantining on every start
+    // would throw away the index each launch and rebuild it from every transcript.
+    const directory = mkdtempSync(path.join(tmpdir(), 'gjc-search-keep-'))
+    try {
+      const dbPath = path.join(directory, 'productivity.sqlite')
+      const first = new ProductivityService(source(), dbPath)
+      await first.rebuildSearch()
+
+      const second = new ProductivityService(source(), dbPath)
+      await expect(second.searchTranscripts('alpha', 10)).resolves.toHaveLength(1)
+      expect(existsSync(`${dbPath}.corrupt`)).toBe(false)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

@@ -63,6 +63,23 @@ export class SessionMetadataStore {
     this.write()
   }
 
+  /**
+   * Forgets hidden ids the agent no longer knows about, returning how many were
+   * dropped.
+   *
+   * `hidden` exists to keep a deleted session out of discovery. Once the agent has
+   * forgotten the session there is nothing left to filter, but the id stayed on
+   * disk forever -- 629 of them against three aliases in practice -- and every
+   * write rewrote the whole file.
+   */
+  forgetHiddenOutside(knownSessionIds: ReadonlySet<string>): number {
+    let dropped = 0
+    for (const sessionId of [...this.hidden])
+      if (!knownSessionIds.has(sessionId)) { this.hidden.delete(sessionId); dropped += 1 }
+    if (dropped > 0) this.write()
+    return dropped
+  }
+
   retainOnly(allSessionIds: Iterable<string>, retained: ReadonlySet<string>): void {
     for (const sessionId of allSessionIds) {
       if (retained.has(sessionId)) this.hidden.delete(sessionId)

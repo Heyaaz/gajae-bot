@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -41,5 +41,35 @@ describe('automation service contracts', () => {
     expect((await service.list())[0]?.enabled).toBe(false)
     await service.delete(created.id)
     expect(await service.list()).toEqual([])
+  })
+
+  it('schedules the automations around a record it cannot read', async () => {
+    // `defs()` only guards against the file failing to parse. A record written by an
+    // older schema -- a daily schedule with no time -- threw out of the loop, so every
+    // automation after it was left unregistered with launchd. The caller only logs, so
+    // the user saw no error, just scheduled work that silently stopped running.
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-skip-'))
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      const record = (id: string, schedule: unknown) => ({ id, name: id, prompt: 'p', workspace: '/tmp', enabled: true, thinking: 'medium', worktree: false, schedule, createdAt: new Date().toISOString() })
+      await writeFile(path.join(directory, 'automations.json'), JSON.stringify([
+        record('first', { kind: 'daily', time: '09:00' }),
+        record('broken', { kind: 'daily' }),
+        record('last', { kind: 'daily', time: '10:00' }),
+      ]))
+      const loaded: string[] = []
+      const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'darwin', launchctl: (args) => { if (args[0] === 'load' && args[1]) loaded.push(path.basename(args[1])) } })
+
+      await service.initialize()
+
+      // The record before the bad one was already reached; the one after it is what
+      // used to be lost.
+      expect(loaded).toContain('com.gajae.automation.first.plist')
+      expect(loaded).toContain('com.gajae.automation.last.plist')
+      expect(loaded).not.toContain('com.gajae.automation.broken.plist')
+      expect(errors).toHaveBeenCalled()
+    } finally {
+      errors.mockRestore()
+    }
   })
 })

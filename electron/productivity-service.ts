@@ -1,3 +1,4 @@
+import { renameSync, rmSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { lookup } from 'node:dns/promises'
@@ -5,6 +6,50 @@ import { BlockList, isIP } from 'node:net'
 import { DatabaseSync } from 'node:sqlite'
 import type { AgentSession, TranscriptItem } from '../shared/agent-contract.js'
 import type { GlobalSearchResult, LinkPreview } from '../shared/productivity-ipc.js'
+
+/**
+ * Opens the search database, rebuilding it if the file on disk is unusable.
+ *
+ * This index is derived data: every row is reconstructed from the transcripts on
+ * demand. A corrupt file used to throw out of the constructor, and the call site
+ * runs at module scope during startup, so a damaged cache took the whole app down
+ * and no window opened at all. Losing the cache costs one rebuild; losing the app
+ * costs the user everything.
+ */
+const SEARCH_SCHEMA = `CREATE TABLE IF NOT EXISTS productivity_search (
+      itemId TEXT NOT NULL,
+      sessionId TEXT NOT NULL,
+      sessionTitle TEXT NOT NULL,
+      workspace TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      displayText TEXT NOT NULL,
+      searchText TEXT NOT NULL,
+      PRIMARY KEY (sessionId, itemId)
+    ); CREATE INDEX IF NOT EXISTS productivity_search_session ON productivity_search(sessionId)`
+
+function openSearchDatabase(dbPath: string): DatabaseSync {
+  // `DatabaseSync` opens lazily, so a damaged file is only reported when the first
+  // statement runs. Applying the schema here is what actually proves the file is
+  // usable; checking only the constructor would let the failure escape later.
+  try {
+    const db = new DatabaseSync(dbPath)
+    db.exec(SEARCH_SCHEMA)
+    return db
+  } catch (error) {
+    // Keep the damaged file for diagnosis rather than destroying evidence, and drop
+    // any previous quarantine so this cannot grow without bound.
+    try {
+      rmSync(`${dbPath}.corrupt`, { force: true })
+      renameSync(dbPath, `${dbPath}.corrupt`)
+    } catch {
+      rmSync(dbPath, { force: true })
+    }
+    console.error(`Search index at ${dbPath} was unreadable and has been rebuilt`, error)
+    const rebuilt = new DatabaseSync(dbPath)
+    rebuilt.exec(SEARCH_SCHEMA)
+    return rebuilt
+  }
+}
 
 export interface ProductivitySource {
   listSessions(): Promise<AgentSession[]>
@@ -84,17 +129,7 @@ export class ProductivityService {
   constructor(private readonly source: ProductivitySource, dbPath: string, options: { transport?: LinkTransport; resolver?: AddressResolver } = {}) {
     this.transport = options.transport || defaultTransport
     this.resolve = options.resolver || (async hostname => (await lookup(hostname, { all: true, verbatim: true })).map(record => record.address))
-    this.db = new DatabaseSync(dbPath)
-    this.db.exec(`CREATE TABLE IF NOT EXISTS productivity_search (
-      itemId TEXT NOT NULL,
-      sessionId TEXT NOT NULL,
-      sessionTitle TEXT NOT NULL,
-      workspace TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      displayText TEXT NOT NULL,
-      searchText TEXT NOT NULL,
-      PRIMARY KEY (sessionId, itemId)
-    ); CREATE INDEX IF NOT EXISTS productivity_search_session ON productivity_search(sessionId)`)
+    this.db = openSearchDatabase(dbPath)
   }
   private readonly resolve: AddressResolver
 

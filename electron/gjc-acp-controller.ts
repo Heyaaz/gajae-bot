@@ -1592,6 +1592,12 @@ export class GjcAcpController {
     // previous result stands rather than republishing every historical session.
     if (!brokerRows)
       return this.lastDiscovered.map((session) => ({ ...session }));
+    // The broker index is the full set of session ids that still exist anywhere. A
+    // hidden id outside it has nothing left to hide, so it is dropped instead of
+    // being carried in the metadata file for the life of the install.
+    this.sessionMetadata?.forgetHiddenOutside(
+      new Set(brokerRows.map((session) => session.sessionId)),
+    );
     for (const session of brokerRows) {
       if (
         isControllerSession(session, this.child?.pid) &&
