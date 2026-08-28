@@ -4373,6 +4373,15 @@ export class GjcAcpController {
     this.modelProfiles.clear();
     this.explicitSessionThinking.clear();
     this.artifactWrites.clear();
+    // In-flight bookkeeping. Each entry is normally removed in a `finally`, so what
+    // is left here is whatever a rejected or abandoned call did not reach. Teardown
+    // claims to release everything, so it has to include these too.
+    this.cancellingSessions.clear();
+    this.flushingSessions.clear();
+    this.pendingSteers.clear();
+    this.locallyAbortedSessions.clear();
+    this.imageDataUrls.clear();
+    this.contextUsageQueries.clear();
     for (const watcher of this.sharedSessionWatchers.values()) watcher.close();
     for (const watcher of this.runStateWatchers.values()) watcher.close();
     this.runStateWatchers.clear();
