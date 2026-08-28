@@ -7,8 +7,35 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 
+/**
+ * Masks credentials that reached an error message.
+ *
+ * Errors here are surfaced verbatim in the UI, and a failure from a lower layer
+ * carries whatever was on the wire: a rejected `Bearer` header, an `sk-` key, a
+ * command line with a token in it. The main process already redacts what it writes
+ * to artifacts; this is the same guarantee for what the user is shown.
+ */
+function redactCredentials(value: string): string {
+  return value
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}/giu, "$1[삭제됨]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[삭제됨]")
+    // The value runs to the closing quote or delimiter, not to the first space: a
+    // header like `"authorization": "Token abcdef"` carries the secret in a second
+    // word, and stopping at the space left it on screen.
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,"'}]+)/giu,
+      "$1[삭제됨]",
+    )
+    .replace(
+      /\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))=[^\s]+/gu,
+      "$1=[삭제됨]",
+    );
+}
+
 export function humanErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = redactCredentials(
+    error instanceof Error ? error.message : String(error),
+  );
   if (
     /\b(?:operation[ _-]?aborted|operation[ _-]?cancelled|operation[ _-]?canceled|aborterror|request aborted)\b/iu.test(
       message,
