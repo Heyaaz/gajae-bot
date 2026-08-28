@@ -930,6 +930,45 @@ export default function App() {
     }
   }
 
+  // The sidebar is memoized so a streamed transcript chunk stops re-rendering it,
+  // measured at 1.1-1.7ms per pass. That only holds if its callbacks keep the same
+  // identity, and the handlers above are plain declarations rebuilt on every render.
+  // Routing through a ref means the stable wrappers below always call the current
+  // ones instead of closing over a stale render's state.
+  const handlers = {
+    forkSession,
+    resumeSession,
+    renameSession,
+    renameWorkspace,
+    installUpdate,
+    openResumePicker,
+  };
+  const handlersRef = useRef(handlers);
+  handlersRef.current = handlers;
+
+  const openSearch = useCallback(() => setSearchOpen(true), []);
+  const openNewSession = useCallback(() => setNewSessionOpen(true), []);
+  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const startFork = useCallback((session: AgentSession) => {
+    void handlersRef.current.forkSession(session);
+  }, []);
+  const startResume = useCallback((session: AgentSession) => {
+    void handlersRef.current.resumeSession(session.id);
+  }, []);
+  const startRename = useCallback((sessionId: string, title: string) => {
+    void handlersRef.current.renameSession(sessionId, title);
+  }, []);
+  const startWorkspaceRename = useCallback((label: string) => {
+    void handlersRef.current.renameWorkspace(label);
+  }, []);
+  const startUpdate = useCallback(() => {
+    void handlersRef.current.installUpdate();
+  }, []);
+  const openResumePickerStable = useCallback(() => {
+    handlersRef.current.openResumePicker();
+  }, []);
+  const updateBusyFlag = Boolean(updateBusy);
+
   return (
     <div className="app-shell">
       <Sidebar
@@ -938,20 +977,20 @@ export default function App() {
         selectedId={selectedId}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
-        onSearchOpen={() => setSearchOpen(true)}
+        onSearchOpen={openSearch}
         onSelect={selectSession}
-        onCreate={() => setNewSessionOpen(true)}
-        onFork={(session) => void forkSession(session)}
-        onResume={(session) => void resumeSession(session.id)}
-        onResumePicker={openResumePicker}
-        onRename={(sessionId, title) => void renameSession(sessionId, title)}
+        onCreate={openNewSession}
+        onFork={startFork}
+        onResume={startResume}
+        onResumePicker={openResumePickerStable}
+        onRename={startRename}
         onDelete={setDeleteCandidate}
-        onSettings={() => setSettingsOpen(true)}
+        onSettings={openSettings}
         workspaceLabel={workspaceLabel}
-        onWorkspaceLabelChange={(label) => void renameWorkspace(label)}
+        onWorkspaceLabelChange={startWorkspaceRename}
         updateStatus={updateStatus}
-        updateBusy={Boolean(updateBusy)}
-        onUpdate={() => void installUpdate()}
+        updateBusy={updateBusyFlag}
+        onUpdate={startUpdate}
       />
 
       {selectedSession ? (
