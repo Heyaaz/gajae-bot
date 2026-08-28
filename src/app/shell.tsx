@@ -531,9 +531,15 @@ export default function App() {
   // Queue state changes when the turn starts or ends, not on every streamed
   // chunk. Keying this on transcript length re-listed the queue over the shared
   // ACP channel for each chunk, which is what made sending feel slow.
+  // A permission the agent already withdrew is gone by the time a slow click
+  // arrives, and the backend rejects for it. Dropping that rejection left the
+  // dialog looking answered while nothing had been sent, so it surfaces like
+  // every other action failure.
   const resolveToolCall = useCallback(
     (toolId: string, optionId: string) => {
-      void backend.resolveToolCall(toolId, { optionId });
+      backend.resolveToolCall(toolId, { optionId }).catch((error: unknown) => {
+        setAppError(humanErrorMessage(error));
+      });
     },
     [backend],
   );

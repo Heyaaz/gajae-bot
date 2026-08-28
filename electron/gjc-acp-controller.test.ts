@@ -3931,6 +3931,67 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("leaves a dropped goal out of the progress row", async () => {
+    // GJC keeps a dropped goal in its state with status "dropped". It used to arrive
+    // here as enabled with no mode, and the inspector only checks enabled plus an
+    // objective, so a discarded goal kept rendering as an active one.
+    const extMethod = vi
+      .fn()
+      .mockImplementation((_method: string, params: { query?: string }) => {
+        if (params.query === "goal.list/get")
+          return Promise.resolve({
+            page: {
+              complete: true,
+              items: [
+                {
+                  enabled: true,
+                  goal: { objective: "Abandoned plan", status: "dropped" },
+                },
+              ],
+            },
+          });
+        return Promise.resolve({ page: { complete: true, items: [] } });
+      });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = { signal: { aborted: false }, extMethod };
+
+    await expect(controller.getGoal("session-1")).resolves.toEqual({
+      enabled: false,
+      completed: 0,
+      total: 0,
+    });
+    controller.dispose();
+  });
+
+  it("reports no repository instead of failing the git panel", async () => {
+    // A session can sit in a directory that is not a repository. `git status` exits
+    // non-zero there, and that rejection reached the IPC handler as an unhandled
+    // error on every poll of the panel.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/not-a-repository-at-all",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as { startup: Promise<void> };
+    internals.startup = Promise.resolve();
+
+    await expect(controller.getGitStatus("session-1")).resolves.toEqual({
+      workspace: "/tmp/not-a-repository-at-all",
+      branch: "",
+      ahead: 0,
+      behind: 0,
+      files: [],
+    });
+    controller.dispose();
+  });
+
   it("projects live runtime subagent jobs", async () => {
     const extMethod = vi.fn().mockResolvedValue({
       page: {

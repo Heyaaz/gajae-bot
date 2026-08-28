@@ -1435,6 +1435,12 @@ export class GjcAcpController {
   // A transcript is append-only, so a rescan only has to parse the bytes added
   // since the last one. Device/inode identify the file so a compaction that
   // rewrites or truncates it is detected and falls back to a full parse.
+  //
+  // Every entry retains the file's parsed envelopes, so the map is held to the
+  // transcripts actually being re-read. Measured at 6.3MB per entry, an unbounded
+  // map reached 372MB across 60 transcripts and would pass 2GB across the 400 on
+  // this machine. Insertion order makes it an LRU: the oldest key is evicted first.
+  private static readonly SHARED_TRANSCRIPT_CACHE_LIMIT = 8;
   private readonly sharedTranscriptReads = new Map<
     string,
     {
@@ -1523,6 +1529,9 @@ export class GjcAcpController {
     this.connection = undefined;
     this.startup = undefined;
     this.attachedSessions.clear();
+    // The new runtime re-attaches from scratch, so last run's throttle stamps must
+    // not delay the first attempt against it.
+    this.attachAttempts.clear();
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
@@ -2315,8 +2324,13 @@ export class GjcAcpController {
       // Shrinking means the file was rewritten (compaction), so nothing carries over.
       info.size >= previous.size;
 
-    if (reusable && info.size === previous.size)
+    if (reusable && info.size === previous.size) {
+      // An unchanged file is still a read, and the eviction order is what decides
+      // which transcript survives. Returning early without touching it made the
+      // most frequently polled session look like the stalest one.
+      this.rememberTranscriptRead(filePath, previous);
       return previous.envelopes.slice();
+    }
 
     if (reusable) {
       const handle = await open(filePath, "r");
@@ -2330,7 +2344,7 @@ export class GjcAcpController {
           buffer.toString("utf8"),
           previous.partial,
         );
-        this.sharedTranscriptReads.set(filePath, {
+        this.rememberTranscriptRead(filePath, {
           device,
           inode,
           size: info.size,
@@ -2345,7 +2359,7 @@ export class GjcAcpController {
 
     const envelopes: Record<string, unknown>[] = [];
     const partial = parseInto(envelopes, await readFile(filePath, "utf8"), "");
-    this.sharedTranscriptReads.set(filePath, {
+    this.rememberTranscriptRead(filePath, {
       device,
       inode,
       size: info.size,
@@ -2353,6 +2367,31 @@ export class GjcAcpController {
       partial,
     });
     return envelopes.slice();
+  }
+
+  /** Caches a parsed transcript, evicting the least recently read one past the limit. */
+  private rememberTranscriptRead(
+    filePath: string,
+    entry: {
+      device: number;
+      inode: number;
+      size: number;
+      envelopes: Record<string, unknown>[];
+      partial: string;
+    },
+  ): void {
+    // Re-inserting moves the key to the end, so the first key is always the one
+    // read longest ago.
+    this.sharedTranscriptReads.delete(filePath);
+    this.sharedTranscriptReads.set(filePath, entry);
+    while (
+      this.sharedTranscriptReads.size >
+      GjcAcpController.SHARED_TRANSCRIPT_CACHE_LIMIT
+    ) {
+      const oldest = this.sharedTranscriptReads.keys().next();
+      if (oldest.done) break;
+      this.sharedTranscriptReads.delete(oldest.value);
+    }
   }
 
   private async readPersistedTranscript(
@@ -3796,13 +3835,17 @@ export class GjcAcpController {
         : typeof state?.mode === "string"
           ? state.mode
           : undefined;
+    // A dropped goal is discarded, so it must not occupy the progress row. It used
+    // to arrive as enabled with no mode, which the inspector rendered as an active
+    // goal because it only checks `enabled` and `objective`.
+    const live = enabled && status !== "dropped";
     return {
-      enabled,
-      ...(enabled &&
+      enabled: live,
+      ...(live &&
       (status === "active" || status === "paused" || status === "complete")
         ? { mode: status }
         : {}),
-      ...(enabled && typeof goal?.objective === "string"
+      ...(live && typeof goal?.objective === "string"
         ? { objective: goal.objective }
         : {}),
       completed: tasks.filter((task) => task.status === "completed").length,
@@ -4304,6 +4347,13 @@ export class GjcAcpController {
     this.sessions.clear();
     this.sessionCwds.clear();
     this.attachedSessions.clear();
+    // Only a successful attach removes a session's throttle stamp, so sessions that
+    // never attach -- terminal-only rows, dead endpoints -- held one for the life of
+    // the process while every other map here was already being cleared.
+    this.attachAttempts.clear();
+    // Each entry holds a transcript's parsed envelopes, measured at 6.3MB apiece.
+    this.sharedTranscriptReads.clear();
+    this.sharedSessionFiles.clear();
     this.transcripts.clear();
     this.messageKeys.clear();
     this.activeAssistantMessages.clear();
@@ -5804,11 +5854,20 @@ export class GjcAcpController {
 
   async getGitStatus(sessionId: string): Promise<GitStatusSnapshot> {
     const workspace = this.sessionCwds.get(sessionId) ?? this.workspace;
-    const result = await execFile(
-      "git",
-      ["-C", workspace, "status", "--porcelain=v1", "-z", "--branch"],
-      { maxBuffer: 2 * 1024 * 1024 },
-    );
+    // A session can live in a directory that is not a repository at all. `git status`
+    // exits non-zero there, and that rejection reached the IPC handler as an
+    // unhandled error every time the panel polled. No repository is a state, not a
+    // failure, so it is reported as one.
+    let result: { stdout: string };
+    try {
+      result = await execFile(
+        "git",
+        ["-C", workspace, "status", "--porcelain=v1", "-z", "--branch"],
+        { maxBuffer: 2 * 1024 * 1024 },
+      );
+    } catch {
+      return { workspace, branch: "", ahead: 0, behind: 0, files: [] };
+    }
     let branch = "";
     let upstream: string | undefined;
     let ahead = 0;

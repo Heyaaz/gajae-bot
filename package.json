@@ -19,7 +19,7 @@
     "gjc:e2e": "npm run build && node scripts/gjc-acp-e2e.mjs",
     "lint": "oxlint",
     "test": "vitest run",
-    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke",
+    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke && npm run desktop:gjc-smoke",
     "verify:gjc": "npm run build && npm run desktop:gjc-smoke && node scripts/gjc-acp-e2e.mjs",
     "preview": "vite preview"
   },
