@@ -16,6 +16,7 @@ import { promisify } from "node:util";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 import {
   brokerExec,
+  readTranscriptTail,
   brokerFailureMessage,
   busyPromptError,
   cancelledOperationError,
@@ -4104,6 +4105,232 @@ describe("listSessions runtime preservation", () => {
       }),
     ]);
     controller.dispose();
+  });
+});
+
+describe("readTranscriptTail", () => {
+  it("matches a full parse of the same transcript", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-tail-"));
+    const file = path.join(root, "session.jsonl");
+    const rows = [
+      { type: "message", message: { role: "user", content: "one" } },
+      {
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "a" },
+      },
+      { type: "message", message: { role: "user", content: "two" } },
+      { type: "message", message: { role: "assistant", stopReason: "toolUse" } },
+    ];
+    await writeFile(file, `${rows.map((r) => JSON.stringify(r)).join("\n")}\n`);
+    const size = (await stat(file)).size;
+
+    const tail = await readTranscriptTail(file, size);
+
+    expect(tail).toBeDefined();
+    expect(persistedTranscriptRunning(tail ?? [])).toBe(
+      persistedTranscriptRunning(rows),
+    );
+  });
+
+  it("drops a row the window cut in half instead of reporting it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-tail-cut-"));
+    const file = path.join(root, "session.jsonl");
+    // Padding wide enough to push the window start past the first rows.
+    const filler = Array.from({ length: 400 }, (_unused, index) =>
+      JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: `${index}`.padEnd(900, "x"),
+        },
+      }),
+    ).join("\n");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "first" },
+      })}\n${filler}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "done" },
+      })}\n`,
+    );
+    const size = (await stat(file)).size;
+
+    const tail = await readTranscriptTail(file, size);
+
+    expect(tail).toBeDefined();
+    // Every row that survived must be a real object, never a fragment.
+    for (const row of tail ?? []) expect(typeof row).toBe("object");
+    expect(persistedTranscriptRunning(tail ?? [])).toBe(false);
+  });
+
+  it("drops a cut row even when the fragment still parses", async () => {
+    // The dangerous case is a fragment that is itself valid JSON: parsing cannot
+    // reject it, so the window's first line has to be dropped on position alone.
+    // The row lengths below place the 256KB window boundary exactly at the start of
+    // a nested object that parses on its own and claims the turn ended.
+    const tailBytes = 256 * 1024;
+    const decoy =
+      '{"type":"message","message":{"role":"assistant","stopReason":"end_turn","content":"decoy"}}';
+    const request = JSON.stringify({
+      type: "message",
+      message: { role: "user", content: "live request" },
+    });
+    const working = JSON.stringify({
+      type: "message",
+      message: { role: "assistant", stopReason: "toolUse" },
+    });
+    // Solving for the boundary: the filler line must make up whatever the trailing
+    // rows and the decoy do not.
+    const shell = JSON.stringify({
+      type: "message",
+      message: { role: "assistant", stopReason: "toolUse", content: "" },
+    });
+    const fillerContent =
+      tailBytes -
+      (request.length + working.length + 3 + decoy.length) -
+      shell.length -
+      1;
+    const filler = JSON.stringify({
+      type: "message",
+      message: {
+        role: "assistant",
+        stopReason: "toolUse",
+        content: "z".repeat(fillerContent),
+      },
+    });
+    const oversized = `{"type":"message","message":{"role":"user","content":"${"y".repeat(
+      3000,
+    )}"}}${decoy}`;
+
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-tail-valid-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${oversized}\n${filler}\n${request}\n${working}\n`,
+    );
+    const size = (await stat(file)).size;
+    // The construction is only meaningful if the boundary really lands there.
+    expect(size - tailBytes).toBe(oversized.length - decoy.length);
+
+    const tail = await readTranscriptTail(file, size);
+
+    expect(tail).toBeDefined();
+    expect(
+      (tail ?? []).some(
+        (row) =>
+          ((row as { message?: { content?: unknown } }).message?.content ??
+            null) === "decoy",
+      ),
+    ).toBe(false);
+    expect(persistedTranscriptRunning(tail ?? [])).toBe(true);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("declines to answer when the tail holds no usable row", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-tail-empty-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(file, "\n\n");
+    const size = (await stat(file)).size;
+
+    await expect(readTranscriptTail(file, size)).resolves.toBeUndefined();
+  });
+});
+
+describe("listSessions status from the transcript", () => {
+  it("lists a session the transcript reports working as running", async () => {
+    // Discovery carries identity and cwd only -- no run state. A session this
+    // window has never opened therefore had no status source at all and defaulted
+    // to idle, so work started from a terminal showed up as finished.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-disc-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const listed = {
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+      title: "Session",
+    };
+    const extMethod = vi.fn().mockResolvedValue({ result: { sessions: [] } });
+    const listSessions = vi.fn().mockResolvedValue({ sessions: [listed] });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "session-1", status: "running" }),
+    ]);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("lists a settled session as idle", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-disc-idle-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "ok" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const listed = {
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+      title: "Session",
+    };
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: Record<string, unknown>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: vi.fn().mockResolvedValue({ result: { sessions: [] } }),
+      listSessions: vi.fn().mockResolvedValue({ sessions: [listed] }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "session-1", status: "idle" }),
+    ]);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
   });
 });
 

@@ -108,6 +108,49 @@ const execFile = promisify(execFileCb);
  * The child is left to exit on its own once its response has been read. Measured:
  * such a process ends by itself within its linger window, so nothing accumulates.
  */
+/** How much of a transcript's end is enough to decide whether its turn is still open. */
+const RUN_STATE_TAIL_BYTES = 256 * 1024;
+
+/**
+ * Parses the last rows of a transcript.
+ *
+ * Whether a turn is open depends on how the newest rows end, so reading the whole
+ * file to answer that is waste: across 399 local sessions a full parse costs ~23s
+ * against ~30ms for the tails. The first line in the window is dropped unless the
+ * window starts at the beginning of the file, because it is probably cut in half.
+ *
+ * Returns undefined when the tail holds no usable row, so the caller can decline to
+ * guess rather than reporting a wrong state.
+ */
+export async function readTranscriptTail(
+  filePath: string,
+  size: number,
+): Promise<Record<string, unknown>[] | undefined> {
+  const start = Math.max(0, size - RUN_STATE_TAIL_BYTES);
+  const handle = await open(filePath, "r");
+  try {
+    const length = size - start;
+    if (length <= 0) return undefined;
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, start);
+    const lines = buffer.toString("utf8").split("\n");
+    if (start > 0) lines.shift();
+    const rows: Record<string, unknown>[] = [];
+    for (const line of lines) {
+      const text = line.trim();
+      if (!text) continue;
+      try {
+        rows.push(JSON.parse(text) as Record<string, unknown>);
+      } catch {
+        // A torn line at either edge of the window is skipped.
+      }
+    }
+    return rows.length > 0 ? rows : undefined;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function brokerExec(
   executable: string,
   args: string[],
@@ -1360,6 +1403,11 @@ export class GjcAcpController {
   // Anything at that size is the snapshot the signal already superseded; a larger
   // file is a newer account.
   private readonly liveRunningDigests = new Map<string, number>();
+  /** Transcript-derived run state per session, keyed by the file size it was read at. */
+  private readonly discoveredRunStates = new Map<
+    string,
+    { size: number; status: AgentSession["status"] }
+  >();
   /** How long an ACP cancel gets to settle the turn before escalating. */
   private cancelSettleMs = 4000;
   /** Delay between broker polls while recovering a fork's session id. */
@@ -1468,6 +1516,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
+    this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
     this.activeAssistantMessages.clear();
@@ -1617,13 +1666,24 @@ export class GjcAcpController {
           ? ("terminal-only" as const)
           : ("attachable" as const);
       const listedSession = sessionInfoToAgentSession(info);
+      // Discovery metadata says nothing about whether the agent is working, and a
+      // session this window has never opened has no other source, so it used to
+      // default to idle -- work started from a terminal listed as finished. The
+      // persisted transcript is the one account that exists for those sessions.
+      const transcriptStatus = await this.discoveredRunState(info.sessionId);
       // Session discovery only carries identity/cwd metadata. Replacing the whole row
       // here erased model, thinking, context usage, phase, and status that transcript
       // replay had just restored, so the UI drifted again after every list refresh.
       const session = {
         ...existing,
         ...listedSession,
-        status: existing?.status ?? "idle",
+        // A row this window drives keeps the status its own turn is maintaining; a
+        // session it only observes is described by its transcript.
+        status:
+          this.activePromptSessions.has(info.sessionId) ||
+          this.attachedSessions.has(info.sessionId)
+            ? (existing?.status ?? "idle")
+            : (transcriptStatus ?? existing?.status ?? "idle"),
         phase: existing?.phase,
         mode: existing?.mode,
         model: existing?.model,
@@ -1649,6 +1709,40 @@ export class GjcAcpController {
       ...this.sessions.get(info.sessionId)!,
     }));
     return this.lastDiscovered.map((session) => ({ ...session }));
+  }
+
+  /**
+   * Run state for a session discovery is listing, read from its transcript.
+   *
+   * Discovery covers every session the broker knows, so this must not turn a list
+   * refresh into hundreds of full file reads. Only the tail of the file is parsed,
+   * and the result is cached against the file's size so an unchanged transcript is
+   * answered without touching the disk again.
+   */
+  private async discoveredRunState(
+    sessionId: string,
+  ): Promise<AgentSession["status"] | undefined> {
+    try {
+      const filePath = await this.locateSharedTranscriptFile(sessionId);
+      if (!filePath) return undefined;
+      const info = await stat(filePath);
+      if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
+      const cached = this.discoveredRunStates.get(sessionId);
+      if (cached && cached.size === info.size) return cached.status;
+      // Never parse whole transcripts here. Measured across 399 local sessions
+      // (640MB), a full parse of each costs ~23s, which would stall every list
+      // refresh. Run state only depends on how the newest rows end, so a bounded
+      // tail is read instead.
+      const envelopes = await readTranscriptTail(filePath, info.size);
+      if (!envelopes) return undefined;
+      const status = persistedTranscriptRunning(envelopes)
+        ? ("running" as const)
+        : ("idle" as const);
+      this.discoveredRunStates.set(sessionId, { size: info.size, status });
+      return status;
+    } catch {
+      return undefined;
+    }
   }
 
   /** Undefined when the broker index could not be read in full. */
@@ -2207,6 +2301,7 @@ export class GjcAcpController {
           ) {
             this.liveRunningSessions.delete(sessionId);
             this.liveRunningDigests.delete(sessionId);
+            this.discoveredRunStates.delete(sessionId);
             this.updateSessionStatus(sessionId, "idle");
           }
         } else if (
@@ -3091,6 +3186,7 @@ export class GjcAcpController {
     // about it from putting the row back to running.
     this.liveRunningSessions.delete(sessionId);
     this.liveRunningDigests.delete(sessionId);
+    this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
     this.updateSessionStatus(sessionId, "idle");
@@ -4019,6 +4115,7 @@ export class GjcAcpController {
     this.activePromptSessions.delete(sessionId);
     this.liveRunningSessions.delete(sessionId);
     this.liveRunningDigests.delete(sessionId);
+    this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
@@ -4069,6 +4166,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
+    this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
     this.suppressedUserMessageKeys.clear();
@@ -4154,6 +4252,7 @@ export class GjcAcpController {
       this.activePromptSessions.clear();
       this.liveRunningSessions.clear();
       this.liveRunningDigests.clear();
+      this.discoveredRunStates.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
       this.activeAssistantMessages.clear();
@@ -5370,6 +5469,7 @@ export class GjcAcpController {
       session.status = "idle";
       this.liveRunningSessions.delete(sessionId);
       this.liveRunningDigests.delete(sessionId);
+      this.discoveredRunStates.delete(sessionId);
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;
