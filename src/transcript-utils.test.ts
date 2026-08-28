@@ -179,6 +179,70 @@ describe("mergeTranscriptItem", () => {
     const merged = mergeTranscriptItem([first], message("b", "two"));
     expect(merged[0]).toBe(first);
   });
+
+  it("retires the streamed copy when the persisted rebuild of the same reply arrives", () => {
+    // The live ACP stream names a reply `acp-message-<messageId>`; the persisted
+    // rebuild names the same reply `shared-message-<rowId>`. An id-only match
+    // appended the rebuild as a new row, so one reply rendered twice -- once
+    // above and once below the tool card it wrapped.
+    const items = [
+      message("acp-message-m1", "답이 나왔습니다."),
+      message("call-1", "tool"),
+    ];
+    const merged = mergeTranscriptItem(
+      items,
+      message("shared-message-r1", "답이 나왔습니다."),
+    );
+    expect(merged.map((i) => i.id)).toEqual(["shared-message-r1", "call-1"]);
+  });
+
+  it("does not retire a streamed message whose body differs", () => {
+    const items = [message("acp-message-m1", "first reply")];
+    const merged = mergeTranscriptItem(
+      items,
+      message("shared-message-r1", "second reply"),
+    );
+    expect(merged.map((i) => i.id)).toEqual([
+      "acp-message-m1",
+      "shared-message-r1",
+    ]);
+  });
+
+  it("retires the echoed request when its persisted rebuild arrives", () => {
+    // Aborting a turn republishes the tail, so the request the window echoed as
+    // `local-prompt-` met its `shared-message-` rebuild through the appended
+    // path and rendered as two identical bubbles.
+    const echo = {
+      ...message("local-prompt-9", "음 좀 고셔진거 같네"),
+      role: "user" as const,
+    };
+    const rebuilt = {
+      ...message("shared-message-abc", "음 좀 고셔진거 같네"),
+      role: "user" as const,
+    };
+    expect(mergeTranscriptItem([echo], rebuilt).map((i) => i.id)).toEqual([
+      "shared-message-abc",
+    ]);
+  });
+
+  it("retires the local cancellation notice when the persisted one arrives", () => {
+    const local = {
+      kind: "notice",
+      id: "gjc-cancelled-3",
+      sessionId: "s",
+      title: "작업 취소됨",
+      content: "진행 중인 작업이 취소되어 종료됐습니다.",
+      tone: "neutral",
+      createdAt: "08:50",
+    } as unknown as TranscriptItem;
+    const rebuilt = {
+      ...local,
+      id: "shared-cancelled-def",
+    } as TranscriptItem;
+    expect(mergeTranscriptItem([local], rebuilt).map((i) => i.id)).toEqual([
+      "shared-cancelled-def",
+    ]);
+  });
 });
 
 describe("cacheTranscript", () => {
@@ -278,6 +342,65 @@ describe("cacheTranscript", () => {
     expect(confirmed["session-1"].some((item) => item.id === echo.id)).toBe(
       false,
     );
+  });
+
+  it("drops the echo when the confirming remote row was already on screen", () => {
+    // The persisted sync publishes the remote user row first, then a rescan
+    // republishes the same history. The echo has to retire against that already
+    // known row; requiring a newly seen id pinned it forever and the request
+    // rendered as two identical bubbles.
+    const remote = {
+      ...message,
+      id: "shared-message-user-1",
+      role: "user" as const,
+      content: "만약 저거 반영 안하면 앱에는 어떤 일이 있지 ?",
+    };
+    const echo = {
+      ...message,
+      id: "local-prompt-3",
+      role: "user" as const,
+      content: "만약 저거 반영 안하면 앱에는 어떤 일이 있지 ?",
+    };
+    const settled = cacheTranscript({ "session-1": [remote, echo] }, "session-1", [
+      remote,
+    ]);
+    expect(settled["session-1"].map((item) => item.id)).toEqual([remote.id]);
+  });
+
+  it("keeps two identical requests when only one has been confirmed", () => {
+    const echoOne = {
+      ...message,
+      id: "local-prompt-1",
+      role: "user" as const,
+      content: "다시 해",
+    };
+    const echoTwo = { ...echoOne, id: "local-prompt-2" };
+    const settled = cacheTranscript(
+      { "session-1": [echoOne, echoTwo] },
+      "session-1",
+      [{ ...message, id: "shared-message-1", role: "user", content: "다시 해" }],
+    );
+    expect(settled["session-1"]).toHaveLength(2);
+  });
+
+  it("confirms an attachment-only request by its file names", () => {
+    const echo = {
+      ...message,
+      id: "local-prompt-8",
+      role: "user" as const,
+      content: '\n\n<local-files>\n- "/tmp/a/report.pdf"\n</local-files>',
+    };
+    const settled = cacheTranscript({ "session-1": [echo] }, "session-1", [
+      {
+        ...message,
+        id: "shared-message-2",
+        role: "user" as const,
+        content: '<local-files>\n- "/other/report.pdf"\n</local-files>',
+      },
+    ]);
+    expect(settled["session-1"].map((item) => item.id)).toEqual([
+      "shared-message-2",
+    ]);
   });
 
   it("keeps an unmatched image or steer request at the end until it is confirmed", () => {

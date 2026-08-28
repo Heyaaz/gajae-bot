@@ -117,12 +117,29 @@ function sameUserRequest(
   const remoteText = requestText(remote.content);
   const localText = requestText(local.content);
   if (remoteText && localText) return remoteText === localText;
+  // An attachment-only request has no prose on either side, so text comparison
+  // cannot confirm it. The attached file names are the only content both sides
+  // carry, so they stand in for the body.
+  const remoteNames = attachedNames(remote.content);
+  const localNames =
+    attachedNames(local.content) ||
+    (local.images ?? []).map((image) => image.name).sort().join("|");
+  if (!remoteText && !localText && (remoteNames || localNames))
+    return remoteNames === localNames;
   if (local.images?.length) {
     const remoteHasImages =
       /<local-images>/u.test(remote.content) || Boolean(remote.images?.length);
     return remoteHasImages && (!localText || remoteText === localText);
   }
   return false;
+}
+
+/** File names from a prompt's attachment block, order-independent. */
+function attachedNames(content: string): string {
+  return [...content.matchAll(/^\s*-\s+"([^"]+)"\s*$/gmu)]
+    .map((match) => match[1]!.split("/").at(-1)!)
+    .sort()
+    .join("|");
 }
 
 export function copyableMessageText(content: string): string {
@@ -163,22 +180,26 @@ export function cacheTranscript(
 ): Record<string, TranscriptItem[]> {
   const previous = transcripts[sessionId];
   if (previous) {
-    const previousRemoteIds = new Set(
-      previous.filter((item) => !isLocalEcho(item.id)).map((item) => item.id),
-    );
     const optimistic = previous.filter(
       (item): item is Extract<TranscriptItem, { kind: "message" }> =>
         item.kind === "message" && isLocalEcho(item.id),
     );
+    // Each remote user message confirms at most one echo. Matching by text alone
+    // let a single remote row confirm nothing when it was already on screen
+    // before the echo -- the old "must be a newly seen id" rule -- which left the
+    // echo pinned forever and rendered the request twice. Consuming candidates
+    // instead keeps two identical requests independent while guaranteeing every
+    // confirmed echo is dropped.
+    const unconsumed = items.filter(
+      (item): item is Extract<TranscriptItem, { kind: "message" }> =>
+        item.kind === "message" && item.role === "user",
+    );
     for (const local of optimistic) {
-      const confirmed = items.some(
-        (item) =>
-          item.kind === "message" &&
-          item.role === "user" &&
-          !previousRemoteIds.has(item.id) &&
-          sameUserRequest(item, local),
+      const match = unconsumed.findIndex((item) =>
+        sameUserRequest(item, local),
       );
-      if (!confirmed) items = [...items, local];
+      if (match >= 0) unconsumed.splice(match, 1);
+      else items = [...items, local];
     }
   }
   if (previous && previous !== items) {
@@ -226,8 +247,59 @@ export function mergeTranscriptItem(
   item: TranscriptItem,
 ): TranscriptItem[] {
   const index = items.findIndex((existing) => existing.id === item.id);
-  if (index === -1) return [...items, item];
-  return items.map((existing, at) => (at === index ? item : existing));
+  if (index >= 0)
+    return items.map((existing, at) => (at === index ? item : existing));
+  // Every row this window shows before GJC persists it carries a local id, and
+  // the persisted rebuild of that same row carries a different one. An id-only
+  // match treated the rebuild as a brand new row and appended it, so a request,
+  // a reply, or a cancellation notice rendered twice.
+  const superseded = supersededLocalIndex(items, item);
+  if (superseded >= 0)
+    return items.map((existing, at) => (at === superseded ? item : existing));
+  return [...items, item];
+}
+
+// Local ids and the persisted ids that replace them. The renderer draws whatever
+// the transcript holds, so a rebuilt row must retire the local copy of itself
+// rather than sit next to it.
+const LOCAL_MESSAGE_PREFIXES = [
+  "acp-message-",
+  "local-prompt-",
+  "local-user-",
+];
+const LOCAL_NOTICE_PREFIXES = ["gjc-cancelled-"];
+
+function hasLocalPrefix(id: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => id.startsWith(prefix));
+}
+
+/** Index of the locally rendered row that `item` is the persisted rebuild of. */
+function supersededLocalIndex(
+  items: readonly TranscriptItem[],
+  item: TranscriptItem,
+): number {
+  if (item.kind === "message" && item.id.startsWith("shared-message-")) {
+    const body = requestText(item.content);
+    if (!body) return -1;
+    return items.findIndex(
+      (existing) =>
+        existing.kind === "message" &&
+        existing.role === item.role &&
+        hasLocalPrefix(existing.id, LOCAL_MESSAGE_PREFIXES) &&
+        requestText(existing.content) === body,
+    );
+  }
+  // A cancelled turn is announced locally the moment the user aborts, and the
+  // persisted transcript reports the same stop as its own notice row.
+  if (item.kind === "notice" && item.id.startsWith("shared-cancelled-")) {
+    return items.findIndex(
+      (existing) =>
+        existing.kind === "notice" &&
+        hasLocalPrefix(existing.id, LOCAL_NOTICE_PREFIXES) &&
+        existing.title === item.title,
+    );
+  }
+  return -1;
 }
 
 export function updateTranscriptItem(
