@@ -1403,6 +1403,16 @@ export class GjcAcpController {
   // Anything at that size is the snapshot the signal already superseded; a larger
   // file is a newer account.
   private readonly liveRunningDigests = new Map<string, number>();
+  /**
+   * Sessions whose running state was read out of their transcript.
+   *
+   * Attaching to a session makes GJC publish a bootstrap `gjcRunning:false` about
+   * this connection's own prompt state. For a session another process is driving that
+   * report is uninformative, and taking it as a completion flipped the row to 완료 the
+   * moment it was clicked. Remembering where the running state came from is what
+   * tells that report apart from a real one.
+   */
+  private readonly transcriptRunningSessions = new Set<string>();
   /** Transcript-derived run state per session, keyed by the file size it was read at. */
   private readonly discoveredRunStates = new Map<
     string,
@@ -1516,6 +1526,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
+    this.transcriptRunningSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -1763,6 +1774,8 @@ export class GjcAcpController {
       const status = persistedTranscriptRunning(envelopes)
         ? ("running" as const)
         : ("idle" as const);
+      if (status === "running") this.transcriptRunningSessions.add(sessionId);
+      else this.transcriptRunningSessions.delete(sessionId);
       this.discoveredRunStates.set(sessionId, { size: info.size, status });
       return status;
     } catch {
@@ -2326,6 +2339,7 @@ export class GjcAcpController {
           ) {
             this.liveRunningSessions.delete(sessionId);
             this.liveRunningDigests.delete(sessionId);
+      this.transcriptRunningSessions.delete(sessionId);
             this.discoveredRunStates.delete(sessionId);
             this.updateSessionStatus(sessionId, "idle");
           }
@@ -4191,6 +4205,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
+    this.transcriptRunningSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -4277,6 +4292,7 @@ export class GjcAcpController {
       this.activePromptSessions.clear();
       this.liveRunningSessions.clear();
       this.liveRunningDigests.clear();
+    this.transcriptRunningSessions.clear();
       this.discoveredRunStates.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
@@ -5478,13 +5494,28 @@ export class GjcAcpController {
     // completion always follows a gjcRunning:true for that same turn. Ignoring
     // every report instead left the row running forever whenever the prompt never
     // got its reply.
+    //
+    // The same reasoning covers a turn nobody here started. Attaching to a session
+    // makes GJC publish a bootstrap `gjcRunning:false` describing *this connection's*
+    // prompt state, which says nothing about work another process is driving. Reading
+    // it as a completion is what flipped a working session to 완료 the moment it was
+    // clicked. Only a report that follows a confirmed start closes a turn.
+    const neverConfirmedRunning = !this.liveRunningSessions.has(sessionId);
     const staleForActivePrompt =
-      this.activePromptSessions.has(sessionId) &&
-      !this.liveRunningSessions.has(sessionId);
+      this.activePromptSessions.has(sessionId) && neverConfirmedRunning;
+    // Which report to discard depends on where the row's running state came from. A
+    // status this window set for its own command is answered by that command's own
+    // live report. A status read out of the transcript belongs to work in another
+    // process, and the bootstrap report carries no information about it.
+    const bootstrapForForeignTurn =
+      !this.activePromptSessions.has(sessionId) &&
+      neverConfirmedRunning &&
+      this.transcriptRunningSessions.has(sessionId);
     if (
       running === false &&
       session.status !== "failed" &&
       !staleForActivePrompt &&
+      !bootstrapForForeignTurn &&
       !this.compactingSessions.has(sessionId)
     ) {
       // A turn this window did not start -- a steer, or work driven from the
@@ -5495,6 +5526,7 @@ export class GjcAcpController {
       session.status = "idle";
       this.liveRunningSessions.delete(sessionId);
       this.liveRunningDigests.delete(sessionId);
+      this.transcriptRunningSessions.delete(sessionId);
       this.discoveredRunStates.delete(sessionId);
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);

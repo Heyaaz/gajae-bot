@@ -4352,6 +4352,79 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
+  it("ignores the bootstrap report attaching sends for foreign work", async () => {
+    // The user's report: the sidebar reads 진행 중, then clicking the session flips it
+    // to 완료. Clicking attaches the session, and GJC answers an attach with a
+    // session_info_update carrying gjcRunning:false that describes this connection's
+    // own prompt state -- nothing about the agent working in another process.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-bootstrap-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      handleSessionUpdate: (payload: {
+        sessionId: string;
+        update: Record<string, unknown>;
+      }) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+
+    // The sidebar lists the session as working, read from its transcript.
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "running" }),
+    ]);
+
+    // Clicking it attaches, and GJC publishes its bootstrap phase.
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+      },
+    });
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("notices work that started since the last list refresh", async () => {
     // Discovery skips its scan when nothing about the live session set changed. An
     // agent starting work changes no session id and no repository, so a list whose
