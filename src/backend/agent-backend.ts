@@ -15,6 +15,7 @@ import type {
   GitStatusSnapshot,
   GoalOperation,
   GoalSnapshot,
+  HistorySession,
   MessageDelivery,
   QueuedMessage,
   SubagentSnapshot,
@@ -26,6 +27,9 @@ export interface AgentBackend {
   listSessions(): Promise<AgentSession[]>;
   createSession(input: CreateSessionInput): Promise<AgentSession>;
   forkSession(input: ForkSessionInput): Promise<AgentSession>;
+  resumeSession(sessionId: string): Promise<AgentSession>;
+  listHistorySessions(): Promise<HistorySession[]>;
+  openHistorySession(sessionId: string): Promise<AgentSession>;
   renameSession(sessionId: string, title: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;

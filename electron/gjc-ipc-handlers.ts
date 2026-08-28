@@ -251,6 +251,15 @@ export function registerGjcIpcHandlers(
         requiredString(title, "Session title"),
       ),
   );
+  ipcMain.handle(GJC_IPC.resumeSession, (_event, sessionId: unknown) =>
+    controller.resumeSession(requiredId(sessionId, "Session ID")),
+  );
+  ipcMain.handle(GJC_IPC.listHistorySessions, () =>
+    controller.listHistorySessions(),
+  );
+  ipcMain.handle(GJC_IPC.openHistorySession, (_event, sessionId: unknown) =>
+    controller.openHistorySession(requiredId(sessionId, "Session ID")),
+  );
   ipcMain.handle(GJC_IPC.deleteSession, (_event, sessionId: unknown) =>
     controller.deleteSession(requiredId(sessionId, "Session ID")),
   );

@@ -9,6 +9,7 @@ import {
   MoreHorizontal,
   Pencil,
   Plus,
+  RotateCcw,
   Search,
   Settings,
   Trash2,
@@ -135,6 +136,8 @@ export interface SidebarProps {
   onSelect: (sessionId: string) => void;
   onCreate: () => void;
   onFork: (session: AgentSession) => void;
+  onResume: (session: AgentSession) => void;
+  onResumePicker: () => void;
   onRename: (sessionId: string, title: string) => void;
   onDelete: (session: AgentSession) => void;
   onSettings: () => void;
@@ -155,6 +158,8 @@ export function Sidebar({
   onSelect,
   onCreate,
   onFork,
+  onResume,
+  onResumePicker,
   onRename,
   onDelete,
   onSettings,
@@ -254,6 +259,14 @@ export function Sidebar({
         <button
           className="icon-button"
           type="button"
+          title="지난 세션 이어서 진행"
+          onClick={onResumePicker}
+        >
+          <RotateCcw size={16} />
+        </button>
+        <button
+          className="icon-button"
+          type="button"
           title="새 Gajae 세션"
           onClick={onCreate}
         >
@@ -286,6 +299,9 @@ export function Sidebar({
           <div className="sidebar-empty">
             <Search size={18} />
             <span>세션이 없습니다</span>
+            <button type="button" onClick={onResumePicker}>
+              지난 세션 여기
+            </button>
           </div>
         )}
       </div>
@@ -384,6 +400,18 @@ export function Sidebar({
           >
             <GitFork size={14} /> 현재 상태에서 포크
           </button>
+          {contextMenu.session.attachment !== "attached" && (
+            <button
+              type="button"
+              onClick={() => {
+                const session = contextMenu.session;
+                setContextMenu(null);
+                onResume(session);
+              }}
+            >
+              <RotateCcw size={14} /> 세션 이어서 진행
+            </button>
+          )}
           <button
             type="button"
             onClick={() => beginRename(contextMenu.session)}

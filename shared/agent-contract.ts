@@ -75,6 +75,22 @@ export interface AgentSession {
   runtimeState?: EffectiveRuntimeState;
 }
 
+/**
+ * A past session on disk, whether or not it is still running.
+ *
+ * Discovery deliberately drops sessions the broker no longer reports as live, so
+ * they cannot be listed as rows. They are still resumable -- this is what
+ * `gjc --resume <id>` opens -- so they are offered separately.
+ */
+export interface HistorySession {
+  id: string;
+  title: string;
+  workspace: string;
+  updatedAt: string;
+  messageCount: number;
+  live: boolean;
+}
+
 export interface AgentCommand {
   name: string;
   description: string;
@@ -438,6 +454,9 @@ export interface GjcDesktopBridge {
   listSessions(): Promise<AgentSession[]>;
   createSession(input: CreateSessionInput): Promise<AgentSession>;
   forkSession(input: ForkSessionInput): Promise<AgentSession>;
+  resumeSession(sessionId: string): Promise<AgentSession>;
+  listHistorySessions(): Promise<HistorySession[]>;
+  openHistorySession(sessionId: string): Promise<AgentSession>;
   renameSession(sessionId: string, title: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;

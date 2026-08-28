@@ -8,7 +8,7 @@ import type {
 } from "../../shared/agent-contract";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
-import { Target, X } from "lucide-react";
+import { Copy, RotateCcw, Target, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { statusLabel, subagentLabel } from "./format";
 
@@ -16,6 +16,8 @@ export interface InspectorProps {
   session: AgentSession;
   transcript: TranscriptItem[];
   liveSubagents: SubagentSnapshot[];
+  resuming?: boolean;
+  onResume?: () => void;
   onClose: () => void;
 }
 
@@ -23,6 +25,8 @@ export function Inspector({
   session,
   transcript,
   liveSubagents,
+  resuming = false,
+  onResume,
   onClose,
 }: InspectorProps) {
   const transcriptSubagents = transcript.filter(
@@ -58,12 +62,32 @@ export function Inspector({
           <img src={gajaeIconUrl} alt="" />
         </span>
         <h2>{session.title}</h2>
+        <button
+          className="inspector-session-id"
+          type="button"
+          title="세션 ID 복사"
+          onClick={() => void navigator.clipboard?.writeText(session.id)}
+        >
+          <code>{session.id}</code>
+          <Copy size={11} />
+        </button>
         <p>{session.subtitle}</p>
         <span
           className={`status-chip status-chip--${session.phase === "compacting" ? "compacting" : session.status}`}
         >
           {statusLabel(session.status, session.phase)}
         </span>
+        {onResume && session.attachment !== "attached" && (
+          <button
+            className="inspector-resume"
+            type="button"
+            disabled={resuming}
+            onClick={() => onResume()}
+          >
+            <RotateCcw size={12} />
+            {resuming ? "이어서 진행 중…" : "세션 이어서 진행"}
+          </button>
+        )}
       </section>
       <section className="inspector-section inspector-subagents">
         <h3>서브 에이전트</h3>

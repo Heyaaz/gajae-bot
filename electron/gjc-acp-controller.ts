@@ -60,6 +60,7 @@ import type {
   GitStatusSnapshot,
   GoalOperation,
   GoalSnapshot,
+  HistorySession,
   QueuedMessage,
   SubagentSnapshot,
   ToolImage,
@@ -69,6 +70,9 @@ import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 
 const GJC_ACCENT = "#ff8a34";
 const STARTUP_TIMEOUT_MS = 30_000;
+// How many past sessions the resume picker offers. The store keeps every session
+// ever recorded, and summarising each one costs a file read.
+const HISTORY_SESSION_LIMIT = 60;
 // How far back a transcript rescan looks for rows that changed in place. A turn
 // settles its own recent rows; a disagreement older than this is republished as
 // a whole history instead of being reconciled row by row.
@@ -1046,6 +1050,72 @@ export function sessionInfoToAgentSession(info: SessionInfo): AgentSession {
     accent: GJC_ACCENT,
     ownership: "external",
     attachment: "attachable",
+  };
+}
+
+/**
+ * A session file's title, message count, and last activity.
+ *
+ * The first line is the session envelope (`cwd`, id); the rest are messages. The
+ * first user message is what identifies the session to a human, because a
+ * persisted session carries no title of its own.
+ */
+export function historySessionSummary(
+  lines: readonly string[],
+): { cwd?: string; title?: string; messageCount: number } | undefined {
+  let cwd: string | undefined;
+  let title: string | undefined;
+  let messageCount = 0;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let row: Record<string, unknown>;
+    try {
+      row = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (row.type === "session" && typeof row.cwd === "string") {
+      cwd = row.cwd;
+      continue;
+    }
+    if (row.type !== "message") continue;
+    const message =
+      row.message && typeof row.message === "object" && !Array.isArray(row.message)
+        ? (row.message as Record<string, unknown>)
+        : row;
+    if (message.role !== "user" && message.role !== "assistant") continue;
+    messageCount += 1;
+    if (title || message.role !== "user") continue;
+    const text = Array.isArray(message.content)
+      ? message.content
+          .flatMap((part) =>
+            part &&
+            typeof part === "object" &&
+            !Array.isArray(part) &&
+            (part as Record<string, unknown>).type === "text" &&
+            typeof (part as Record<string, unknown>).text === "string"
+              ? [String((part as Record<string, unknown>).text)]
+              : [],
+          )
+          .join(" ")
+      : typeof message.content === "string"
+        ? message.content
+        : "";
+    // Attachment blocks are machinery, not intent, so they never become a title.
+    const body = text
+      .replace(
+        /<local-(?:attachments|files|images)>[\s\S]*?<\/local-(?:attachments|files|images)>/gu,
+        "",
+      )
+      .replace(/\s+/gu, " ")
+      .trim();
+    if (body) title = body.slice(0, 80);
+  }
+  if (messageCount === 0) return undefined;
+  return {
+    ...(cwd ? { cwd } : {}),
+    ...(title ? { title } : {}),
+    messageCount,
   };
 }
 
@@ -3996,6 +4066,182 @@ export class GjcAcpController {
       }
     }
     return "gjc";
+  }
+
+  /**
+   * Past sessions on disk, newest first.
+   *
+   * Discovery only lists sessions the broker still reports as live, so everything
+   * else is unreachable from the window even though `gjc --resume <id>` opens it
+   * fine. The session files are the authority on what exists.
+   */
+  async listHistorySessions(): Promise<HistorySession[]> {
+    const agentDirectory = path.resolve(
+      process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
+    );
+    const sessionsDirectory = path.join(agentDirectory, "sessions");
+    let connection: ClientSideConnection | undefined;
+    try {
+      connection = await this.requireConnection();
+    } catch {
+      // Liveness is decoration here; the files still list fine without it.
+    }
+    const liveIds = new Set(
+      ((connection ? await this.brokerSessions(connection) : undefined) ?? [])
+        .filter((session) => session.live)
+        .map((session) => session.sessionId),
+    );
+    const files: Array<{ path: string; id: string; modified: number }> = [];
+    try {
+      for (const bucket of await readdir(sessionsDirectory, {
+        withFileTypes: true,
+      })) {
+        if (!bucket.isDirectory()) continue;
+        const directory = path.join(sessionsDirectory, bucket.name);
+        for (const entry of await readdir(directory, { withFileTypes: true })) {
+          if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+          const id = entry.name.slice(0, -".jsonl".length).split("_").at(-1);
+          if (!id) continue;
+          const filePath = path.join(directory, entry.name);
+          try {
+            const info = await stat(filePath);
+            // A huge transcript is still listed, but its summary is read from a
+            // bounded head rather than the whole file.
+            files.push({ path: filePath, id, modified: info.mtimeMs });
+          } catch {
+            /* the file went away between listing and reading */
+          }
+        }
+      }
+    } catch {
+      return [];
+    }
+    files.sort((left, right) => right.modified - left.modified);
+    const sessions: HistorySession[] = [];
+    for (const file of files.slice(0, HISTORY_SESSION_LIMIT)) {
+      let summary: ReturnType<typeof historySessionSummary>;
+      try {
+        const text = await readFile(file.path, "utf8");
+        summary = historySessionSummary(text.split("\n"));
+      } catch {
+        continue;
+      }
+      if (!summary) continue;
+      const workspace = summary.cwd ?? "";
+      sessions.push({
+        id: file.id,
+        title: summary.title ?? readableSessionTitle(file.id, undefined),
+        workspace,
+        updatedAt: recentLabel(new Date(file.modified).toISOString()),
+        messageCount: summary.messageCount,
+        live: liveIds.has(file.id),
+      });
+    }
+    return sessions;
+  }
+
+  /**
+   * Open a past session as a row in this window, the way `gjc --resume <id>` does
+   * in a terminal. A session already listed is simply re-attached.
+   */
+  async openHistorySession(sessionId: string): Promise<AgentSession> {
+    if (this.sessions.has(sessionId)) return this.resumeSession(sessionId);
+    const filePath = await this.locateSharedTranscriptFile(sessionId);
+    if (!filePath)
+      throw new Error(`세션 기록을 찾지 못했습니다: ${sessionId}`);
+    let cwd: string | undefined;
+    try {
+      const text = await readFile(filePath, "utf8");
+      cwd = historySessionSummary(text.split("\n"))?.cwd;
+    } catch {
+      /* the workspace falls back below */
+    }
+    const workspace = cwd ?? this.workspace;
+    const session: AgentSession = {
+      id: sessionId,
+      title: readableSessionTitle(sessionId, undefined),
+      subtitle: path.basename(workspace) || workspace,
+      workspace,
+      runtime: "gjc",
+      status: "idle",
+      updatedAt: "now",
+      pinned: false,
+      unread: false,
+      accent: GJC_ACCENT,
+      ownership: "gajae",
+      attachment: "recovering",
+    };
+    this.sessions.set(sessionId, session);
+    this.sessionCwds.set(sessionId, workspace);
+    this.sessionMetadata?.setWorkspace(sessionId, workspace);
+    this.sessionMetadata?.setOwnership(sessionId, "gajae");
+    this.emitEvent({ type: "session.created", session: { ...session } });
+    try {
+      return await this.resumeSession(sessionId);
+    } catch (error) {
+      // The row stays so its transcript remains readable, which is what the
+      // persisted file supports even when the agent refuses to attach.
+      const items = await this.getTranscript(sessionId).catch(() => []);
+      this.emitEvent({
+        type: "transcript.synced",
+        sessionId,
+        items: items.map(cloneTranscriptItem),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Re-attach a session this window lost control of.
+   *
+   * A session goes `terminal-only` when a terminal held the lease, and
+   * `recovering` when a reconnect could not resume it. Both states are dead ends
+   * in the window: the transcript is readable but nothing can be sent. Attaching
+   * again is the only recovery, and it has to be user-driven because the lease
+   * may still be held -- retrying on a timer would just fail repeatedly.
+   */
+  async resumeSession(sessionId: string): Promise<AgentSession> {
+    const session = this.sessions.get(sessionId);
+    if (!session) throw new Error(`Unknown GJC session: ${sessionId}`);
+    // The refusal that produced terminal-only is not permanent, so the flag is
+    // cleared before retrying or ensureAttached would be skipped entirely.
+    this.terminalOnlySessions.delete(sessionId);
+    this.attachedSessions.delete(sessionId);
+    this.attachAttempts.delete(sessionId);
+    try {
+      await this.ensureAttached(sessionId, true);
+      await this.refreshSessionSettings(sessionId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (/no current Router attachment|provider_lease_conflict/iu.test(message)) {
+        this.terminalOnlySessions.add(sessionId);
+        session.attachment = "terminal-only";
+        session.ownership = "external";
+        this.emitEvent({ type: "session.updated", session: { ...session } });
+        throw new Error(
+          "다른 터미널이 이 세션을 잡고 있어 이어서 진행할 수 없습니다. 해당 GJC를 종료한 뒤 다시 시도하세요.",
+        );
+      }
+      // A lifecycle receipt is evidence that the attach was recorded, not whether
+      // it happened. The transcript is read from the session file either way, so
+      // an unverifiable receipt leaves the session readable instead of failing
+      // the resume outright -- it only means live control is not guaranteed.
+      if (!lifecycleUncertainError(error)) throw error;
+      this.attachedSessions.delete(sessionId);
+      session.attachment = "recovering";
+      this.emitEvent({ type: "session.updated", session: { ...session } });
+    }
+    const resumed = this.sessions.get(sessionId);
+    if (!resumed) throw new Error(`Unknown GJC session: ${sessionId}`);
+    // The transcript is republished so the window shows the history the resumed
+    // session actually has, not the read-only snapshot it was left with.
+    const items = await this.getTranscript(sessionId);
+    this.emitEvent({
+      type: "transcript.synced",
+      sessionId,
+      items: items.map(cloneTranscriptItem),
+    });
+    return { ...resumed };
   }
 
   private async ensureAttached(

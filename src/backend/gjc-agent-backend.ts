@@ -17,6 +17,7 @@ import type {
   GitStatusSnapshot,
   GoalOperation,
   GoalSnapshot,
+  HistorySession,
   MessageDelivery,
   QueuedMessage,
   SubagentSnapshot,
@@ -99,6 +100,18 @@ export class GjcAgentBackend implements AgentBackend {
 
   renameSession(sessionId: string, title: string): Promise<void> {
     return this.bridge.renameSession(sessionId, title);
+  }
+
+  resumeSession(sessionId: string): Promise<AgentSession> {
+    return this.bridge.resumeSession(sessionId);
+  }
+
+  listHistorySessions(): Promise<HistorySession[]> {
+    return this.bridge.listHistorySessions();
+  }
+
+  openHistorySession(sessionId: string): Promise<AgentSession> {
+    return this.bridge.openHistorySession(sessionId);
   }
 
   deleteSession(sessionId: string): Promise<void> {

@@ -5,6 +5,7 @@ import type {
   GjcUpdateStatus,
   GoalOperation,
   GoalSnapshot,
+  HistorySession,
   MessageDelivery,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
@@ -29,7 +30,12 @@ import {
 import { FolderGit2, GitBranch, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "./composer";
-import { DeleteSessionDialog, GlobalSearchDialog, NewSessionDialog } from "./dialogs";
+import {
+  DeleteSessionDialog,
+  GlobalSearchDialog,
+  NewSessionDialog,
+  ResumeSessionDialog,
+} from "./dialogs";
 import {
   BUNDLED_GJC_COMMANDS,
   EMPTY_TRANSCRIPT,
@@ -76,6 +82,7 @@ export default function App() {
   >(null);
   const [updateError, setUpdateError] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [resumingId, setResumingId] = useState<string | null>(null);
   const [diffOpen, setDiffOpen] = useState(false);
   const [diff, setDiff] = useState<DiffSnapshot | null>(null);
   const [selectedGit, setSelectedGit] = useState<GitStatusSnapshot | null>(
@@ -93,6 +100,10 @@ export default function App() {
     null,
   );
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [resumeOpen, setResumeOpen] = useState(false);
+  const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState("");
   const [appError, setAppError] = useState("");
   const [workspaceLabel, setWorkspaceLabel] = useState("개인 Workspace");
   const pendingSessions = useRef(new Map<string, Promise<AgentSession>>());
@@ -831,6 +842,61 @@ export default function App() {
     await backend.renameSession(await resolveSessionId(sessionId), title);
   }
 
+  function openResumePicker(): void {
+    setResumeOpen(true);
+    setHistoryLoading(true);
+    setHistoryError("");
+    void backend
+      .listHistorySessions()
+      .then(setHistorySessions)
+      .catch((error) =>
+        setHistoryError(
+          error instanceof Error ? error.message : String(error),
+        ),
+      )
+      .finally(() => setHistoryLoading(false));
+  }
+
+  async function openHistorySession(sessionId: string): Promise<void> {
+    setResumingId(sessionId);
+    setHistoryError("");
+    // The picker's job ends once a session is chosen. Keeping it open over the
+    // session it just opened hid the result, and the row exists either way --
+    // openHistorySession creates it before attaching -- so a refused attach is
+    // reported against the visible session rather than inside the dialog.
+    setResumeOpen(false);
+    setSelectedId(sessionId);
+    try {
+      const opened = await backend.openHistorySession(sessionId);
+      setSessions((current) => [
+        opened,
+        ...current.filter((item) => item.id !== opened.id),
+      ]);
+      setSelectedId(opened.id);
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setResumingId(null);
+    }
+  }
+
+  async function resumeSession(sessionId: string): Promise<void> {
+    setResumingId(sessionId);
+    setAppError("");
+    try {
+      const resumed = await backend.resumeSession(
+        await resolveSessionId(sessionId),
+      );
+      setSessions((current) =>
+        current.map((item) => (item.id === resumed.id ? resumed : item)),
+      );
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setResumingId(null);
+    }
+  }
+
   async function forkSession(session: AgentSession): Promise<void> {
     try {
       const fork = await backend.forkSession({
@@ -870,6 +936,8 @@ export default function App() {
         onSelect={selectSession}
         onCreate={() => setNewSessionOpen(true)}
         onFork={(session) => void forkSession(session)}
+        onResume={(session) => void resumeSession(session.id)}
+        onResumePicker={openResumePicker}
         onRename={(sessionId, title) => void renameSession(sessionId, title)}
         onDelete={setDeleteCandidate}
         onSettings={() => setSettingsOpen(true)}
@@ -1013,6 +1081,8 @@ export default function App() {
                 session={selectedSession}
                 transcript={selectedTranscript}
                 liveSubagents={liveSubagents}
+                resuming={resumingId === selectedSession.id}
+                onResume={() => void resumeSession(selectedSession.id)}
                 onClose={() => setInspectorOpen(false)}
               />
             )}
@@ -1073,6 +1143,16 @@ export default function App() {
           defaultWorkspace={connection.workspace}
           onCancel={() => setNewSessionOpen(false)}
           onCreate={createSession}
+        />
+      )}
+      {resumeOpen && (
+        <ResumeSessionDialog
+          sessions={historySessions}
+          loading={historyLoading}
+          error={historyError}
+          busyId={resumingId}
+          onClose={() => setResumeOpen(false)}
+          onOpen={(sessionId) => void openHistorySession(sessionId)}
         />
       )}
       {settingsOpen && (

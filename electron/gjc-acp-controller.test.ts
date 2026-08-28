@@ -31,6 +31,7 @@ import {
   sdkControlNeedsBrokerFallback,
   sessionInfoToAgentSession,
   sessionUnreachableError,
+  historySessionSummary,
   sharedTranscriptItems,
   taskSubagents,
   thinkingOptionsForModelCatalog,
@@ -632,6 +633,85 @@ describe("readTranscriptEnvelopes", () => {
   });
 });
 
+describe("historySessionSummary", () => {
+  const line = (row: unknown): string => JSON.stringify(row);
+
+  it("titles a session from its first user message and counts the turns", () => {
+    expect(
+      historySessionSummary([
+        line({ type: "session", id: "s1", cwd: "/tmp/project" }),
+        line({ type: "model_change" }),
+        line({
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "라우터 5자리 고치기" }],
+          },
+        }),
+        line({
+          type: "message",
+          message: { role: "assistant", content: [{ type: "text", text: "네" }] },
+        }),
+        line({ type: "message", message: { role: "toolResult", content: [] } }),
+      ]),
+    ).toEqual({
+      cwd: "/tmp/project",
+      title: "라우터 5자리 고치기",
+      messageCount: 2,
+    });
+  });
+
+  it("never titles a session from an attachment block", () => {
+    // The block is machinery, not intent, so a request that is only an
+    // attachment must not become a title made of markup.
+    expect(
+      historySessionSummary([
+        line({ type: "session", cwd: "/tmp/p" }),
+        line({
+          type: "message",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: '<local-images>\n- "/tmp/a.png"\n</local-images>',
+              },
+            ],
+          },
+        }),
+      ]),
+    ).toMatchObject({ messageCount: 1, cwd: "/tmp/p" });
+    expect(
+      historySessionSummary([
+        line({ type: "session", cwd: "/tmp/p" }),
+        line({
+          type: "message",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: '<local-images>\n- "/tmp/a.png"\n</local-images>',
+              },
+            ],
+          },
+        }),
+      ])?.title,
+    ).toBeUndefined();
+  });
+
+  it("ignores a session file that holds no conversation", () => {
+    expect(
+      historySessionSummary([
+        line({ type: "session", cwd: "/tmp/p" }),
+        line({ type: "model_change" }),
+        "",
+        "{ torn line",
+      ]),
+    ).toBeUndefined();
+  });
+});
+
 describe("sharedTranscriptItems", () => {
   it("labels every row from the row's own timestamp", () => {
     // Rows are labelled with one shared Intl formatter rather than a new one per
@@ -790,6 +870,63 @@ describe("sharedTranscriptItems", () => {
           kind: "tool",
           status: "cancelled",
         }),
+      ]),
+    );
+  });
+  it("gives every text part of one assistant row its own id", () => {
+    // A row can carry a short lead-in, a thinking part, then the full answer.
+    // All of them shared `shared-message-${sourceId}`, and a transcript keyed by
+    // id rendered the same reply twice, once above and once below the tool card.
+    const items = sharedTranscriptItems("shared-session", [
+      {
+        id: "assistant-multi",
+        role: "assistant",
+        stopReason: "toolUse",
+        content: [
+          { type: "text", text: "lead in" },
+          { type: "thinking", thinking: "" },
+          { type: "text", text: "full answer" },
+        ],
+      },
+    ]);
+    const ids = items.map((item) => item.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(
+      items.filter((item) => item.kind === "message").map((item) => item.id),
+    ).toHaveLength(2);
+  });
+  it("settles a resultless tool call once the turn is no longer running", () => {
+    // A finished turn ends on `stopReason: toolUse` whose call has no result row
+    // yet. Reporting that as running kept the composer showing stop and routing
+    // later messages into a steer after the turn had ended.
+    const rows = [
+      { id: "user-1", role: "user", content: [{ type: "text", text: "go" }] },
+      {
+        id: "assistant-1",
+        role: "assistant",
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-open",
+            name: "bash",
+            arguments: { command: "echo hi" },
+          },
+        ],
+      },
+    ];
+    expect(
+      sharedTranscriptItems("shared-session", rows, { turnRunning: false }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "call-open", status: "completed" }),
+      ]),
+    );
+    expect(
+      sharedTranscriptItems("shared-session", rows, { turnRunning: true }),
+    ).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "call-open", status: "running" }),
       ]),
     );
   });
@@ -3270,6 +3407,38 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("does not announce a cancellation the persisted transcript already reports", () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      transcripts: Map<string, TranscriptItem[]>;
+      appendCancelledNotice: (sessionId: string) => void;
+    };
+    internals.startup = Promise.resolve();
+    // The rebuilt transcript already carries the aborted turn as its own notice.
+    internals.transcripts.set("session-1", [
+      {
+        id: "shared-cancelled-row9",
+        kind: "notice",
+        sessionId: "session-1",
+        title: "작업 취소됨",
+        content: "진행 중인 작업이 취소되어 종료됐습니다.",
+        tone: "neutral",
+        createdAt: "08:50",
+      } as unknown as TranscriptItem,
+    ]);
+    internals.appendCancelledNotice("session-1");
+    expect(
+      (internals.transcripts.get("session-1") ?? []).filter(
+        (item) => item.kind === "notice",
+      ),
+    ).toHaveLength(1);
+    controller.dispose();
+  });
+
   it("cancels the active turn and its owned subagents through ACP", async () => {
     const settle = new Set<string>();
     const cancel = vi.fn().mockImplementation(async () => {
@@ -4982,6 +5151,336 @@ describe("GjcAcpController MUST surfaces", () => {
         session: expect.objectContaining({ id: "fork-session" }),
       }),
     );
+    controller.dispose();
+  });
+
+  it("opens a past session that discovery no longer lists", async () => {
+    // Discovery drops sessions the broker stopped reporting as live, so the only
+    // way back to them is the session file -- which is what `gjc --resume <id>`
+    // uses. Opening one must create the row and attach it.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, AgentSession>;
+      connection: Record<string, unknown>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      refreshSessionSettings: (id: string) => Promise<void>;
+      refreshModelProfiles: (id: string) => Promise<void>;
+      refreshContextUsage: (id: string) => Promise<void>;
+      getTranscript: (id: string) => Promise<TranscriptItem[]>;
+    };
+    internals.startup = Promise.resolve();
+    const file = path.join(
+      await mkdtemp(path.join(tmpdir(), "gajae-history-")),
+      "2026-08-01T00-00-00-000Z_past-session.jsonl",
+    );
+    await writeFile(
+      file,
+      [
+        JSON.stringify({ type: "session", cwd: "/tmp/recovered" }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "go" }] },
+        }),
+      ].join("\n"),
+    );
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.connection = {
+      signal: { aborted: false },
+      loadSession: vi.fn().mockResolvedValue({ configOptions: [] }),
+    };
+    internals.refreshSessionSettings = async () => undefined;
+    internals.refreshModelProfiles = async () => undefined;
+    internals.refreshContextUsage = async () => undefined;
+    internals.getTranscript = async () => [];
+
+    await expect(
+      controller.openHistorySession("past-session"),
+    ).resolves.toMatchObject({
+      id: "past-session",
+      // The workspace comes from the session file, not this window's default.
+      workspace: "/tmp/recovered",
+      attachment: "attached",
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.created",
+        session: expect.objectContaining({ id: "past-session" }),
+      }),
+    );
+    controller.dispose();
+  });
+
+  it("re-attaches a terminal-only session and republishes its transcript", async () => {
+    // terminal-only and recovering are dead ends: the transcript is readable but
+    // nothing can be sent. The refusal is not permanent, so an explicit resume
+    // clears the flag and attaches again.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "stuck-session",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      terminalOnlySessions: Set<string>;
+      attachedSessions: Set<string>;
+      connection: Record<string, unknown>;
+      refreshSessionSettings: (id: string) => Promise<void>;
+      refreshModelProfiles: (id: string) => Promise<void>;
+      refreshContextUsage: (id: string) => Promise<void>;
+      getTranscript: (id: string) => Promise<TranscriptItem[]>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, {
+      ...session,
+      attachment: "terminal-only",
+      ownership: "external",
+      status: "failed",
+    });
+    internals.sessionCwds.set(session.id, "/tmp/project");
+    internals.terminalOnlySessions.add(session.id);
+    internals.connection = {
+      signal: { aborted: false },
+      loadSession: vi.fn().mockResolvedValue({ configOptions: [] }),
+    };
+    internals.refreshSessionSettings = async () => undefined;
+    internals.refreshModelProfiles = async () => undefined;
+    internals.refreshContextUsage = async () => undefined;
+    internals.getTranscript = async () => [];
+
+    await expect(controller.resumeSession(session.id)).resolves.toMatchObject({
+      id: session.id,
+      attachment: "attached",
+      status: "idle",
+    });
+    expect(internals.terminalOnlySessions.has(session.id)).toBe(false);
+    expect(internals.attachedSessions.has(session.id)).toBe(true);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "transcript.synced",
+        sessionId: session.id,
+      }),
+    );
+    controller.dispose();
+  });
+
+  it("keeps a resumed session usable when its lifecycle receipt cannot be verified", async () => {
+    // The receipt records that the attach happened; it does not decide whether it
+    // did. The transcript comes from the session file either way, so an
+    // unverifiable receipt must not fail the resume outright.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "uncertain-session",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      terminalOnlySessions: Set<string>;
+      connection: Record<string, unknown>;
+      refreshModelProfiles: (id: string) => Promise<void>;
+      refreshContextUsage: (id: string) => Promise<void>;
+      getTranscript: (id: string) => Promise<TranscriptItem[]>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.sessionCwds.set(session.id, "/tmp/project");
+    internals.connection = {
+      signal: { aborted: false },
+      loadSession: vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Internal error: Lifecycle terminal evidence could not be verified after persistence; retained artifacts require reconciliation.",
+          ),
+        ),
+    };
+    internals.refreshModelProfiles = async () => undefined;
+    internals.refreshContextUsage = async () => undefined;
+    internals.getTranscript = async () => [];
+
+    await expect(controller.resumeSession(session.id)).resolves.toMatchObject({
+      id: session.id,
+      // Live control is not guaranteed, so the row says so rather than claiming
+      // it is attached.
+      attachment: "recovering",
+    });
+    // A receipt problem is not a lease conflict, so the session is not demoted to
+    // read-only terminal ownership.
+    expect(internals.terminalOnlySessions.has(session.id)).toBe(false);
+    controller.dispose();
+  });
+
+  it("reports the holding terminal when a resume is refused", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "leased-session",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      terminalOnlySessions: Set<string>;
+      connection: Record<string, unknown>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.sessionCwds.set(session.id, "/tmp/project");
+    internals.connection = {
+      signal: { aborted: false },
+      loadSession: vi
+        .fn()
+        .mockRejectedValue(new Error("provider_lease_conflict")),
+    };
+
+    await expect(controller.resumeSession(session.id)).rejects.toThrow(
+      /다른 터미널이 이 세션을 잡고 있어/u,
+    );
+    // The refusal is recorded so the window keeps showing read-only sync.
+    expect(internals.terminalOnlySessions.has(session.id)).toBe(true);
+    expect(internals.sessions.get(session.id)?.attachment).toBe(
+      "terminal-only",
+    );
+    controller.dispose();
+  });
+
+  it("adopts the forked session when its lifecycle receipt cannot be verified", async () => {
+    // The fork creates the session; the receipt is only evidence it was recorded.
+    // An unverifiable receipt was surfaced as a failed fork even though the
+    // broker had already created the session, so the error showed up and the
+    // fork appeared in the sidebar moments later anyway.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const source = sessionInfoToAgentSession({
+      sessionId: "source-session",
+      cwd: "/tmp/project",
+      title: "Source",
+    });
+    const unstableForkSession = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          "Internal error: Lifecycle terminal evidence could not be verified after persistence; retained artifacts require reconciliation.",
+        ),
+      );
+    const loadSession = vi.fn().mockResolvedValue({ configOptions: [] });
+    let listed = false;
+    const extMethod = vi.fn().mockImplementation(async () => {
+      // The broker only reports the forked session on a later poll.
+      if (!listed) {
+        listed = true;
+        return { ok: true, sessions: [] };
+      }
+      return {
+        ok: true,
+        sessions: [
+          {
+            sessionId: "fork-session",
+            locator: { repo: "/tmp/project" },
+            live: true,
+            endpointGeneration: 3,
+          },
+        ],
+      };
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof source>;
+      sessionCwds: Map<string, string>;
+      attachedSessions: Set<string>;
+      connection: Record<string, unknown>;
+      forkRecoveryIntervalMs: number;
+    };
+    internals.startup = Promise.resolve();
+    internals.forkRecoveryIntervalMs = 0;
+    internals.sessions.set(source.id, source);
+    internals.sessionCwds.set(source.id, "/tmp/project");
+    internals.attachedSessions.add(source.id);
+    internals.connection = {
+      signal: { aborted: false },
+      unstable_forkSession: unstableForkSession,
+      loadSession,
+      extMethod,
+    };
+
+    await expect(
+      controller.forkSession({ sourceSessionId: source.id }),
+    ).resolves.toMatchObject({
+      id: "fork-session",
+      ownership: "gajae",
+      workspace: "/tmp/project",
+    });
+    expect(loadSession).toHaveBeenCalledWith({
+      sessionId: "fork-session",
+      cwd: "/tmp/project",
+      mcpServers: [],
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.created",
+        session: expect.objectContaining({ id: "fork-session" }),
+      }),
+    );
+    controller.dispose();
+  });
+
+  it("reports an unrecoverable fork instead of inventing a session", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const source = sessionInfoToAgentSession({
+      sessionId: "source-session",
+      cwd: "/tmp/project",
+      title: "Source",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof source>;
+      sessionCwds: Map<string, string>;
+      attachedSessions: Set<string>;
+      connection: Record<string, unknown>;
+      recoverForkedSession: () => Promise<undefined>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(source.id, source);
+    internals.sessionCwds.set(source.id, "/tmp/project");
+    internals.attachedSessions.add(source.id);
+    internals.connection = {
+      signal: { aborted: false },
+      unstable_forkSession: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("retained artifacts require reconciliation"),
+        ),
+    };
+    // No new session ever appears, so the fork really did not happen.
+    internals.recoverForkedSession = async () => undefined;
+
+    await expect(
+      controller.forkSession({ sourceSessionId: source.id }),
+    ).rejects.toThrow(/lifecycle ledger reconciliation/u);
     controller.dispose();
   });
 

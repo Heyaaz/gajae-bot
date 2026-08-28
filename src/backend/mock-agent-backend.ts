@@ -19,6 +19,7 @@ import type {
   GitStatusSnapshot,
   GoalOperation,
   GoalSnapshot,
+  HistorySession,
   QueuedMessage,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
@@ -391,6 +392,34 @@ export class MockAgentBackend implements AgentBackend {
     };
     this.append(parentNotice);
     return session;
+  }
+
+  async listHistorySessions(): Promise<HistorySession[]> {
+    return this.sessionStore.map((session) => ({
+      id: session.id,
+      title: session.title,
+      workspace: session.workspace,
+      updatedAt: session.updatedAt,
+      messageCount: this.transcriptStore.get(session.id)?.length ?? 0,
+      live: session.attachment === "attached",
+    }));
+  }
+
+  async openHistorySession(sessionId: string): Promise<AgentSession> {
+    return this.resumeSession(sessionId);
+  }
+
+  async resumeSession(sessionId: string): Promise<AgentSession> {
+    const session = this.sessionStore.find(
+      (candidate) => candidate.id === sessionId,
+    );
+    if (!session) throw new Error(`Unknown session: ${sessionId}`);
+    session.attachment = "attached";
+    session.ownership = "gajae";
+    if (session.status === "failed") session.status = "idle";
+    session.updatedAt = "now";
+    this.emit({ type: "session.updated", session: cloneSession(session) });
+    return cloneSession(session);
   }
 
   async renameSession(sessionId: string, title: string): Promise<void> {

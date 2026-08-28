@@ -1,6 +1,15 @@
 import type { GlobalSearchResult } from "../../shared/productivity-ipc";
+import type { HistorySession } from "../../shared/agent-contract";
 import type { AgentSession } from "../backend/types";
-import { FileSearch, FolderOpen, Plus, Search, Trash2, X } from "lucide-react";
+import {
+  FileSearch,
+  FolderOpen,
+  Plus,
+  RotateCcw,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -177,6 +186,120 @@ export function DeleteSessionDialog({
             삭제
           </button>
         </footer>
+      </section>
+    </div>
+  );
+}
+
+// A session title is the whole first request, which runs to hundreds of
+// characters. The row is one line, so it is cut to something readable rather
+// than left to overflow the dialog.
+export function sessionSummaryLine(title: string, limit = 72): string {
+  const value = title.replace(/\s+/gu, " ").trim();
+  return value.length > limit ? `${value.slice(0, limit - 1).trimEnd()}\u2026` : value;
+}
+
+// The full path is rarely the useful part; the project folder is.
+export function workspaceLabelFor(workspace: string): string {
+  const trimmed = workspace.replace(/\/+$/u, "");
+  if (!trimmed) return "";
+  const parts = trimmed.split("/").filter(Boolean);
+  return parts.length <= 2 ? trimmed : `…/${parts.slice(-2).join("/")}`;
+}
+
+/**
+ * Past sessions on disk, the way `gjc --resume` offers them in a terminal.
+ *
+ * The sidebar only lists sessions the broker still reports as live, so anything
+ * older is unreachable from the window without this.
+ */
+export function ResumeSessionDialog({
+  sessions,
+  loading,
+  error,
+  busyId,
+  onClose,
+  onOpen,
+}: {
+  sessions: HistorySession[];
+  loading: boolean;
+  error: string;
+  busyId: string | null;
+  onClose: () => void;
+  onOpen: (sessionId: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const value = query.trim().toLowerCase();
+  // An id prefix is how the CLI addresses a session, so it is matched too.
+  const visible = value
+    ? sessions.filter(
+        (session) =>
+          session.id.toLowerCase().startsWith(value) ||
+          session.title.toLowerCase().includes(value) ||
+          session.workspace.toLowerCase().includes(value),
+      )
+    : sessions;
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+      <section
+        className="resume-session-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="지난 세션 이어서 진행"
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <header>
+          <RotateCcw size={16} />
+          <input
+            autoFocus
+            value={query}
+            placeholder="세션 ID, 제목, 폴더로 찾기"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") onClose();
+            }}
+          />
+          <button className="icon-button" type="button" onClick={onClose}>
+            <X size={16} />
+          </button>
+        </header>
+        <div className="resume-session-list">
+          {loading && (
+            <div className="global-search-empty">
+              <span className="mini-spinner" />
+              <small>세션 기록을 읽는 중…</small>
+            </div>
+          )}
+          {error && <p className="diff-error">{error}</p>}
+          {!loading && !error && visible.length === 0 && (
+            <div className="global-search-empty">
+              <strong>이어서 진행할 세션이 없습니다</strong>
+            </div>
+          )}
+          {visible.map((session) => (
+            <button
+              type="button"
+              key={session.id}
+              disabled={busyId !== null}
+              onClick={() => onOpen(session.id)}
+            >
+              <span className="resume-session-head">
+                <strong>{sessionSummaryLine(session.title)}</strong>
+                {session.live && <em className="resume-live">진행 중</em>}
+              </span>
+              <small>
+                {workspaceLabelFor(session.workspace) || "폴더 정보 없음"}
+              </small>
+              <span className="resume-session-meta">
+                {/* 8 chars collide across real sessions; 12 is unambiguous. */}
+                <code>{session.id.slice(0, 12)}</code>
+                <time>{session.updatedAt}</time>
+                <small>{session.messageCount}개 대화</small>
+                {busyId === session.id && <span className="mini-spinner" />}
+              </span>
+            </button>
+          ))}
+        </div>
       </section>
     </div>
   );

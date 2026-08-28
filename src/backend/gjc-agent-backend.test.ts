@@ -13,6 +13,7 @@ import type {
 import type {
   ForkSessionInput,
   GitStatusSnapshot,
+  HistorySession,
 } from "../../shared/agent-contract";
 
 class FakeGjcBridge implements GjcDesktopBridge {
@@ -78,6 +79,40 @@ class FakeGjcBridge implements GjcDesktopBridge {
       workspace: "/tmp/project",
       isolation: "workspace",
       title: input.title,
+    });
+  }
+
+  opened: string[] = [];
+  async listHistorySessions(): Promise<HistorySession[]> {
+    return [
+      {
+        id: "past-session",
+        title: "지난 생각 이어서",
+        workspace: "/tmp/project",
+        updatedAt: "2h",
+        messageCount: 12,
+        live: false,
+      },
+    ];
+  }
+  async openHistorySession(sessionId: string): Promise<AgentSession> {
+    this.opened.push(sessionId);
+    return this.createSession({
+      runtime: "gjc",
+      workspace: "/tmp/project",
+      isolation: "workspace",
+      title: "Opened",
+    });
+  }
+
+  resumed: string[] = [];
+  async resumeSession(sessionId: string): Promise<AgentSession> {
+    this.resumed.push(sessionId);
+    return this.createSession({
+      runtime: "gjc",
+      workspace: "/tmp/project",
+      isolation: "workspace",
+      title: "Resumed",
     });
   }
 
@@ -359,6 +394,13 @@ describe("GjcAgentBackend", () => {
   it("delegates fork and git operations", async () => {
     const bridge = new FakeGjcBridge();
     const backend = new GjcAgentBackend(bridge);
+    await backend.resumeSession("s");
+    expect(bridge.resumed).toEqual(["s"]);
+    await expect(backend.listHistorySessions()).resolves.toMatchObject([
+      { id: "past-session", messageCount: 12, live: false },
+    ]);
+    await backend.openHistorySession("past-session");
+    expect(bridge.opened).toEqual(["past-session"]);
     await backend.forkSession({ sourceSessionId: "s", title: "Fork" });
     await expect(backend.getGitStatus("s")).resolves.toMatchObject({
       branch: "main",

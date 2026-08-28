@@ -38,6 +38,11 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.forkSession, input),
   renameSession: (sessionId: string, title: string) =>
     ipcRenderer.invoke(GJC_IPC.renameSession, sessionId, title),
+  resumeSession: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.resumeSession, sessionId),
+  listHistorySessions: () => ipcRenderer.invoke(GJC_IPC.listHistorySessions),
+  openHistorySession: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.openHistorySession, sessionId),
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.deleteSession, sessionId),
   getTranscript: (sessionId: string) =>

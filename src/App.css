@@ -3009,6 +3009,150 @@
   font-size: 10px;
   line-height: 1.4;
 }
+.resume-session-dialog {
+  display: grid;
+  width: min(560px, 92vw);
+  max-height: 70vh;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+  background: var(--surface-raised, #1b1b1d);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+}
+.resume-session-dialog > header {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 14px;
+  color: var(--text-tertiary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.resume-session-dialog > header input {
+  flex: 1;
+  color: var(--text-primary);
+  font-size: 12px;
+  background: none;
+  border: none;
+  outline: none;
+}
+.resume-session-list {
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 7px;
+}
+.resume-session-list > button {
+  display: grid;
+  width: 100%;
+  /* Rows are one line each. Without a zero minimum the long title sets the
+     track width, which pushed the id/time row out of the dialog and left the
+     list scrolling sideways. */
+  min-width: 0;
+  gap: 3px;
+  padding: 9px 11px;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.resume-session-list > button > * {
+  min-width: 0;
+}
+.resume-session-list > button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+.resume-session-list > button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.resume-session-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+.resume-session-list strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.resume-session-list small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.resume-live {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  color: var(--success);
+  font-size: 9px;
+  font-style: normal;
+  white-space: nowrap;
+  background: rgba(103, 214, 165, 0.1);
+  border-radius: 999px;
+}
+.resume-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+}
+.resume-session-meta code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.inspector-session-id {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 5px;
+  margin-top: 7px;
+  padding: 3px 7px;
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.04);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.inspector-session-id:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.07);
+}
+.inspector-session-id code {
+  overflow: hidden;
+  font-size: 9px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.inspector-resume {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 11px;
+  padding: 5px 10px;
+  color: var(--text-primary);
+  font-size: 10px;
+  background: rgba(255, 138, 52, 0.14);
+  border: 1px solid rgba(255, 138, 52, 0.3);
+  border-radius: 7px;
+  cursor: pointer;
+}
+.inspector-resume:hover:not(:disabled) {
+  background: rgba(255, 138, 52, 0.22);
+}
+.inspector-resume:disabled {
+  color: var(--text-tertiary);
+  cursor: default;
+}
 .status-chip {
   padding: 3px 7px;
   color: var(--text-secondary);

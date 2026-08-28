@@ -280,7 +280,10 @@ function createWindow(): BrowserWindow {
         console.error("Renderer smoke test timed out");
         app.exit(1);
       },
-      gjcSmokeMode ? 60_000 : 10_000,
+      // The renderer sequence alone spends over 11s in deliberate waits (IME
+      // commits, streaming, queue release), so a 10s budget failed on timing
+      // rather than on any assertion.
+      gjcSmokeMode ? 60_000 : 30_000,
     );
 
     window.webContents.once("did-finish-load", async () => {
@@ -456,11 +459,41 @@ function createWindow(): BrowserWindow {
             await wait(50);
             assert(document.querySelector('.inspector'), 'Session inspector did not open');
             assert(document.querySelector('.subagent-card')?.textContent?.includes('executor'), 'Sub-agent status did not render in the inspector');
+            const sessionIdChip = document.querySelector('.inspector-session-id code');
+            assert(sessionIdChip?.textContent?.trim(), 'Inspector did not render the session id');
+            // An attached session has nothing to recover, so the resume action stays hidden.
+            assert(!document.querySelector('.inspector-resume'), 'Resume action rendered for an already attached session');
             assert(!document.querySelector('.inspector')?.textContent?.includes('소유권:'), 'Removed session ownership details still render');
             assert(!document.querySelector('.inspector')?.textContent?.includes('workspace:'), 'Removed workspace details still render');
             assert(!document.querySelector('.inspector')?.textContent?.includes('MCP:'), 'Removed runtime details still render');
             assert(!document.querySelector('.workflow-section'), 'Removed workflow section still renders in the inspector');
             assert(!document.querySelector('.inspector')?.textContent?.includes('GJC:'), 'Removed GJC version line still renders in the inspector');
+            // A session a terminal holds is a dead end until it is attached again,
+            // so the inspector has to offer the recovery and it has to work.
+            const selectedBefore = document.querySelector('.session-row.is-selected');
+            assert(selectedBefore, 'No session row was selected before the resume check');
+            // Row text carries live status, so it changes under us. The session
+            // title is the stable part of the row.
+            const selectedTitle = selectedBefore.querySelector('strong')?.textContent?.trim();
+            assert(selectedTitle, 'Selected session row had no title');
+            const stuckRow = Array.from(document.querySelectorAll('.session-row')).find((node) => node.textContent?.includes('M1 Air box health'));
+            assert(stuckRow, 'Terminal-only session row did not render');
+            stuckRow.click();
+            await wait(120);
+            const resumeAction = document.querySelector('.inspector-resume');
+            assert(resumeAction, 'Resume action did not render for a terminal-only session');
+            resumeAction.click();
+            await wait(250);
+            assert(!document.querySelector('.inspector-resume'), 'Resume did not attach the terminal-only session');
+            // Every later check describes the session under test, so the selection
+            // these checks moved has to be handed back.
+            const restoreSelection = async () => {
+              const row = Array.from(document.querySelectorAll('.session-row')).find((node) => node.querySelector('strong')?.textContent?.trim() === selectedTitle);
+              assert(row, 'Original session row disappeared: ' + selectedTitle);
+              row.click();
+              await wait(120);
+            };
+            await restoreSelection();
             document.querySelector('.inspector > header .icon-button')?.click();
             assert(!document.querySelector('.connection-pill'), 'Bottom-right connection chip still renders');
             assert(typeof window.agentControlDesktop?.settings.pathForFile === 'function', 'Chromium file chooser bridge did not render');
@@ -623,9 +656,11 @@ function createWindow(): BrowserWindow {
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(100);
             assert(!document.querySelector('.send-button--stop'), 'A finished turn left the composer treating an idle session as running');
+            assert(document.querySelectorAll('.composer-submit-actions .send-button').length === 1, 'The idle composer rendered more than one submit action');
             document.querySelector('.composer')?.requestSubmit();
             await wait(500);
             assert(document.querySelector('button[title="작업 중단 (Esc)"]'), 'Abort action did not render during an active run');
+            assert(document.querySelectorAll('.composer-submit-actions .send-button').length === 1, 'The submit slot rendered send and stop at the same time during an active run');
             assert(!document.querySelector('button[title="메시지 보내기"]'), 'Send button did not become the abort button during an active run');
             valueSetter.call(textarea, '한국어 조종');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
@@ -635,15 +670,17 @@ function createWindow(): BrowserWindow {
             valueSetter.call(textarea, 'focus on the regression');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(50);
-            assert(document.querySelector('button[title="메시지 보내기"]'), 'Active run kept the stop button after a steer/follow-up draft was entered');
-            assert(document.querySelectorAll('.composer-submit-actions .send-button').length === 2, 'Stop button covered the steer/follow-up submit action');
-            document.querySelector('button[title="메시지 보내기"]')?.click();
+            assert(document.querySelector('button[title="이어서 보내기"]'), 'Active run kept the stop button after a steer/follow-up draft was entered');
+            assert(document.querySelectorAll('.composer-submit-actions .send-button').length === 1, 'The submit slot rendered send and stop at the same time');
+            assert(!document.querySelector('.send-button--stop'), 'Stop button stayed visible while a draft was ready to submit');
+            document.querySelector('button[title="이어서 보내기"]')?.click();
             await wait(100);
             assert(document.activeElement === textarea, 'Composer did not restore focus for the immediate second Enter action');
             assert(Array.from(document.querySelectorAll('.composer-queue-item--followUp')).some((node) => node.textContent?.includes('focus on the regression')), 'Ordinary active-run input was not held in the composer queue');
             assert(!document.querySelector('.composer-queue-item--steer'), 'Ordinary active-run input was incorrectly marked as an immediate steer');
             await wait(1_800);
             assert(document.body.textContent?.includes('Desktop smoke message'), 'User message did not append');
+            assert(Array.from(document.querySelectorAll('.message--user')).filter((node) => node.textContent?.includes('Desktop smoke message')).length === 1, 'The confirmed request rendered as two user bubbles');
             // The prompt is answered, and the request held during that turn is
             // released automatically once it ends, so it is answered too.
             assert(document.querySelectorAll('.message--assistant').length > assistantCount, 'Assistant reply did not append');
@@ -670,7 +707,7 @@ function createWindow(): BrowserWindow {
             await wait(100);
             valueSetter.call(textarea, '체크');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
-            document.querySelector('button[title="메시지 보내기"]')?.click();
+            document.querySelector('.composer-submit-actions .send-button')?.click();
             await wait(120);
             const steerChips = () => Array.from(document.querySelectorAll('.composer-queue-item')).map((node) => node.textContent ?? '');
             assert(steerChips().some((text) => text.includes('체크')), 'Steer did not register in the composer queue: ' + steerChips().join(' | '));
@@ -679,6 +716,37 @@ function createWindow(): BrowserWindow {
             await wait(200);
             assert(!document.querySelector('.composer-queue'), 'Queued steer indicator survived the flush: ' + steerChips().join(' | '));
             assert(document.body.textContent?.includes('체크'), 'Flushed steer did not reach the transcript');
+
+            // Past sessions are unreachable from the sidebar once the broker stops
+            // reporting them live, so the picker is the only way back to them.
+            document.querySelector('button[title="지난 세션 이어서 진행"]')?.click();
+            await wait(120);
+            const resumeDialog = document.querySelector('.resume-session-dialog');
+            assert(resumeDialog, 'Resume session picker did not open');
+            const historyRows = document.querySelectorAll('.resume-session-list > button');
+            assert(historyRows.length > 0, 'Resume picker listed no past sessions');
+            assert(document.querySelector('.resume-session-meta code')?.textContent?.trim(), 'Resume picker did not show session ids');
+            const resumeSearch = resumeDialog.querySelector('input');
+            const inputValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+            assert(resumeSearch && inputValueSetter, 'Resume picker search is unavailable');
+            inputValueSetter.call(resumeSearch, 'zzz-no-such-session');
+            resumeSearch.dispatchEvent(new Event('input', { bubbles: true }));
+            await wait(60);
+            assert(document.querySelectorAll('.resume-session-list > button').length === 0, 'Resume picker ignored its filter');
+            inputValueSetter.call(resumeSearch, '');
+            resumeSearch.dispatchEvent(new Event('input', { bubbles: true }));
+            await wait(60);
+            // A long first request must not widen the row: that pushed the id/time
+            // line out of the dialog and left the list scrolling sideways.
+            const resumeList = document.querySelector('.resume-session-list');
+            assert(resumeList.scrollWidth <= resumeList.clientWidth + 1, 'Resume picker overflowed sideways: ' + resumeList.scrollWidth + ' > ' + resumeList.clientWidth);
+            const resumeRow = document.querySelector('.resume-session-list > button');
+            assert(resumeRow.getBoundingClientRect().right <= resumeDialog.getBoundingClientRect().right + 1, 'Resume row escaped the dialog');
+            // Choosing a session closes the picker; leaving it open hid the result.
+            resumeRow.click();
+            await wait(250);
+            assert(!document.querySelector('.resume-session-dialog'), 'Resume picker stayed open after choosing a session');
+            await restoreSelection();
 
             const initialSessions = document.querySelectorAll('.session-row').length;
             document.querySelector('button[title="새 Gajae 세션"]')?.click();
