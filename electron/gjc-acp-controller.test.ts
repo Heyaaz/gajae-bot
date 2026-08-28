@@ -4291,6 +4291,181 @@ describe("listSessions status from the transcript", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("keeps the compaction baseline while an unrelated phase is reported", async () => {
+    // The baseline is how the transcript path recognises the compaction record this
+    // window asked for. Dropping it on any phase update -- a stray "thinking" while
+    // compaction is still running -- left that path with nothing to compare against,
+    // so a terminal-owned session could never clear its compaction indicator.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      compactingSessions: Set<string>;
+      compactionRecordBaseline: Map<string, number>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+      phase: "compacting",
+    });
+    internals.compactingSessions.add("session-1");
+    internals.compactionRecordBaseline.set("session-1", 3);
+
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcPhase: "thinking" },
+    });
+
+    expect(internals.compactionRecordBaseline.get("session-1")).toBe(3);
+    controller.dispose();
+  });
+
+  it("clears the compaction baseline once GJC reports the work resumed", async () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      compactingSessions: Set<string>;
+      compactionRecordBaseline: Map<string, number>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+      phase: "compacting",
+    });
+    internals.compactingSessions.add("session-1");
+    internals.compactionRecordBaseline.set("session-1", 3);
+
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcPhase: "responding" },
+    });
+
+    expect(internals.compactionRecordBaseline.has("session-1")).toBe(false);
+    expect(internals.compactingSessions.has("session-1")).toBe(false);
+    controller.dispose();
+  });
+
+  it("reports work in a session it opened but is not driving", async () => {
+    // Opening a session attaches it. Attachment alone used to hand the row's status
+    // to whatever was cached, but the live session_info_update that would move that
+    // status only arrives for prompts this process sent -- so a session driven from
+    // a terminal stayed on its stale idle forever.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-disc-attached-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const listed = {
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+      title: "Session",
+    };
+    const extMethod = vi.fn().mockResolvedValue({ result: { sessions: [] } });
+    const listSessions = vi.fn().mockResolvedValue({ sessions: [listed] });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      attachedSessions: Set<string>;
+      sessions: Map<string, { id: string; status: string }>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+    // The state after opening the session: attached, and remembered as idle.
+    internals.attachedSessions.add("session-1");
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "idle",
+    } as never);
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "session-1", status: "running" }),
+    ]);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("leaves a turn this window is running to its own round trip", async () => {
+    // The mirror of the case above: while this process drives the turn, the live
+    // signal is the authority and a lagging transcript must not settle the row.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-disc-own-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const listed = {
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+      title: "Session",
+    };
+    const extMethod = vi.fn().mockResolvedValue({ result: { sessions: [] } });
+    const listSessions = vi.fn().mockResolvedValue({ sessions: [listed] });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        listSessions: typeof listSessions;
+      };
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      activePromptSessions: Set<string>;
+      sessions: Map<string, { id: string; status: string }>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      listSessions,
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.activePromptSessions.add("session-1");
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+    } as never);
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "session-1", status: "running" }),
+    ]);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("lists a settled session as idle", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gjc-disc-idle-"));
     const file = path.join(root, "session.jsonl");

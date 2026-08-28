@@ -1677,11 +1677,14 @@ export class GjcAcpController {
       const session = {
         ...existing,
         ...listedSession,
-        // A row this window drives keeps the status its own turn is maintaining; a
-        // session it only observes is described by its transcript.
+        // Only a turn this window is actually driving keeps the status its own round
+        // trip maintains. Being attached is not enough: attachment happens just by
+        // opening a session, while the live `session_info_update` that would move the
+        // status only arrives for prompts this process sent. A session someone else is
+        // driving is attached, silent, and described solely by its transcript.
         status:
           this.activePromptSessions.has(info.sessionId) ||
-          this.attachedSessions.has(info.sessionId)
+          this.liveRunningSessions.has(info.sessionId)
             ? (existing?.status ?? "idle")
             : (transcriptStatus ?? existing?.status ?? "idle"),
         phase: existing?.phase,
@@ -5430,9 +5433,10 @@ export class GjcAcpController {
       // GJC reporting any other phase is the authority that compaction ended, so
       // this is where a locally started compaction is released. Returning from the
       // control call only meant the request was accepted.
-      if (phase === "responding" || phase === "idle")
+      if (phase === "responding" || phase === "idle") {
         this.compactingSessions.delete(sessionId);
         this.compactionRecordBaseline.delete(sessionId);
+      }
       session.phase =
         phase === "responding" || phase === "idle" ? undefined : phase;
     }
