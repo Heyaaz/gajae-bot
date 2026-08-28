@@ -368,6 +368,16 @@ export function persistedTranscriptRunning(rows: unknown[]): boolean {
   return lastUser >= 0 && lastUser > lastTerminalAssistant;
 }
 
+/** How many finished compactions the persisted transcript records. */
+export function compactionRecordCount(rows: unknown[]): number {
+  let count = 0;
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    if ((row as Record<string, unknown>).type === "compaction") count += 1;
+  }
+  return count;
+}
+
 export function persistedModelState(rows: unknown[]): {
   model?: string;
   thinking?: string;
@@ -1220,6 +1230,11 @@ export class GjcAcpController {
   private readonly locallyAbortedSessions = new Set<string>();
   /** Compaction is finished only when GJC says so, never when the request returns. */
   private readonly compactingSessions = new Set<string>();
+  // How many compaction records the transcript held when compaction started. A
+  // terminal-owned session never receives session_info_update, so the live signal
+  // cannot release the phase for it; a new record appearing is the evidence that
+  // GJC finished. Without this the indicator stayed up for the rest of the session.
+  private readonly compactionRecordBaseline = new Map<string, number>();
   // Sessions the live ACP signal currently reports as working. The persisted
   // transcript lags behind that signal, so it is not allowed to report one of
   // these idle until GJC itself says the turn ended.
@@ -1332,6 +1347,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.compactingSessions.clear();
+    this.compactionRecordBaseline.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.suppressedUserMessageKeys.clear();
@@ -2033,6 +2049,16 @@ export class GjcAcpController {
       if (effectiveModel.model || effectiveModel.thinking) {
         this.patchSessionRuntime(sessionId, effectiveModel);
       }
+      // A terminal-owned session gets no live phase report, so the transcript is the
+      // only place its finished compaction is recorded.
+      if (this.compactingSessions.has(sessionId)) {
+        const baseline = this.compactionRecordBaseline.get(sessionId) ?? 0;
+        if (compactionRecordCount(envelopes) > baseline) {
+          this.compactingSessions.delete(sessionId);
+          this.compactionRecordBaseline.delete(sessionId);
+          this.patchSessionRuntime(sessionId, { phase: undefined });
+        }
+      }
       if (!this.activePromptSessions.has(sessionId)) {
         const status = turnRunning ? "running" : "idle";
         const current = this.sessions.get(sessionId)?.status;
@@ -2342,12 +2368,34 @@ export class GjcAcpController {
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }
 
+  /**
+   * Counts the compactions already recorded on disk. A read failure returns 0 so a
+   * later record still clears the phase; the alternative is an indicator that never
+   * goes away.
+   */
+  private async persistedCompactionCount(sessionId: string): Promise<number> {
+    try {
+      const filePath = await this.locateSharedTranscriptFile(sessionId);
+      if (!filePath) return 0;
+      const info = await stat(filePath);
+      return compactionRecordCount(
+        await this.readTranscriptEnvelopes(filePath, info),
+      );
+    } catch {
+      return 0;
+    }
+  }
+
   async compactSession(sessionId: string): Promise<void> {
     // Compaction is a session control operation, not an ACP provider attachment.
     // Terminal-owned sessions must route through the persistent control plane (or
     // broker fallback) instead of being rejected for lacking a second attachment.
     const statusBefore = this.sessions.get(sessionId)?.status;
     this.compactingSessions.add(sessionId);
+    this.compactionRecordBaseline.set(
+      sessionId,
+      await this.persistedCompactionCount(sessionId),
+    );
     this.patchSessionRuntime(sessionId, {
       phase: "compacting",
       status: "running",
@@ -2368,6 +2416,7 @@ export class GjcAcpController {
       // replaced is restored -- and only that one, or a real turn running
       // underneath would be reported idle.
       this.compactingSessions.delete(sessionId);
+      this.compactionRecordBaseline.delete(sessionId);
       this.patchSessionRuntime(sessionId, {
         phase: undefined,
         ...(statusBefore && statusBefore !== "running"
@@ -2882,6 +2931,7 @@ export class GjcAcpController {
     // about it from putting the row back to running.
     this.liveRunningSessions.delete(sessionId);
     this.compactingSessions.delete(sessionId);
+    this.compactionRecordBaseline.delete(sessionId);
     this.updateSessionStatus(sessionId, "idle");
     await this.fireAbort(sessionId);
     this.cancellingSessions.delete(sessionId);
@@ -3808,6 +3858,7 @@ export class GjcAcpController {
     this.activePromptSessions.delete(sessionId);
     this.liveRunningSessions.delete(sessionId);
     this.compactingSessions.delete(sessionId);
+    this.compactionRecordBaseline.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
@@ -3856,6 +3907,7 @@ export class GjcAcpController {
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.compactingSessions.clear();
+    this.compactionRecordBaseline.clear();
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
@@ -3939,6 +3991,7 @@ export class GjcAcpController {
       this.activePromptSessions.clear();
       this.liveRunningSessions.clear();
       this.compactingSessions.clear();
+      this.compactionRecordBaseline.clear();
       this.activeAssistantMessages.clear();
       this.activeThoughts.clear();
         this.suppressedUserMessageKeys.clear();
@@ -5116,6 +5169,7 @@ export class GjcAcpController {
       // control call only meant the request was accepted.
       if (phase === "responding" || phase === "idle")
         this.compactingSessions.delete(sessionId);
+        this.compactionRecordBaseline.delete(sessionId);
       session.phase =
         phase === "responding" || phase === "idle" ? undefined : phase;
     }
@@ -5147,6 +5201,7 @@ export class GjcAcpController {
       session.status = "idle";
       this.liveRunningSessions.delete(sessionId);
       this.compactingSessions.delete(sessionId);
+      this.compactionRecordBaseline.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;
       if (
         wasRunning &&

@@ -5706,6 +5706,147 @@ describe("session status authority", () => {
     controller.dispose();
   });
 
+  it("releases the compacting phase from the transcript for a terminal-owned session", async () => {
+    // A terminal-owned session never receives session_info_update, so the live
+    // signal cannot release the phase. Its transcript records the finished
+    // compaction, and that record is the evidence.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-compact-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "before" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "ok" },
+      })}\n`,
+    );
+    const extMethod = vi
+      .fn()
+      .mockImplementation((_method: string, params: { operation?: string }) => {
+        if (params.operation === "compaction.run")
+          return Promise.resolve({ ok: true, accepted: true });
+        return Promise.resolve({ page: { items: [] } });
+      });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = { signal: { aborted: false }, extMethod };
+    internals.sessions.set(session.id, session);
+    internals.terminalOnlySessions.add(session.id);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await controller.compactSession(session.id);
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+
+    // GJC finishes and records the compaction in the transcript.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "before" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "ok" },
+      })}\n${JSON.stringify({
+        type: "compaction",
+        id: "c1",
+        timestamp: new Date().toISOString(),
+        summary: "compacted",
+      })}\n`,
+    );
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not treat an earlier compaction as the one just requested", async () => {
+    // A long session has compacted before. Counting records without a baseline
+    // made the very first transcript read look like the new compaction had
+    // finished, so the indicator vanished immediately.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-compact-base-"));
+    const file = path.join(root, "session.jsonl");
+    const history = `${JSON.stringify({
+      type: "compaction",
+      id: "old",
+      timestamp: "2026-08-01T00:00:00.000Z",
+      summary: "an earlier compaction",
+    })}\n${JSON.stringify({
+      type: "message",
+      message: { role: "user", content: "after the old compaction" },
+    })}\n${JSON.stringify({
+      type: "message",
+      message: { role: "assistant", stopReason: "end_turn", content: "ok" },
+    })}\n`;
+    await writeFile(file, history);
+    const extMethod = vi
+      .fn()
+      .mockImplementation((_method: string, params: { operation?: string }) => {
+        if (params.operation === "compaction.run")
+          return Promise.resolve({ ok: true, accepted: true });
+        return Promise.resolve({ page: { items: [] } });
+      });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = { signal: { aborted: false }, extMethod };
+    internals.sessions.set(session.id, session);
+    internals.terminalOnlySessions.add(session.id);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await controller.compactSession(session.id);
+    await internals.readPersistedTranscript(session.id);
+
+    // The old record must not be mistaken for the requested compaction.
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+
+    await writeFile(
+      file,
+      `${history}${JSON.stringify({
+        type: "compaction",
+        id: "new",
+        timestamp: new Date().toISOString(),
+        summary: "the requested compaction",
+      })}\n`,
+    );
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("holds the compacting phase until compaction is actually finished", async () => {
     const extMethod = vi
       .fn()
