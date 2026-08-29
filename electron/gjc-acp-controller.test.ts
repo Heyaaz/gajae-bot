@@ -3681,6 +3681,66 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
+  it("falls back when the broker CLI cannot carry a terminal abort key", async () => {
+    // Probed against gjc/0.15.3: a broker-CLI terminal abort is structurally impossible.
+    // `--idempotency-key` is not forwarded for it ("terminal abort requires a nonempty
+    // idempotency key"), and putting the key in the request body is rejected outright
+    // ("Unknown turn.abort terminal field: idempotencyKey").
+    //
+    // Only the `operator` wording was recognised as unsupported, so on the installed
+    // release these two errors escaped `abortOwnedThroughControl` instead of falling
+    // through to the plain abort -- which does work, verified answering
+    // `{aborted:true, disposition:"idle"}`. A cancel that throws leaves the turn
+    // running with no indication the request failed.
+    for (const message of [
+      "terminal abort requires a nonempty idempotency key.",
+      "Unknown turn.abort terminal field: idempotencyKey",
+    ]) {
+      const extMethod = vi
+        .fn()
+        .mockResolvedValue({ ok: false, error: { message } });
+      const brokerControl = vi
+        .fn()
+        .mockImplementation(
+          (
+            _sessionId: string,
+            operation: string,
+            input: Record<string, unknown>,
+          ) =>
+            operation === "turn.abort" && input.mode === "terminal"
+              ? Promise.reject(new Error(message))
+              : Promise.resolve({ aborted: true, disposition: "idle" }),
+        );
+      const controller = new GjcAcpController({
+        workspace: "/tmp/project",
+        emit: () => undefined,
+      });
+      const internals = controller as unknown as {
+        startup: Promise<void>;
+        connection: {
+          signal: { aborted: boolean };
+          extMethod: typeof extMethod;
+        };
+        brokerControl: typeof brokerControl;
+      };
+      internals.startup = Promise.resolve();
+      internals.connection = { signal: { aborted: false }, extMethod };
+      internals.brokerControl = brokerControl;
+
+      // The owned-abort path behind the composer's stop button and /abort.
+      await expect(
+        (
+          controller as unknown as {
+            abortOwnedThroughControl: (
+              id: string,
+            ) => Promise<Record<string, unknown>>;
+          }
+        ).abortOwnedThroughControl("session-1"),
+      ).resolves.toMatchObject({ aborted: true });
+      controller.dispose();
+    }
+  });
+
   it("falls back to the TUI session abort when terminal abort is unsupported", async () => {
     const extMethod = vi.fn().mockResolvedValue({
       ok: false,
@@ -3992,17 +4052,46 @@ describe("sessionInfoToAgentSession", () => {
     controller.dispose();
   });
 
-  it("projects live runtime subagent jobs", async () => {
+  it("does not invent subagents from background tool jobs", async () => {
+    // Verified against gjc/0.15.3: `runtime.jobs.list` returns one wrapper row shaped
+    // `{running, recent, delivery}`, and each job inside is a background *tool* run
+    // whose `type` is the tool name ("bash"). It carries no subagent at all.
+    //
+    // The previous expectation here was written from a guess -- flat rows with
+    // `kind: "subagent"` -- which the broker never sends, so it proved nothing about
+    // real behaviour. Subagents come from the task tool's own arguments in the
+    // transcript; a shell command must never be presented as one.
     const extMethod = vi.fn().mockResolvedValue({
       page: {
         complete: true,
+        revision: "1",
         items: [
           {
-            id: "job-1",
-            kind: "subagent",
-            role: "executor",
-            status: "blocked",
-            description: "Waiting for review",
+            running: [
+              {
+                id: "bg_8",
+                type: "bash",
+                status: "running",
+                label: "npm run verify",
+                startTime: 1787911299087,
+              },
+            ],
+            recent: [
+              {
+                id: "bg_7",
+                type: "bash",
+                status: "failed",
+                label: "gjc sdk session list",
+                startTime: 1787911288023,
+                endTime: 1787911293666,
+              },
+            ],
+            delivery: {
+              queued: 0,
+              delivering: false,
+              pendingJobIds: [],
+              deadLettered: 0,
+            },
           },
         ],
       },
@@ -4018,12 +4107,47 @@ describe("sessionInfoToAgentSession", () => {
     internals.startup = Promise.resolve();
     internals.connection = { signal: { aborted: false }, extMethod };
 
+    await expect(controller.listSubagents("session-1")).resolves.toEqual([]);
+    controller.dispose();
+  });
+
+  it("reports the subagents the task tool actually launched", async () => {
+    // The real source: the `task` tool's arguments, recorded in the transcript.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      transcripts: Map<string, TranscriptItem[]>;
+    };
+    internals.startup = Promise.resolve();
+    internals.transcripts.set("session-1", [
+      {
+        id: "task-1",
+        sessionId: "session-1",
+        kind: "tool",
+        name: "task",
+        description: "launch",
+        status: "running",
+        createdAt: "now",
+        subagents: [
+          {
+            id: "0-BackendReview",
+            label: "Review the backend",
+            role: "architect",
+            status: "running",
+          },
+        ],
+      },
+    ]);
+
     await expect(controller.listSubagents("session-1")).resolves.toEqual([
       {
-        id: "job-1",
-        label: "executor",
-        status: "waiting",
-        detail: "Waiting for review",
+        id: "0-BackendReview",
+        label: "Review the backend",
+        role: "architect",
+        status: "running",
       },
     ]);
     controller.dispose();
@@ -4413,6 +4537,68 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
+  it("lists a live generation-0 session instead of dropping it", async () => {
+    // The user's report: a session vanishes from the recent list. A TUI-hosted session
+    // holds no ACP endpoint, so the broker reports endpointGeneration 0 while still
+    // reporting it live and active. Discovery treated every generation-0 row as a
+    // control placeholder and filtered it out, so the row disappeared mid-run.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-gen0-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "stop" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      terminalOnlySessions: Set<string>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "tui-session",
+              live: true,
+              endpointGeneration: 0,
+              pid: 93669,
+              activity: { state: "active" },
+              locator: { repo: "/tmp/project" },
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "tui-session", cwd: "/tmp/project", title: "TUI" },
+        ],
+      }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "tui-session" }),
+    ]);
+    // It has no attachable endpoint, so it is controlled through the broker rather
+    // than advertised as attachable.
+    expect(internals.terminalOnlySessions.has("tui-session")).toBe(true);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("ignores the bootstrap report attaching sends for foreign work", async () => {
     // The user's report: the sidebar reads 진행 중, then clicking the session flips it
     // to 완료. Clicking attaches the session, and GJC answers an attach with a
@@ -4473,6 +4659,455 @@ describe("listSessions status from the transcript", () => {
     ]);
 
     // Clicking it attaches, and GJC publishes its bootstrap phase.
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+      },
+    });
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps a row running when its own prompt returns while GJC works on", async () => {
+    // sendMessage lowers the row to idle as soon as connection.prompt() resolves. That
+    // return only means this window's prompt round trip finished, not that the agent
+    // stopped: a follow-up turn, a queued steer, or background work continues, and the
+    // transcript keeps growing. The row said 완료 while the session was still working.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-prompt-idle-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "toolResult" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      sessionCwds: Map<string, string>;
+      transcripts: Map<string, unknown[]>;
+      messageKeys: Map<string, Map<string, string>>;
+      attachedSessions: Set<string>;
+      refreshContextUsage: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      prompt: async () => ({ stopReason: "end_turn" }),
+      extMethod: async () => ({ ok: true, result: {} }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.refreshContextUsage = async () => undefined;
+    internals.attachedSessions.add("session-1");
+    internals.sessionCwds.set("session-1", "/tmp/project");
+    internals.transcripts.set("session-1", []);
+    internals.messageKeys.set("session-1", new Map());
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "idle",
+      unread: false,
+    });
+
+    await controller.sendMessage("session-1", {
+      text: "go",
+      images: [],
+      files: [],
+    });
+
+    // The transcript is the account of the session itself, and it says the turn is
+    // still open, so the row must not claim the work finished.
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("re-reads run state for a session GJC reported running but never closed", async () => {
+    // republishRunState skips any session in liveRunningSessions, which is entered on
+    // gjcRunning:true and only left on a matching gjcRunning:false. A terminal-owned
+    // session, or one whose completion report is lost to a disconnect, never sends that
+    // close, so the row was excluded from run-state reads for the rest of the process
+    // and kept whatever status it was left with. The transcript still records the end.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-stuck-live-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "go" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      liveRunningSessions: Set<string>;
+      republishRunState: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+      unread: false,
+    });
+    // GJC said the turn started and never said it ended.
+    internals.liveRunningSessions.add("session-1");
+
+    await internals.republishRunState("session-1");
+
+    expect(internals.sessions.get("session-1")?.status).toBe("idle");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("leaves a just-started turn alone until its transcript moves", async () => {
+    // The counterpart to the check above. The transcript is written after the fact, so
+    // right after GJC reports a turn started the file still reads idle. Re-reading run
+    // state must not take that stale snapshot and cancel the live report; only a file
+    // that has grown since the report is the newer account.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-fresh-live-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      liveRunningSessions: Set<string>;
+      liveRunningDigests: Map<string, number>;
+      republishRunState: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+      unread: false,
+    });
+    internals.liveRunningSessions.add("session-1");
+    // The baseline recorded when GJC reported the turn started.
+    internals.liveRunningDigests.set(
+      "session-1",
+      (await stat(file)).size,
+    );
+
+    await internals.republishRunState("session-1");
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+
+    // Once the file grows and still reports no open turn, it has watched the work end.
+    await appendFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    await internals.republishRunState("session-1");
+
+    expect(internals.sessions.get("session-1")?.status).toBe("idle");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("still finishes a row when the transcript records the turn ending", async () => {
+    // The counterpart to the check above: deferring to the transcript must not pin a
+    // row to running. A transcript whose newest row carries a terminal stop reason is
+    // the turn ending, so the row settles.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-prompt-done-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "go" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      sessionCwds: Map<string, string>;
+      transcripts: Map<string, unknown[]>;
+      messageKeys: Map<string, Map<string, string>>;
+      attachedSessions: Set<string>;
+      refreshContextUsage: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      prompt: async () => ({ stopReason: "end_turn" }),
+      extMethod: async () => ({ ok: true, result: {} }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.refreshContextUsage = async () => undefined;
+    internals.attachedSessions.add("session-1");
+    internals.sessionCwds.set("session-1", "/tmp/project");
+    internals.transcripts.set("session-1", []);
+    internals.messageKeys.set("session-1", new Map());
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "idle",
+      unread: false,
+    });
+
+    await controller.sendMessage("session-1", {
+      text: "go",
+      images: [],
+      files: [],
+    });
+
+    expect(internals.sessions.get("session-1")?.status).toBe("idle");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("announces the finished turn once when its own prompt settles", async () => {
+    // The completion notification is what tells the user a background session is done.
+    // Deferring the idle decision to the transcript moved where that transition is
+    // decided, so the announcement has to be proven to still fire exactly once.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-prompt-announce-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "go" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn" },
+      })}\n`,
+    );
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      sessionCwds: Map<string, string>;
+      transcripts: Map<string, unknown[]>;
+      messageKeys: Map<string, Map<string, string>>;
+      attachedSessions: Set<string>;
+      refreshContextUsage: (id: string) => Promise<void>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      prompt: async () => ({ stopReason: "end_turn" }),
+      extMethod: async () => ({ ok: true, result: {} }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.refreshContextUsage = async () => undefined;
+    internals.attachedSessions.add("session-1");
+    internals.sessionCwds.set("session-1", "/tmp/project");
+    internals.transcripts.set("session-1", []);
+    internals.messageKeys.set("session-1", new Map());
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "idle",
+      unread: false,
+    });
+
+    await controller.sendMessage("session-1", {
+      text: "go",
+      images: [],
+      files: [],
+    });
+
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" &&
+          event.category === "completed" &&
+          event.sessionId === "session-1",
+      ),
+    ).toHaveLength(1);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("ignores the bootstrap report when the scan answered from cache", async () => {
+    // The same 진행 중 -> 완료 flip, on the path a user actually takes. The guard that
+    // discards the bootstrap report reads `transcriptRunningSessions`, but that set is
+    // only written when the run-state read parses a tail. A second scan of an unchanged
+    // file is answered from the size-keyed cache and returns before the set is touched,
+    // so by the time the user clicks, the guard's evidence is gone and the bootstrap
+    // `gjcRunning:false` closes a turn it knows nothing about.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-bootstrap-cached-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      handleSessionUpdate: (payload: {
+        sessionId: string;
+        update: Record<string, unknown>;
+      }) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+
+    // Two refreshes, which is what 15s polling does while the user reads the row. The
+    // file has not changed, so the second is answered from cache.
+    await controller.listSessions();
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "running" }),
+    ]);
+
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "session_info_update",
+        _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+      },
+    });
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps a foreign turn running after its transcript is opened", async () => {
+    // Opening a session reads its transcript through readSharedTranscript, which
+    // decides the same run state and then only ever *clears* transcriptRunningSessions.
+    // The read that confirms the agent is working erased the evidence the bootstrap
+    // guard needs, so the attach that follows the click reported 완료.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-open-running-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "toolUse" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      sessions: Map<string, { id: string; status: string; unread: boolean }>;
+      transcriptRunningSessions: Set<string>;
+      readSharedTranscript: (id: string) => Promise<unknown[]>;
+      handleSessionUpdate: (payload: {
+        sessionId: string;
+        update: Record<string, unknown>;
+      }) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod: async () => ({
+        result: {
+          sessions: [
+            {
+              sessionId: "session-1",
+              live: true,
+              endpointGeneration: 1,
+              repo: "/tmp/project",
+            },
+          ],
+        },
+      }),
+      listSessions: async () => ({
+        sessions: [
+          { sessionId: "session-1", cwd: "/tmp/project", title: "Session" },
+        ],
+      }),
+    };
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await expect(controller.listSessions()).resolves.toEqual([
+      expect.objectContaining({ status: "running" }),
+    ]);
+
+    // Clicking the row loads the conversation from the shared transcript.
+    await internals.readSharedTranscript("session-1");
+    expect(internals.transcriptRunningSessions.has("session-1")).toBe(true);
+
     internals.handleSessionUpdate({
       sessionId: "session-1",
       update: {
@@ -5542,6 +6177,44 @@ describe("isControllerSession", () => {
     expect(
       isControllerSession({ repo: "/tmp/other", endpointGeneration: 1 }, 42),
     ).toBe(false);
+  });
+
+  it("keeps a live generation-0 session the broker reports as active", () => {
+    // The user's report: a session disappears from the sidebar. A TUI-hosted session
+    // drops to generation 0 while it holds no ACP endpoint, and the broker still
+    // reports it live with a multi-megabyte transcript on disk. Filtering on
+    // generation alone dropped it from discovery, so the row vanished on the next
+    // refresh while the agent was still working in it.
+    expect(
+      isControllerSession(
+        {
+          repo: "/tmp/project",
+          endpointGeneration: 0,
+          pid: 93669,
+          activity: { state: "active" },
+        },
+        42,
+      ),
+    ).toBe(false);
+    // A placeholder reports no activity at all, which is what still filters it.
+    expect(
+      isControllerSession(
+        { repo: "/tmp/project", endpointGeneration: 0, pid: 93669 },
+        42,
+      ),
+    ).toBe(true);
+    // This window's own ACP child outranks activity: it must never become a row.
+    expect(
+      isControllerSession(
+        {
+          repo: "/tmp/project",
+          endpointGeneration: 0,
+          pid: 42,
+          activity: { state: "active" },
+        },
+        42,
+      ),
+    ).toBe(true);
   });
 });
 

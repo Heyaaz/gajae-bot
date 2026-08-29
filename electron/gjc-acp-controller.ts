@@ -1290,14 +1290,26 @@ export function historySessionSummary(
 }
 
 export function isControllerSession(
-  session: { repo?: string; endpointGeneration?: number; pid?: number },
+  session: {
+    repo?: string;
+    endpointGeneration?: number;
+    pid?: number;
+    activity?: { state?: unknown };
+  },
   childPid: number | undefined,
 ): boolean {
   if (childPid !== undefined && session.pid === childPid) return true;
-  // A generation-0 endpoint is a control placeholder with no attachable turn and
-  // no transcript. Discovery reaches every repository now, so these are filtered
-  // everywhere instead of only inside this app's own workspace.
-  return (session.endpointGeneration ?? 0) <= 0;
+  // A generation-0 endpoint is usually a control placeholder with no attachable
+  // turn and no transcript, so it is filtered rather than listed as a row.
+  //
+  // It is not always that. A TUI-hosted session drops to generation 0 while it
+  // holds no ACP endpoint, and the broker still reports it live and active with a
+  // multi-megabyte transcript on disk. Treating generation alone as the test threw
+  // those away, so a session the user was watching vanished from the sidebar on the
+  // next refresh. Reported activity is the evidence that separates a real session
+  // from a placeholder: a placeholder has none.
+  if ((session.endpointGeneration ?? 0) > 0) return false;
+  return session.activity?.state !== "active";
 }
 
 export function thinkingOptionsForModelCatalog(
@@ -1851,13 +1863,36 @@ export class GjcAcpController {
   /** Re-reads one session's run state and publishes the row if it moved. */
   private async republishRunState(sessionId: string): Promise<void> {
     if (this.disposed) return;
-    if (
-      this.activePromptSessions.has(sessionId) ||
-      this.liveRunningSessions.has(sessionId)
-    )
-      return;
+    if (this.activePromptSessions.has(sessionId)) return;
+    // A session enters liveRunningSessions on gjcRunning:true and only leaves it on a
+    // matching gjcRunning:false. A terminal-owned session never sends that close, and
+    // a completion report is lost outright across a disconnect, so excluding the whole
+    // set here stopped run-state reads for the rest of the process and pinned the row
+    // to whatever it was left with.
+    //
+    // The transcript is still older than the live signal for the gap between a turn
+    // starting and its first row reaching disk, so it only overrules that signal once
+    // the file has grown past the size recorded when the work was reported -- the same
+    // rule readSharedTranscript uses. Without a baseline the transcript wins, matching
+    // rememberLiveRunningTranscriptSize's own fallback.
+    if (this.liveRunningSessions.has(sessionId)) {
+      const seenSize = this.liveRunningDigests.get(sessionId);
+      if (seenSize !== undefined) {
+        const filePath = await this.locateSharedTranscriptFile(sessionId);
+        if (!filePath) return;
+        try {
+          if ((await stat(filePath)).size === seenSize) return;
+        } catch {
+          return;
+        }
+      }
+    }
     const status = await this.discoveredRunState(sessionId);
     if (!status) return;
+    if (status === "idle") {
+      this.liveRunningSessions.delete(sessionId);
+      this.liveRunningDigests.delete(sessionId);
+    }
     const session = this.sessions.get(sessionId);
     if (!session || session.status === status) return;
     if (session.status === "failed" || session.status === "starting") return;
@@ -1912,6 +1947,7 @@ export class GjcAcpController {
         live: boolean;
         endpointGeneration?: number;
         pid?: number;
+        activity?: { state?: string };
       }>
     | undefined
   > {
@@ -1921,6 +1957,7 @@ export class GjcAcpController {
       live: boolean;
       endpointGeneration?: number;
       pid?: number;
+      activity?: { state?: string };
     }> = [];
     let cursor: string | undefined;
     // 749 sessions at 100 per page is 8 pages. The broker keeps only 32 cursors
@@ -1984,8 +2021,19 @@ export class GjcAcpController {
             endpointGeneration?: unknown;
             pid?: unknown;
             locator?: { repo?: unknown };
+            activity?: { state?: unknown };
           };
           if (typeof candidate.sessionId !== "string") continue;
+          // A TUI-hosted session reports generation 0 while holding no ACP endpoint,
+          // so the placeholder filter needs the broker's own activity report to tell
+          // it apart from a real session.
+          const activityState =
+            candidate.activity &&
+            typeof candidate.activity === "object" &&
+            !Array.isArray(candidate.activity) &&
+            typeof candidate.activity.state === "string"
+              ? candidate.activity.state
+              : undefined;
           sessions.push({
             sessionId: candidate.sessionId,
             repo:
@@ -1998,6 +2046,7 @@ export class GjcAcpController {
                 ? candidate.endpointGeneration
                 : undefined,
             pid: typeof candidate.pid === "number" ? candidate.pid : undefined,
+            ...(activityState ? { activity: { state: activityState } } : {}),
           });
         }
         cursor =
@@ -2173,6 +2222,16 @@ export class GjcAcpController {
     return { ...session };
   }
 
+  /**
+   * Renames a session for this app only.
+   *
+   * GJC exposes no rename: probed against gjc/0.15.3, `session.rename`,
+   * `session.title.set`, and `session.update` all answer `unknown_operation`. The
+   * broker's title comes from the session's own transcript. So the new name is stored
+   * as a local alias and stays local -- the CLI keeps showing the original title. This
+   * is a runtime limitation, not a shortcut; a shared rename needs a GJC operation to
+   * call.
+   */
   async renameSession(sessionId: string, title: string): Promise<void> {
     const value = title.trim();
     if (!value) throw new Error("Session title cannot be empty");
@@ -3320,8 +3379,24 @@ export class GjcAcpController {
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
       await this.refreshContextUsage(sessionId);
+      // `prompt` resolving means this window's round trip is done, not that the agent
+      // stopped. A follow-up turn, a released steer, or background work keeps running
+      // and keeps appending to the transcript, so closing the row here reported 완료
+      // over live work. The session's own transcript is the account that covers what
+      // this connection cannot see, so it decides.
+      //
       // updateSessionStatus announces the running -> idle transition itself.
-      this.updateSessionStatus(sessionId, "idle");
+      //
+      // The prompt is released before the read because the run-state cache is keyed on
+      // the file, not the caller, and leaving this session marked as actively prompted
+      // would let a concurrent republish skip it. `finally` releasing it again is a
+      // no-op on a Set.
+      this.activePromptSessions.delete(sessionId);
+      const stillRunning = await this.discoveredRunState(sessionId);
+      this.updateSessionStatus(
+        sessionId,
+        stillRunning === "running" ? "running" : "idle",
+      );
     } catch (error) {
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
@@ -3504,8 +3579,15 @@ export class GjcAcpController {
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      // Every way this release can refuse a broker-CLI terminal abort. Probed against
+      // gjc/0.15.3: `--idempotency-key` is not forwarded for terminal aborts, so it
+      // answers "terminal abort requires a nonempty idempotency key", and moving the key
+      // into the request body answers "Unknown turn.abort terminal field:
+      // idempotencyKey". Matching only the `operator` wording let both escape as a
+      // thrown cancel, leaving the turn running with nothing to show the user why.
+      // The plain abort below is what actually stops the turn.
       if (
-        !/Unknown turn\.abort terminal field: operator|operator terminal abort/iu.test(
+        !/Unknown turn\.abort terminal field|operator terminal abort|terminal abort requires a nonempty idempotency key/iu.test(
           message,
         )
       )
@@ -3869,67 +3951,25 @@ export class GjcAcpController {
     return this.getGoal(sessionId);
   }
 
+  /**
+   * The subagents a session launched, read from the task tool's own arguments.
+   *
+   * This used to also query `runtime.jobs.list` and merge anything whose kind matched
+   * /subagent|task/. Verified against gjc/0.15.3, that query answers a single wrapper
+   * row shaped `{running, recent, delivery}` whose entries are background *tool* runs
+   * with `type` set to the tool name ("bash"). No entry is ever a subagent and no
+   * top-level row has a `kind`, so the filter matched nothing: the merge was dead code
+   * whose only live effect was making this method require an ACP connection, so a
+   * session whose subagents were already in the transcript failed to list them
+   * whenever the runtime was unreachable.
+   */
   async listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {
     const declaredById = new Map<string, SubagentSnapshot>();
     for (const agent of (this.transcripts.get(sessionId) ?? []).flatMap(
       (item) => (item.kind === "tool" ? (item.subagents ?? []) : []),
     ))
       declaredById.set(agent.id, agent);
-    const declared = [...declaredById.values()];
-    const rows = await this.querySessionItems(sessionId, "runtime.jobs.list");
-    const jobs = rows
-      .flatMap((row) =>
-        row && typeof row === "object" && !Array.isArray(row)
-          ? [row as Record<string, unknown>]
-          : [],
-      )
-      .filter((job) =>
-        /subagent|task/iu.test(String(job.kind ?? job.type ?? job.name ?? "")),
-      )
-      .map((job, index): SubagentSnapshot => {
-        const rawStatus = String(
-          job.status ?? job.state ?? "running",
-        ).toLowerCase();
-        const status: SubagentSnapshot["status"] = /fail|error|cancel/iu.test(
-          rawStatus,
-        )
-          ? "failed"
-          : /complete|done|success/iu.test(rawStatus)
-            ? "completed"
-            : /wait|block|pause/iu.test(rawStatus)
-              ? "waiting"
-              : "running";
-        return {
-          id: String(job.id ?? job.jobId ?? `job-${index}`),
-          label: String(
-            job.label ??
-              job.name ??
-              job.role ??
-              job.description ??
-              "서브 에이전트",
-          ),
-          status,
-          ...(typeof job.detail === "string"
-            ? { detail: job.detail }
-            : typeof job.description === "string"
-              ? { detail: job.description }
-              : {}),
-        };
-      });
-    if (declared.length === 0) return jobs;
-    const jobById = new Map(jobs.map((job) => [job.id, job]));
-    return declared.map((agent) => {
-      const live = jobById.get(agent.id);
-      return live
-        ? {
-            ...agent,
-            ...live,
-            label: agent.label,
-            role: agent.role,
-            objective: agent.objective,
-          }
-        : agent;
-    });
+    return [...declaredById.values()];
   }
 
   async getDiff(sessionId: string): Promise<DiffSnapshot> {
