@@ -16,11 +16,12 @@
     "desktop:smoke": "electron . --smoke",
     "desktop:gjc-smoke": "electron . --gjc-smoke",
     "desktop:offline-smoke": "electron scripts/offline-shell-smoke.mjs",
+    "desktop:attachment-smoke": "electron scripts/attachment-render-smoke.mjs",
     "package:mac": "npm run build && electron-packager . Gajae --platform=darwin --arch=arm64 --out=release --overwrite --app-bundle-id=com.gajae.desktop --app-version=0.0.0 --icon=src/assets/gajae-icon.icns --prune=true --asar --ignore='^/(artifacts|release|\\.git|\\.gjc)$' && codesign --force --deep --sign - release/Gajae-darwin-arm64/Gajae.app",
     "gjc:e2e": "npm run build && node scripts/gjc-acp-e2e.mjs",
     "lint": "oxlint",
     "test": "vitest run",
-    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke && npm run desktop:offline-smoke && npm run desktop:gjc-smoke",
+    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke && npm run desktop:offline-smoke && npm run desktop:attachment-smoke && npm run desktop:gjc-smoke",
     "verify:gjc": "npm run build && npm run desktop:gjc-smoke && node scripts/gjc-acp-e2e.mjs",
     "preview": "vite preview"
   },
