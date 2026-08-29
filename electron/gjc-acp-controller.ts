@@ -1198,6 +1198,14 @@ export function sessionUnreachableError(error: unknown): boolean {
   );
 }
 
+/**
+ * Whether a failed SDK control response should be retried through the broker CLI.
+ *
+ * Everything except a busy agent should. The CLI is slower but it is a real second
+ * chance at delivering what the user asked for, and dropping the request instead only
+ * surfaces a raw IPC error. A busy agent is excluded because the live connection is
+ * already the right target and a CLI spawn costs seconds that steering cannot afford.
+ */
 export function sdkControlNeedsBrokerFallback(
   response: Record<string, unknown>,
 ): boolean {
@@ -1212,9 +1220,17 @@ export function sdkControlNeedsBrokerFallback(
   // CLI for it costs seconds before the message reaches the queue, which is the
   // opposite of what steering needs.
   if (busyPromptError(text)) return false;
-  return /not_found|unknown session|no current Router attachment|provider_lease_conflict|unavailable/iu.test(
-    text,
-  );
+  // An operation the user asked for cannot be dropped because the failure was
+  // worded in a way this list did not predict. GJC answers some control failures
+  // with nothing more than "Internal error: Control operation failed", and
+  // enumerating known conditions rethrew those straight at the renderer, losing
+  // the message behind a raw IPC error while the broker CLI could still have
+  // delivered it.
+  //
+  // So the default is to try the CLI. Refusing is reserved for the one case where
+  // it is the wrong tool -- a busy agent, handled above -- because a slower
+  // delivery beats a silently dropped prompt.
+  return true;
 }
 
 export function sessionInfoToAgentSession(info: SessionInfo): AgentSession {

@@ -6325,6 +6325,47 @@ describe("isControllerSession", () => {
 });
 
 describe("busyPromptError", () => {
+  it("falls back when GJC reports a bare control failure", () => {
+    // Seen in the running app as
+    //   Error invoking remote method 'agent-control:gjc:send-message':
+    //   RequestError: Internal error: Control operation failed.
+    //
+    // GJC's ACP control surface answers this when it cannot service the operation and
+    // has no more specific code to give. The classifier only recognised named
+    // conditions, so this one skipped the broker fallback entirely and was rethrown to
+    // the renderer -- the user's message was simply lost behind a raw IPC error, even
+    // though the CLI path could have delivered it.
+    expect(
+      sdkControlNeedsBrokerFallback({
+        ok: false,
+        error: { message: "Internal error: Control operation failed." },
+      }),
+    ).toBe(true);
+    // An internal error carrying no detail at all is the same situation.
+    expect(
+      sdkControlNeedsBrokerFallback({
+        ok: false,
+        error: { code: "internal_error", message: "" },
+      }),
+    ).toBe(true);
+    // A busy agent still must not pay for a CLI spawn: steering has to stay fast.
+    // Both wordings this release uses are covered by busyPromptError.
+    expect(
+      sdkControlNeedsBrokerFallback({
+        ok: false,
+        error: { message: "ACP session already has an active prompt" },
+      }),
+    ).toBe(false);
+    expect(
+      sdkControlNeedsBrokerFallback({
+        ok: false,
+        error: {
+          message: "turn.prompt is unavailable while the agent is busy",
+        },
+      }),
+    ).toBe(false);
+  });
+
   it("recognizes current and legacy busy prompt responses", () => {
     expect(
       busyPromptError(
