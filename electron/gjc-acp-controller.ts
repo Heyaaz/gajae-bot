@@ -1459,6 +1459,14 @@ export class GjcAcpController {
    * tells that report apart from a real one.
    */
   private readonly transcriptRunningSessions = new Set<string>();
+  /**
+   * Sessions GJC last described with a non-idle phase.
+   *
+   * The phase is the only signal that separates a turn waiting on a tool result from one
+   * that ended, because `gjcRunning:false` also describes this connection's idle prompt
+   * slot while a steer drives the actual work.
+   */
+  private readonly workingPhaseSessions = new Set<string>();
   /** Transcript-derived run state per session, keyed by the file size it was read at. */
   private readonly discoveredRunStates = new Map<
     string,
@@ -1582,6 +1590,7 @@ export class GjcAcpController {
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
     this.transcriptRunningSessions.clear();
+    this.workingPhaseSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -2583,8 +2592,12 @@ export class GjcAcpController {
           ) {
             this.liveRunningSessions.delete(sessionId);
             this.liveRunningDigests.delete(sessionId);
-      this.transcriptRunningSessions.delete(sessionId);
+            this.transcriptRunningSessions.delete(sessionId);
             this.discoveredRunStates.delete(sessionId);
+            // The transcript has observed the work end, which outranks the last phase
+            // GJC reported: leaving the marker set would keep rejecting every later
+            // idle report and strand the row at 진행 중.
+            this.workingPhaseSessions.delete(sessionId);
             this.updateSessionStatus(sessionId, "idle");
           }
         } else if (
@@ -4442,6 +4455,7 @@ export class GjcAcpController {
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
     this.transcriptRunningSessions.clear();
+    this.workingPhaseSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -4542,6 +4556,7 @@ export class GjcAcpController {
       this.liveRunningSessions.clear();
       this.liveRunningDigests.clear();
     this.transcriptRunningSessions.clear();
+    this.workingPhaseSessions.clear();
       this.discoveredRunStates.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
@@ -5734,6 +5749,11 @@ export class GjcAcpController {
       session.phase =
         phase === "responding" || phase === "idle" ? undefined : phase;
     }
+    // A report carrying `updatedAt` is describing an actual change of state; one without
+    // it is GJC restating a slot. Remembering which sessions were last said to be working
+    // by a real report is what lets the bootstrap idle that follows be recognised.
+    if (update.updatedAt && phase && phase !== "idle")
+      this.workingPhaseSessions.add(sessionId);
     if (running === true && !this.locallyAbortedSessions.has(sessionId)) {
       session.status = "running";
       if (!this.liveRunningSessions.has(sessionId)) {
@@ -5767,11 +5787,26 @@ export class GjcAcpController {
       !this.activePromptSessions.has(sessionId) &&
       neverConfirmedRunning &&
       this.transcriptRunningSessions.has(sessionId);
+    // Attaching delivers two reports 0.1s apart, captured from the running app:
+    //   {updatedAt, _meta:{gjcPhase:"working", gjcRunning:true}}
+    //   {           _meta:{gjcPhase:"idle",    gjcRunning:false}}
+    // The second is the bootstrap restatement of this connection's prompt slot, and it
+    // has no `updatedAt` because nothing changed. The guard below already ignored it, but
+    // only while nothing had confirmed the session running -- and the report 0.1s earlier
+    // had just done exactly that, so the idle won and the row read 완료 while a tool was
+    // still working.
+    //
+    // A real completion states when it happened, so requiring `updatedAt` rejects the
+    // restatement without stranding a row that genuinely finished.
+    const bootstrapIdleAfterWorking =
+      update.updatedAt === undefined &&
+      this.workingPhaseSessions.has(sessionId);
     if (
       running === false &&
       session.status !== "failed" &&
       !staleForActivePrompt &&
       !bootstrapForForeignTurn &&
+      !bootstrapIdleAfterWorking &&
       !this.compactingSessions.has(sessionId)
     ) {
       // A turn this window did not start -- a steer, or work driven from the
@@ -5786,6 +5821,7 @@ export class GjcAcpController {
       this.discoveredRunStates.delete(sessionId);
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);
+      this.workingPhaseSessions.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;
       if (
         wasRunning &&

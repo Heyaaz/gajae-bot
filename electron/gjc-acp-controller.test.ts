@@ -4648,6 +4648,80 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
+  it("keeps a session running when an idle report trails a working phase", async () => {
+    // The user's report: a session goes 완료 while a tool is still working. Captured from
+    // the running app during a `sleep 40` tool call -- GJC sent `gjcRunning:true` with
+    // phase `working`, then 0.1s later `gjcRunning:false` with phase `idle`, and the row
+    // flipped to idle while the tool had 40 seconds left to go.
+    //
+    // The trailing report describes this connection's own prompt slot, which is idle
+    // because the work is a steer, not a fresh prompt. Both live signals still said the
+    // session was working, so the report carries no news about the actual turn.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      liveRunningSessions: Set<string>;
+      transcriptRunningSessions: Set<string>;
+      activePromptSessions: Set<string>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set("session-1", { id: "session-1", status: "idle" });
+
+    // Copied from the running app: the working report states when it happened, the
+    // bootstrap restatement 0.1s later does not.
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-29T05:00:03.353Z",
+      _meta: { gjcPhase: "working", running: true, gjcRunning: true },
+    });
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+    });
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    expect(internals.liveRunningSessions.has("session-1")).toBe(true);
+    controller.dispose();
+  });
+
+  it("still settles a session when the idle report follows a real finish", async () => {
+    // The guard above must not strand a row: an idle report that arrives without a
+    // working phase still ends the turn, which is how a steer and terminal-driven work
+    // are the only things that ever close.
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      liveRunningSessions: Set<string>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set("session-1", { id: "session-1", status: "running" });
+    internals.liveRunningSessions.add("session-1");
+
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-29T05:00:03.353Z",
+      _meta: { gjcPhase: "working", running: true, gjcRunning: true },
+    });
+    // A completion that states when it happened is real news, not a restatement.
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-29T05:00:44.100Z",
+      _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+    });
+
+    expect(internals.sessions.get("session-1")?.status).toBe("idle");
+    expect(internals.liveRunningSessions.has("session-1")).toBe(false);
+    controller.dispose();
+  });
+
   it("lists a live generation-0 session instead of dropping it", async () => {
     // The user's report: a session vanishes from the recent list. A TUI-hosted session
     // holds no ACP endpoint, so the broker reports endpointGeneration 0 while still
