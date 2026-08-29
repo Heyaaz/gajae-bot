@@ -128,6 +128,24 @@ export function isNearTranscriptBottom(
 }
 
 /**
+ * Scroll intent carried between input and the resulting scroll events.
+ *
+ * Chromium reports negative wheel delta while this transcript moves toward older
+ * content and positive delta while it moves toward the latest content. Direction
+ * reversal matters immediately: keeping an earlier upward intent until an exact
+ * 0-1px landing leaves the follow chip stuck when smooth scrolling or virtual row
+ * measurement stops a few pixels short of the mathematical bottom.
+ */
+export function transcriptScrollIntent(
+  scrolledAway: boolean,
+  deltaY: number,
+): boolean {
+  if (deltaY < 0) return true;
+  if (deltaY > 0) return false;
+  return scrolledAway;
+}
+
+/**
  * Whether the transcript should keep pinning itself to the newest content.
  *
  * Distance alone cannot answer this. Rows above the viewport are unmounted, so the

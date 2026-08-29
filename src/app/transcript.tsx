@@ -10,6 +10,7 @@ import {
   groupTranscriptItems,
   shouldFollowTranscript,
   recentUserRequests,
+  transcriptScrollIntent,
   transcriptBlockIndexForItem,
 } from "../transcript-utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -77,6 +78,7 @@ export function Transcript({
   // before it moved anything. A gesture stays in force until the scrolling it caused
   // has stopped.
   const gestureAtRef = useRef(0);
+  const touchYRef = useRef<number | undefined>(undefined);
   const [following, setFollowing] = useState(true);
 
   const blocks = useMemo(() => groupTranscriptItems(items), [items]);
@@ -371,24 +373,35 @@ export function Transcript({
       aria-live="polite"
       ref={transcriptRef}
       onScroll={updateScrollFollowing}
-      // Upward input is what "scrolled away" means. Taken from the gesture rather than
-      // from the resulting position, which is indistinguishable from the measurement
-      // slack that unmounted rows need.
+      // Input direction carries intent. Upward means "reading older content" and
+      // downward reverses it; the resulting position is indistinguishable from the
+      // measurement slack that unmounted rows need.
       onWheel={(event) => {
-        if (event.deltaY >= 0) return;
-        scrolledAwayRef.current = true;
-        gestureAtRef.current = performance.now();
+        scrolledAwayRef.current = transcriptScrollIntent(
+          scrolledAwayRef.current,
+          event.deltaY,
+        );
+        if (event.deltaY < 0) gestureAtRef.current = performance.now();
+        else if (event.deltaY > 0) gestureAtRef.current = 0;
       }}
-      onTouchMove={() => {
-        const transcript = transcriptRef.current;
-        if (!transcript) return;
-        if (
-          transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight >
-          1
-        ) {
-          scrolledAwayRef.current = true;
-          gestureAtRef.current = performance.now();
-        }
+      onTouchStart={(event) => {
+        touchYRef.current = event.touches[0]?.clientY;
+      }}
+      onTouchMove={(event) => {
+        const currentY = event.touches[0]?.clientY;
+        const previousY = touchYRef.current;
+        touchYRef.current = currentY;
+        if (currentY === undefined || previousY === undefined) return;
+        const deltaY = previousY - currentY;
+        scrolledAwayRef.current = transcriptScrollIntent(
+          scrolledAwayRef.current,
+          deltaY,
+        );
+        if (deltaY < 0) gestureAtRef.current = performance.now();
+        else if (deltaY > 0) gestureAtRef.current = 0;
+      }}
+      onTouchEnd={() => {
+        touchYRef.current = undefined;
       }}
     >
       <div className="transcript-column">

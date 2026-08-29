@@ -6,6 +6,7 @@ import {
   groupTranscriptItems,
   initialSessionId,
   isNearTranscriptBottom,
+  transcriptScrollIntent,
   shouldFollowTranscript,
   mergeDiscoveredSessions,
   attachmentSummaryText,
@@ -640,6 +641,27 @@ describe("shouldFollowTranscript", () => {
     expect(at(478, false)).toBe(false);
     // And with a gesture behind it, any distance counts.
     expect(at(400, true)).toBe(false);
+  });
+});
+
+describe("transcriptScrollIntent", () => {
+  it("reverses an upward scroll intent as soon as the user heads back down", () => {
+    // Keeping the earlier upward gesture active until an exact 0-1px landing left the
+    // 최신 내용으로 chip stuck when a trackpad coasted to 2-40px from the bottom.
+    // Direction reversal is the intent: once the wheel heads toward the latest content,
+    // virtualization slack may finish the last few pixels for it.
+    expect(transcriptScrollIntent(true, 109)).toBe(false);
+    expect(transcriptScrollIntent(true, 1)).toBe(false);
+  });
+
+  it("marks upward input as leaving the latest content", () => {
+    expect(transcriptScrollIntent(false, -109)).toBe(true);
+    expect(transcriptScrollIntent(false, -1)).toBe(true);
+  });
+
+  it("does not invent a direction for a zero-delta wheel event", () => {
+    expect(transcriptScrollIntent(true, 0)).toBe(true);
+    expect(transcriptScrollIntent(false, 0)).toBe(false);
   });
 });
 
