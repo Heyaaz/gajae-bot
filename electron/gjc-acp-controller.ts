@@ -963,6 +963,151 @@ function agentCommands(commands: AvailableCommand[]): AgentCommand[] {
   }));
 }
 
+type SdkSlashCommandSpec = AgentCommand & {
+  operations: readonly string[];
+};
+
+/**
+ * Desktop slash commands backed by public GJC SDK operations.
+ *
+ * This is an adapter from the SDK's semantic operation names to the CLI spelling,
+ * not an independent claim about availability. The live `runtime.capabilities`
+ * response is authoritative and filters the list before it reaches the renderer.
+ * TUI-only commands are intentionally absent: they have no SDK operation to invoke.
+ */
+const SDK_SLASH_COMMAND_SPECS: readonly SdkSlashCommandSpec[] = [
+  {
+    name: "context",
+    description: "Show active context token usage",
+    operations: ["context.get"],
+  },
+  {
+    name: "usage",
+    description: "Show token usage",
+    operations: ["usage.get"],
+  },
+  {
+    name: "tools",
+    description: "Show tools available to this session",
+    operations: ["tools.list"],
+  },
+  {
+    name: "jobs",
+    description: "Show background jobs",
+    operations: ["runtime.jobs.list"],
+  },
+  {
+    name: "session",
+    description: "Show session information or delete it",
+    hint: "info|delete",
+    operations: ["session.metadata", "session.stats"],
+  },
+  {
+    name: "transcript",
+    description: "Show transcript entries",
+    operations: ["transcript.list"],
+  },
+  {
+    name: "dump",
+    description: "Return the transcript as text",
+    operations: ["transcript.list"],
+  },
+  {
+    name: "extensions",
+    description: "Show active extensions",
+    operations: ["extensions.list"],
+  },
+  {
+    name: "provider",
+    description: "Show active providers or start login",
+    hint: "[login <provider>]",
+    operations: ["providers.list/active", "auth.providers", "auth.login"],
+  },
+  {
+    name: "credential",
+    description: "Show credential provider status",
+    operations: ["auth.providers"],
+  },
+  {
+    name: "goal",
+    description: "Show or operate goal mode",
+    hint: "[set|show|pause|resume|complete|drop] [objective]",
+    operations: ["goal.list/get", "mode.goal.operate"],
+  },
+  {
+    name: "model",
+    description: "Select the active model profile",
+    hint: "[profile]",
+    operations: ["model.profile.set", "model.set", "models.profiles.list"],
+  },
+  {
+    name: "effort",
+    description: "Show or set model reasoning effort",
+    hint: "[inherit|off|minimal|low|medium|high|xhigh|max]",
+    operations: ["thinking.set"],
+  },
+  {
+    name: "fast",
+    description: "Enable or disable priority service tier",
+    hint: "[on|off]",
+    operations: ["service_tier.set"],
+  },
+  {
+    name: "export",
+    description: "Export this session to HTML",
+    operations: ["session.export_html"],
+  },
+  {
+    name: "clear",
+    description: "Clear context while preserving this session ID",
+    operations: ["context.clear"],
+  },
+  {
+    name: "compact",
+    description: "Compact context and continue this session",
+    operations: ["compaction.run"],
+  },
+  {
+    name: "retry",
+    description: "Retry the last interrupted turn",
+    operations: ["retry.last"],
+  },
+  {
+    name: "background",
+    description: "Move the active managed bash job to the background",
+    operations: ["bash.background"],
+  },
+  {
+    name: "rename",
+    description: "Rename the current session",
+    hint: "<title>",
+    operations: ["session.rename"],
+  },
+  {
+    name: "move",
+    description: "Move the session working directory",
+    hint: "<path>",
+    operations: ["session.cwd.move"],
+  },
+];
+
+export function sdkSlashCommandsForOperations(
+  operations: readonly string[],
+): AgentCommand[] {
+  const available = new Set(operations);
+  return SDK_SLASH_COMMAND_SPECS.flatMap((spec) =>
+    spec.operations.some((operation) => available.has(operation))
+      ? [
+          {
+            name: spec.name,
+            description: spec.description,
+            ...(spec.hint ? { hint: spec.hint } : {}),
+          },
+        ]
+      : [],
+  );
+}
+
 function configOptionValues(
   option: Extract<SessionConfigOption, { type: "select" }>,
 ): AgentConfigOption["options"] {
@@ -1526,6 +1671,7 @@ export class GjcAcpController {
   /** How long the escalated session abort gets to settle the turn. */
   private cancelEscalationMs = 6000;
   private readonly sessionCommands = new Map<string, AgentCommand[]>();
+  private readonly sessionSdkOperations = new Map<string, Set<string>>();
   private readonly sessionConfig = new Map<string, AgentConfigOption[]>();
   private readonly terminalOnlySessions = new Set<string>();
   private readonly modelProfiles = new Map<string, AgentConfigOptionValue[]>();
@@ -1646,6 +1792,7 @@ export class GjcAcpController {
     this.activeThoughts.clear();
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
+    this.sessionSdkOperations.clear();
     child?.kill("SIGTERM");
     await this.ensureStarted();
     return true;
@@ -2336,21 +2483,15 @@ export class GjcAcpController {
     return { ...session };
   }
 
-  /**
-   * Renames a session for this app only.
-   *
-   * GJC exposes no rename: probed against gjc/0.15.3, `session.rename`,
-   * `session.title.set`, and `session.update` all answer `unknown_operation`. The
-   * broker's title comes from the session's own transcript. So the new name is stored
-   * as a local alias and stays local -- the CLI keeps showing the original title. This
-   * is a runtime limitation, not a shortcut; a shared rename needs a GJC operation to
-   * call.
-   */
+  /** Renames through the live SDK, then mirrors the title into app metadata. */
   async renameSession(sessionId: string, title: string): Promise<void> {
     const value = title.trim();
     if (!value) throw new Error("Session title cannot be empty");
     const session = this.sessions.get(sessionId);
     if (!session) throw new Error(`Unknown GJC session: ${sessionId}`);
+    const operations = await this.sdkOperations(sessionId);
+    if (operations.has("session.rename"))
+      await this.controlSession(sessionId, "session.rename", { name: value });
     this.sessionMetadata?.setAlias(sessionId, value);
     session.title = value;
     session.updatedAt = "now";
@@ -3183,9 +3324,18 @@ export class GjcAcpController {
       | "mode.goal.operate"
       | "thinking.set"
       | "thinking.cycle"
-      | "model.profile.set",
+      | "model.profile.set"
+      | "service_tier.set"
+      | "session.export_html"
+      | "context.clear"
+      | "session.rename"
+      | "session.cwd.move"
+      | "retry.last"
+      | "bash.background"
+      | "auth.login",
     input: Record<string, unknown>,
     idempotencyKeyOverride?: string,
+    confirm = false,
   ): Promise<Record<string, unknown> | undefined> {
     const executable = await this.resolveExecutable();
     const repo = this.sessionCwds.get(sessionId) ?? this.workspace;
@@ -3212,6 +3362,7 @@ export class GjcAcpController {
           ...(operation === "turn.abort" && input.operator === true
             ? ["--confirm"]
             : []),
+          ...(confirm ? ["--confirm"] : []),
           "--repo",
           repo,
           "--timeout-ms",
@@ -3257,8 +3408,17 @@ export class GjcAcpController {
       | "mode.goal.operate"
       | "thinking.set"
       | "thinking.cycle"
-      | "model.profile.set",
+      | "model.profile.set"
+      | "service_tier.set"
+      | "session.export_html"
+      | "context.clear"
+      | "session.rename"
+      | "session.cwd.move"
+      | "retry.last"
+      | "bash.background"
+      | "auth.login",
     input: Record<string, unknown>,
+    options?: { confirm?: boolean },
   ): Promise<Record<string, unknown> | undefined> {
     const connection = this.connection;
     if (connection && !connection.signal.aborted) {
@@ -3267,6 +3427,7 @@ export class GjcAcpController {
           sessionId,
           operation,
           input,
+          ...(options?.confirm ? { confirm: true } : {}),
         });
         if (response.ok !== false && response.accepted !== false) {
           return response.result &&
@@ -3299,7 +3460,15 @@ export class GjcAcpController {
       }
     }
     try {
-      return await this.brokerControl(sessionId, operation, input);
+      return options?.confirm
+        ? await this.brokerControl(
+            sessionId,
+            operation,
+            input,
+            undefined,
+            true,
+          )
+        : await this.brokerControl(sessionId, operation, input);
     } catch (error) {
       // Every control operation ends here, so a session with no SDK endpoint is
       // reported once, in terms the user can act on, instead of each caller
@@ -3437,11 +3606,275 @@ export class GjcAcpController {
     }
   }
 
+  private appendSdkCommandOutput(
+    sessionId: string,
+    content: string,
+  ): void {
+    const message: ChatMessage = {
+      id: `sdk-command-${this.nextLocalId++}`,
+      kind: "message",
+      sessionId,
+      role: "assistant",
+      content,
+      createdAt: nowLabel(),
+      streaming: false,
+    };
+    this.appendTranscript(message);
+    const session = this.sessions.get(sessionId);
+    if (session)
+      this.emitEvent({ type: "session.updated", session: { ...session } });
+  }
+
+  private sdkCommandJson(value: unknown): string {
+    const text = JSON.stringify(value, null, 2) ?? String(value);
+    const bounded =
+      text.length <= MAX_TOOL_TEXT
+        ? text
+        : `${text.slice(0, MAX_TOOL_TEXT)}\n… output truncated`;
+    return `\`\`\`json\n${bounded}\n\`\`\``;
+  }
+
+  private async executeSdkSlashCommand(
+    sessionId: string,
+    input: MessageInput,
+  ): Promise<boolean> {
+    if (input.images?.length || input.files?.length) return false;
+    const match = /^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/iu.exec(
+      input.text.trim(),
+    );
+    if (!match?.[1]) return false;
+    const name = match[1].toLowerCase();
+    const args = match[2]?.trim() ?? "";
+    const spec = SDK_SLASH_COMMAND_SPECS.find(
+      (candidate) => candidate.name === name,
+    );
+    if (!spec) return false;
+    const operations = await this.sdkOperations(sessionId);
+    if (!spec.operations.some((operation) => operations.has(operation)))
+      return false;
+
+    const requireOperation = (operation: string): void => {
+      if (!operations.has(operation))
+        throw new Error(
+          `/${name} is unavailable in this GJC runtime (${operation} is not advertised)`,
+        );
+    };
+    const output = (content: string): true => {
+      this.appendSdkCommandOutput(sessionId, content);
+      return true;
+    };
+    const query = async (
+      operation: string,
+      queryInput: Record<string, unknown> = {},
+    ): Promise<unknown[]> => {
+      requireOperation(operation);
+      return await this.querySessionItems(sessionId, operation, queryInput, {
+        strict: true,
+      });
+    };
+    const control = async (
+      operation:
+        | "mode.goal.operate"
+        | "model.profile.set"
+        | "thinking.set"
+        | "service_tier.set"
+        | "session.export_html"
+        | "context.clear"
+        | "compaction.run"
+        | "session.rename"
+        | "session.cwd.move"
+        | "retry.last"
+        | "bash.background"
+        | "auth.login",
+      controlInput: Record<string, unknown> = {},
+      options?: { confirm?: boolean },
+    ): Promise<Record<string, unknown> | undefined> => {
+      requireOperation(operation);
+      return await this.controlSession(
+        sessionId,
+        operation,
+        controlInput,
+        options,
+      );
+    };
+
+    switch (name) {
+      case "context": {
+        if (args) throw new Error("Usage: /context");
+        const rows = await query("context.get");
+        const row = rows[0] as Record<string, unknown> | undefined;
+        const usage =
+          row?.usage &&
+          typeof row.usage === "object" &&
+          !Array.isArray(row.usage)
+            ? (row.usage as Record<string, unknown>)
+            : undefined;
+        return output(
+          [
+            "## Context",
+            `- Window: ${typeof usage?.contextWindow === "number" ? usage.contextWindow.toLocaleString() : "unknown"} tokens`,
+            `- Used: ${typeof usage?.percent === "number" ? `${usage.percent.toFixed(1)}%` : "unknown"}`,
+            `- Source: ${typeof usage?.source === "string" ? usage.source : "unknown"}`,
+            `- Streaming: ${row?.isStreaming === true ? "yes" : "no"}`,
+            `- Steers queued: ${typeof row?.steeringQueueDepth === "number" ? row.steeringQueueDepth : 0}`,
+            `- Follow-ups queued: ${typeof row?.followupQueueDepth === "number" ? row.followupQueueDepth : 0}`,
+          ].join("\n"),
+        );
+      }
+      case "usage":
+        if (args) throw new Error("Usage: /usage");
+        return output(this.sdkCommandJson(await query("usage.get")));
+      case "tools":
+        if (args) throw new Error("Usage: /tools");
+        return output(
+          `## Tools\n${(await query("tools.list")).map((tool) => `- ${String(tool)}`).join("\n")}`,
+        );
+      case "jobs":
+        if (args) throw new Error("Usage: /jobs");
+        return output(this.sdkCommandJson(await query("runtime.jobs.list")));
+      case "session": {
+        const subcommand = args || "info";
+        if (subcommand === "delete") {
+          await this.deleteSession(sessionId);
+          return true;
+        }
+        if (subcommand !== "info")
+          throw new Error("Usage: /session [info|delete]");
+        const [metadata, stats] = await Promise.all([
+          query("session.metadata"),
+          query("session.stats"),
+        ]);
+        return output(this.sdkCommandJson({ metadata: metadata[0], stats: stats[0] }));
+      }
+      case "transcript":
+      case "dump":
+        if (args) throw new Error(`Usage: /${name}`);
+        return output(this.sdkCommandJson(await query("transcript.list")));
+      case "extensions":
+        if (args) throw new Error("Usage: /extensions");
+        return output(this.sdkCommandJson(await query("extensions.list")));
+      case "provider": {
+        const login = /^login\s+(.+)$/iu.exec(args);
+        if (login?.[1]) {
+          const result = await control("auth.login", {
+            provider: login[1].trim(),
+          });
+          return output(this.sdkCommandJson(result ?? { accepted: true }));
+        }
+        if (args) throw new Error("Usage: /provider [login <provider>]");
+        const [active, auth] = await Promise.all([
+          operations.has("providers.list/active")
+            ? query("providers.list/active")
+            : Promise.resolve([]),
+          operations.has("auth.providers")
+            ? query("auth.providers")
+            : Promise.resolve([]),
+        ]);
+        return output(this.sdkCommandJson({ active, authentication: auth }));
+      }
+      case "credential":
+        if (args) throw new Error("Credential switching is not exposed by this SDK runtime");
+        return output(this.sdkCommandJson(await query("auth.providers")));
+      case "goal": {
+        const [verb = "show", ...rest] = args.split(/\s+/u).filter(Boolean);
+        if (verb === "show" || verb === "get")
+          return output(this.sdkCommandJson(await query("goal.list/get")));
+        const op = verb === "set" ? "create" : verb;
+        if (!new Set(["create", "pause", "resume", "complete", "drop"]).has(op))
+          throw new Error(
+            "Usage: /goal [set|show|pause|resume|complete|drop] [objective]",
+          );
+        const objective = rest.join(" ");
+        if (op === "create" && !objective)
+          throw new Error("Usage: /goal set <objective>");
+        const result = await control("mode.goal.operate", {
+          op,
+          ...(objective ? { objective } : {}),
+        });
+        return output(this.sdkCommandJson(result ?? { accepted: true }));
+      }
+      case "model": {
+        if (!args)
+          return output(
+            this.sdkCommandJson(await query("models.profiles.list")),
+          );
+        const result = await control("model.profile.set", { id: args });
+        return output(this.sdkCommandJson(result ?? { profile: args }));
+      }
+      case "effort": {
+        if (!args)
+          return output(
+            `Current effort: ${this.sessions.get(sessionId)?.thinking ?? "inherit"}`,
+          );
+        const result = await control("thinking.set", { level: args });
+        return output(this.sdkCommandJson(result ?? { level: args }));
+      }
+      case "fast": {
+        if (args !== "on" && args !== "off")
+          throw new Error("Usage: /fast [on|off]");
+        const tier = args === "on" ? "priority" : "default";
+        const result = await control("service_tier.set", { tier });
+        return output(this.sdkCommandJson(result ?? { tier }));
+      }
+      case "export": {
+        if (args) throw new Error("This SDK exports to its managed HTML path; use /export without a path");
+        const result = await control("session.export_html");
+        return output(this.sdkCommandJson(result ?? { exported: true }));
+      }
+      case "clear":
+        if (args) throw new Error("Usage: /clear");
+        await control("context.clear", {}, { confirm: true });
+        return output("Context cleared. The session ID and durable transcript were preserved.");
+      case "compact":
+        if (args) throw new Error("Use the compact action without inline instructions in this client");
+        await this.compactSession(sessionId);
+        return true;
+      case "retry":
+        if (args) throw new Error("Usage: /retry");
+        return output(
+          this.sdkCommandJson((await control("retry.last")) ?? { accepted: true }),
+        );
+      case "background":
+        if (args) throw new Error("Usage: /background");
+        return output(
+          this.sdkCommandJson(
+            (await control("bash.background")) ?? { accepted: true },
+          ),
+        );
+      case "rename":
+        if (!args) throw new Error("Usage: /rename <title>");
+        await this.renameSession(sessionId, args);
+        return output(`Session renamed to **${args}**.`);
+      case "move":
+        if (!args) throw new Error("Usage: /move <path>");
+        {
+          const result = await control("session.cwd.move", { path: args });
+          const cwd =
+            typeof result?.cwd === "string"
+              ? result.cwd
+              : path.resolve(this.sessionCwds.get(sessionId) ?? this.workspace, args);
+          const session = this.sessions.get(sessionId);
+          if (session) {
+            this.sessionCwds.set(sessionId, cwd);
+            this.sessionMetadata?.setWorkspace(sessionId, cwd);
+            session.workspace = cwd;
+            session.subtitle = path.basename(cwd) || cwd;
+            session.updatedAt = "now";
+            this.emitEvent({ type: "session.updated", session: { ...session } });
+          }
+          return output(this.sdkCommandJson(result ?? { moved: true, cwd }));
+        }
+      default:
+        return false;
+    }
+  }
+
   async sendMessage(
     sessionId: string,
     input: MessageInput,
   ): Promise<MessageDelivery> {
     this.locallyAbortedSessions.delete(sessionId);
+    if (await this.executeSdkSlashCommand(sessionId, input)) return "prompt";
     const value = input.text.trim();
     if (/^\/steer(?:\s+|$)/u.test(value)) {
       await this.steerSession(sessionId, input);
@@ -3987,6 +4420,8 @@ export class GjcAcpController {
   private async querySessionItems(
     sessionId: string,
     query: string,
+    input: Record<string, unknown> = {},
+    options?: { strict?: boolean },
   ): Promise<unknown[]> {
     const connection = await this.requireConnection();
     const items: unknown[] = [];
@@ -3995,10 +4430,23 @@ export class GjcAcpController {
       const response = await connection.extMethod("_gjc/sdk/query", {
         sessionId,
         query,
-        input: {},
+        input,
         ...(cursor ? { cursor } : {}),
       });
-      if (response.ok === false) return [];
+      if (response.ok === false) {
+        if (!options?.strict) return [];
+        const error =
+          response.error &&
+          typeof response.error === "object" &&
+          !Array.isArray(response.error)
+            ? (response.error as { message?: unknown })
+            : undefined;
+        throw new Error(
+          typeof error?.message === "string"
+            ? error.message
+            : `GJC ${query} query failed`,
+        );
+      }
       const page =
         response.page &&
         typeof response.page === "object" &&
@@ -4013,6 +4461,53 @@ export class GjcAcpController {
       if (!cursor || page.complete === true) break;
     }
     return items;
+  }
+
+  private async refreshSdkCommands(
+    sessionId: string,
+    advertised: AgentCommand[],
+  ): Promise<void> {
+    try {
+      const operations = [...(await this.sdkOperations(sessionId))];
+      if (operations.length === 0) return;
+      // Runtime-advertised entries win on a name collision. Once GJC publishes its
+      // own built-ins in available_commands_update, the desktop automatically uses
+      // its description and hint rather than the adapter copy above.
+      const commands = [
+        ...new Map(
+          [...sdkSlashCommandsForOperations(operations), ...advertised].map(
+            (command) => [command.name, command],
+          ),
+        ).values(),
+      ];
+      this.sessionCommands.set(sessionId, commands);
+      this.emitEvent({ type: "session.commands", sessionId, commands });
+    } catch {
+      // The ACP command update is still useful against an older host that does not
+      // expose runtime.capabilities. Never replace it with an empty palette.
+    }
+  }
+
+  private async sdkOperations(sessionId: string): Promise<Set<string>> {
+    const cached = this.sessionSdkOperations.get(sessionId);
+    if (cached) return cached;
+    const rows = await this.querySessionItems(
+      sessionId,
+      "runtime.capabilities",
+    );
+    const operations = new Set(
+      rows.flatMap((row) => {
+        if (!row || typeof row !== "object" || Array.isArray(row)) return [];
+        const value = row as Record<string, unknown>;
+        return Array.isArray(value.operations)
+          ? value.operations.filter(
+              (operation): operation is string => typeof operation === "string",
+            )
+          : [];
+      }),
+    );
+    if (operations.size > 0) this.sessionSdkOperations.set(sessionId, operations);
+    return operations;
   }
 
   async getGoal(sessionId: string): Promise<GoalSnapshot> {
@@ -4262,6 +4757,7 @@ export class GjcAcpController {
     this.connection = undefined;
     this.startup = undefined;
     this.attachedSessions.clear();
+    this.sessionSdkOperations.clear();
     this.generation += 1;
     child?.kill("SIGTERM");
     await this.ensureStarted();
@@ -4485,6 +4981,7 @@ export class GjcAcpController {
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
+    this.sessionSdkOperations.delete(sessionId);
     this.sessionConfig.delete(sessionId);
     this.terminalOnlySessions.delete(sessionId);
     this.modelProfiles.delete(sessionId);
@@ -4545,6 +5042,7 @@ export class GjcAcpController {
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
+    this.sessionSdkOperations.clear();
     this.sessionConfig.clear();
     this.terminalOnlySessions.clear();
     this.modelProfiles.clear();
@@ -4641,6 +5139,7 @@ export class GjcAcpController {
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
       this.runtimeIdleSessions.clear();
+      this.sessionSdkOperations.clear();
       this.discoveredRunStates.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
@@ -5062,6 +5561,7 @@ export class GjcAcpController {
         const commands = agentCommands(update.availableCommands);
         this.sessionCommands.set(sessionId, commands);
         this.emitEvent({ type: "session.commands", sessionId, commands });
+        void this.refreshSdkCommands(sessionId, commands);
         break;
       }
       case "config_option_update":

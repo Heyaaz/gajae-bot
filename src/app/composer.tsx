@@ -5,6 +5,7 @@ import {
   composerQueuePreview,
   droppedImageAttachments,
   imeCommitSubmits,
+  isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
   parkDraft,
   releaseRequests,
@@ -140,11 +141,9 @@ export function Composer({
   const matchingCommands =
     commandQuery === null
       ? []
-      : commands
-          .filter((command) =>
-            command.name.toLowerCase().includes(commandQuery),
-          )
-          .slice(0, 8);
+      : commands.filter((command) =>
+          command.name.toLowerCase().includes(commandQuery),
+        );
   const modelOption = configOptions.find(
     (option) =>
       option.type === "select" &&
@@ -457,7 +456,12 @@ export function Composer({
         );
     }
     const liveTurn = running || pendingQueue.length > 0;
-    if (liveTurn) {
+    const immediateSdkCommand = isImmediateSdkCommandSubmission(
+      content,
+      commands,
+      images.length > 0 || files.length > 0,
+    );
+    if (liveTurn && !immediateSdkCommand) {
       // Held locally, not sent. GJC consumes turn.steer into the open turn the
       // moment it arrives, so submitting now would run the request against the
       // turn the user is still waiting on.
@@ -473,6 +477,9 @@ export function Composer({
         }),
       );
     } else {
+      // SDK slash commands are controls/queries, not prompts. They remain useful
+      // while a turn is running and must not sit behind the composer's follow-up
+      // queue, where they would execute only after the work they are inspecting.
       void onSend({ text: content, images, files });
     }
     // submit() reads the textarea's DOM value, so clearing React state alone left
@@ -575,6 +582,17 @@ export function Composer({
     if (command.name === "effort" && thinkingOption) {
       setValue("");
       setConfigMenu(thinkingOption.id);
+      return;
+    }
+    if (!command.hint && !command.name.startsWith("skill:")) {
+      // A completed no-argument SDK command would otherwise leave the exact `/name`
+      // query in the textarea. The palette stays open for that value, so every later
+      // Enter selects it again and the command can never reach submit(). Selection is
+      // the complete action for a command with no input to collect.
+      setValue("");
+      setCommandIndex(0);
+      void onSend({ text: `/${command.name}`, images: [], files: [] });
+      requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
     setValue(`/${command.name}${command.hint ? " " : ""}`);

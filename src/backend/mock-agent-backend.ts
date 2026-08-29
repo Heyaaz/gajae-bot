@@ -508,6 +508,10 @@ export class MockAgentBackend implements AgentBackend {
           sessionId,
           commands: [
             {
+              name: "context",
+              description: "Show active context token usage",
+            },
+            {
               name: "skill:deep-interview",
               description: "Clarify requirements before implementation",
               hint: "[request]",

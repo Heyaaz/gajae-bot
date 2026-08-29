@@ -32,6 +32,7 @@ import {
   profileDefaultModelLabel,
   readableModelLabel,
   sdkControlNeedsBrokerFallback,
+  sdkSlashCommandsForOperations,
   sessionInfoToAgentSession,
   sessionUnreachableError,
   historySessionSummary,
@@ -715,6 +716,36 @@ describe("historySessionSummary", () => {
   });
 });
 
+describe("sdkSlashCommandsForOperations", () => {
+  it("derives slash commands only from operations the live SDK advertises", () => {
+    const commands = sdkSlashCommandsForOperations([
+      "context.get",
+      "runtime.jobs.list",
+      "tools.list",
+      "session.rename",
+    ]);
+
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "context" }),
+        expect.objectContaining({ name: "jobs" }),
+        expect.objectContaining({ name: "tools" }),
+        expect.objectContaining({ name: "rename", hint: "<title>" }),
+      ]),
+    );
+    expect(commands.map((command) => command.name)).not.toContain("clear");
+    expect(commands.map((command) => command.name)).not.toContain("move");
+  });
+
+  it("deduplicates command names backed by more than one SDK query", () => {
+    const commands = sdkSlashCommandsForOperations([
+      "session.metadata",
+      "session.stats",
+    ]);
+    expect(commands.filter((command) => command.name === "session")).toHaveLength(1);
+  });
+});
+
 describe("listHistorySessions", () => {
   const controllerFor = async (
     root: string,
@@ -822,6 +853,141 @@ describe("listHistorySessions", () => {
       controller.dispose();
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("SDK slash command dispatch", () => {
+  it("runs /context as an SDK query instead of sending it to the model", async () => {
+    const events: AgentEvent[] = [];
+    const extMethod = vi.fn().mockImplementation(
+      (_method: string, params: { query?: string }) => {
+        if (params.query === "context.get")
+          return Promise.resolve({
+            page: {
+              items: [
+                {
+                  usage: {
+                    contextWindow: 1_050_000,
+                    percent: 25.16,
+                    source: "provider_anchor",
+                  },
+                  systemPrompt: ["SECRET_SYSTEM_PROMPT"],
+                  isStreaming: false,
+                  steeringQueueDepth: 1,
+                  followupQueueDepth: 2,
+                },
+              ],
+              complete: true,
+            },
+          });
+        return Promise.resolve({ page: { items: [], complete: true } });
+      },
+    );
+    const prompt = vi.fn();
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.status = "running";
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        prompt: typeof prompt;
+      };
+      sessions: Map<string, typeof session>;
+      sessionSdkOperations: Map<string, Set<string>>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      prompt,
+    };
+    internals.sessions.set(session.id, session);
+    internals.sessionSdkOperations.set(session.id, new Set(["context.get"]));
+
+    await expect(
+      controller.sendMessage(session.id, {
+        text: "/context",
+        images: [],
+        files: [],
+      }),
+    ).resolves.toBe("prompt");
+
+    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/query", {
+      sessionId: session.id,
+      query: "context.get",
+      input: {},
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    const output = events.find(
+      (event): event is Extract<AgentEvent, { type: "transcript.appended" }> =>
+        event.type === "transcript.appended" &&
+        event.item.kind === "message" &&
+        event.item.role === "assistant",
+    );
+    expect(output?.item).toEqual(
+      expect.objectContaining({
+        content: expect.stringContaining("1,050,000 tokens"),
+      }),
+    );
+    expect(
+      output?.item.kind === "message" ? output.item.content : "",
+    ).not.toContain("SECRET_SYSTEM_PROMPT");
+    controller.dispose();
+  });
+
+  it("runs /clear through confirmed SDK control", async () => {
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, result: { cleared: true } });
+    const prompt = vi.fn();
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+        prompt: typeof prompt;
+      };
+      sessions: Map<string, typeof session>;
+      sessionSdkOperations: Map<string, Set<string>>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+      prompt,
+    };
+    internals.sessions.set(session.id, session);
+    internals.sessionSdkOperations.set(session.id, new Set(["context.clear"]));
+
+    await controller.sendMessage(session.id, {
+      text: "/clear",
+      images: [],
+      files: [],
+    });
+
+    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
+      sessionId: session.id,
+      operation: "context.clear",
+      input: {},
+      confirm: true,
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    controller.dispose();
   });
 });
 
@@ -2198,6 +2364,58 @@ describe("sessionInfoToAgentSession", () => {
         thoughtId: "acp-thought-thought-1",
         streaming: false,
       }),
+    );
+    controller.dispose();
+  });
+
+  it("enriches ACP skills with slash commands from runtime capabilities", async () => {
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      querySessionItems: (id: string, query: string) => Promise<unknown[]>;
+      handleSessionUpdate: (notification: SessionNotification) => void;
+    };
+    internals.querySessionItems = async (_id, query) =>
+      query === "runtime.capabilities"
+        ? [{ operations: ["context.get", "runtime.jobs.list"] }]
+        : [];
+
+    internals.handleSessionUpdate({
+      sessionId: "session-1",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "skill:ralplan",
+            description: "Plan changes",
+            input: { hint: "[request]" },
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() =>
+      expect(events).toContainEqual({
+        type: "session.commands",
+        sessionId: "session-1",
+        commands: [
+          expect.objectContaining({ name: "context" }),
+          expect.objectContaining({ name: "jobs" }),
+          expect.objectContaining({ name: "skill:ralplan" }),
+        ],
+      }),
+    );
+    const enriched = events
+      .filter(
+        (event): event is Extract<AgentEvent, { type: "session.commands" }> =>
+          event.type === "session.commands",
+      )
+      .at(-1);
+    expect(enriched?.commands.map((command) => command.name)).not.toContain(
+      "clear",
     );
     controller.dispose();
   });
@@ -4441,6 +4659,7 @@ describe("sessionInfoToAgentSession", () => {
       transcripts: Map<string, TranscriptItem[]>;
       messageKeys: Map<string, Map<string, string>>;
       sessionCommands: Map<string, unknown[]>;
+      sessionSdkOperations: Map<string, Set<string>>;
       sessionConfig: Map<string, unknown[]>;
       modelProfiles: Map<string, unknown[]>;
     };
@@ -4448,6 +4667,7 @@ describe("sessionInfoToAgentSession", () => {
     internals.transcripts.set("session-1", []);
     internals.messageKeys.set("session-1", new Map([["external", "local"]]));
     internals.sessionCommands.set("session-1", []);
+    internals.sessionSdkOperations.set("session-1", new Set(["context.get"]));
     internals.sessionConfig.set("session-1", []);
     internals.modelProfiles.set("session-1", []);
 
@@ -4457,6 +4677,7 @@ describe("sessionInfoToAgentSession", () => {
     expect(internals.transcripts.size).toBe(0);
     expect(internals.messageKeys.size).toBe(0);
     expect(internals.sessionCommands.size).toBe(0);
+    expect(internals.sessionSdkOperations.size).toBe(0);
     expect(internals.sessionConfig.size).toBe(0);
     expect(internals.modelProfiles.size).toBe(0);
   });

@@ -1,4 +1,30 @@
 import type { FileAttachment, ImageAttachment } from "../shared/agent-contract";
+
+const LOCAL_COMPOSER_COMMANDS = new Set([
+  "steer",
+  "queue",
+  "abort",
+  "compact",
+  "new",
+  "model",
+  "effort",
+]);
+
+export function isImmediateSdkCommandSubmission(
+  content: string,
+  commands: readonly { name: string }[],
+  hasAttachments: boolean,
+): boolean {
+  if (hasAttachments) return false;
+  const name = /^\/([^\s]+)(?:\s|$)/u.exec(content.trim())?.[1]?.toLowerCase();
+  return (
+    name !== undefined &&
+    !name.startsWith("skill:") &&
+    !LOCAL_COMPOSER_COMMANDS.has(name) &&
+    commands.some((command) => command.name.toLowerCase() === name)
+  );
+}
+
 export interface CompactText {
   text: string;
   omittedLines: number;

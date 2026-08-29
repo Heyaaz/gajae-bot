@@ -7,6 +7,7 @@ import {
   compactToolText,
   composerQueuePreview,
   appendPendingRequest,
+  isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
   SUBMISSION_DEDUPE_MS,
   IME_COMMIT_WINDOW_MS,
@@ -20,6 +21,35 @@ import {
 } from "./composer-utils";
 
 describe("composer utilities", () => {
+  it("dispatches SDK commands during a run without bypassing prompt queues", () => {
+    const commands = [
+      { name: "context" },
+      { name: "clear" },
+      { name: "skill:ralplan" },
+      { name: "queue" },
+    ];
+    expect(isImmediateSdkCommandSubmission("/context", commands, false)).toBe(
+      true,
+    );
+    expect(
+      isImmediateSdkCommandSubmission("/clear now", commands, false),
+    ).toBe(true);
+    // Skills remain prompts, and explicit queue semantics stay owned by the composer.
+    expect(
+      isImmediateSdkCommandSubmission("/skill:ralplan plan it", commands, false),
+    ).toBe(false);
+    expect(isImmediateSdkCommandSubmission("/queue later", commands, false)).toBe(
+      false,
+    );
+    // Unknown slash text is still a model prompt; attachments never become controls.
+    expect(isImmediateSdkCommandSubmission("/unknown", commands, false)).toBe(
+      false,
+    );
+    expect(isImmediateSdkCommandSubmission("/context", commands, true)).toBe(
+      false,
+    );
+  });
+
   it("extracts text from ACP structured tool output and keeps a bounded tail preview", () => {
     const lines = Array.from({ length: 15 }, (_, index) => `line-${index + 1}`);
     const raw = JSON.stringify({

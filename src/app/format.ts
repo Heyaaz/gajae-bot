@@ -163,26 +163,6 @@ export const BUNDLED_GJC_COMMANDS: AgentCommand[] = [
   { name: "new", description: "이 workspace에서 새 세션 시작" },
   { name: "model", description: "세션 모델 프로필 선택" },
   { name: "effort", description: "추론 effort 변경 (단축키: ⇧⇥)" },
-  {
-    name: "skill:deep-interview",
-    description: "요구사항을 구체화하고 구현 가능한 명세 작성",
-    hint: "[요청]",
-  },
-  {
-    name: "skill:ralplan",
-    description: "검토된 합의형 구현 계획 작성",
-    hint: "[요청]",
-  },
-  {
-    name: "skill:ultragoal",
-    description: "목표를 기준으로 구현하고 검증",
-    hint: "[요청]",
-  },
-  {
-    name: "skill:autoresearch",
-    description: "목표 중심 리서치 실행",
-    hint: "[요청]",
-  },
 ];
 
 export const EMPTY_TRANSCRIPT: TranscriptItem[] = [];
