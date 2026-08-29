@@ -1100,8 +1100,14 @@ export function sdkSlashCommandsForOperations(
       ? [
           {
             name: spec.name,
-            description: spec.description,
-            ...(spec.hint ? { hint: spec.hint } : {}),
+            description:
+              spec.name === "provider" && !available.has("auth.login")
+                ? "Show active provider status"
+                : spec.description,
+            ...(spec.hint &&
+            !(spec.name === "provider" && !available.has("auth.login"))
+              ? { hint: spec.hint }
+              : {}),
           },
         ]
       : [],

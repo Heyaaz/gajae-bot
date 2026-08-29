@@ -744,6 +744,20 @@ describe("sdkSlashCommandsForOperations", () => {
     ]);
     expect(commands.filter((command) => command.name === "session")).toHaveLength(1);
   });
+
+  it("does not advertise provider login when the runtime only exposes status", () => {
+    expect(
+      sdkSlashCommandsForOperations(["auth.providers"]),
+    ).toContainEqual({
+      name: "provider",
+      description: "Show active provider status",
+    });
+    expect(
+      sdkSlashCommandsForOperations(["auth.providers", "auth.login"]),
+    ).toContainEqual(
+      expect.objectContaining({ name: "provider", hint: "[login <provider>]" }),
+    );
+  });
 });
 
 describe("listHistorySessions", () => {
