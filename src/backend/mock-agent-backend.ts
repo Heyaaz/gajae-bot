@@ -316,17 +316,40 @@ export class MockAgentBackend implements AgentBackend {
     if (!sessionId) return;
     const items = this.transcriptStore.get(sessionId) ?? [];
     const createdAt = new Date().toISOString();
+    const sentence =
+      "이 줄은 읽기 컬럼의 폭에 따라 줄바꿈 위치가 달라지도록 충분히 길게 작성된 본문이며, 세션 정보 패널을 여닫을 때 다시 측정되어야 하는 대상입니다.";
     while (items.length < count) {
       const index = items.length;
+      // Heights have to vary wildly, not just exceed one line. A real session measured
+      // 61px to 1415px per block, and it is that spread against the fixed estimate that
+      // makes the scroll height wrong enough to expose scroll-restore bugs. Uniform rows
+      // sat close to the estimate and hid them.
+      const bulk = (index % 7) * (index % 3);
+      // Alternate messages with tool calls, the way a real turn does. Grouping collapses
+      // consecutive tool calls into one block, so this produces the message/tool-run
+      // alternation where per-card bottom margins made spacing jump between 20px and 40px.
+      if (index % 3 === 1) {
+        items.push(
+          cloneItem({
+            id: `seeded-${index}`,
+            sessionId,
+            kind: "tool",
+            name: "bash",
+            description: `샘프 명령 ${index}`,
+            command: `echo ${index}`,
+            status: "completed",
+            createdAt,
+          } as never),
+        );
+        continue;
+      }
       items.push(
         cloneItem({
           id: `seeded-${index}`,
           sessionId,
           kind: "message",
           role: index % 2 === 0 ? "assistant" : "user",
-          // Long enough to wrap, so a row's height depends on the column width -- the
-          // condition that made a full transcript expensive to re-lay-out.
-          content: `${index} 번째 메시지입니다. 이 줄은 읽기 컬럼의 폭에 따라 줄바꿈 위치가 달라지도록 충분히 길게 작성된 본문이며, 세션 정보 패널을 여닫을 때 다시 측정되어야 하는 대상입니다.`,
+          content: `${index} 번째 메시지입니다. ${sentence.repeat(1 + bulk)}`,
           createdAt,
         } as never),
       );

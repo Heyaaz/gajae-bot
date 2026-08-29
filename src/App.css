@@ -94,6 +94,20 @@
   width: 100%;
   min-width: 0;
 }
+/* The slot is the only thing that spaces blocks apart.
+   Cards used to carry their own bottom margins (18px to 26px, six different rules). In
+   static flow those collapsed together; between absolutely positioned slots they do not,
+   and they were counted once in the slot's measured height and again in its layout, which
+   left gaps between -154px and +81px. */
+.transcript-slot {
+  padding-bottom: 18px;
+}
+/* Nothing follows the final block, so its padding would only push the newest message away
+   from the composer. Keyed off an explicit attribute, not `:last-child`: mounted slots are
+   in arbitrary DOM order, so `:last-child` stripped the padding from a random middle row. */
+.transcript-slot[data-last="true"] {
+  padding-bottom: 0;
+}
 .transcript-entry {
   min-width: 0;
   border-radius: 10px;
@@ -1262,7 +1276,9 @@
   width: min(760px, calc(100% - 48px));
   min-width: 0;
   margin: 0 auto;
-  padding: 44px 0 28px;
+  /* Bottom padding is small: the composer below already separates the newest message,
+     and rows carry their own bottom margins. */
+  padding: 44px 0 8px;
   overflow-anchor: none;
 }
 .transcript-column > :last-child {
@@ -1292,7 +1308,7 @@
 
 .message {
   position: relative;
-  margin: 0 0 26px;
+  margin: 0;
 }
 .message--user {
   display: grid;
@@ -2052,7 +2068,7 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin: 0 0 22px 31px;
+  margin: 0 0 0 31px;
   padding: 10px 11px;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--border);
@@ -2083,7 +2099,7 @@
 }
 
 .compaction-card {
-  margin: 0 0 18px 31px;
+  margin: 0 0 0 31px;
   color: var(--text-secondary);
   background: rgba(255, 138, 52, 0.05);
   border: 1px solid rgba(255, 138, 52, 0.18);
@@ -2195,7 +2211,7 @@
   line-height: 1.5;
 }
 .thought-card {
-  margin: 0 0 18px 31px;
+  margin: 0 0 0 31px;
   color: var(--text-secondary);
   background: rgba(240, 100, 22, 0.035);
   border: 1px solid rgba(240, 100, 22, 0.14);
@@ -2251,7 +2267,6 @@
   display: flex;
   flex-direction: column;
   gap: 0;
-  margin-bottom: 18px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.012);
@@ -2411,7 +2426,7 @@
   margin-bottom: 0;
 }
 .plan-card {
-  margin: 0 0 20px 31px;
+  margin: 0 0 0 31px;
   padding: 10px 11px;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--border);
