@@ -1023,11 +1023,16 @@ describe("sharedTranscriptItems", () => {
         ],
       },
     ];
+    // Not `completed`. The broker's transcript carries no status on a tool block at all
+    // -- checked against a live session: 55 blocks, zero with a status -- so a call with
+    // no result row is one whose outcome was never recorded. Claiming it succeeded put 완료
+    // on a card for a tool that was still running whenever the turn-running read lagged,
+    // which is exactly the state a user sees mid-tool-call.
     expect(
       sharedTranscriptItems("shared-session", rows, { turnRunning: false }),
     ).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: "call-open", status: "completed" }),
+        expect.objectContaining({ id: "call-open", status: "cancelled" }),
       ]),
     );
     expect(
@@ -7363,6 +7368,25 @@ describe("persistedTranscriptRunning mid-turn activity", () => {
         { type: "toolResult", output: "ok" },
       ]),
     ).toBe(true);
+  });
+
+  it("stays finished when a cancel is the last thing that happened", () => {
+    // The reason the abandoned rule exists: a cancel flushes the tool rows that were
+    // already in flight, and those must not read as a live turn.
+    expect(
+      persistedTranscriptRunning([
+        { type: "message", message: { role: "user", content: "work" } },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "toolUse" },
+        },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "aborted" },
+        },
+        { type: "message", message: { role: "toolResult", content: "late" } },
+      ]),
+    ).toBe(false);
   });
 
   it("settles once a terminal stop reason follows the mid-turn rows", () => {

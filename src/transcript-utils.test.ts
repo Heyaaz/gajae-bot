@@ -179,6 +179,51 @@ describe("mergeTranscriptItem", () => {
       createdAt: "00:00",
     }) as TranscriptItem;
 
+  const tool = (
+    id: string,
+    status: string,
+    output?: string,
+  ): TranscriptItem =>
+    ({
+      kind: "tool",
+      id,
+      sessionId: "s",
+      name: "bash",
+      description: "bash",
+      status,
+      createdAt: "00:00",
+      ...(output ? { output } : {}),
+    }) as unknown as TranscriptItem;
+
+  it("keeps a running tool call running when a rescan reports no outcome", () => {
+    // The live connection reports a tool call the moment it starts. A transcript rescan
+    // rebuilds the same row from the persisted file, where the broker writes no status on
+    // a tool block at all -- verified against a live session: 55 blocks, none with one --
+    // so a call still in flight comes back with nothing but the fact it was never
+    // resolved. Replacing the row wholesale let that overwrite 상태 and the card flipped to
+    // a finished state while the tool was still working.
+    const merged = mergeTranscriptItem(
+      [tool("call-1", "running")],
+      tool("call-1", "cancelled"),
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: "call-1", status: "running" });
+  });
+
+  it("accepts a real outcome for a running tool call", () => {
+    // The guard above must not freeze a card: a rescan that carries an actual result still
+    // settles the row.
+    expect(
+      mergeTranscriptItem(
+        [tool("call-1", "running")],
+        tool("call-1", "completed", "done"),
+      )[0],
+    ).toMatchObject({ status: "completed", output: "done" });
+    expect(
+      mergeTranscriptItem([tool("c", "running")], tool("c", "failed"))[0],
+    ).toMatchObject({ status: "failed" });
+  });
+
   it("appends an item the history has not seen", () => {
     const items = [message("a", "one")];
     expect(mergeTranscriptItem(items, message("b", "two")).map((i) => i.id)).toEqual([

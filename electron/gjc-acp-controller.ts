@@ -667,11 +667,18 @@ export function sharedTranscriptItems(
     ),
   );
   // A tool call with no result row is only still running while the turn itself is.
-  // A finished turn leaves its last `toolUse` call resultless in the persisted
-  // file, and reporting that as running kept the composer showing stop and
-  // routing every later message into a steer long after the turn ended.
+  // A finished turn leaves its last `toolUse` call resultless in the persisted file, and
+  // reporting that as running kept the composer showing stop and routing every later
+  // message into a steer long after the turn ended.
+  //
+  // Once the turn is over it reads `cancelled`, never `completed`. The broker writes no
+  // status on a tool block at all -- 55 blocks in a live session, none with one -- so a
+  // resultless call is one whose outcome was never recorded, not one that succeeded. The
+  // turn-running read comes from a bounded tail and can lag by a beat, and in that window
+  // `completed` put 완료 on the card of a tool that was still working. `cancelled` is
+  // accurate either way and carries no spinner.
   const unresolvedToolStatus: ToolActivity["status"] =
-    options?.turnRunning === false ? "completed" : "running";
+    options?.turnRunning === false ? "cancelled" : "running";
   const abortedTurn = records.some((row) => {
     const message =
       row.message &&

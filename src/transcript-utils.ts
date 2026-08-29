@@ -285,8 +285,10 @@ export function mergeTranscriptItem(
   item: TranscriptItem,
 ): TranscriptItem[] {
   const index = items.findIndex((existing) => existing.id === item.id);
-  if (index >= 0)
+  if (index >= 0) {
+    if (supersedesRunningTool(items[index], item)) return items.slice();
     return items.map((existing, at) => (at === index ? item : existing));
+  }
   // Every row this window shows before GJC persists it carries a local id, and
   // the persisted rebuild of that same row carries a different one. An id-only
   // match treated the rebuild as a brand new row and appended it, so a request,
@@ -297,6 +299,31 @@ export function mergeTranscriptItem(
       at === superseded ? withLocalImages(item, existing) : existing,
     );
   return [...items, item];
+}
+
+/**
+ * True when a rebuilt tool row would undo a live one without knowing any better.
+ *
+ * The live connection reports a tool call the moment it starts and again when it ends. A
+ * transcript rescan rebuilds the same row from the persisted file, and the broker writes no
+ * status on a tool block at all -- verified against a live session: 55 blocks, none with
+ * one. So a call still in flight comes back carrying only the fact that no result was
+ * recorded, which the rebuild reports as a settled state. Applying that put a tool card
+ * into a finished state while the tool was still working.
+ *
+ * A rebuild carrying a real outcome -- output, a failure -- is newer than the live report
+ * and still replaces it.
+ */
+function supersedesRunningTool(
+  existing: TranscriptItem,
+  incoming: TranscriptItem,
+): boolean {
+  if (existing.kind !== "tool" || incoming.kind !== "tool") return false;
+  if (existing.status !== "running" && existing.status !== "pending")
+    return false;
+  // The state the rebuild invents for a call whose outcome is absent from the file.
+  // Anything else, including completed with output or failed, is real news.
+  return incoming.status === "cancelled" && !incoming.output;
 }
 
 /**
