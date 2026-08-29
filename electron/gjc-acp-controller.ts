@@ -1497,13 +1497,23 @@ export class GjcAcpController {
    */
   private readonly transcriptRunningSessions = new Set<string>();
   /**
-   * Sessions GJC last described with a non-idle phase.
+   * Sessions whose current work cycle GJC confirmed with a non-idle phase.
    *
-   * The phase is the only signal that separates a turn waiting on a tool result from one
-   * that ended, because `gjcRunning:false` also describes this connection's idle prompt
-   * slot while a steer drives the actual work.
+   * The marker survives runtime idle until the transcript confirms the final assistant
+   * row. The phase is the only signal that separates a turn waiting on a tool result
+   * from one that ended, because `gjcRunning:false` also describes this connection's
+   * idle prompt slot while a steer drives the actual work.
    */
   private readonly workingPhaseSessions = new Set<string>();
+  /**
+   * Sessions whose runtime has reported a real idle transition after a working phase.
+   *
+   * Neither side closes a cycle alone. Runtime idle can arrive while the model is
+   * still responding after a tool, and the transcript can contain a `stop` row before
+   * more tool calls are appended. A session that emitted a working phase settles only
+   * after this marker and a terminal transcript agree.
+   */
+  private readonly runtimeIdleSessions = new Set<string>();
   /** Transcript-derived run state per session, keyed by the file size it was read at. */
   private readonly discoveredRunStates = new Map<
     string,
@@ -1628,6 +1638,7 @@ export class GjcAcpController {
     this.liveRunningDigests.clear();
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
+    this.runtimeIdleSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -1972,6 +1983,9 @@ export class GjcAcpController {
     if (status === "idle") {
       this.liveRunningSessions.delete(sessionId);
       this.liveRunningDigests.delete(sessionId);
+      this.transcriptRunningSessions.delete(sessionId);
+      this.workingPhaseSessions.delete(sessionId);
+      this.runtimeIdleSessions.delete(sessionId);
     }
     const session = this.sessions.get(sessionId);
     if (!session || session.status === status) return;
@@ -2000,7 +2014,8 @@ export class GjcAcpController {
       const info = await stat(filePath);
       if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
       const cached = this.discoveredRunStates.get(sessionId);
-      if (cached && cached.size === info.size) return cached.status;
+      if (cached && cached.size === info.size)
+        return this.effectiveTranscriptRunState(sessionId, cached.status);
       // Never parse whole transcripts here. Measured across 399 local sessions
       // (640MB), a full parse of each costs ~23s, which would stall every list
       // refresh. Run state only depends on how the newest rows end, so a bounded
@@ -2013,10 +2028,23 @@ export class GjcAcpController {
       if (status === "running") this.transcriptRunningSessions.add(sessionId);
       else this.transcriptRunningSessions.delete(sessionId);
       this.discoveredRunStates.set(sessionId, { size: info.size, status });
-      return status;
+      return this.effectiveTranscriptRunState(sessionId, status);
     } catch {
       return undefined;
     }
+  }
+
+  private effectiveTranscriptRunState(
+    sessionId: string,
+    status: AgentSession["status"],
+  ): AgentSession["status"] {
+    if (
+      status === "idle" &&
+      this.workingPhaseSessions.has(sessionId) &&
+      !this.runtimeIdleSessions.has(sessionId)
+    )
+      return "running";
+    return status;
   }
 
   /** Undefined when the broker index could not be read in full. */
@@ -2590,14 +2618,18 @@ export class GjcAcpController {
           },
         ];
       });
+      const transcriptRunning = persistedTranscriptRunning(envelopes);
       const turnRunning =
-        persistedTranscriptRunning(envelopes) ||
-        this.activePromptSessions.has(sessionId);
+        transcriptRunning ||
+        this.activePromptSessions.has(sessionId) ||
+        (this.workingPhaseSessions.has(sessionId) &&
+          !this.runtimeIdleSessions.has(sessionId));
       // A transcript that has not changed since the live signal reported work is the
       // same snapshot that signal already superseded, so it carries no news. Once the
       // file grows and still reports no active turn, it has observed the work end and
       // becomes the newer account. A terminal-owned session never sends
-      // gjcRunning:false, so this is the only evidence its turn ended.
+      // gjcRunning:false, so this is sufficient evidence for that kind of session. A
+      // cycle that did emit a working phase also needs runtime idle before it settles.
       const seenSize = this.liveRunningDigests.get(sessionId);
       const transcriptAdvanced =
         seenSize !== undefined && info.size !== seenSize;
@@ -2641,6 +2673,7 @@ export class GjcAcpController {
             // GJC reported: leaving the marker set would keep rejecting every later
             // idle report and strand the row at 진행 중.
             this.workingPhaseSessions.delete(sessionId);
+            this.runtimeIdleSessions.delete(sessionId);
             this.updateSessionStatus(sessionId, "idle");
           }
         } else if (
@@ -3541,6 +3574,9 @@ export class GjcAcpController {
     // about it from putting the row back to running.
     this.liveRunningSessions.delete(sessionId);
     this.liveRunningDigests.delete(sessionId);
+    this.transcriptRunningSessions.delete(sessionId);
+    this.workingPhaseSessions.delete(sessionId);
+    this.runtimeIdleSessions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
@@ -4439,6 +4475,9 @@ export class GjcAcpController {
     this.activePromptSessions.delete(sessionId);
     this.liveRunningSessions.delete(sessionId);
     this.liveRunningDigests.delete(sessionId);
+    this.transcriptRunningSessions.delete(sessionId);
+    this.workingPhaseSessions.delete(sessionId);
+    this.runtimeIdleSessions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
@@ -4499,6 +4538,7 @@ export class GjcAcpController {
     this.liveRunningDigests.clear();
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
+    this.runtimeIdleSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -4600,6 +4640,7 @@ export class GjcAcpController {
       this.liveRunningDigests.clear();
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
+      this.runtimeIdleSessions.clear();
       this.discoveredRunStates.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
@@ -5794,8 +5835,23 @@ export class GjcAcpController {
     // A report carrying `updatedAt` is describing an actual change of state; one without
     // it is GJC restating a slot. Remembering which sessions were last said to be working
     // by a real report is what lets the bootstrap idle that follows be recognised.
-    if (update.updatedAt && phase && phase !== "idle")
+    const runtimeConfirmedWorkingCycle =
+      update.updatedAt !== undefined &&
+      (running === true || (phase !== undefined && phase !== "idle"));
+    if (runtimeConfirmedWorkingCycle) {
       this.workingPhaseSessions.add(sessionId);
+      this.runtimeIdleSessions.delete(sessionId);
+    }
+    const runtimeFinishedWorkingCycle =
+      update.updatedAt !== undefined &&
+      (phase === "idle" || (phase === undefined && running === false)) &&
+      this.workingPhaseSessions.has(sessionId);
+    if (runtimeFinishedWorkingCycle) {
+      this.runtimeIdleSessions.add(sessionId);
+      // The transcript may already contain the final assistant row. If it does not,
+      // its watcher will call this again when that row arrives.
+      void this.readPersistedTranscript(sessionId);
+    }
     if (running === true && !this.locallyAbortedSessions.has(sessionId)) {
       session.status = "running";
       if (!this.liveRunningSessions.has(sessionId)) {
@@ -5838,8 +5894,9 @@ export class GjcAcpController {
     // had just done exactly that, so the idle won and the row read 완료 while a tool was
     // still working.
     //
-    // A real completion states when it happened, so requiring `updatedAt` rejects the
-    // restatement without stranding a row that genuinely finished.
+    // A real runtime transition states when it happened, so requiring `updatedAt`
+    // rejects the restatement. It still does not finish the row by itself: the
+    // transcript must also contain the cycle's terminal assistant response.
     const bootstrapIdleAfterWorking =
       update.updatedAt === undefined &&
       this.workingPhaseSessions.has(sessionId);
@@ -5849,6 +5906,7 @@ export class GjcAcpController {
       !staleForActivePrompt &&
       !bootstrapForForeignTurn &&
       !bootstrapIdleAfterWorking &&
+      !this.workingPhaseSessions.has(sessionId) &&
       !this.compactingSessions.has(sessionId)
     ) {
       // A turn this window did not start -- a steer, or work driven from the
@@ -5864,6 +5922,7 @@ export class GjcAcpController {
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);
       this.workingPhaseSessions.delete(sessionId);
+      this.runtimeIdleSessions.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;
       if (
         wasRunning &&

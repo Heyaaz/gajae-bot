@@ -4799,10 +4799,30 @@ describe("listSessions status from the transcript", () => {
     controller.dispose();
   });
 
-  it("still settles a session when the idle report follows a real finish", async () => {
-    // The guard above must not strand a row: an idle report that arrives without a
-    // working phase still ends the turn, which is how a steer and terminal-driven work
-    // are the only things that ever close.
+  it("does not settle a working cycle before its transcript is terminal", async () => {
+    // `gjcRunning:false` is not the end of the user's cycle. It can arrive after a tool
+    // result while the model is still preparing its response, and GJC transcripts have
+    // also been observed writing `stop` before appending another tool call. The row must
+    // stay 작업 중 until runtime idle and the cycle's terminal transcript agree.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-cycle-idle-first-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [{ type: "toolCall", id: "c1", name: "bash" }],
+        },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "toolResult", toolCallId: "c1", content: "done" },
+      })}\n`,
+    );
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
       emit: () => undefined,
@@ -4810,16 +4830,21 @@ describe("listSessions status from the transcript", () => {
     const internals = controller as unknown as {
       sessions: Map<string, { id: string; status: string; phase?: string }>;
       liveRunningSessions: Set<string>;
+      liveRunningDigests: Map<string, number>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
       patchSessionInfo: (id: string, update: unknown) => void;
     };
     internals.sessions.set("session-1", { id: "session-1", status: "running" });
     internals.liveRunningSessions.add("session-1");
+    internals.locateSharedTranscriptFile = async () => file;
 
     internals.patchSessionInfo("session-1", {
       sessionUpdate: "session_info_update",
       updatedAt: "2026-08-29T05:00:03.353Z",
       _meta: { gjcPhase: "working", running: true, gjcRunning: true },
     });
+    internals.liveRunningDigests.set("session-1", (await stat(file)).size);
     // A completion that states when it happened is real news, not a restatement.
     internals.patchSessionInfo("session-1", {
       sessionUpdate: "session_info_update",
@@ -4827,9 +4852,121 @@ describe("listSessions status from the transcript", () => {
       _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
     });
 
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+
+    // Only the final assistant response closes the cycle.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [{ type: "toolCall", id: "c1", name: "bash" }],
+        },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "toolResult", toolCallId: "c1", content: "done" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "stop", content: "final" },
+      })}\n`,
+    );
+    await internals.readPersistedTranscript("session-1");
+
     expect(internals.sessions.get("session-1")?.status).toBe("idle");
     expect(internals.liveRunningSessions.has("session-1")).toBe(false);
     controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not accept an intermediate transcript stop while runtime is working", async () => {
+    // A real 3405-row transcript writes stopReason `stop`, then more toolUse rows without
+    // a new user request. Reading the file in that gap used to flash 완료 until the next
+    // row arrived. A live working phase means that stop is not authoritative yet.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-cycle-stop-first-"));
+    const file = path.join(root, "session.jsonl");
+    const initial = `${JSON.stringify({
+      type: "message",
+      message: { role: "user", content: "work" },
+    })}\n`;
+    await writeFile(file, initial);
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      liveRunningSessions: Set<string>;
+      liveRunningDigests: Map<string, number>;
+      workingPhaseSessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.sessions.set("session-1", { id: "session-1", status: "running" });
+    internals.liveRunningSessions.add("session-1");
+    internals.liveRunningDigests.set("session-1", Buffer.byteLength(initial));
+    internals.workingPhaseSessions.add("session-1");
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await writeFile(
+      file,
+      `${initial}${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "stop", content: "" },
+      })}\n`,
+    );
+    await internals.readPersistedTranscript("session-1");
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    expect(internals.workingPhaseSessions.has("session-1")).toBe(true);
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("keeps a cached terminal transcript running until runtime idle arrives", async () => {
+    // sendMessage asks discoveredRunState immediately after ACP prompt resolves. The
+    // final row is already on disk then, but the runtime idle report follows a few
+    // milliseconds later. Returning cached `idle` in that gap caused the visible
+    // running -> 완료 -> running/완료 flicker even though the transcript reader itself
+    // had the full-cycle guard.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-cycle-cache-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "work" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "stop", content: "done" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      workingPhaseSessions: Set<string>;
+      runtimeIdleSessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+    };
+    internals.workingPhaseSessions.add("session-1");
+    internals.locateSharedTranscriptFile = async () => file;
+
+    expect(await internals.discoveredRunState("session-1")).toBe("running");
+
+    // The second read hits the size-keyed cache. Runtime idle must still reveal the
+    // cached transcript's actual terminal verdict instead of leaving it running.
+    internals.runtimeIdleSessions.add("session-1");
+    expect(await internals.discoveredRunState("session-1")).toBe("idle");
+
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
   });
 
   it("lists a live generation-0 session instead of dropping it", async () => {
