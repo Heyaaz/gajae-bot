@@ -1,4 +1,4 @@
-import gajaeIconUrl from "../assets/gajae-icon.png";
+import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type { GjcUpdateStatus, ManagementSnapshot } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
 import { CalendarClock, Check, Command, FolderOpen, ShieldCheck, X } from "lucide-react";

@@ -1,5 +1,5 @@
 import ReactMarkdown from "react-markdown";
-import gajaeIconUrl from "../assets/gajae-icon.png";
+import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import remarkGfm from "remark-gfm";
 import type { ArtifactContent, GeneratedFilePreview } from "../../shared/agent-contract";
 import type { ToolActivity, TranscriptItem } from "../backend/types";

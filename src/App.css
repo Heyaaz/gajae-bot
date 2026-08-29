@@ -1102,6 +1102,9 @@
   gap: 4px;
 }
 .workspace-body {
+  /* Positioning context for the detail panel, which overlays this area rather than
+     taking a slot in the flex row. */
+  position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -3002,11 +3005,22 @@
   white-space: nowrap;
 }
 
+/* Overlays the conversation instead of taking a flex slot beside it.
+
+   As a sibling it shrank the reading column from 836px to 753px, and because a row's
+   height depends on where its text wraps, opening it re-wrapped and re-measured every
+   row in one frame -- 65ms on an 800-row session, which is the stutter. Floating it
+   leaves the transcript's width untouched, so nothing behind it reflows. The panel is
+   already opaque, and the conversation keeps its own scroll position underneath. */
 .inspector {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  right: 0;
+  bottom: 0;
   width: 276px;
-  flex: 0 0 auto;
   overflow-y: auto;
-  background: rgba(17, 17, 19, 0.94);
+  background: rgba(17, 17, 19, 0.985);
   border-left: 1px solid var(--border);
   animation: reveal-inspector 0.16s ease-out;
 }
@@ -4041,14 +4055,18 @@
     transform: translateY(-2px);
   }
 }
+/* Slides in on the compositor. Animating width instead reflowed the shell on every
+   frame -- the transcript beside it was re-laid-out 60 times for one 160ms open, which
+   is what made the panel feel like it stuttered into place. transform and opacity do
+   not touch layout, so the cost no longer scales with how long the session is. */
 @keyframes reveal-inspector {
   from {
-    width: 0;
     opacity: 0;
+    transform: translateX(12px);
   }
   to {
-    width: 276px;
     opacity: 1;
+    transform: translateX(0);
   }
 }
 

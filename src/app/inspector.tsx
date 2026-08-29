@@ -1,4 +1,4 @@
-import gajaeIconUrl from "../assets/gajae-icon.png";
+import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
   DiffSnapshot,
   GitStatusSnapshot,
