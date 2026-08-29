@@ -25,8 +25,11 @@ const failAfter = setTimeout(() => {
 // estimated scroll height is far off the real one -- the error is what made returning to
 // the bottom land short. At 400 the estimate was close enough to hide that bug.
 const SEEDED_ITEMS = 1200
+// Must match estimateSize in transcript.tsx: a row still reserved at exactly this height
+// is one the virtualizer never measured.
+const ESTIMATED_ROW_PX = 140
 
-const probe = `(async (seeded) => {
+const probe = `(async (seeded, ESTIMATED_ROW_PX) => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   for (let i = 0; i < 80 && !document.querySelector('.session-row'); i += 1) await wait(100);
   const row = document.querySelector('.session-row');
@@ -120,7 +123,9 @@ const probe = `(async (seeded) => {
     if (Number(next.dataset.index) !== Number(current.dataset.index) + 1) continue;
     const startOf = (el) => Number.parseFloat((el.style.transform.match(/-?[\d.]+/) || [0])[0]);
     const reserved = startOf(next) - startOf(current);
-    if (Math.abs(reserved - 140) < 1 && current.offsetHeight !== 140) unmeasuredRows += 1;
+    // A row still holding the flat estimate was never measured, so its position is wrong.
+    if (Math.abs(reserved - ESTIMATED_ROW_PX) < 1 && current.offsetHeight !== ESTIMATED_ROW_PX)
+      unmeasuredRows += 1;
     const overlap =
       current.getBoundingClientRect().bottom - next.getBoundingClientRect().top;
     if (overlap > 1) {
@@ -177,7 +182,7 @@ const probe = `(async (seeded) => {
       : 0,
     unmeasuredRows,
   };
-})(${SEEDED_ITEMS})`
+})(${SEEDED_ITEMS}, ${ESTIMATED_ROW_PX})`
 
 function check(result) {
   if (result.error) return [`error: ${result.error}`]

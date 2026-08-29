@@ -90,6 +90,40 @@ describe("locating a search hit that is not mounted", () => {
     ).toBe(false);
   });
 
+  it("decides following from the scroll position, not from a mounted final block", () => {
+    // The bug: following was force-enabled whenever the last block was mounted, on the
+    // theory that it only mounts once the view is at the end. It does not. Measured on a
+    // real session, overscan kept that block mounted up to 2000px -- 2.8 viewports --
+    // above the bottom, so stopping anywhere in that band switched following back on and
+    // the view was pulled to the bottom 120ms later. Scrolling up a little always snapped
+    // back down.
+    //
+    // Only the scroll position decides. One viewport of slack absorbs the estimation error
+    // from unmounted rows without swallowing a deliberate scroll away.
+    const clientHeight = 720;
+    const scrollHeight = 150_000;
+    // Matches the threshold the transcript uses: a third of a viewport.
+    const atDistance = (px: number) =>
+      isNearTranscriptBottom(
+        scrollHeight,
+        scrollHeight - clientHeight - px,
+        clientHeight,
+        Math.round(clientHeight / 3),
+      );
+
+    // Inside the band where the final block is still mounted, the user is reading.
+    expect(atDistance(1000)).toBe(false);
+    expect(atDistance(2000)).toBe(false);
+
+    // A deliberate nudge upward is left alone too, which a full-viewport threshold undid.
+    expect(atDistance(400)).toBe(false);
+
+    // Landing just short of the bottom is still following, which is what keeps a drag to
+    // the end from stalling with a blank band under the newest message.
+    expect(atDistance(200)).toBe(true);
+    expect(atDistance(0)).toBe(true);
+  });
+
   it("keeps block ids stable so the virtualizer does not remount rows", () => {
     // The virtualizer keys mounted rows by these ids. If a block's id changed as items
     // arrived, every row would remount on each transcript update and lose its measured

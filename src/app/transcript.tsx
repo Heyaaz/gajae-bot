@@ -83,7 +83,7 @@ export function Transcript({
     measureElement: (element) => (element as HTMLElement).offsetHeight,
     getItemKey: (index) => blocks[index]?.id ?? index,
     // Rows are only measured once mounted, and a row's real height runs from 61px to
-    // 1415px against a 140px estimate. Too small an overscan and the rows arriving at the
+    // 1415px against a single estimate. Too small an overscan and the rows arriving at the
     // bottom edge get positioned on the estimate before they are measured, so they
     // overlapped the row above by up to 445px. A screenful of slack ahead means they are
     // mounted and measured before they matter.
@@ -92,21 +92,36 @@ export function Transcript({
 
   const virtualItems = virtualizer.getVirtualItems();
 
-  // Measure every slot that is mounted right now.
+  // Measure slots the first time they mount.
   //
   // The virtualizer observes each slot for resizes, and that works -- forcing a size change
   // on the first screen's rows snapped all 12 of them into place. The problem is that a row
-  // mounts at its final size, so there is no resize to observe: rows keep the 140px
+  // mounts at its final size, so there is no resize to observe: rows keep the size
   // estimate while their real heights run past 1000px, and on first entry they overlapped
-  // by up to 1097px with the text stacked on itself. Anything that later changed a size
-  // (scrolling, resizing the window) fixed it, which is why only the opening screen was
-  // wrong.
+  // by up to 1097px with the text stacked on itself.
+  //
+  // Only slots whose recorded height is still the estimate. Re-measuring every mounted slot
+  // on every render fought the virtualizer's own scroll compensation: scrolling up mounts
+  // rows taller than the estimate, the content above grows, and it shifts scrollTop to hold
+  // the view still. Redoing measurements underneath that cancelled it out, so 25 wheel
+  // notches moved the view 10px -- scrolling up felt like being dragged back down.
+  //
+  // Comparing against the reserved height rather than tracking which keys were seen: a slot
+  // can mount, be measured, unmount, and come back, and a seen-set would skip it the second
+  // time and leave it on the estimate.
   //
   // useLayoutEffect so this lands before the browser paints the bad positions.
   useLayoutEffect(() => {
     const scroller = transcriptRef.current;
     if (!scroller) return;
+    const reserved = new Map(virtualItems.map((row) => [row.index, row.size]));
     for (const slot of scroller.querySelectorAll<HTMLElement>(".transcript-slot")) {
+      const index = Number(slot.dataset.index);
+      const recorded = reserved.get(index);
+      if (recorded === undefined) continue;
+      // Within a pixel of the real height means the virtualizer already has it, and
+      // re-reporting it is what interfered with scroll compensation.
+      if (Math.abs(recorded - slot.offsetHeight) <= 1) continue;
       virtualizer.measureElement(slot);
     }
   }, [virtualItems, virtualizer]);
@@ -115,41 +130,46 @@ export function Transcript({
 
   useEffect(() => {
     if (!followingRef.current || blocks.length === 0) return;
-    const transcript = transcriptRef.current;
-    if (!transcript) return;
-    // Keeping the newest message in view is the whole point of this pane, and
-    // virtualization makes it a moving target: rows below are unmounted, so the scroll
-    // height is an estimate that changes as they mount and get measured.
+    if (!transcriptRef.current) return;
+    // Keeping the newest message in view is the point of this pane, and virtualization
+    // makes it a moving target: rows below are unmounted, so the scroll height is an
+    // estimate that only firms up as they mount and get measured. One immediate scroll
+    // lands short, so the correction is deferred until that measuring has happened.
     //
-    // Measured live on a ~1000-block session, each failure mode in turn:
-    //   - one correction, after the total grew 3,719px: 253px blank under the last row
-    //   - correcting only while within 400px of the bottom: the large jumps were vetoed
-    //   - stopping once the total held steady: 627px short, last row 287px off-screen
-    //
-    // So it re-asserts the bottom until the scroll actually reaches it and the spacer
-    // stops growing, rather than for a fixed number of frames.
-    // One correction, deferred, rather than a loop.
-    //
-    // Writing scrollTop every frame keeps the virtualizer in its scrolling state, and it
-    // defers measuring rows while scrolling. Rows arriving at the bottom edge therefore
-    // kept the 140px estimate against real heights up to 639px and overlapped the row
-    // above by as much as 549px, stacking text on top of itself. Measured with the loop
-    // disabled: zero unmeasured rows, zero overlaps.
-    //
-    // A timeout lets that measuring finish first; scrollHeight is only trustworthy
-    // afterwards. Anything still short is caught by the next totalSize change.
-    const timer = window.setTimeout(() => {
+    // Keyed on the transcript's content, never on the measured total. Measurement changes
+    // the total constantly while scrolling, and re-running then dragged the view back to
+    // the bottom 80ms after every scroll up -- reading earlier messages was impossible.
+    let frame = 0;
+    let attempts = 0;
+    const settle = (): void => {
       const element = transcriptRef.current;
-      if (!element || !followingRef.current) return;
+      if (!element || !followingRef.current) {
+        selfScrollingRef.current = false;
+        return;
+      }
+      // Marked as our own scroll: mid-correction the position is legitimately short of the
+      // bottom, and letting the scroll handler judge that would clear the follow flag and
+      // cancel this.
       selfScrollingRef.current = true;
       element.scrollTop = element.scrollHeight - element.clientHeight;
-      // Cleared on the next frame, once the scroll event this caused has been handled.
-      requestAnimationFrame(() => {
+      attempts += 1;
+      const settled =
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+      if ((settled && attempts > 2) || attempts > 30) {
         selfScrollingRef.current = false;
-      });
+        return;
+      }
+      frame = requestAnimationFrame(settle);
+    };
+    const timer = window.setTimeout(() => {
+      frame = requestAnimationFrame(settle);
     }, 80);
-    return () => window.clearTimeout(timer);
-  }, [blocks.length, items, totalSize, virtualizer]);
+    return () => {
+      window.clearTimeout(timer);
+      cancelAnimationFrame(frame);
+      selfScrollingRef.current = false;
+    };
+  }, [blocks.length, items]);
 
   useEffect(() => {
     const transcript = transcriptRef.current;
@@ -165,19 +185,36 @@ export function Transcript({
       const width = element?.clientWidth ?? lastWidth;
       if (!element || width === lastWidth) return;
       lastWidth = width;
+      // A resize is not the user scrolling away, so following must survive it. Discarding
+      // the heights below makes the scroll position briefly look far from the bottom, and
+      // the scroll events that causes had been switching following off -- which then
+      // cancelled the restore and left the view 1284px short at narrow widths.
+      selfScrollingRef.current = true;
       virtualizer.measure();
-        // Re-measuring is handled by the layout effect above; this only has to restore the
-      // scroll position once the new heights are in.
+      // Re-measuring is handled by the layout effect above; this only restores the scroll
+      // position. It takes several frames: `measure()` drops every height, so rows are
+      // re-measured one render at a time and the bottom keeps moving. A single restore
+      // landed 1284px short at narrow widths, so it retries until the bottom holds.
       cancelAnimationFrame(remeasure);
-      remeasure = requestAnimationFrame(() => {
+      let attempts = 0;
+      const restore = (): void => {
         const scroller = transcriptRef.current;
-        if (!scroller || !followingRef.current) return;
+        if (!scroller || !followingRef.current) {
+          selfScrollingRef.current = false;
+          return;
+        }
         selfScrollingRef.current = true;
         scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
-        requestAnimationFrame(() => {
+        attempts += 1;
+        const settled =
+          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
+        if ((settled && attempts > 3) || attempts > 30) {
           selfScrollingRef.current = false;
-        });
-      });
+          return;
+        }
+        remeasure = requestAnimationFrame(restore);
+      };
+      remeasure = requestAnimationFrame(restore);
     });
     observer.observe(transcript);
     return () => {
@@ -230,35 +267,28 @@ export function Transcript({
     const transcript = transcriptRef.current;
     if (!transcript) return;
     if (selfScrollingRef.current) return;
-    // One viewport of slack rather than the default 48px, because rows above are
-    // unmounted and the scroll height is an estimate: landing on the bottom can still
-    // measure a few hundred pixels short. Anything beyond a full viewport is a real
-    // scroll away from the newest message.
+    // Wider than the default 48px, because rows above are unmounted and the scroll height
+    // is an estimate: a drag to the end can still measure a few hundred pixels short, and
+    // reading that as "scrolled away" leaves the view stalled with a blank band under the
+    // newest message.
+    //
+    // But not a whole viewport either. That much slack also swallowed a small deliberate
+    // scroll up -- park 400px above the bottom and the view slid back down. A third of a
+    // viewport covers the estimation error while leaving a nudge upward alone.
     const nearBottom = isNearTranscriptBottom(
       transcript.scrollHeight,
       transcript.scrollTop,
       transcript.clientHeight,
-      transcript.clientHeight,
+      Math.round(transcript.clientHeight / 3),
     );
     followingRef.current = nearBottom;
     setFollowing(nearBottom);
 
-    // Landing near the bottom is not the same as reaching it: rows below were unmounted,
-    // so the height the browser scrolled against was an estimate, and a drag to the end
-    // stopped up to 922px short with a blank band under the newest message -- and stayed
-    // there, because that distance also read as "scrolled away" and switched following
-    // off, which disabled every correction.
-    //
-    // Having the final block mounted is the reliable signal instead: it only enters the
-    // window when the view is genuinely at the end, whatever the estimate says.
-    const lastBlockMounted =
-      blocks.length > 0 &&
-      transcript.querySelector(`.transcript-slot[data-last="true"]`) !== null;
-    if (lastBlockMounted && !nearBottom) {
-      followingRef.current = true;
-      setFollowing(true);
-    }
-    if (!nearBottom && !lastBlockMounted) return;
+    // Only close a gap the user did not ask for. Scrolling up must stay put: an earlier
+    // version force-enabled following whenever the last block was mounted, but overscan
+    // keeps it mounted well past the viewport, so scrolling up switched following back on
+    // and the view was dragged to the bottom 120ms later.
+    if (!nearBottom) return;
     window.clearTimeout(settleTimerRef.current);
     settleTimerRef.current = window.setTimeout(() => {
       const scroller = transcriptRef.current;
