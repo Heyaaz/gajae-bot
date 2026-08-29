@@ -7,20 +7,27 @@ import { GjcAgentBackend } from './backend/gjc-agent-backend'
 import { MockAgentBackend } from './backend/mock-agent-backend'
 import './index.css'
 
-async function selectBackend(): Promise<AgentBackend> {
+/**
+ * Chooses the backend this window will run on.
+ *
+ * The mock backend exists for UI work and for the `--smoke` run, so it is reachable
+ * only by asking for it explicitly. It must never stand in for a real runtime that
+ * failed: it answers `state: "connected"` with invented sessions and transcripts, so
+ * substituting it showed a green dot and a working-looking window while nothing was
+ * attached. The whole point of this app is that its screen is the source of truth
+ * about the agent, which makes a silent swap to fiction the worst thing it can do.
+ *
+ * A GJC backend that cannot connect is returned anyway. It reports its own failure
+ * through `getConnection`, and the shell renders that state with a retry, which is
+ * what lets a user recover once the runtime is back.
+ */
+function selectBackend(): AgentBackend {
   const forceMock = new URLSearchParams(window.location.search).get('backend') === 'mock'
   if (forceMock || !window.agentControlDesktop?.gjc) return new MockAgentBackend()
-
-  const backend = new GjcAgentBackend(window.agentControlDesktop.gjc)
-  const connection = await backend.getConnection()
-  if (connection.state === 'connected') return backend
-
-  console.error(`GJC connection unavailable: ${connection.detail}`)
-  backend.dispose()
-  return new MockAgentBackend()
+  return new GjcAgentBackend(window.agentControlDesktop.gjc)
 }
 
-const backend = await selectBackend()
+const backend = selectBackend()
 const mount = document.getElementById('root')
 
 if (!mount) {

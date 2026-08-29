@@ -308,8 +308,10 @@ export class MockAgentBackend implements AgentBackend {
     return {
       state: "connected",
       backend: "mock",
-      label: "Mock runtime",
-      detail: "Local preview data",
+      // Every session and reply this backend serves is invented, so the label says so
+      // rather than reading as a runtime that is genuinely attached.
+      label: "샘해데이턼 (Mock)",
+      detail: "UI 미리보기욨 가짜 데이턼입니다. 실제 GJC에 연결되지 않았습니다.",
       workspace: "agent-control",
     };
   }

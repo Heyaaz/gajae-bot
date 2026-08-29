@@ -160,6 +160,23 @@ export default function App() {
     selectedIdRef.current = selectedId;
   }, [selectedId]);
 
+  const [reconnecting, setReconnecting] = useState(false);
+  const reconnect = useCallback(async (): Promise<void> => {
+    setReconnecting(true);
+    try {
+      setConnection(await backend.reconnect());
+    } catch (error) {
+      setAppError(humanErrorMessage(error));
+    } finally {
+      setReconnecting(false);
+    }
+  }, [backend]);
+  // A runtime that is not attached has no sessions, no transcripts, and no controls
+  // that can do anything. Rendering the ordinary shell over that state showed an empty
+  // but otherwise normal-looking window, so the failure is given the workspace instead.
+  const runtimeUnavailable =
+    connection.state === "disconnected" || connection.state === "error";
+
   useEffect(() => {
     function openGlobalSearch(event: globalThis.KeyboardEvent): void {
       if (
@@ -1021,7 +1038,36 @@ export default function App() {
         onUpdate={startUpdate}
       />
 
-      {selectedSession ? (
+      {runtimeUnavailable ? (
+        <main className="workspace workspace--empty workspace--offline">
+          <span className="workspace-empty__mark">
+            <img src={gajaeIconUrl} alt="" />
+          </span>
+          <h1>GJC runtime에 연결되지 않았습니다</h1>
+          <p className="workspace-offline__detail">{connection.detail}</p>
+          <p className="workspace-offline__hint">
+            연결되지 않은 동안에는 세션 목록과 대화 내용을 표시할 수 없습니다.
+          </p>
+          <div className="workspace-offline__actions">
+            <button
+              className="button-primary"
+              type="button"
+              disabled={reconnecting}
+              onClick={() => void reconnect()}
+            >
+              {reconnecting ? <span className="mini-spinner" /> : null}
+              {reconnecting ? "재연결 중" : "재연결"}
+            </button>
+            <button
+              className="button-secondary"
+              type="button"
+              onClick={openSettings}
+            >
+              설정 열기
+            </button>
+          </div>
+        </main>
+      ) : selectedSession ? (
         <main className="workspace">
           <header className="chat-header">
             <div className="chat-identity">
@@ -1071,16 +1117,6 @@ export default function App() {
               >
                 <PanelRight size={18} />
               </button>
-              {(connection.state === "disconnected" ||
-                connection.state === "error") && (
-                <button
-                  className="button-secondary"
-                  type="button"
-                  onClick={() => void backend.reconnect().then(setConnection)}
-                >
-                  재연결
-                </button>
-              )}
             </div>
           </header>
 
