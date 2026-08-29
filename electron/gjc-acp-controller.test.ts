@@ -897,6 +897,95 @@ describe("sharedTranscriptItems", () => {
       items.filter((item) => item.kind === "message").map((item) => item.id),
     ).toHaveLength(2);
   });
+  it("reads a tool call still waiting for its result as a running turn", () => {
+    // Row shapes verified against a real 728-row transcript: a tool call is an
+    // assistant row with `stopReason: "toolUse"`, and its answer is a separate
+    // `role: "toolResult"` row written only once the tool returns.
+    //
+    // Between those two rows the turn is plainly mid-flight, but the last row on disk
+    // is the toolUse itself. Because that stop reason is not terminal the turn read as
+    // finished, and sharedTranscriptItems then stamps a resultless call "completed" --
+    // so a tool the agent was still waiting on displayed as done.
+    const waiting = [
+      { id: "u1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+      {
+        id: "a1",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [{ type: "toolCall", id: "call-1", name: "bash" }],
+        },
+      },
+    ];
+    expect(persistedTranscriptRunning(waiting)).toBe(true);
+
+    // The result landing does not end the turn either: the agent still has to speak.
+    const answered = [
+      ...waiting,
+      { id: "r1", message: { role: "toolResult", toolCallId: "call-1", body: "hi" } },
+    ];
+    expect(persistedTranscriptRunning(answered)).toBe(true);
+
+    // Only a terminal stop reason closes it.
+    const finished = [
+      ...answered,
+      { id: "a2", message: { role: "assistant", stopReason: "stop", content: [] } },
+    ];
+    expect(persistedTranscriptRunning(finished)).toBe(false);
+  });
+
+  it("keeps a turn running when work continues after a stop reason", () => {
+    // Found in a real 3405-row transcript: GJC writes `stopReason: "stop"` mid-turn and
+    // then keeps working -- more toolUse calls and their results follow, with no new
+    // user request between them. Row 3367 of that file is exactly this shape.
+    //
+    // Treating that stop as the end of the turn flipped the session row to 완료 while
+    // the agent was still calling tools, which is what made a working session read as
+    // finished a moment after each tool answered.
+    const rows = [
+      { message: { role: "user", content: [{ type: "text", text: "go" }] } },
+      { message: { role: "assistant", stopReason: "stop", content: [] } },
+      {
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [{ type: "toolCall", id: "c1", name: "bash" }],
+        },
+      },
+      { message: { role: "toolResult", toolCallId: "c1", body: "out" } },
+    ];
+    expect(persistedTranscriptRunning(rows)).toBe(true);
+
+    // A stop with nothing after it is still the end.
+    expect(
+      persistedTranscriptRunning([
+        { message: { role: "user", content: [{ type: "text", text: "go" }] } },
+        { message: { role: "assistant", stopReason: "stop", content: [] } },
+      ]),
+    ).toBe(false);
+  });
+
+  it("leaves a tool call running when the turn state is unknown", () => {
+    // readSharedTranscript's fallback page reader called this with no options at all.
+    // The default has to be "still running", because the alternative marks a call the
+    // agent is actively waiting on as finished -- and a tool card that says 완료 while
+    // its output is still coming is worse than one that catches up a moment late.
+    const rows = [
+      { id: "u1", role: "user", content: [{ type: "text", text: "go" }] },
+      {
+        id: "a1",
+        role: "assistant",
+        stopReason: "toolUse",
+        content: [{ type: "toolCall", id: "call-1", name: "bash" }],
+      },
+    ];
+    expect(sharedTranscriptItems("s", rows)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "call-1", status: "running" }),
+      ]),
+    );
+  });
+
   it("settles a resultless tool call once the turn is no longer running", () => {
     // A finished turn ends on `stopReason: toolUse` whose call has no result row
     // yet. Reporting that as running kept the composer showing stop and routing
@@ -7584,6 +7673,60 @@ describe("session status authority", () => {
     await internals.readPersistedTranscript(session.id);
 
     expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not report a mid-turn transcript as finished just because it was opened", async () => {
+    // Instrumenting the running app showed getTranscript -> readPersistedTranscript
+    // driving a session to idle the moment it was opened. A session working in a
+    // terminal never sends this window gjcRunning:true, so it is absent from
+    // liveRunningSessions, and the idle branch only refused to act when that set
+    // contained it -- clicking such a row flipped it to 완료 while the agent worked.
+    //
+    // discoveredRunState already recorded the transcript's own verdict in
+    // transcriptRunningSessions, so that evidence is what has to be honoured here.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-open-"));
+    const file = path.join(root, "session.jsonl");
+    // A turn mid-tool: the call is on disk, its result is not.
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: [{ type: "text", text: "go" }] },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [{ type: "toolCall", id: "c1", name: "bash" }],
+        },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.status = "running";
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.startup = Promise.resolve();
+    internals.sessions.set(session.id, session);
+    internals.terminalOnlySessions.add(session.id);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
     controller.dispose();
     await rm(root, { recursive: true, force: true });
   });

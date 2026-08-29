@@ -9,7 +9,7 @@ import type {
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
 import { Copy, RotateCcw, Target, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { statusLabel, subagentLabel } from "./format";
 
 export interface InspectorProps {
@@ -21,7 +21,15 @@ export interface InspectorProps {
   onClose: () => void;
 }
 
-export function Inspector({
+/**
+ * Session detail panel.
+ *
+ * Memoized, and its subagent list derived through useMemo, because the panel is a child
+ * of the shell: every streamed chunk changes shell state and re-runs this whole subtree.
+ * The panel shows a handful of rows but scans the entire transcript to find them, and
+ * that scan was repeating on chunks that could not affect it.
+ */
+function InspectorView({
   session,
   transcript,
   liveSubagents,
@@ -29,26 +37,30 @@ export function Inspector({
   onResume,
   onClose,
 }: InspectorProps) {
-  const transcriptSubagents = transcript.filter(
-    (item): item is ToolActivity =>
-      item.kind === "tool" && /^(task|subagent)$/iu.test(item.name),
+  const subagents: SubagentSnapshot[] = useMemo(
+    () =>
+      liveSubagents.length > 0
+        ? liveSubagents
+        : transcript
+            .filter(
+              (item): item is ToolActivity =>
+                item.kind === "tool" && /^(task|subagent)$/iu.test(item.name),
+            )
+            .map((tool): SubagentSnapshot => ({
+              id: tool.id,
+              label: subagentLabel(tool),
+              status:
+                tool.status === "running"
+                  ? "running"
+                  : tool.status === "failed" || tool.status === "denied"
+                    ? "failed"
+                    : tool.status === "approval-required"
+                      ? "waiting"
+                      : "completed",
+              detail: tool.output,
+            })),
+    [liveSubagents, transcript],
   );
-  const subagents: SubagentSnapshot[] =
-    liveSubagents.length > 0
-      ? liveSubagents
-      : transcriptSubagents.map((tool): SubagentSnapshot => ({
-          id: tool.id,
-          label: subagentLabel(tool),
-          status:
-            tool.status === "running"
-              ? "running"
-              : tool.status === "failed" || tool.status === "denied"
-                ? "failed"
-                : tool.status === "approval-required"
-                  ? "waiting"
-                  : "completed",
-          detail: tool.output,
-        }));
   return (
     <aside className="inspector">
       <header>
@@ -125,6 +137,8 @@ export function Inspector({
     </aside>
   );
 }
+
+export const Inspector = memo(InspectorView);
 
 export function GoalProgressRow({
   goal,

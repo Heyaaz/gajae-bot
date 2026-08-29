@@ -1009,6 +1009,15 @@ export default function App() {
   const startUpdate = useCallback(() => {
     void handlersRef.current.installUpdate();
   }, []);
+  const closeInspector = useCallback(() => setInspectorOpen(false), []);
+  // The inspector is memoized for the same reason as the sidebar: it is a child of the
+  // shell, so every streamed chunk re-runs it, and it scans the whole transcript to
+  // find the few rows it shows. Its callbacks have to keep their identity or the memo
+  // never holds.
+  const resumeSelectedSession = useCallback(() => {
+    const id = selectedIdRef.current;
+    if (id) void handlersRef.current.resumeSession(id);
+  }, []);
   const openResumePickerStable = useCallback(() => {
     handlersRef.current.openResumePicker();
   }, []);
@@ -1191,8 +1200,8 @@ export default function App() {
                 transcript={selectedTranscript}
                 liveSubagents={liveSubagents}
                 resuming={resumingId === selectedSession.id}
-                onResume={() => void resumeSession(selectedSession.id)}
-                onClose={() => setInspectorOpen(false)}
+                onResume={resumeSelectedSession}
+                onClose={closeInspector}
               />
             )}
             {diffOpen && (
