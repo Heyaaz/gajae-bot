@@ -22,8 +22,16 @@ import './index.css'
  * what lets a user recover once the runtime is back.
  */
 function selectBackend(): AgentBackend {
-  const forceMock = new URLSearchParams(window.location.search).get('backend') === 'mock'
-  if (forceMock || !window.agentControlDesktop?.gjc) return new MockAgentBackend()
+  const params = new URLSearchParams(window.location.search)
+  const forceMock = params.get('backend') === 'mock'
+  if (forceMock || !window.agentControlDesktop?.gjc) {
+    const mock = new MockAgentBackend()
+    // The inspector smoke needs a session long enough that mounting every row would be
+    // visible, to prove the transcript is windowed.
+    const seed = Number.parseInt(params.get('seedTranscript') ?? '', 10)
+    if (Number.isFinite(seed) && seed > 0) mock.seedLargeTranscript(seed)
+    return mock
+  }
   return new GjcAgentBackend(window.agentControlDesktop.gjc)
 }
 

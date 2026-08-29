@@ -10,7 +10,9 @@ import {
   groupTranscriptItems,
   isNearTranscriptBottom,
   recentUserRequests,
+  transcriptBlockIndexForItem,
 } from "../transcript-utils";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Brain,
   Check,
@@ -48,38 +50,111 @@ export function Transcript({
   onReadArtifact,
   onPreviewFile,
 }: TranscriptProps) {
-  const endRef = useRef<HTMLDivElement>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const [following, setFollowing] = useState(true);
 
-  useEffect(() => {
-    if (!followingRef.current) return;
-    const frame = requestAnimationFrame(() => {
-      const transcript = transcriptRef.current;
-      if (!transcript) return;
-      transcript.scrollTop = transcript.scrollHeight;
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [items]);
+  const blocks = useMemo(() => groupTranscriptItems(items), [items]);
+
+  // Only the blocks near the viewport are mounted. A full session used to keep ~800
+  // entries and 20,000 nodes live, which made every width change -- opening the detail
+  // panel, resizing the window -- re-wrap and re-measure the whole document in one
+  // frame. Estimates are refined by measuring each row as it mounts.
+  const virtualizer = useVirtualizer({
+    count: blocks.length,
+    getScrollElement: () => transcriptRef.current,
+    estimateSize: () => 140,
+    // Entries carry vertical margins (a tool run adds 18px below itself), and
+    // getBoundingClientRect stops at the border box, so margins are added back or rows
+    // would creep upward as they are measured.
+    measureElement: (element) => {
+      const style = window.getComputedStyle(element);
+      return (
+        element.getBoundingClientRect().height +
+        Number.parseFloat(style.marginTop || "0") +
+        Number.parseFloat(style.marginBottom || "0")
+      );
+    },
+    getItemKey: (index) => blocks[index]?.id ?? index,
+    overscan: 6,
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+  const totalSize = virtualizer.getTotalSize();
 
   useEffect(() => {
-    if (!revealItemId || !items.some((item) => item.id === revealItemId))
-      return;
-    const frame = requestAnimationFrame(() => {
-      const target = document.getElementById(
-        `transcript-${encodeURIComponent(revealItemId)}`,
-      );
-      target?.scrollIntoView({ block: "center", behavior: "smooth" });
-      target?.classList.add("is-search-reveal");
-      window.setTimeout(
-        () => target?.classList.remove("is-search-reveal"),
-        2200,
-      );
-      onRevealComplete?.(revealItemId);
+    if (!followingRef.current || blocks.length === 0) return;
+    // Rows below the viewport are unmounted, so their heights start as estimates and the
+    // total is not final yet. Scrolling to the last block by index lands on the newest
+    // message regardless, and the virtualizer keeps it pinned as real heights resolve.
+    virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+  }, [blocks.length, items, virtualizer]);
+
+  useEffect(() => {
+    if (!followingRef.current || blocks.length === 0) return;
+    const transcript = transcriptRef.current;
+    if (!transcript) return;
+    // Rows are measured as they mount, so the total keeps growing while scrolling up and
+    // back down -- landing at the old scrollHeight left the view a few hundred pixels
+    // short of the newest message. Re-pinning whenever the total changes and we are still
+    // following closes that gap; it is skipped once the user scrolls away.
+    if (isNearTranscriptBottom(transcript.scrollHeight, transcript.scrollTop, transcript.clientHeight, 400)) {
+      virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+    }
+  }, [blocks.length, totalSize, virtualizer]);
+
+  useEffect(() => {
+    const transcript = transcriptRef.current;
+    if (!transcript) return;
+    // A width change re-wraps text, so every height measured at the old width is wrong.
+    // Without discarding them the cached totals drift and the view drops thousands of
+    // pixels away from where it was -- opening the detail panel or resizing the window
+    // both do this.
+    let lastWidth = transcript.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = transcriptRef.current?.clientWidth ?? lastWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      virtualizer.measure();
+      if (!followingRef.current || blocks.length === 0) return;
+      virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
     });
-    return () => cancelAnimationFrame(frame);
-  }, [items, onRevealComplete, revealItemId]);
+    observer.observe(transcript);
+    return () => observer.disconnect();
+  }, [blocks.length, virtualizer]);
+
+  useEffect(() => {
+    if (!revealItemId) return;
+    const index = transcriptBlockIndexForItem(blocks, revealItemId);
+    if (index < 0) return;
+    // A search hit is usually not mounted, so it has to be scrolled to by index before
+    // its element exists to highlight.
+    followingRef.current = false;
+    setFollowing(false);
+    virtualizer.scrollToIndex(index, { align: "center" });
+    let highlightFrame = 0;
+    let removeTimer = 0;
+    const highlight = window.setTimeout(() => {
+      highlightFrame = requestAnimationFrame(() => {
+        const target = document.getElementById(
+          `transcript-${encodeURIComponent(revealItemId)}`,
+        );
+        if (!target) return;
+        target.scrollIntoView({ block: "center" });
+        target.classList.add("is-search-reveal");
+        removeTimer = window.setTimeout(
+          () => target.classList.remove("is-search-reveal"),
+          2200,
+        );
+      });
+      onRevealComplete?.(revealItemId);
+    }, 60);
+    return () => {
+      window.clearTimeout(highlight);
+      window.clearTimeout(removeTimer);
+      cancelAnimationFrame(highlightFrame);
+    };
+  }, [blocks, onRevealComplete, revealItemId, virtualizer]);
 
   function updateScrollFollowing(): void {
     const transcript = transcriptRef.current;
@@ -96,9 +171,15 @@ export function Transcript({
   function scrollToLatest(): void {
     followingRef.current = true;
     setFollowing(true);
-    const transcript = transcriptRef.current;
-    if (!transcript) return;
-    transcript.scrollTo({ top: transcript.scrollHeight, behavior: "smooth" });
+    if (blocks.length === 0) return;
+    // Scrolling by index rather than to scrollHeight: rows above are unmounted, so the
+    // total height is still an estimate and a raw scrollTop lands short. Dragging the
+    // scrollbar to the bottom hits the same problem, which is what the follow effect
+    // below corrects.
+    virtualizer.scrollToIndex(blocks.length - 1, {
+      align: "end",
+      behavior: "smooth",
+    });
   }
 
   if (items.length === 0 && !compacting) {
@@ -120,39 +201,55 @@ export function Transcript({
       onScroll={updateScrollFollowing}
     >
       <div className="transcript-column">
-        {groupTranscriptItems(items).map((block) =>
-          block.kind === "item" ? (
-            <div
-              className="transcript-entry"
-              id={`transcript-${encodeURIComponent(block.item.id)}`}
-              key={block.id}
-            >
-              <TranscriptItemView
-                item={block.item}
-                onResolveTool={onResolveTool}
-                onReadArtifact={onReadArtifact}
-                onPreviewFile={onPreviewFile}
-              />
-            </div>
-          ) : (
-            <div className="transcript-entry tool-run" key={block.id}>
-              {block.items.map((tool) => (
-                <div
-                  className="tool-run-entry"
-                  id={`transcript-${encodeURIComponent(tool.id)}`}
-                  key={tool.id}
-                >
-                  <TranscriptItemView
-                    item={tool}
-                    onResolveTool={onResolveTool}
-                    onReadArtifact={onReadArtifact}
-                    onPreviewFile={onPreviewFile}
-                  />
-                </div>
-              ))}
-            </div>
-          ),
-        )}
+        <div
+          className="transcript-window"
+          style={{ height: `${totalSize}px` }}
+        >
+          {virtualItems.map((virtualRow) => {
+            const block = blocks[virtualRow.index];
+            if (!block) return null;
+            return (
+              <div
+                className="transcript-slot"
+                data-index={virtualRow.index}
+                key={virtualRow.key}
+                ref={virtualizer.measureElement}
+                style={{ transform: `translateY(${virtualRow.start}px)` }}
+              >
+                {block.kind === "item" ? (
+                  <div
+                    className="transcript-entry"
+                    id={`transcript-${encodeURIComponent(block.item.id)}`}
+                  >
+                    <TranscriptItemView
+                      item={block.item}
+                      onResolveTool={onResolveTool}
+                      onReadArtifact={onReadArtifact}
+                      onPreviewFile={onPreviewFile}
+                    />
+                  </div>
+                ) : (
+                  <div className="transcript-entry tool-run">
+                    {block.items.map((tool) => (
+                      <div
+                        className="tool-run-entry"
+                        id={`transcript-${encodeURIComponent(tool.id)}`}
+                        key={tool.id}
+                      >
+                        <TranscriptItemView
+                          item={tool}
+                          onResolveTool={onResolveTool}
+                          onReadArtifact={onReadArtifact}
+                          onPreviewFile={onPreviewFile}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
         {compacting && (
           <article className="compaction-card compaction-card--progress">
             <header>
@@ -166,7 +263,6 @@ export function Transcript({
             </p>
           </article>
         )}
-        <div ref={endRef} />
       </div>
       {!following && (
         <button

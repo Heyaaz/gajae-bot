@@ -100,6 +100,24 @@ export function groupTranscriptItems(
   return blocks;
 }
 
+/**
+ * Locates the block holding an item so the transcript can scroll to a search hit.
+ *
+ * Only a window of blocks is mounted, so a hit is usually not in the DOM and cannot be
+ * found by id. Its index is what the virtualizer needs to bring it on screen first.
+ * Returns -1 when the item is absent.
+ */
+export function transcriptBlockIndexForItem(
+  blocks: readonly TranscriptBlock[],
+  itemId: string,
+): number {
+  return blocks.findIndex((block) =>
+    block.kind === "item"
+      ? block.item.id === itemId
+      : block.items.some((item) => item.id === itemId),
+  );
+}
+
 export function isNearTranscriptBottom(
   scrollHeight: number,
   scrollTop: number,

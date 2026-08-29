@@ -80,6 +80,20 @@
   border-radius: 4px;
 }
 
+/* Spacer holding the full scroll height while only the visible rows are mounted. */
+.transcript-window {
+  position: relative;
+  width: 100%;
+}
+/* Each mounted row is positioned by transform, so the browser never lays out the rows
+   that are scrolled away. */
+.transcript-slot {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-width: 0;
+}
 .transcript-entry {
   min-width: 0;
   border-radius: 10px;
@@ -4065,12 +4079,16 @@
   .app-shell {
     grid-template-columns: 250px minmax(0, 1fr);
   }
+  /* Below this width there is no room for a third column, so the panel floats. It is
+     opaque rather than translucent: it is covering the conversation here, and text
+     showing through two layers is unreadable. */
   .inspector {
     position: absolute;
     top: 52px;
     right: 0;
     bottom: 0;
     z-index: 4;
+    background: #111113;
     box-shadow: -16px 0 40px rgba(0, 0, 0, 0.35);
   }
   .transcript-column {

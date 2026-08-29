@@ -304,6 +304,36 @@ export class MockAgentBackend implements AgentBackend {
   private capabilitiesEmitted = new Set<string>();
   private readonly gitStores = new Map<string, GitStatusSnapshot>();
 
+  /**
+   * Pads the first session to `count` entries.
+   *
+   * Virtualization only shows up on a session big enough that mounting every row would
+   * be obvious, and the canned transcripts are a handful of items. The smoke asks for
+   * this explicitly through `?seedTranscript=`; nothing else calls it.
+   */
+  seedLargeTranscript(count: number): void {
+    const sessionId = this.sessionStore[0]?.id;
+    if (!sessionId) return;
+    const items = this.transcriptStore.get(sessionId) ?? [];
+    const createdAt = new Date().toISOString();
+    while (items.length < count) {
+      const index = items.length;
+      items.push(
+        cloneItem({
+          id: `seeded-${index}`,
+          sessionId,
+          kind: "message",
+          role: index % 2 === 0 ? "assistant" : "user",
+          // Long enough to wrap, so a row's height depends on the column width -- the
+          // condition that made a full transcript expensive to re-lay-out.
+          content: `${index} 번째 메시지입니다. 이 줄은 읽기 컬럼의 폭에 따라 줄바꿈 위치가 달라지도록 충분히 길게 작성된 본문이며, 세션 정보 패널을 여닫을 때 다시 측정되어야 하는 대상입니다.`,
+          createdAt,
+        } as never),
+      );
+    }
+    this.transcriptStore.set(sessionId, items);
+  }
+
   async getConnection(): Promise<BackendConnection> {
     return {
       state: "connected",
