@@ -1102,9 +1102,6 @@
   gap: 4px;
 }
 .workspace-body {
-  /* Positioning context for the detail panel, which overlays this area rather than
-     taking a slot in the flex row. */
-  position: relative;
   display: flex;
   flex: 1;
   min-width: 0;
@@ -3005,22 +3002,16 @@
   white-space: nowrap;
 }
 
-/* Overlays the conversation instead of taking a flex slot beside it.
+/* Takes its own column beside the conversation -- it must never cover the text being
+   read. Overlaying it was tried and hid up to 157px of every visible row.
 
-   As a sibling it shrank the reading column from 836px to 753px, and because a row's
-   height depends on where its text wraps, opening it re-wrapped and re-measured every
-   row in one frame -- 65ms on an 800-row session, which is the stutter. Floating it
-   leaves the transcript's width untouched, so nothing behind it reflows. The panel is
-   already opaque, and the conversation keeps its own scroll position underneath. */
+   The reflow it used to cause is handled at .transcript-column instead, by pinning that
+   column's width so it does not follow the container. */
 .inspector {
-  position: absolute;
-  z-index: 6;
-  top: 0;
-  right: 0;
-  bottom: 0;
   width: 276px;
+  flex: 0 0 auto;
   overflow-y: auto;
-  background: rgba(17, 17, 19, 0.985);
+  background: rgba(17, 17, 19, 0.94);
   border-left: 1px solid var(--border);
   animation: reveal-inspector 0.16s ease-out;
 }

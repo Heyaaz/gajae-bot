@@ -1,12 +1,12 @@
-// Proves opening the session detail panel does not reflow the transcript.
+// Proves the session detail panel gets its own column instead of covering the transcript.
 //
-// The panel used to be a flex sibling of the conversation, so opening it shrank the
-// reading column from 836px to 753px. A row's height depends on where its text wraps,
-// so every row was re-wrapped and re-measured in one frame -- 65ms on a long session,
-// which is what the stutter was. The panel now overlays the conversation instead.
+// Making it an overlay was tried as a performance fix: it removed a 65ms reflow, but it
+// floated over the conversation and hid up to 157px of every visible row, cutting
+// sentences off mid-line. A panel that hides the text being read is worse than a slow
+// one, so it keeps its own track and the reflow is a separate, still-open problem.
 //
-// This is a layout property, so no unit test can hold it: the check is that the
-// transcript's width is identical before and after the panel opens.
+// This is a layout property, so no unit test can hold it: the check is that no visible
+// transcript row overlaps the panel's box.
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,40 +31,46 @@ app.whenReady().then(async () => {
     if (!row) return { error: 'no session rows' };
     row.click();
     for (let i = 0; i < 80 && !document.querySelector('.transcript-column'); i += 1) await wait(100);
-    const column = document.querySelector('.transcript-column');
-    if (!column) return { error: 'transcript never rendered' };
+    for (let i = 0; i < 80 && document.querySelector('.transcript-column').getBoundingClientRect().width < 100; i += 1)
+      await wait(50);
 
-    // Wait for the column to be laid out; a zero-width column would make the
-    // comparison below vacuous.
-    for (let i = 0; i < 80 && column.getBoundingClientRect().width < 100; i += 1) await wait(50);
-    const widthClosed = Math.round(column.getBoundingClientRect().width);
-    if (widthClosed < 100) return { error: 'transcript column never took width' };
     const toggle = [...document.querySelectorAll('button')].find(
       (b) => b.getAttribute('title') === '세션 정보',
     );
     if (!toggle) return { error: 'inspector toggle not found' };
-
     toggle.click();
     for (let i = 0; i < 80 && !document.querySelector('.inspector'); i += 1) await wait(25);
     const panel = document.querySelector('.inspector');
     if (!panel) return { error: 'inspector never rendered' };
-    await wait(300);
+    await wait(400);
 
-    // Re-query rather than reuse the earlier node: React can replace the element when
-    // the panel mounts, and a detached node measures zero.
-    const widthOpen = Math.round(
-      document.querySelector('.transcript-column').getBoundingClientRect().width,
-    );
     const panelBox = panel.getBoundingClientRect();
-    const bodyBox = document.querySelector('.workspace-body').getBoundingClientRect();
+    const column = document.querySelector('.transcript-column');
+    const columnBox = column.getBoundingClientRect();
 
+    // Every row currently on screen must sit clear of the panel.
+    let visibleRows = 0;
+    let overlappingRows = 0;
+    let worstOverlapPx = 0;
+    for (const child of column.children) {
+      const box = child.getBoundingClientRect();
+      if (box.bottom < 0 || box.top > window.innerHeight || box.width === 0) continue;
+      visibleRows += 1;
+      const overlap = Math.min(box.right, panelBox.right) - Math.max(box.left, panelBox.left);
+      if (overlap > 0) {
+        overlappingRows += 1;
+        worstOverlapPx = Math.max(worstOverlapPx, Math.round(overlap));
+      }
+    }
+
+    const bodyBox = document.querySelector('.workspace-body').getBoundingClientRect();
     return {
-      transcriptWidthClosed: widthClosed,
-      transcriptWidthOpen: widthOpen,
-      widthUnchanged: widthClosed === widthOpen,
+      visibleRows,
+      overlappingRows,
+      worstOverlapPx,
+      columnRight: Math.round(columnBox.right),
+      panelLeft: Math.round(panelBox.left),
       panelVisible: panelBox.width > 200,
-      // An overlay still has to stay inside the conversation area rather than
-      // hanging off the window or covering the sidebar.
       panelInsideBody:
         panelBox.right <= bodyBox.right + 1 &&
         panelBox.top >= bodyBox.top - 1 &&
@@ -77,7 +83,10 @@ app.whenReady().then(async () => {
 
   const ok =
     !result.error &&
-    result.widthUnchanged &&
+    result.visibleRows > 0 &&
+    result.overlappingRows === 0 &&
+    // The panel starts where the reading column ends rather than on top of it.
+    result.columnRight <= result.panelLeft &&
     result.panelVisible &&
     result.panelInsideBody
 
