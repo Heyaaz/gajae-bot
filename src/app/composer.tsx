@@ -101,6 +101,7 @@ export function Composer({
     value.trim().length > 0 || images.length > 0 || files.length > 0;
   const composerRef = useRef<HTMLFormElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const commandPaletteRef = useRef<HTMLDivElement>(null);
   const composingRef = useRef(false);
   const submitAfterCompositionRef = useRef(false);
   const compositionEndedAtRef = useRef(0);
@@ -308,6 +309,25 @@ export function Composer({
     textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 52), 196)}px`;
     textarea.style.overflowY = textarea.scrollHeight > 196 ? "auto" : "hidden";
   }, [value]);
+
+  useEffect(() => {
+    setCommandIndex(0);
+  }, [commandQuery]);
+
+  useLayoutEffect(() => {
+    const palette = commandPaletteRef.current;
+    const selected = palette?.querySelector<HTMLElement>(
+      `[data-command-index="${commandIndex}"]`,
+    );
+    if (!palette || !selected) return;
+    const selectedTop = selected.offsetTop;
+    const selectedBottom = selectedTop + selected.offsetHeight;
+    const visibleTop = palette.scrollTop;
+    const visibleBottom = visibleTop + palette.clientHeight;
+    if (selectedTop < visibleTop) palette.scrollTop = selectedTop;
+    else if (selectedBottom > visibleBottom)
+      palette.scrollTop = selectedBottom - palette.clientHeight;
+  }, [commandIndex, commandQuery, matchingCommands.length]);
 
   useEffect(() => {
     function closePopovers(event: Event): void {
@@ -855,7 +875,7 @@ export function Composer({
         onKeyDown={handleKeyDown}
       />
       {matchingCommands.length > 0 && (
-        <div className="command-palette">
+        <div className="command-palette" ref={commandPaletteRef}>
           <header>
             <Command size={14} /> GJC 명령어
           </header>
@@ -863,6 +883,7 @@ export function Composer({
             <button
               key={command.name}
               type="button"
+              data-command-index={index}
               className={index === commandIndex ? "is-selected" : ""}
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => selectCommand(command)}

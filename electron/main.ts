@@ -532,6 +532,17 @@ function createWindow(): BrowserWindow {
             assert(document.body.textContent?.includes('/new'), 'New-session command did not appear in command palette');
             assert(document.body.textContent?.includes('/steer'), 'Steer command did not appear in command palette');
             assert(document.body.textContent?.includes('/abort'), 'Abort command did not appear in command palette');
+            for (let index = 0; index < 10; index += 1) {
+              commandTextarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true, cancelable: true }));
+              await wait(10);
+            }
+            const keyboardPalette = document.querySelector('.command-palette');
+            const keyboardSelection = keyboardPalette?.querySelector('.is-selected');
+            assert(keyboardPalette && keyboardSelection, 'Arrow-key command selection did not move');
+            const paletteRect = keyboardPalette.getBoundingClientRect();
+            const selectionRect = keyboardSelection.getBoundingClientRect();
+            assert(keyboardPalette.scrollTop > 0, 'Arrow-key command navigation did not scroll the palette');
+            assert(selectionRect.top >= paletteRect.top && selectionRect.bottom <= paletteRect.bottom, 'Arrow-key selection moved outside the visible palette');
             const contextCommand = Array.from(document.querySelectorAll('.command-palette button')).find((button) => button.textContent?.includes('/context'));
             assert(contextCommand, 'No-hint SDK command did not render');
             contextCommand.click();
