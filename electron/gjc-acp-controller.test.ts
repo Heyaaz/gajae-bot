@@ -715,6 +715,116 @@ describe("historySessionSummary", () => {
   });
 });
 
+describe("listHistorySessions", () => {
+  const controllerFor = async (
+    root: string,
+  ): Promise<{ controller: GjcAcpController; restore: () => void }> => {
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as { startup: Promise<void> };
+    internals.startup = Promise.resolve();
+    // No agent is spawned: liveness is decoration and the files are the authority.
+    vi.spyOn(
+      controller as unknown as { requireConnection: () => Promise<unknown> },
+      "requireConnection",
+    ).mockRejectedValue(new Error("no agent"));
+    return {
+      controller,
+      restore: () => {
+        if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+        else process.env.GJC_CODING_AGENT_DIR = previous;
+      },
+    };
+  };
+
+  const writeSession = async (
+    root: string,
+    bucket: string,
+    name: string,
+    title: string,
+  ): Promise<void> => {
+    const directory = path.join(root, "sessions", bucket);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      path.join(directory, name),
+      [
+        JSON.stringify({ type: "session", cwd: "/tmp/project" }),
+        JSON.stringify({
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: title }] },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+  };
+
+  it("summarises a session without reading the whole transcript", async () => {
+    // The title comes from the first user message, so a session that has grown to
+    // hundreds of megabytes must not be pulled into memory to find it. Sixty of
+    // these at once is the picker opening.
+    const root = await mkdtemp(path.join(tmpdir(), "history-huge-"));
+    const { controller, restore } = await controllerFor(root);
+    try {
+      const directory = path.join(root, "sessions", "v2-bucket");
+      await mkdir(directory, { recursive: true });
+      const filler = JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "x".repeat(4096) }],
+        },
+      });
+      await writeFile(
+        path.join(directory, "2026-01-01T00-00-00-000Z_big-session.jsonl"),
+        [
+          JSON.stringify({ type: "session", cwd: "/tmp/project" }),
+          JSON.stringify({
+            type: "message",
+            message: { role: "user", content: [{ type: "text", text: "제목" }] },
+          }),
+          ...Array.from({ length: 3000 }, () => filler),
+        ].join("\n"),
+        "utf8",
+      );
+      const sessions = await controller.listHistorySessions();
+      expect(sessions[0]?.title).toBe("제목");
+      // 12 MB on disk; a summary that needed the whole file would report every row.
+      expect(sessions[0]?.messageCount).toBeLessThan(3000);
+    } finally {
+      restore();
+      controller.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("offers more than sixty past sessions", async () => {
+    // The store holds hundreds and every one of them opens fine with
+    // `gjc --resume`, so a cap that hides them makes the window less capable than
+    // the CLI it fronts.
+    const root = await mkdtemp(path.join(tmpdir(), "history-many-"));
+    const { controller, restore } = await controllerFor(root);
+    try {
+      for (let index = 0; index < 90; index += 1)
+        await writeSession(
+          root,
+          `v2-bucket-${index}`,
+          `2026-01-01T00-00-00-000Z_session-${String(index).padStart(3, "0")}.jsonl`,
+          `세션 ${index}`,
+        );
+      const sessions = await controller.listHistorySessions();
+      expect(sessions.length).toBe(90);
+    } finally {
+      restore();
+      controller.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("sharedTranscriptItems", () => {
   it("labels every row from the row's own timestamp", () => {
     // Rows are labelled with one shared Intl formatter rather than a new one per

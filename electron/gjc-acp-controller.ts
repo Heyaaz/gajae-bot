@@ -71,8 +71,16 @@ import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 const GJC_ACCENT = "#ff8a34";
 const STARTUP_TIMEOUT_MS = 30_000;
 // How many past sessions the resume picker offers. The store keeps every session
-// ever recorded, and summarising each one costs a file read.
-const HISTORY_SESSION_LIMIT = 60;
+// ever recorded and each one needs a summary, but the summary is read from a
+// bounded head rather than the whole transcript, so the cap is about how long a
+// list stays useful to scroll rather than what it costs to build. 402 sessions
+// were on disk here; 60 hid most of them behind a search box.
+const HISTORY_SESSION_LIMIT = 250;
+// How much of a session file the picker reads to title it. The title is the first
+// user message and the envelope is the first line, so both are near the top. Real
+// transcripts here reach 43 MB, and reading them whole to find the first message
+// pulled 645 MB through memory for one list.
+const HISTORY_SUMMARY_HEAD_BYTES = 128 * 1024;
 // How far back a transcript rescan looks for rows that changed in place. A turn
 // settles its own recent rows; a disagreement older than this is republished as
 // a whole history instead of being reconciled row by row.
@@ -122,6 +130,35 @@ const RUN_STATE_TAIL_BYTES = 256 * 1024;
  * Returns undefined when the tail holds no usable row, so the caller can decline to
  * guess rather than reporting a wrong state.
  */
+/**
+ * The first lines of a session file, for summarising it.
+ *
+ * The envelope and the first user message are both near the top, so a bounded head
+ * answers what the picker needs. A trailing partial line is dropped: it is cut at
+ * the window edge and would only parse by luck.
+ */
+export async function transcriptHeadLines(
+  filePath: string,
+): Promise<string[]> {
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(HISTORY_SUMMARY_HEAD_BYTES);
+    const { bytesRead } = await handle.read(
+      buffer,
+      0,
+      HISTORY_SUMMARY_HEAD_BYTES,
+      0,
+    );
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+    // Only when the window actually filled: a file smaller than the window ends
+    // with a complete line, and dropping it would lose a one-message session.
+    if (bytesRead === HISTORY_SUMMARY_HEAD_BYTES) lines.pop();
+    return lines;
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function readTranscriptTail(
   filePath: string,
   size: number,
@@ -2003,10 +2040,16 @@ export class GjcAcpController {
       activity?: { state?: string };
     }> = [];
     let cursor: string | undefined;
-    // 749 sessions at 100 per page is 8 pages. The broker keeps only 32 cursors
+    // This broker answers session.list in one page and ignores `limit`: measured
+    // against gjc/0.15.3 with 482 repo-scope sessions, limits of 100, 600, and 2000
+    // all returned all 482 with no continuationCursor. The cursor walk below is kept
+    // because the field is part of the operation and a paginating broker must not
+    // silently give us one page.
+    //
+    // When a walk does start it is always finished. The broker keeps only 32 cursors
     // for 15 minutes each, so a walk that stops early (page cap, error, throw)
     // strands one and a few polls exhaust the pool, taking session.list down for
-    // everyone. The pool is the shared resource, so the walk is always drained.
+    // everyone. The pool is the shared resource.
     const drain = async (token: string): Promise<void> => {
       let next: string | undefined = token;
       for (let page = 0; page < 4096 && next; page += 1) {
@@ -2035,9 +2078,9 @@ export class GjcAcpController {
       for (let page = 0; page < 4096; page += 1) {
         const response = await connection.extMethod("_gjc/sdk/global", {
           operation: "session.list",
-          // 100 is the broker's maximum page size. Every unfinished walk strands a
-          // continuation cursor for 15 minutes and the broker only holds 32, so a
-          // scan must always be drained to its final page.
+          // A page size the broker is free to ignore, and this one does. Every
+          // unfinished walk strands a continuation cursor for 15 minutes and the
+          // broker only holds 32, so a scan that does page must be drained.
           input: { ...(cursor ? { cursor } : {}), limit: 100 },
         });
         // Liveness classification comes only from this index. An empty result on
@@ -4777,8 +4820,7 @@ export class GjcAcpController {
     for (const file of files.slice(0, HISTORY_SESSION_LIMIT)) {
       let summary: ReturnType<typeof historySessionSummary>;
       try {
-        const text = await readFile(file.path, "utf8");
-        summary = historySessionSummary(text.split("\n"));
+        summary = historySessionSummary(await transcriptHeadLines(file.path));
       } catch {
         continue;
       }
