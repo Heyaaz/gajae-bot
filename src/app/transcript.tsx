@@ -141,10 +141,31 @@ export function Transcript({
     // the bottom 80ms after every scroll up -- reading earlier messages was impossible.
     let frame = 0;
     let attempts = 0;
+    // A scroll this correction did not perform means the user is scrolling. Comparing
+    // positions cannot detect it: the correction chases a bottom that grows as rows are
+    // measured, so its own writes move the position further than a wheel notch moves it
+    // back. Measured with real wheel events, the loop wrote 168392 -> 168488 while the
+    // user was scrolling up, pulling the view up to 96px past where they had stopped.
+    let interrupted = false;
+    const noteForeignScroll = (): void => {
+      if (!selfScrollingRef.current) interrupted = true;
+    };
+    transcriptRef.current.addEventListener("scroll", noteForeignScroll, {
+      passive: true,
+    });
     const settle = (): void => {
       const element = transcriptRef.current;
       if (!element || !followingRef.current) {
         selfScrollingRef.current = false;
+        return;
+      }
+      // Hand the view back the moment the user takes over. Suppressing the scroll handler
+      // for the whole loop -- up to 30 frames -- also suppressed real input, so their
+      // scroll was silently overwritten.
+      if (interrupted) {
+        selfScrollingRef.current = false;
+        followingRef.current = false;
+        setFollowing(false);
         return;
       }
       // Marked as our own scroll: mid-correction the position is legitimately short of the
@@ -164,9 +185,11 @@ export function Transcript({
     const timer = window.setTimeout(() => {
       frame = requestAnimationFrame(settle);
     }, 80);
+    const scroller = transcriptRef.current;
     return () => {
       window.clearTimeout(timer);
       cancelAnimationFrame(frame);
+      scroller?.removeEventListener("scroll", noteForeignScroll);
       selfScrollingRef.current = false;
     };
   }, [blocks.length, items]);
