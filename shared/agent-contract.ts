@@ -154,6 +154,11 @@ export interface ToolActivity {
   description: string;
   command?: string;
   status:
+    // ACP distinguishes a call that is queued from one that is executing, and GJC
+    // sends both: a tool arrives `pending` and can sit there for seconds before it
+    // reports `in_progress`. Collapsing them showed a spinner and 작업 중 for work
+    // that had not started.
+    | "pending"
     | "running"
     | "completed"
     | "failed"

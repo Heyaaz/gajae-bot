@@ -123,6 +123,9 @@ export function subagentLabel(tool: ToolActivity): string {
 }
 
 export function toolStatusLabel(status: ToolActivity["status"]): string {
+  // A queued call is not work in progress: GJC leaves a tool pending for seconds
+  // before it starts, and saying 작업 중 for that stretch claimed work had begun.
+  if (status === "pending") return "대기 중";
   if (status === "running") return "작업 중";
   if (status === "completed" || status === "approved") return "완료";
   if (status === "failed" || status === "denied") return "실패";

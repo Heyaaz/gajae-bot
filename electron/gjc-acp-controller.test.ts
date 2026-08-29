@@ -28,6 +28,7 @@ import {
   messageTextWithFiles,
   persistedModelState,
   persistedTranscriptRunning,
+  toolStatus,
   profileDefaultModelLabel,
   readableModelLabel,
   sdkControlNeedsBrokerFallback,
@@ -932,6 +933,22 @@ describe("sharedTranscriptItems", () => {
       { id: "a2", message: { role: "assistant", stopReason: "stop", content: [] } },
     ];
     expect(persistedTranscriptRunning(finished)).toBe(false);
+  });
+
+  it("tells a queued tool call apart from one that is executing", () => {
+    // Observed live from gjc/0.15.3: a tool call arrives `pending`, and only 7s later
+    // becomes `in_progress` and then `completed`. ACP defines those as distinct states
+    // ("pending" | "in_progress" | "completed" | "failed").
+    //
+    // Both mapped to "running", so a call that was still queued displayed 작업 중 with
+    // a spinner for the whole wait -- it looked like work was underway when nothing
+    // had started.
+    expect(toolStatus("pending")).toBe("pending");
+    expect(toolStatus("in_progress")).toBe("running");
+    expect(toolStatus("completed")).toBe("completed");
+    expect(toolStatus("failed")).toBe("failed");
+    // An update with no status at all says nothing; the caller keeps what it had.
+    expect(toolStatus(undefined)).toBe("running");
   });
 
   it("keeps a turn running when work continues after a stop reason", () => {

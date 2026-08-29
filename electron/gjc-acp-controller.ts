@@ -1026,11 +1026,22 @@ function safeGitPath(value: string): boolean {
   );
 }
 
-function toolStatus(
+/**
+ * ACP tool state as this app displays it.
+ *
+ * `pending` and `in_progress` are separate states in ACP and GJC sends both: a call
+ * arrives pending and can sit there for seconds before it starts. Mapping both to
+ * running spun a spinner and said 작업 중 for work that had not begun.
+ *
+ * An update carrying no status says nothing about the call, so the caller's existing
+ * state stands and running is the safe assumption for a brand new one.
+ */
+export function toolStatus(
   status: ToolCallStatus | null | undefined,
 ): ToolActivity["status"] {
   if (status === "completed") return "completed";
   if (status === "failed") return "failed";
+  if (status === "pending") return "pending";
   return "running";
 }
 
