@@ -871,6 +871,45 @@ describe("listHistorySessions", () => {
 });
 
 describe("SDK slash command dispatch", () => {
+  it("replays cached commands when a renderer opens the transcript", async () => {
+    // The main-process controller outlives a renderer reload. available_commands_update
+    // is an event, so the new renderer otherwise starts with only bundled app actions:
+    // ensureAttached returns early for the already attached session and GJC does not
+    // publish the bootstrap command event a second time.
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const commands = [
+      { name: "context", description: "Show context" },
+      { name: "skill:ralplan", description: "Plan", hint: "[request]" },
+    ];
+    const internals = controller as unknown as {
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+      sessionCommands: Map<string, typeof commands>;
+      readPersistedTranscript: (id: string) => Promise<TranscriptItem[] | undefined>;
+    };
+    internals.sessions.set(session.id, session);
+    internals.terminalOnlySessions.add(session.id);
+    internals.sessionCommands.set(session.id, commands);
+    internals.readPersistedTranscript = async () => [];
+
+    await controller.getTranscript(session.id);
+
+    expect(events).toContainEqual({
+      type: "session.commands",
+      sessionId: session.id,
+      commands,
+    });
+    controller.dispose();
+  });
+
   it("runs /context as an SDK query instead of sending it to the model", async () => {
     const events: AgentEvent[] = [];
     const extMethod = vi.fn().mockImplementation(

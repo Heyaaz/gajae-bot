@@ -2526,6 +2526,17 @@ export class GjcAcpController {
         }
       }
     }
+    // The controller survives renderer reloads, while available_commands_update is a
+    // one-shot ACP event. Re-opening the transcript is the renderer's session bootstrap,
+    // so replay the cached snapshot even when the session was already attached and GJC
+    // has no reason to publish its bootstrap updates again.
+    const commands = this.sessionCommands.get(sessionId);
+    if (commands)
+      this.emitEvent({
+        type: "session.commands",
+        sessionId,
+        commands: commands.map((command) => ({ ...command })),
+      });
     const externallyDriven = !this.activePromptSessions.has(sessionId);
     if (this.terminalOnlySessions.has(sessionId) || externallyDriven) {
       try {
