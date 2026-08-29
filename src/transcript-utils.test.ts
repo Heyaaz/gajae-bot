@@ -7,6 +7,7 @@ import {
   initialSessionId,
   isNearTranscriptBottom,
   mergeDiscoveredSessions,
+  attachmentSummaryText,
   mergeTranscriptItem,
   orderedSessionsForShortcuts,
   recentUserRequests,
@@ -49,6 +50,32 @@ describe("copyableMessageText", () => {
         'inspect this\n\n<local-images>\n- "/tmp/shot.png"\n</local-images>\nThe user attached these images. You MUST inspect every image with the read tool before responding.',
       ),
     ).toBe("inspect this");
+  });
+});
+
+describe("attachmentSummaryText", () => {
+  it("names the attached images so the bubble shows what was sent", () => {
+    // The prompt carries the paths inside a block addressed to the agent, and the
+    // bubble strips that block. With only a thumbnail left, an attachment the model
+    // did read looked like it was never sent -- and a path-only attachment showed
+    // nothing at all.
+    expect(
+      attachmentSummaryText(
+        'inspect this\n\n<local-images>\n- "/tmp/shot.png"\n- "/tmp/two.png"\n</local-images>\nThe user attached these images. You MUST inspect every image with the read tool before responding.',
+      ),
+    ).toEqual(["shot.png", "two.png"]);
+  });
+
+  it("names attached files too", () => {
+    expect(
+      attachmentSummaryText(
+        'read it\n\n<local-files>\n- "/tmp/a/report.pdf"\n</local-files>\nUse the read tool on these local files when their contents are needed.',
+      ),
+    ).toEqual(["report.pdf"]);
+  });
+
+  it("stays empty for a plain message", () => {
+    expect(attachmentSummaryText("just text")).toEqual([]);
   });
 });
 
@@ -172,6 +199,47 @@ describe("mergeTranscriptItem", () => {
         { kind: "message" }
       >,
     ).toMatchObject({ content: "done" });
+  });
+
+  it("keeps the local thumbnails when the persisted rebuild replaces the row", () => {
+    // Only this window holds the image bytes: the app reads the file and echoes the
+    // bubble with inline base64, while the persisted transcript stores just the path
+    // inside the prompt text. The rebuild therefore arrives with no `images`, and
+    // replacing the row wholesale erased the thumbnail the user had just seen.
+    const local = {
+      kind: "message",
+      id: "local-prompt-1",
+      sessionId: "s",
+      role: "user",
+      content:
+        '이거 봐줘\n\n<local-images>\n- "/tmp/shot.png"\n</local-images>\nThe user attached these images. You MUST inspect every image with the read tool before responding.',
+      createdAt: "00:00",
+      images: [
+        {
+          id: "img-1",
+          name: "shot.png",
+          mimeType: "image/png",
+          data: "AAAA",
+          path: "/tmp/shot.png",
+        },
+      ],
+    } as unknown as TranscriptItem;
+    const rebuilt = {
+      kind: "message",
+      id: "shared-message-9",
+      sessionId: "s",
+      role: "user",
+      content: local.kind === "message" ? local.content : "",
+      createdAt: "00:01",
+    } as unknown as TranscriptItem;
+
+    const merged = mergeTranscriptItem([local], rebuilt);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.id).toBe("shared-message-9");
+    expect(
+      (merged[0] as Extract<TranscriptItem, { kind: "message" }>).images,
+    ).toEqual(local.kind === "message" ? local.images : undefined);
   });
 
   it("keeps untouched items by reference so memoized rows do not re-render", () => {

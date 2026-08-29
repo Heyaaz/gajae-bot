@@ -4,7 +4,6 @@ import type { AgentSession, BackendConnection } from "../backend/types";
 import {
   ArrowDown,
   Clock3,
-  Command,
   GitFork,
   MoreHorizontal,
   Pencil,
@@ -267,14 +266,6 @@ function SidebarView({
         <button
           className="icon-button"
           type="button"
-          title="지난 세션 이어서 진행"
-          onClick={onResumePicker}
-        >
-          <RotateCcw size={16} />
-        </button>
-        <button
-          className="icon-button"
-          type="button"
           title="새 Gajae 세션"
           onClick={onCreate}
         >
@@ -315,11 +306,17 @@ function SidebarView({
       </div>
 
       <div className="sidebar-footer">
-        <button type="button" onClick={onCreate}>
-          <Command size={16} />
-          <span>새 Gajae 세션</span>
+        {/* The title is what the narrow rail leans on: it hides footer labels, so
+            without it this button becomes an unlabelled icon. */}
+        <button
+          type="button"
+          title="지난 세션 이어서 진행"
+          onClick={onResumePicker}
+        >
+          <RotateCcw size={16} />
+          <span>지난 세션 이어서 진행</span>
         </button>
-        <button type="button" onClick={onSettings}>
+        <button type="button" title="설정" onClick={onSettings}>
           <Settings size={16} />
           <span>설정</span>
         </button>

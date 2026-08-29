@@ -5,6 +5,7 @@ import type { ArtifactContent, GeneratedFilePreview } from "../../shared/agent-c
 import type { ToolActivity, TranscriptItem } from "../backend/types";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import {
+  attachmentSummaryText,
   copyableMessageText,
   groupTranscriptItems,
   isNearTranscriptBottom,
@@ -18,6 +19,7 @@ import {
   FileSearch,
   GitFork,
   ListChecks,
+  Paperclip,
   ShieldCheck,
   Shrink,
   TerminalSquare,
@@ -335,6 +337,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 }) {
   if (item.kind === "message") {
     const copyText = copyableMessageText(item.content);
+    const attachments = attachmentSummaryText(item.content);
     return (
       <article className={`message message--${item.role}`}>
         {item.role === "assistant" && (
@@ -383,6 +386,16 @@ export const TranscriptItemView = memo(function TranscriptItemView({
               />
             ))}
           </div>
+        )}
+        {attachments.length > 0 && (
+          <ul className="message-attachments">
+            {attachments.map((name) => (
+              <li key={name}>
+                <Paperclip size={12} aria-hidden />
+                <span>{name}</span>
+              </li>
+            ))}
+          </ul>
         )}
         {item.role === "user" &&
           httpUrls(item.content).map((url) => (

@@ -66,6 +66,37 @@ describe("Sidebar memoization", () => {
     expect(String(marker)).toBe("Symbol(react.memo)");
   });
 
+  it("keeps the search row to two cells so nothing wraps", () => {
+    // .sidebar-actions is a two-column grid: search plus one 32px button. A third
+    // child wrapped onto its own line, so the + button ate a full row of the rail
+    // while the search field stayed short of the edge.
+    const markup = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)])),
+    );
+    const row = markup.match(
+      /<div class="sidebar-actions">([\s\S]*?)<div class="sidebar-scroll">/u,
+    )?.[1];
+    expect(row).toBeTruthy();
+    expect(row!.match(/<button/gu) ?? []).toHaveLength(1);
+    expect(row).toContain('title="새 Gajae 세션"');
+    // Resume moved to the footer, where a label fits.
+    expect(row).not.toContain("지난 세션");
+    expect(markup).toContain("지난 세션 이어서 진행");
+  });
+
+  it("offers exactly one way to start a session", () => {
+    // The footer used to repeat the header's + button. Two controls firing the same
+    // onCreate read as two different actions, so the second one is noise in a rail
+    // that is otherwise one-control-per-action.
+    const markup = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)])),
+    );
+    const occurrences = markup.split("새 Gajae 세션").length - 1;
+    expect(occurrences).toBe(1);
+    // And the survivor is the header button the whole app targets by title.
+    expect(markup).toContain('title="새 Gajae 세션"');
+  });
+
   it("still renders every session it is given", () => {
     // Guards the wrapper against being satisfied by something that renders nothing.
     const sessions = [session(0), session(1), session(2)];

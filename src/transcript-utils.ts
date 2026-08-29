@@ -134,6 +134,26 @@ function sameUserRequest(
   return false;
 }
 
+/**
+ * Names of the files and images a prompt attached, in the order they were attached.
+ *
+ * The paths live in a block addressed to the agent, and the bubble strips that block
+ * so the instructions do not read as the user's own words. That left an attachment
+ * invisible: a thumbnail alone does not say a file was sent, and an image the model
+ * read by path had nothing to show at all. The renderer lists these names next to the
+ * message so the user can see what went with it.
+ */
+export function attachmentSummaryText(content: string): string[] {
+  const blocks = content.matchAll(
+    /<local-(?:attachments|files|images)>([\s\S]*?)<\/local-(?:attachments|files|images)>/gu,
+  );
+  const names: string[] = [];
+  for (const block of blocks)
+    for (const line of block[1]!.matchAll(/^\s*-\s+"([^"]+)"\s*$/gmu))
+      names.push(line[1]!.split("/").at(-1)!);
+  return names;
+}
+
 /** File names from a prompt's attachment block, order-independent. */
 function attachedNames(content: string): string {
   return [...content.matchAll(/^\s*-\s+"([^"]+)"\s*$/gmu)]
@@ -255,8 +275,27 @@ export function mergeTranscriptItem(
   // a reply, or a cancellation notice rendered twice.
   const superseded = supersededLocalIndex(items, item);
   if (superseded >= 0)
-    return items.map((existing, at) => (at === superseded ? item : existing));
+    return items.map((existing, at) =>
+      at === superseded ? withLocalImages(item, existing) : existing,
+    );
   return [...items, item];
+}
+
+/**
+ * Carries a replaced row's inline images onto its persisted rebuild.
+ *
+ * Only this window ever holds the image bytes: the app reads the file and echoes the
+ * bubble with inline base64, while the persisted transcript stores the path inside the
+ * prompt text and nothing else. So the rebuild always arrives without images, and
+ * replacing the row wholesale erased the thumbnail the user had just seen.
+ */
+function withLocalImages(
+  item: TranscriptItem,
+  replaced: TranscriptItem,
+): TranscriptItem {
+  if (item.kind !== "message" || replaced.kind !== "message") return item;
+  if (item.images?.length || !replaced.images?.length) return item;
+  return { ...item, images: replaced.images };
 }
 
 // Local ids and the persisted ids that replace them. The renderer draws whatever
