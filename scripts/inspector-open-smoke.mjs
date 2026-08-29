@@ -214,8 +214,10 @@ function check(result) {
   if (result.followButtonAfterReturn) {
     failures.push('최신 내용으로 button still showing after returning to the bottom')
   }
-  // A negative value means the last row is cut off under the composer.
-  if (result.blankBelowContentPx > 120 || result.blankBelowContentPx < -8) {
+  // A negative value means the last row is cut off under the composer. Too small and the
+  // newest message reads as glued to it: the gap has to be at least the 18px that
+  // separates blocks from each other, or the last one looks attached to the input.
+  if (result.blankBelowContentPx > 120 || result.blankBelowContentPx < 16) {
     failures.push(
       `${result.blankBelowContentPx}px between the last message and the composer`,
     )

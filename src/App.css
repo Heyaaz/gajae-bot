@@ -1276,9 +1276,10 @@
   width: min(760px, calc(100% - 48px));
   min-width: 0;
   margin: 0 auto;
-  /* Bottom padding is small: the composer below already separates the newest message,
-     and rows carry their own bottom margins. */
-  padding: 44px 0 8px;
+  /* The newest message needs the same breathing room from the composer that blocks get
+     from each other (18px at .transcript-slot); at 8px it read as glued to the input. Not
+     matched to the 44px at the top, which is deliberately airier under the header. */
+  padding: 44px 0 20px;
   overflow-anchor: none;
 }
 .transcript-column > :last-child {
