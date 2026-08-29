@@ -8,7 +8,7 @@ import {
   attachmentSummaryText,
   copyableMessageText,
   groupTranscriptItems,
-  isNearTranscriptBottom,
+  shouldFollowTranscript,
   recentUserRequests,
   transcriptBlockIndexForItem,
 } from "../transcript-utils";
@@ -30,6 +30,12 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { httpUrls, humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
 import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
+
+// How long an upward gesture keeps its say over the follow decision. Long enough to
+// cover the smooth-scroll animation one notch triggers -- measured at ~157ms from the
+// wheel event to the last scroll event -- so the position the gesture started from
+// cannot cancel it.
+const GESTURE_WINDOW_MS = 400;
 
 export interface TranscriptProps {
   items: TranscriptItem[];
@@ -60,6 +66,17 @@ export function Transcript({
   const selfScrollingRef = useRef(false);
   // Pending bottom correction, so a burst of scroll events collapses into one.
   const settleTimerRef = useRef(0);
+  // Set by a wheel or touch gesture, cleared once the view is back at the bottom. The
+  // scroll position cannot carry this on its own: one notch is ~109px, which is inside
+  // the slack that unmounted rows require, so a small scroll up read as "still at the
+  // bottom" and was pulled straight back -- net movement 0px.
+  const scrolledAwayRef = useRef(false);
+  // When the last upward gesture happened. The first scroll event of a gesture still
+  // reports the old position -- one notch fires it while scrollTop is unchanged and
+  // remaining is 0 -- so clearing the intent on "at the bottom" erased the gesture
+  // before it moved anything. A gesture stays in force until the scrolling it caused
+  // has stopped.
+  const gestureAtRef = useRef(0);
   const [following, setFollowing] = useState(true);
 
   const blocks = useMemo(() => groupTranscriptItems(items), [items]);
@@ -290,20 +307,17 @@ export function Transcript({
     const transcript = transcriptRef.current;
     if (!transcript) return;
     if (selfScrollingRef.current) return;
-    // Wider than the default 48px, because rows above are unmounted and the scroll height
-    // is an estimate: a drag to the end can still measure a few hundred pixels short, and
-    // reading that as "scrolled away" leaves the view stalled with a blank band under the
-    // newest message.
-    //
-    // But not a whole viewport either. That much slack also swallowed a small deliberate
-    // scroll up -- park 400px above the bottom and the view slid back down. A third of a
-    // viewport covers the estimation error while leaving a nudge upward alone.
-    const nearBottom = isNearTranscriptBottom(
+    const nearBottom = shouldFollowTranscript(
       transcript.scrollHeight,
       transcript.scrollTop,
       transcript.clientHeight,
-      Math.round(transcript.clientHeight / 3),
+      scrolledAwayRef.current,
     );
+    // Back at the bottom: the gesture is spent, so the slack for unmounted rows applies
+    // again and new content resumes arriving in view. Not while it is still under way,
+    // because its opening events report the position it started from.
+    if (nearBottom && performance.now() - gestureAtRef.current > GESTURE_WINDOW_MS)
+      scrolledAwayRef.current = false;
     followingRef.current = nearBottom;
     setFollowing(nearBottom);
 
@@ -357,6 +371,25 @@ export function Transcript({
       aria-live="polite"
       ref={transcriptRef}
       onScroll={updateScrollFollowing}
+      // Upward input is what "scrolled away" means. Taken from the gesture rather than
+      // from the resulting position, which is indistinguishable from the measurement
+      // slack that unmounted rows need.
+      onWheel={(event) => {
+        if (event.deltaY >= 0) return;
+        scrolledAwayRef.current = true;
+        gestureAtRef.current = performance.now();
+      }}
+      onTouchMove={() => {
+        const transcript = transcriptRef.current;
+        if (!transcript) return;
+        if (
+          transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight >
+          1
+        ) {
+          scrolledAwayRef.current = true;
+          gestureAtRef.current = performance.now();
+        }
+      }}
     >
       <div className="transcript-column">
         <div

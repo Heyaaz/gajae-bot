@@ -6,6 +6,7 @@ import {
   groupTranscriptItems,
   initialSessionId,
   isNearTranscriptBottom,
+  shouldFollowTranscript,
   mergeDiscoveredSessions,
   attachmentSummaryText,
   mergeTranscriptItem,
@@ -589,6 +590,56 @@ describe("isNearTranscriptBottom", () => {
     expect(isNearTranscriptBottom(1_000, 552, 400)).toBe(false);
     expect(isNearTranscriptBottom(1_000, 553, 400)).toBe(true);
     expect(isNearTranscriptBottom(1_000, 600, 400)).toBe(true);
+  });
+});
+
+describe("shouldFollowTranscript", () => {
+  const clientHeight = 477;
+  const scrollHeight = 168_000;
+  const at = (px: number, scrolledAway: boolean) =>
+    shouldFollowTranscript(
+      scrollHeight,
+      scrollHeight - clientHeight - px,
+      clientHeight,
+      scrolledAway,
+    );
+
+  it("leaves a small deliberate scroll up alone", () => {
+    // The bug this encodes, measured with real wheel events on a ~1200-block session:
+    // one notch moves 109px, the follow threshold is a third of a 477px viewport (159px),
+    // so the view was still "near the bottom" and the 120ms settle timer pulled it back.
+    // Net movement was 0px -- the scroll simply did not happen as far as the user could
+    // tell. Two notches (198px) cleared the threshold and worked, which is why this only
+    // showed up on small scrolls.
+    expect(at(109, true)).toBe(false);
+    expect(at(40, true)).toBe(false);
+    // Any distance at all, once it was asked for.
+    expect(at(2, true)).toBe(false);
+  });
+
+  it("still absorbs the estimation error from unmounted rows", () => {
+    // Rows above the viewport are unmounted, so the scroll height is an estimate and a
+    // drag to the end can land a couple hundred pixels short. That is not a scroll away,
+    // and reading it as one leaves a blank band under the newest message with the
+    // 최신 내용으로 button stuck on screen.
+    expect(at(200, false)).toBe(true);
+    expect(at(158, false)).toBe(true);
+    expect(at(0, false)).toBe(true);
+  });
+
+  it("resumes following once the view is back at the bottom", () => {
+    // Scrolling back down has to re-arm following, or new messages stop arriving in view
+    // for the rest of the session.
+    expect(at(0, true)).toBe(true);
+    expect(at(1, true)).toBe(true);
+  });
+
+  it("keeps a genuine scroll away from following", () => {
+    // Past one viewport nothing can explain the distance as estimation error.
+    expect(at(2_000, false)).toBe(false);
+    expect(at(478, false)).toBe(false);
+    // And with a gesture behind it, any distance counts.
+    expect(at(400, true)).toBe(false);
   });
 });
 

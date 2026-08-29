@@ -127,6 +127,37 @@ export function isNearTranscriptBottom(
   return scrollHeight - scrollTop - clientHeight < threshold;
 }
 
+/**
+ * Whether the transcript should keep pinning itself to the newest content.
+ *
+ * Distance alone cannot answer this. Rows above the viewport are unmounted, so the
+ * scroll height is an estimate and a drag to the end can land a couple hundred
+ * pixels short -- that has to read as following, or the view stalls with a blank
+ * band under the newest message. But one wheel notch is only ~109px, which lands
+ * in that same band, and treating it as following pulled the view straight back
+ * down: a small scroll up produced no net movement at all.
+ *
+ * So intent is the second input. Once the user has scrolled away in this gesture,
+ * any distance from the bottom means they are reading and following stops. The
+ * slack applies only when they have not, which is exactly the case it exists for.
+ * Returning to the bottom re-arms following either way.
+ */
+export function shouldFollowTranscript(
+  scrollHeight: number,
+  scrollTop: number,
+  clientHeight: number,
+  scrolledAway: boolean,
+  // A full viewport, because the estimation error is the only thing this slack has
+  // to cover once intent is accounted for: a measured drag to the end landed 577px
+  // short on a real session. A third of a viewport was the old compromise, chosen to
+  // stop small scrolls snapping back, which `scrolledAway` now handles directly.
+  threshold = clientHeight,
+): boolean {
+  const remaining = scrollHeight - scrollTop - clientHeight;
+  if (scrolledAway) return remaining <= 1;
+  return remaining < threshold;
+}
+
 function sameUserRequest(
   remote: Extract<TranscriptItem, { kind: "message" }>,
   local: Extract<TranscriptItem, { kind: "message" }>,
