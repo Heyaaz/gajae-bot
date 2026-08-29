@@ -512,6 +512,11 @@ export class MockAgentBackend implements AgentBackend {
               description: "Show active context token usage",
             },
             {
+              name: "fast",
+              description: "Toggle fast mode",
+              hint: "[on|off]",
+            },
+            {
               name: "skill:deep-interview",
               description: "Clarify requirements before implementation",
               hint: "[request]",
@@ -720,6 +725,17 @@ export class MockAgentBackend implements AgentBackend {
     const value = input.text.trim();
     if (!value && input.images.length === 0 && input.files.length === 0)
       return "prompt";
+
+    if (value === "/fast on" || value === "/fast off") {
+      const session = this.sessionStore.find(
+        (candidate) => candidate.id === sessionId,
+      );
+      if (session) {
+        session.serviceTier = value === "/fast on" ? "priority" : "default";
+        session.updatedAt = "now";
+        this.emit({ type: "session.updated", session: cloneSession(session) });
+      }
+    }
 
     const userMessage: ChatMessage = {
       id: `message-${this.nextId++}`,

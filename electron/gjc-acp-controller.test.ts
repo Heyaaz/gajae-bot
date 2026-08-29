@@ -219,6 +219,20 @@ describe("persistedModelState", () => {
       ]),
     ).toEqual({ model: "GOAT", thinking: "high" });
   });
+
+  it("restores the latest persisted service tier", () => {
+    expect(
+      persistedModelState([
+        { type: "service_tier_change", serviceTier: "priority" },
+      ]),
+    ).toMatchObject({ serviceTier: "priority" });
+    expect(
+      persistedModelState([
+        { type: "service_tier_change", serviceTier: "priority" },
+        { type: "service_tier_change", serviceTier: null },
+      ]),
+    ).toHaveProperty("serviceTier", undefined);
+  });
 });
 
 describe("readableModelLabel", () => {
@@ -1040,6 +1054,61 @@ describe("SDK slash command dispatch", () => {
       confirm: true,
     });
     expect(prompt).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("publishes the fast service tier after SDK control accepts it", async () => {
+    const events: AgentEvent[] = [];
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, result: { changed: true } });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: {
+        signal: { aborted: boolean };
+        extMethod: typeof extMethod;
+      };
+      sessions: Map<string, typeof session>;
+      sessionSdkOperations: Map<string, Set<string>>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      extMethod,
+    };
+    internals.sessions.set(session.id, session);
+    internals.sessionSdkOperations.set(
+      session.id,
+      new Set(["service_tier.set"]),
+    );
+
+    await controller.sendMessage(session.id, {
+      text: "/fast on",
+      images: [],
+      files: [],
+    });
+
+    expect(extMethod).toHaveBeenCalledWith("_gjc/sdk/control", {
+      sessionId: session.id,
+      operation: "service_tier.set",
+      input: { tier: "priority" },
+      confirm: undefined,
+    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        type: "session.updated",
+        session: expect.objectContaining({
+          id: session.id,
+          serviceTier: "priority",
+        }),
+      }),
+    );
     controller.dispose();
   });
 });

@@ -1105,6 +1105,23 @@
   color: var(--warning);
   border-left: 1px solid var(--border);
 }
+.chat-fast-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  color: #e5a04d;
+  background: rgb(229 160 77 / 12%);
+  border: 1px solid rgb(229 160 77 / 28%);
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.chat-fast-mode svg {
+  flex: 0 0 auto;
+}
 .presence-inline {
   width: 6px;
   height: 6px;

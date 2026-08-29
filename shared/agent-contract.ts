@@ -67,6 +67,7 @@ export interface AgentSession {
   model?: string;
   modelDisplay?: string;
   thinking?: string;
+  serviceTier?: string;
   usagePercent?: number;
   usagePending?: boolean;
   ownership: SessionOwnership;

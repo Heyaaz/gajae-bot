@@ -325,6 +325,8 @@ function createWindow(): BrowserWindow {
                 if (connection?.textContent?.includes('연결됨') && sessions.length > 0 && chatIdentity && composer) {
                   let customProfiles = false;
                   let builtInProfiles = false;
+                  let fastIndicator = false;
+                  let fastIndicatorCleared = false;
                   let modelStatus = null;
                   // A freshly created session is the only reliably attachable one: previously
                   // listed sessions may be owned by a terminal with no attachable ACP endpoint.
@@ -357,7 +359,36 @@ function createWindow(): BrowserWindow {
                       await wait(100);
                     }
                     modelStatus.click();
-                    if (customProfiles && builtInProfiles) break;
+                    if (customProfiles && builtInProfiles) {
+                      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+                      if (!valueSetter) throw new Error('Live GJC composer value setter is unavailable');
+                      valueSetter.call(composer, '/fast on');
+                      composer.dispatchEvent(new Event('input', { bubbles: true }));
+                      composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+                      const fastDeadline = Date.now() + 5_000;
+                      while (Date.now() < fastDeadline) {
+                        const indicator = document.querySelector('.chat-fast-mode');
+                        if (indicator?.textContent?.trim() === 'Fast' && indicator.querySelector('svg')) {
+                          fastIndicator = true;
+                          break;
+                        }
+                        await wait(100);
+                      }
+                      if (!fastIndicator) throw new Error('Live /fast on did not render the lightning indicator');
+                      valueSetter.call(composer, '/fast off');
+                      composer.dispatchEvent(new Event('input', { bubbles: true }));
+                      composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+                      const clearDeadline = Date.now() + 5_000;
+                      while (Date.now() < clearDeadline) {
+                        if (!document.querySelector('.chat-fast-mode')) {
+                          fastIndicatorCleared = true;
+                          break;
+                        }
+                        await wait(100);
+                      }
+                      if (!fastIndicatorCleared) throw new Error('Live /fast off did not clear the lightning indicator');
+                      break;
+                    }
                   }
                   if (probeSessionId) {
                     try {
@@ -380,6 +411,8 @@ function createWindow(): BrowserWindow {
                     composer: true,
                     customProfiles,
                     builtInProfiles,
+                    fastIndicator,
+                    fastIndicatorCleared,
                   };
                 }
                 await wait(250);
@@ -550,6 +583,20 @@ function createWindow(): BrowserWindow {
             assert(!document.querySelector('.command-palette'), 'No-hint SDK command selection did not submit');
             assert(commandTextarea.value === '', 'No-hint SDK command remained stuck in the composer');
             await wait(1800);
+            commandValueSetter.call(commandTextarea, '/fast on');
+            commandTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+            commandTextarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+            await wait(1800);
+            const fastModeIndicator = document.querySelector('.chat-fast-mode');
+            assert(fastModeIndicator, 'Fast mode indicator did not appear after /fast on');
+            assert(fastModeIndicator.textContent?.trim() === 'Fast', 'Fast mode indicator label is incorrect');
+            assert(fastModeIndicator.querySelector('svg'), 'Fast mode indicator has no lightning icon');
+            assert(fastModeIndicator.getBoundingClientRect().width > 0, 'Fast mode indicator is not visible');
+            commandValueSetter.call(commandTextarea, '/fast off');
+            commandTextarea.dispatchEvent(new Event('input', { bubbles: true }));
+            commandTextarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+            await wait(1800);
+            assert(!document.querySelector('.chat-fast-mode'), 'Fast mode indicator remained after /fast off');
             commandValueSetter.call(commandTextarea, '/compact');
             commandTextarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(50);

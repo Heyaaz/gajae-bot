@@ -578,9 +578,12 @@ export function compactionRecordCount(rows: unknown[]): number {
 export function persistedModelState(rows: unknown[]): {
   model?: string;
   thinking?: string;
+  serviceTier?: string;
 } {
   let model: string | undefined;
   let thinking: string | undefined;
+  let serviceTier: string | undefined;
+  let serviceTierRecorded = false;
   for (const row of rows) {
     if (!row || typeof row !== "object" || Array.isArray(row)) continue;
     const value = row as Record<string, unknown>;
@@ -603,8 +606,21 @@ export function persistedModelState(rows: unknown[]): {
     ) {
       thinking = value.thinkingLevel;
     }
+    if (value.type === "service_tier_change") {
+      if (typeof value.serviceTier === "string") {
+        serviceTier = value.serviceTier;
+        serviceTierRecorded = true;
+      } else if (value.serviceTier === null) {
+        serviceTier = undefined;
+        serviceTierRecorded = true;
+      }
+    }
   }
-  return { model, thinking };
+  return {
+    model,
+    thinking,
+    ...(serviceTierRecorded ? { serviceTier } : {}),
+  };
 }
 
 function taskStatus(
@@ -2794,7 +2810,11 @@ export class GjcAcpController {
       const items = sharedTranscriptItems(sessionId, rows, { turnRunning });
       await this.resolveToolImages(items);
       const effectiveModel = persistedModelState(envelopes);
-      if (effectiveModel.model || effectiveModel.thinking) {
+      if (
+        effectiveModel.model ||
+        effectiveModel.thinking ||
+        Object.hasOwn(effectiveModel, "serviceTier")
+      ) {
         this.patchSessionRuntime(sessionId, effectiveModel);
       }
       // A terminal-owned session gets no live phase report, so the transcript is the
@@ -3831,6 +3851,7 @@ export class GjcAcpController {
           throw new Error("Usage: /fast [on|off]");
         const tier = args === "on" ? "priority" : "default";
         const result = await control("service_tier.set", { tier });
+        this.patchSessionRuntime(sessionId, { serviceTier: tier });
         return output(this.sdkCommandJson(result ?? { tier }));
       }
       case "export": {
@@ -6030,6 +6051,7 @@ export class GjcAcpController {
         | "model"
         | "modelDisplay"
         | "thinking"
+        | "serviceTier"
         | "usagePercent"
         | "usagePending"
       >
