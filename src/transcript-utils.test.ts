@@ -776,6 +776,21 @@ describe("mergeDiscoveredSessions", () => {
     ).toEqual(["running"]);
   });
 
+  it("does not let an older discovery response replace a newer live status", () => {
+    expect(
+      mergeDiscoveredSessions(
+        [{ ...session("open", "running"), runRevision: 2 }],
+        [{ ...session("open", "idle"), runRevision: 1 }],
+      )[0],
+    ).toMatchObject({ status: "running", runRevision: 2 });
+    expect(
+      mergeDiscoveredSessions(
+        [{ ...session("open", "idle"), runRevision: 1 }],
+        [{ ...session("open", "running"), runRevision: 2 }],
+      )[0],
+    ).toMatchObject({ status: "running", runRevision: 2 });
+  });
+
   it("takes a settled status over a stale running row", () => {
     expect(
       mergeDiscoveredSessions(

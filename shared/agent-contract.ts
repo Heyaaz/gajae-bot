@@ -58,6 +58,8 @@ export interface AgentSession {
   workspace: string;
   runtime: RuntimeKind;
   status: SessionStatus;
+  /** Monotonic lifecycle revision used to reject stale status snapshots. */
+  runRevision?: number;
   updatedAt: string;
   pinned: boolean;
   unread: boolean;

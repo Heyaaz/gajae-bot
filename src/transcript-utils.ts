@@ -470,7 +470,12 @@ export function updateTranscriptItem(
  * on 완료 for its whole run.
  */
 export function mergeDiscoveredSessions<
-  T extends { id: string; unread: boolean; status?: string },
+  T extends {
+    id: string;
+    unread: boolean;
+    status?: string;
+    runRevision?: number;
+  },
 >(
   current: readonly T[],
   discovered: readonly T[],
@@ -493,7 +498,19 @@ export function mergeDiscoveredSessions<
   const merged = discovered.map((session) => {
     const existing = known.get(session.id);
     if (!existing) return session;
-    return { ...session, ...existing, status: session.status };
+    const currentRevision = existing.runRevision ?? 0;
+    const discoveredRevision = session.runRevision ?? 0;
+    return {
+      ...session,
+      ...existing,
+      status:
+        currentRevision > discoveredRevision
+          ? existing.status
+          : session.status,
+      ...(existing.runRevision !== undefined || session.runRevision !== undefined
+        ? { runRevision: Math.max(currentRevision, discoveredRevision) }
+        : {}),
+    };
   });
   // Discovery order is activity-ranked and churns between refreshes. Rows already
   // on screen keep their position so the list does not reshuffle under the

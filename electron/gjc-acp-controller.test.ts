@@ -4784,6 +4784,8 @@ describe("sessionInfoToAgentSession", () => {
       sessionSdkOperations: Map<string, Set<string>>;
       sessionConfig: Map<string, unknown[]>;
       modelProfiles: Map<string, unknown[]>;
+      pendingAsyncWorkSessions: Set<string>;
+      runRevisions: Map<string, number>;
     };
     internals.sessions.set("session-1", {});
     internals.transcripts.set("session-1", []);
@@ -4792,6 +4794,8 @@ describe("sessionInfoToAgentSession", () => {
     internals.sessionSdkOperations.set("session-1", new Set(["context.get"]));
     internals.sessionConfig.set("session-1", []);
     internals.modelProfiles.set("session-1", []);
+    internals.pendingAsyncWorkSessions.add("session-1");
+    internals.runRevisions.set("session-1", 3);
 
     controller.dispose();
 
@@ -4802,6 +4806,8 @@ describe("sessionInfoToAgentSession", () => {
     expect(internals.sessionSdkOperations.size).toBe(0);
     expect(internals.sessionConfig.size).toBe(0);
     expect(internals.modelProfiles.size).toBe(0);
+    expect(internals.pendingAsyncWorkSessions.size).toBe(0);
+    expect(internals.runRevisions.size).toBe(0);
   });
 });
 
@@ -5270,6 +5276,317 @@ describe("listSessions status from the transcript", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("keeps the whole cycle running across a detached task result continuation", async () => {
+    // Captured from the user's live session (local time, UTC+09):
+    //   01:42:56.440 assistant stop (the first final response)
+    //   01:42:56.750 custom_message async-result (detached task completed)
+    //   01:43:02.921 assistant toolUse (automatic continuation)
+    //   01:43:11.629 assistant stop (the actual end)
+    // The task launch result already carried durable `details.async.state=running`.
+    // Ignoring it made the first stop publish 완료 for 6 seconds, then the async
+    // result woke the model and changed the same row back to 작업 중.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-async-continuation-"));
+    const file = path.join(root, "session.jsonl");
+    const launch = [
+      {
+        type: "message",
+        message: { role: "user", content: "work" },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "toolUse",
+          content: [{ type: "toolCall", id: "task-1", name: "task" }],
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolCallId: "task-1",
+          toolName: "task",
+          content: "Started 1 background task job",
+          details: {
+            async: {
+              state: "running",
+              jobId: "2-FastModeBadge",
+              type: "task",
+            },
+          },
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: "first final",
+        },
+      },
+    ];
+    await writeFile(
+      file,
+      `${launch.map((row) => JSON.stringify(row)).join("\n")}\n`,
+    );
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      liveRunningSessions: Set<string>;
+      liveRunningDigests: Map<string, number>;
+      workingPhaseSessions: Set<string>;
+      runtimeIdleSessions: Set<string>;
+      discoveredRunStates: Map<string, { size: number; status: "idle" | "running" }>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.sessions.set("session-1", { id: "session-1", status: "running" });
+    internals.liveRunningSessions.add("session-1");
+    internals.liveRunningDigests.set("session-1", 0);
+    internals.workingPhaseSessions.add("session-1");
+    internals.runtimeIdleSessions.add("session-1");
+    internals.locateSharedTranscriptFile = async () => file;
+
+    await internals.readPersistedTranscript("session-1");
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(0);
+    // Discovery only reads a bounded tail and caches its verdict. Even if that tail
+    // starts after the task launch and looks terminal, it must not overrule the full
+    // transcript's outstanding async-job authority.
+    internals.discoveredRunStates.set("session-1", {
+      size: (await stat(file)).size,
+      status: "idle",
+    });
+    expect(await internals.discoveredRunState("session-1")).toBe("running");
+    // A restarted app has no in-memory working-phase marker yet. The attach slot's
+    // bootstrap idle still cannot settle a detached job restored from the transcript.
+    internals.workingPhaseSessions.clear();
+    internals.liveRunningSessions.clear();
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      _meta: { gjcPhase: "idle", running: false, gjcRunning: false },
+    });
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+
+    const continuation = {
+      type: "custom_message",
+      customType: "async-result",
+      display: true,
+      content: "Background job 2-FastModeBadge has completed. Resume your work.",
+      details: { jobs: [{ jobId: "2-FastModeBadge", type: "task" }] },
+    };
+    await appendFile(file, `${JSON.stringify(continuation)}\n`);
+    await internals.readPersistedTranscript("session-1");
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+
+    await appendFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: "actual final",
+        },
+      })}\n`,
+    );
+    await internals.readPersistedTranscript("session-1");
+    expect(internals.sessions.get("session-1")?.status).toBe("idle");
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(1);
+
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("expands an ambiguous run-state tail before settling a long detached cycle", async () => {
+    // In the captured turn, 386KB was written between the detached task launch and
+    // the first assistant stop, beyond the 256KB discovery tail. A tail containing
+    // only that stop cannot prove the cycle ended; expand this one transition rather
+    // than either hiding the launch or making every session scan read whole files.
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-long-async-cycle-"));
+    const file = path.join(root, "session.jsonl");
+    const rows = [
+      { type: "message", message: { role: "user", content: "work" } },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "task",
+          details: {
+            async: { state: "running", jobId: "bg-task", type: "task" },
+          },
+        },
+      },
+      {
+        type: "custom_message",
+        customType: "diagnostic",
+        content: "x".repeat(300 * 1024),
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: "first final",
+        },
+      },
+    ];
+    await writeFile(file, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.status = "running";
+    const internals = controller as unknown as {
+      sessions: Map<string, typeof session>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      discoveredRunState: (id: string) => Promise<string | undefined>;
+    };
+    internals.sessions.set(session.id, session);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    expect(await internals.discoveredRunState(session.id)).toBe("running");
+
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("discards an idle transcript read when newer work starts before it applies", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-stale-idle-read-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "first" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "stop", content: "done" },
+      })}\n`,
+    );
+    let releaseImages: () => void = () => undefined;
+    let imagesStarted: () => void = () => undefined;
+    const imageGate = new Promise<void>((resolve) => {
+      releaseImages = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      imagesStarted = resolve;
+    });
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      liveRunningSessions: Set<string>;
+      liveRunningDigests: Map<string, number>;
+      workingPhaseSessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      resolveToolImages: () => Promise<void>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.sessions.set("session-1", { id: "session-1", status: "running" });
+    internals.liveRunningSessions.add("session-1");
+    internals.liveRunningDigests.set("session-1", 0);
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.resolveToolImages = async () => {
+      imagesStarted();
+      await imageGate;
+    };
+
+    const staleRead = internals.readPersistedTranscript("session-1");
+    await started;
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-29T17:00:00.000Z",
+      _meta: { gjcPhase: "working", running: true, gjcRunning: true },
+    });
+    releaseImages();
+    await staleRead;
+
+    expect(internals.sessions.get("session-1")?.status).toBe("running");
+    expect(internals.workingPhaseSessions.has("session-1")).toBe(true);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(0);
+
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("discards an idle watcher verdict when newer work starts while it waits", async () => {
+    let resolveVerdict: (status: "idle") => void = () => undefined;
+    const verdict = new Promise<"idle">((resolve) => {
+      resolveVerdict = resolve;
+    });
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    session.status = "running";
+    const internals = controller as unknown as {
+      sessions: Map<string, typeof session>;
+      liveRunningSessions: Set<string>;
+      workingPhaseSessions: Set<string>;
+      discoveredRunState: () => Promise<"idle">;
+      republishRunState: (id: string) => Promise<void>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set(session.id, session);
+    internals.discoveredRunState = async () => verdict;
+
+    const staleWatcher = internals.republishRunState(session.id);
+    await Promise.resolve();
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-29T17:01:00.000Z",
+      _meta: { gjcPhase: "working", running: true, gjcRunning: true },
+    });
+    resolveVerdict("idle");
+    await staleWatcher;
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    expect(internals.liveRunningSessions.has(session.id)).toBe(true);
+    expect(internals.workingPhaseSessions.has(session.id)).toBe(true);
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(0);
+    controller.dispose();
+  });
+
   it("keeps a cached terminal transcript running until runtime idle arrives", async () => {
     // sendMessage asks discoveredRunState immediately after ACP prompt resolves. The
     // final row is already on disk then, but the runtime idle report follows a few
@@ -5508,6 +5825,77 @@ describe("listSessions status from the transcript", () => {
     expect(internals.sessions.get("session-1")?.status).toBe("running");
     controller.dispose();
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not apply an old prompt settlement after an automatic continuation starts", async () => {
+    let releaseSettlement: (status: "idle") => void = () => undefined;
+    let settlementStarted: () => void = () => undefined;
+    const settlement = new Promise<"idle">((resolve) => {
+      releaseSettlement = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      settlementStarted = resolve;
+    });
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: unknown;
+      sessions: Map<string, typeof session>;
+      sessionCwds: Map<string, string>;
+      transcripts: Map<string, unknown[]>;
+      messageKeys: Map<string, Map<string, string>>;
+      attachedSessions: Set<string>;
+      refreshContextUsage: () => Promise<void>;
+      discoveredRunState: () => Promise<"idle">;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = {
+      signal: { aborted: false },
+      prompt: async () => ({ stopReason: "end_turn" }),
+      extMethod: async () => ({ ok: true, result: {} }),
+    };
+    internals.refreshContextUsage = async () => undefined;
+    internals.discoveredRunState = async () => {
+      settlementStarted();
+      return settlement;
+    };
+    internals.sessions.set(session.id, session);
+    internals.sessionCwds.set(session.id, session.workspace);
+    internals.transcripts.set(session.id, []);
+    internals.messageKeys.set(session.id, new Map());
+    internals.attachedSessions.add(session.id);
+
+    const sent = controller.sendMessage(session.id, {
+      text: "go",
+      images: [],
+      files: [],
+    });
+    await started;
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-29T17:02:00.000Z",
+      _meta: { gjcPhase: "working", running: true, gjcRunning: true },
+    });
+    releaseSettlement("idle");
+    await sent;
+
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    expect(
+      events.filter(
+        (event) =>
+          event.type === "session.activity" && event.category === "completed",
+      ),
+    ).toHaveLength(0);
+    controller.dispose();
   });
 
   it("re-reads run state for a session GJC reported running but never closed", async () => {
@@ -8330,6 +8718,12 @@ describe("session status authority", () => {
     await controller.compactSession(session.id);
     expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
 
+    // The transcript still ends at the response from before compaction. That old
+    // terminal row cannot settle the newly accepted compaction operation.
+    await internals.readPersistedTranscript(session.id);
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+
     // GJC finishes and records the compaction in the transcript.
     await writeFile(
       file,
@@ -8349,6 +8743,7 @@ describe("session status authority", () => {
     await internals.readPersistedTranscript(session.id);
 
     expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
     controller.dispose();
     await rm(root, { recursive: true, force: true });
   });

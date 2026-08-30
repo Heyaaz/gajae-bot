@@ -116,16 +116,17 @@ const execFile = promisify(execFileCb);
  * The child is left to exit on its own once its response has been read. Measured:
  * such a process ends by itself within its linger window, so nothing accumulates.
  */
-/** How much of a transcript's end is enough to decide whether its turn is still open. */
+/** Initial window for finding the current persisted cycle's user boundary. */
 const RUN_STATE_TAIL_BYTES = 256 * 1024;
 
 /**
  * Parses the last rows of a transcript.
  *
- * Whether a turn is open depends on how the newest rows end, so reading the whole
- * file to answer that is waste: across 399 local sessions a full parse costs ~23s
- * against ~30ms for the tails. The first line in the window is dropped unless the
- * window starts at the beginning of the file, because it is probably cut in half.
+ * Whether a turn is open depends on every continuation since its latest user row.
+ * Start with a small tail, then double only when that boundary is outside the window.
+ * This keeps ordinary discovery cheap without calling a terminal row authoritative
+ * when a long detached task launch sits 300KB or more behind it. The first line in
+ * each window is dropped unless it starts at byte zero because it may be cut in half.
  *
  * Returns undefined when the tail holds no usable row, so the caller can decline to
  * guess rather than reporting a wrong state.
@@ -162,27 +163,39 @@ export async function transcriptHeadLines(
 export async function readTranscriptTail(
   filePath: string,
   size: number,
+  expandTerminalCycle = false,
 ): Promise<Record<string, unknown>[] | undefined> {
-  const start = Math.max(0, size - RUN_STATE_TAIL_BYTES);
   const handle = await open(filePath, "r");
   try {
-    const length = size - start;
-    if (length <= 0) return undefined;
-    const buffer = Buffer.alloc(length);
-    await handle.read(buffer, 0, length, start);
-    const lines = buffer.toString("utf8").split("\n");
-    if (start > 0) lines.shift();
-    const rows: Record<string, unknown>[] = [];
-    for (const line of lines) {
-      const text = line.trim();
-      if (!text) continue;
-      try {
-        rows.push(JSON.parse(text) as Record<string, unknown>);
-      } catch {
-        // A torn line at either edge of the window is skipped.
+    if (size <= 0) return undefined;
+    let length = Math.min(size, RUN_STATE_TAIL_BYTES);
+    while (length > 0) {
+      const start = size - length;
+      const buffer = Buffer.alloc(length);
+      await handle.read(buffer, 0, length, start);
+      const lines = buffer.toString("utf8").split("\n");
+      if (start > 0) lines.shift();
+      const rows: Record<string, unknown>[] = [];
+      for (const line of lines) {
+        const text = line.trim();
+        if (!text) continue;
+        try {
+          rows.push(JSON.parse(text) as Record<string, unknown>);
+        } catch {
+          // A torn line at either edge of the window is skipped.
+        }
       }
+      const turn = persistedTurnState(rows);
+      if (
+        start === 0 ||
+        !expandTerminalCycle ||
+        turn.running ||
+        (rows.length > 0 && turn.hasUserBoundary)
+      )
+        return rows.length > 0 ? rows : undefined;
+      length = Math.min(size, length * 2);
     }
-    return rows.length > 0 ? rows : undefined;
+    return undefined;
   } finally {
     await handle.close();
   }
@@ -515,23 +528,77 @@ const TERMINAL_STOP_REASONS = new Set([
   "max_tokens",
 ]);
 
-/** A persisted turn is active until an assistant message closes it with a terminal stop reason. */
-export function persistedTranscriptRunning(rows: unknown[]): boolean {
+interface PersistedTurnState {
+  running: boolean;
+  pendingAsyncWork: boolean;
+  hasUserBoundary: boolean;
+}
+
+/**
+ * Whole-cycle state recovered from the durable transcript.
+ *
+ * A detached `task` returns immediately with `details.async.state=running`, so an
+ * assistant can write a terminal response while the task is still alive. GJC later
+ * appends `custom_message/async-result` and automatically resumes the model without a
+ * new user row. Treating that first response as the turn boundary is the exact
+ * running -> idle -> running flicker this state machine must prevent.
+ */
+function persistedTurnState(rows: unknown[]): PersistedTurnState {
   let lastUser = -1;
   let lastTerminalAssistant = -1;
   let lastActivity = -1;
   let abandoned = false;
+  const pendingAsyncJobs = new Set<string>();
   for (let index = 0; index < rows.length; index += 1) {
     const envelope = rows[index];
     if (!envelope || typeof envelope !== "object" || Array.isArray(envelope))
       continue;
     const value = envelope as Record<string, unknown>;
+    if (value.type === "custom_message" && value.customType === "async-result") {
+      const details =
+        value.details &&
+        typeof value.details === "object" &&
+        !Array.isArray(value.details)
+          ? (value.details as Record<string, unknown>)
+          : undefined;
+      if (Array.isArray(details?.jobs)) {
+        for (const candidate of details.jobs) {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
+            continue;
+          const jobId = (candidate as Record<string, unknown>).jobId;
+          if (typeof jobId === "string") pendingAsyncJobs.delete(jobId);
+        }
+      }
+      // An async result is an input that tells the model to resume. It bridges the
+      // completed detached job to the assistant row that will actually close the
+      // continued cycle. An abandoned/cancelled turn is deliberately not reopened.
+      if (!abandoned) lastActivity = index;
+    }
     const message =
       value.message &&
       typeof value.message === "object" &&
       !Array.isArray(value.message)
         ? (value.message as Record<string, unknown>)
         : value;
+    if (message.role === "toolResult" && message.toolName === "task") {
+      const details =
+        message.details &&
+        typeof message.details === "object" &&
+        !Array.isArray(message.details)
+          ? (message.details as Record<string, unknown>)
+          : undefined;
+      const asyncState =
+        details?.async &&
+        typeof details.async === "object" &&
+        !Array.isArray(details.async)
+          ? (details.async as Record<string, unknown>)
+          : undefined;
+      const jobId = asyncState?.jobId;
+      if (typeof jobId === "string") {
+        if (asyncState?.state === "running") pendingAsyncJobs.add(jobId);
+        else pendingAsyncJobs.delete(jobId);
+      }
+    }
     if (message.role === "user") {
       lastUser = index;
       abandoned = false;
@@ -561,8 +628,19 @@ export function persistedTranscriptRunning(rows: unknown[]): boolean {
       if (!abandoned) lastActivity = index;
     }
   }
-  if (lastActivity > lastTerminalAssistant) return true;
-  return lastUser >= 0 && lastUser > lastTerminalAssistant;
+  return {
+    running:
+      (!abandoned && pendingAsyncJobs.size > 0) ||
+      lastActivity > lastTerminalAssistant ||
+      (lastUser >= 0 && lastUser > lastTerminalAssistant),
+    pendingAsyncWork: !abandoned && pendingAsyncJobs.size > 0,
+    hasUserBoundary: lastUser >= 0,
+  };
+}
+
+/** A persisted cycle is active until all continuations reach a terminal assistant row. */
+export function persistedTranscriptRunning(rows: unknown[]): boolean {
+  return persistedTurnState(rows).running;
 }
 
 /** How many finished compactions the persisted transcript records. */
@@ -1681,6 +1759,10 @@ export class GjcAcpController {
    * after this marker and a terminal transcript agree.
    */
   private readonly runtimeIdleSessions = new Set<string>();
+  /** Sessions with a detached task that has not delivered its async-result yet. */
+  private readonly pendingAsyncWorkSessions = new Set<string>();
+  /** Monotonic per-session lifecycle generation for async status reads and IPC merges. */
+  private readonly runRevisions = new Map<string, number>();
   /** Transcript-derived run state per session, keyed by the file size it was read at. */
   private readonly discoveredRunStates = new Map<
     string,
@@ -1807,6 +1889,7 @@ export class GjcAcpController {
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
     this.runtimeIdleSessions.clear();
+    this.pendingAsyncWorkSessions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -2006,12 +2089,32 @@ export class GjcAcpController {
       // session this window has never opened has no other source, so it used to
       // default to idle -- work started from a terminal listed as finished. The
       // persisted transcript is the one account that exists for those sessions.
+      const statusRevision = this.currentRunRevision(info.sessionId);
       const transcriptStatus = await this.discoveredRunState(info.sessionId);
+      const currentSession = this.sessions.get(info.sessionId) ?? existing;
+      const revisionChanged =
+        statusRevision !== this.currentRunRevision(info.sessionId);
+      const discoveredStatus =
+        revisionChanged && currentSession
+          ? currentSession.status
+          : this.activePromptSessions.has(info.sessionId) ||
+              this.liveRunningSessions.has(info.sessionId)
+            ? (currentSession?.status ?? "idle")
+            : currentSession?.status === "failed" ||
+                currentSession?.status === "starting"
+              ? currentSession.status
+              : (transcriptStatus ?? currentSession?.status ?? "idle");
+      if (
+        !revisionChanged &&
+        currentSession &&
+        currentSession.status !== discoveredStatus
+      )
+        this.advanceRunRevision(info.sessionId);
       // Session discovery only carries identity/cwd metadata. Replacing the whole row
       // here erased model, thinking, context usage, phase, and status that transcript
       // replay had just restored, so the UI drifted again after every list refresh.
       const session = {
-        ...existing,
+        ...currentSession,
         ...listedSession,
         // Only a turn this window is actually driving keeps the status its own round
         // trip maintains. Being attached is not enough: attachment happens just by
@@ -2024,25 +2127,20 @@ export class GjcAcpController {
         // when the ACP child exits, and `starting` covers a session whose first round
         // trip has not landed. A transcript that ended cleanly long ago would
         // otherwise report `idle` and erase a disconnect the user has not seen yet.
-        status:
-          this.activePromptSessions.has(info.sessionId) ||
-          this.liveRunningSessions.has(info.sessionId)
-            ? (existing?.status ?? "idle")
-            : existing?.status === "failed" || existing?.status === "starting"
-              ? existing.status
-              : (transcriptStatus ?? existing?.status ?? "idle"),
-        phase: existing?.phase,
-        mode: existing?.mode,
-        model: existing?.model,
-        modelDisplay: existing?.modelDisplay,
-        thinking: existing?.thinking,
-        usagePercent: existing?.usagePercent,
-        usagePending: existing?.usagePending,
+        status: discoveredStatus,
+        runRevision: this.currentRunRevision(info.sessionId),
+        phase: currentSession?.phase,
+        mode: currentSession?.mode,
+        model: currentSession?.model,
+        modelDisplay: currentSession?.modelDisplay,
+        thinking: currentSession?.thinking,
+        usagePercent: currentSession?.usagePercent,
+        usagePending: currentSession?.usagePending,
         ownership,
         attachment,
         unread:
           this.sessionMetadata?.getUnread(info.sessionId) ??
-          existing?.unread ??
+          currentSession?.unread ??
           false,
         worktree: this.sessionMetadata?.getWorktree(info.sessionId),
       };
@@ -2124,6 +2222,8 @@ export class GjcAcpController {
   private async republishRunState(sessionId: string): Promise<void> {
     if (this.disposed) return;
     if (this.activePromptSessions.has(sessionId)) return;
+    const generation = this.generation;
+    const revision = this.currentRunRevision(sessionId);
     // A session enters liveRunningSessions on gjcRunning:true and only leaves it on a
     // matching gjcRunning:false. A terminal-owned session never sends that close, and
     // a completion report is lost outright across a disconnect, so excluding the whole
@@ -2148,6 +2248,11 @@ export class GjcAcpController {
       }
     }
     const status = await this.discoveredRunState(sessionId);
+    if (
+      generation !== this.generation ||
+      revision !== this.currentRunRevision(sessionId)
+    )
+      return;
     if (!status) return;
     if (status === "idle") {
       this.liveRunningSessions.delete(sessionId);
@@ -2159,9 +2264,12 @@ export class GjcAcpController {
     const session = this.sessions.get(sessionId);
     if (!session || session.status === status) return;
     if (session.status === "failed" || session.status === "starting") return;
+    this.advanceRunRevision(sessionId);
     session.status = status;
     this.lastDiscovered = this.lastDiscovered.map((row) =>
-      row.id === sessionId ? { ...row, status } : row,
+      row.id === sessionId
+        ? { ...row, status, runRevision: session.runRevision }
+        : row,
     );
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }
@@ -2189,7 +2297,15 @@ export class GjcAcpController {
       // (640MB), a full parse of each costs ~23s, which would stall every list
       // refresh. Run state only depends on how the newest rows end, so a bounded
       // tail is read instead.
-      const envelopes = await readTranscriptTail(filePath, info.size);
+      // Expanding is only needed for a running -> idle decision whose user boundary
+      // fell outside the first window. Ordinary discovery stays at 256KB, preserving
+      // the measured ~30ms all-session scan instead of regressing toward full parses.
+      const envelopes = await readTranscriptTail(
+        filePath,
+        info.size,
+        this.sessions.get(sessionId)?.status === "running" ||
+          this.liveRunningSessions.has(sessionId),
+      );
       if (!envelopes) return undefined;
       const status = persistedTranscriptRunning(envelopes)
         ? ("running" as const)
@@ -2209,8 +2325,9 @@ export class GjcAcpController {
   ): AgentSession["status"] {
     if (
       status === "idle" &&
-      this.workingPhaseSessions.has(sessionId) &&
-      !this.runtimeIdleSessions.has(sessionId)
+      ((this.workingPhaseSessions.has(sessionId) &&
+        !this.runtimeIdleSessions.has(sessionId)) ||
+        this.pendingAsyncWorkSessions.has(sessionId))
     )
       return "running";
     return status;
@@ -2750,6 +2867,8 @@ export class GjcAcpController {
   private async readPersistedTranscript(
     sessionId: string,
   ): Promise<TranscriptItem[] | undefined> {
+    const generation = this.generation;
+    const revision = this.currentRunRevision(sessionId);
     const filePath = await this.locateSharedTranscriptFile(sessionId);
     if (!filePath) return undefined;
     this.watchSharedTranscript(sessionId, filePath);
@@ -2792,7 +2911,8 @@ export class GjcAcpController {
           },
         ];
       });
-      const transcriptRunning = persistedTranscriptRunning(envelopes);
+      const persistedTurn = persistedTurnState(envelopes);
+      const transcriptRunning = persistedTurn.running;
       const turnRunning =
         transcriptRunning ||
         this.activePromptSessions.has(sessionId) ||
@@ -2809,6 +2929,14 @@ export class GjcAcpController {
         seenSize !== undefined && info.size !== seenSize;
       const items = sharedTranscriptItems(sessionId, rows, { turnRunning });
       await this.resolveToolImages(items);
+      const lifecycleCurrent =
+        generation === this.generation &&
+        revision === this.currentRunRevision(sessionId);
+      if (lifecycleCurrent) {
+        if (persistedTurn.pendingAsyncWork)
+          this.pendingAsyncWorkSessions.add(sessionId);
+        else this.pendingAsyncWorkSessions.delete(sessionId);
+      }
       const effectiveModel = persistedModelState(envelopes);
       if (
         effectiveModel.model ||
@@ -2819,7 +2947,7 @@ export class GjcAcpController {
       }
       // A terminal-owned session gets no live phase report, so the transcript is the
       // only place its finished compaction is recorded.
-      if (this.compactingSessions.has(sessionId)) {
+      if (lifecycleCurrent && this.compactingSessions.has(sessionId)) {
         const baseline = this.compactionRecordBaseline.get(sessionId) ?? 0;
         if (compactionRecordCount(envelopes) > baseline) {
           this.compactingSessions.delete(sessionId);
@@ -2827,7 +2955,7 @@ export class GjcAcpController {
           this.patchSessionRuntime(sessionId, { phase: undefined });
         }
       }
-      if (!this.activePromptSessions.has(sessionId)) {
+      if (lifecycleCurrent && !this.activePromptSessions.has(sessionId)) {
         const status = turnRunning ? "running" : "idle";
         const current = this.sessions.get(sessionId)?.status;
         if (status === "idle") {
@@ -2839,9 +2967,11 @@ export class GjcAcpController {
           // evidence the turn ended, not evidence it never started. A terminal-owned
           // session never receives gjcRunning:false, so refusing this too left the row
           // running for the rest of the session.
+          // The terminal row predates a newly accepted compaction. Only a new
+          // compaction record or a live non-compacting phase can release it.
           if (
-            transcriptAdvanced ||
-            !this.liveRunningSessions.has(sessionId)
+            !this.compactingSessions.has(sessionId) &&
+            (transcriptAdvanced || !this.liveRunningSessions.has(sessionId))
           ) {
             this.liveRunningSessions.delete(sessionId);
             this.liveRunningDigests.delete(sessionId);
@@ -3985,12 +4115,18 @@ export class GjcAcpController {
       // the file, not the caller, and leaving this session marked as actively prompted
       // would let a concurrent republish skip it. `finally` releasing it again is a
       // no-op on a Set.
+      const settlementGeneration = this.generation;
+      const settlementRevision = this.currentRunRevision(sessionId);
       this.activePromptSessions.delete(sessionId);
       const stillRunning = await this.discoveredRunState(sessionId);
-      this.updateSessionStatus(
-        sessionId,
-        stillRunning === "running" ? "running" : "idle",
-      );
+      if (
+        settlementGeneration === this.generation &&
+        settlementRevision === this.currentRunRevision(sessionId)
+      )
+        this.updateSessionStatus(
+          sessionId,
+          stillRunning === "running" ? "running" : "idle",
+        );
     } catch (error) {
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
@@ -4048,6 +4184,7 @@ export class GjcAcpController {
     this.transcriptRunningSessions.delete(sessionId);
     this.workingPhaseSessions.delete(sessionId);
     this.runtimeIdleSessions.delete(sessionId);
+    this.pendingAsyncWorkSessions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
@@ -5012,6 +5149,8 @@ export class GjcAcpController {
     this.transcriptRunningSessions.delete(sessionId);
     this.workingPhaseSessions.delete(sessionId);
     this.runtimeIdleSessions.delete(sessionId);
+    this.pendingAsyncWorkSessions.delete(sessionId);
+    this.runRevisions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
@@ -5074,6 +5213,8 @@ export class GjcAcpController {
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
     this.runtimeIdleSessions.clear();
+    this.pendingAsyncWorkSessions.clear();
+    this.runRevisions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -5177,6 +5318,7 @@ export class GjcAcpController {
     this.transcriptRunningSessions.clear();
     this.workingPhaseSessions.clear();
       this.runtimeIdleSessions.clear();
+      this.pendingAsyncWorkSessions.clear();
       this.sessionSdkOperations.clear();
       this.discoveredRunStates.clear();
       this.compactingSessions.clear();
@@ -5186,6 +5328,7 @@ export class GjcAcpController {
         this.suppressedUserMessageKeys.clear();
       this.echoedPromptTexts.clear();
       for (const session of this.sessions.values()) {
+        this.advanceRunRevision(session.id);
         session.attachment = "recovering";
         session.status = "failed";
         this.emitEvent({ type: "session.updated", session: { ...session } });
@@ -6066,6 +6209,12 @@ export class GjcAcpController {
       ([key, value]) => session[key as keyof AgentSession] !== value,
     );
     if (!changed) return;
+    if (
+      Object.hasOwn(patch, "status") &&
+      patch.status !== undefined &&
+      session.status !== patch.status
+    )
+      this.advanceRunRevision(sessionId);
     Object.assign(session, patch);
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }
@@ -6378,6 +6527,7 @@ export class GjcAcpController {
       update.updatedAt !== undefined &&
       (running === true || (phase !== undefined && phase !== "idle"));
     if (runtimeConfirmedWorkingCycle) {
+      this.advanceRunRevision(sessionId);
       this.workingPhaseSessions.add(sessionId);
       this.runtimeIdleSessions.delete(sessionId);
     }
@@ -6392,6 +6542,8 @@ export class GjcAcpController {
       void this.readPersistedTranscript(sessionId);
     }
     if (running === true && !this.locallyAbortedSessions.has(sessionId)) {
+      if (session.status !== "running" && !runtimeConfirmedWorkingCycle)
+        this.advanceRunRevision(sessionId);
       session.status = "running";
       if (!this.liveRunningSessions.has(sessionId)) {
         this.liveRunningSessions.add(sessionId);
@@ -6446,6 +6598,7 @@ export class GjcAcpController {
       !bootstrapForForeignTurn &&
       !bootstrapIdleAfterWorking &&
       !this.workingPhaseSessions.has(sessionId) &&
+      !this.pendingAsyncWorkSessions.has(sessionId) &&
       !this.compactingSessions.has(sessionId)
     ) {
       // A turn this window did not start -- a steer, or work driven from the
@@ -6453,6 +6606,7 @@ export class GjcAcpController {
       // completion is announced. A cancel is excluded: the user performed it and
       // is already watching, so announcing it is noise.
       const wasRunning = session.status === "running";
+      if (session.status !== "idle") this.advanceRunRevision(sessionId);
       session.status = "idle";
       this.liveRunningSessions.delete(sessionId);
       this.liveRunningDigests.delete(sessionId);
@@ -6804,6 +6958,22 @@ export class GjcAcpController {
     this.activeAssistantMessages.delete(sessionId);
   }
 
+  private currentRunRevision(sessionId: string): number {
+    return (
+      this.runRevisions.get(sessionId) ??
+      this.sessions.get(sessionId)?.runRevision ??
+      0
+    );
+  }
+
+  private advanceRunRevision(sessionId: string): number {
+    const revision = this.currentRunRevision(sessionId) + 1;
+    this.runRevisions.set(sessionId, revision);
+    const session = this.sessions.get(sessionId);
+    if (session) session.runRevision = revision;
+    return revision;
+  }
+
   private updateSessionStatus(
     sessionId: string,
     status: AgentSession["status"],
@@ -6830,6 +7000,7 @@ export class GjcAcpController {
       !this.cancellingSessions.has(sessionId) &&
       !this.locallyAbortedSessions.has(sessionId);
     if (session) {
+      if (session.status !== status) this.advanceRunRevision(sessionId);
       session.status = status;
       session.updatedAt = "now";
       this.emitEvent({ type: "session.updated", session: { ...session } });
