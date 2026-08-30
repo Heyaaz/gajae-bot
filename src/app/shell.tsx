@@ -27,7 +27,7 @@ import {
   orderedSessionsForShortcuts,
   updateTranscriptItem,
 } from "../transcript-utils";
-import { FolderGit2, GitBranch, PanelRight, Plus, X, Zap } from "lucide-react";
+import { FolderGit2, GitBranch, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "./composer";
 import {
@@ -48,12 +48,6 @@ import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { SettingsDialog } from "./settings";
 import { Sidebar } from "./sidebar";
 import { RecentRequestStrip, Transcript } from "./transcript";
-
-const FAST_SERVICE_TIERS = new Set([
-  "priority",
-  "openai-only",
-  "claude-only",
-]);
 
 export default function App() {
   const backend = useAgentBackend();
@@ -1096,16 +1090,6 @@ export default function App() {
                     className={`presence-inline presence-inline--${selectedSession.phase === "compacting" ? "compacting" : selectedSession.status}`}
                   />
                   {statusLabel(selectedSession.status, selectedSession.phase)}
-                  {FAST_SERVICE_TIERS.has(selectedSession.serviceTier ?? "") && (
-                    <span
-                      className="chat-fast-mode"
-                      title="Fast 모드 켜짐"
-                      aria-label="Fast 모드 켜짐"
-                    >
-                      <Zap size={11} aria-hidden="true" />
-                      Fast
-                    </span>
-                  )}
                   {selectedSession.attachment === "terminal-only" && (
                     <span className="chat-sync">터미널 읽기 전용 동기화</span>
                   )}
@@ -1190,6 +1174,7 @@ export default function App() {
                   modelDisplay={selectedSession.modelDisplay}
                   thinking={selectedSession.thinking}
                   usagePercent={selectedSession.usagePercent}
+                  serviceTier={selectedSession.serviceTier}
                   onSend={(input) => sendMessage(selectedSession.id, input)}
                   onCancel={() => void cancelRun(selectedSession.id)}
                   onFlushQueued={() => flushQueuedNow(selectedSession.id)}

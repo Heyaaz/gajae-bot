@@ -22,12 +22,19 @@ import {
   FolderGit2,
   FolderOpen,
   Paperclip,
+  Zap,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { configOptionGroups, directoryName, httpUrls } from "./format";
 import { LinkPreviewCard } from "./primitives";
+
+const FAST_SERVICE_TIERS = new Set([
+  "priority",
+  "openai-only",
+  "claude-only",
+]);
 
 export interface ComposerProps {
   sessionId: string;
@@ -40,6 +47,7 @@ export interface ComposerProps {
   modelDisplay?: string;
   thinking?: string;
   usagePercent?: number;
+  serviceTier?: string;
   onSend: (input: MessageInput) => Promise<MessageDelivery | undefined>;
   onCancel: () => void;
   onFlushQueued: () => Promise<void>;
@@ -61,6 +69,7 @@ export function Composer({
   modelDisplay,
   thinking,
   usagePercent,
+  serviceTier,
   onSend,
   onCancel,
   onFlushQueued,
@@ -76,6 +85,7 @@ export function Composer({
   const [attachmentError, setAttachmentError] = useState("");
   const [choosingImages, setChoosingImages] = useState(false);
   const [dragActive, setDragActive] = useState(false);
+  const fastMode = FAST_SERVICE_TIERS.has(serviceTier ?? "");
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [configMenu, setConfigMenu] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -998,6 +1008,19 @@ export function Composer({
                     ? "—"
                     : `${usagePercent.toFixed(1)}%`}
                 </span>
+                {fastMode && (
+                  <>
+                    <i />
+                    <span
+                      className="composer-fast-mode"
+                      title="Fast 모드 켜짐"
+                      aria-label="Fast 모드 켜짐"
+                    >
+                      <Zap size={10} aria-hidden="true" />
+                      Fast
+                    </span>
+                  </>
+                )}
               </button>
               {configMenu === modelOption.id && (
                 <span className="config-option-menu config-option-menu--model">

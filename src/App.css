@@ -1105,23 +1105,6 @@
   color: var(--warning);
   border-left: 1px solid var(--border);
 }
-.chat-fast-mode {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  color: #e5a04d;
-  background: rgb(229 160 77 / 12%);
-  border: 1px solid rgb(229 160 77 / 28%);
-  border-radius: 999px;
-  font-size: 9px;
-  font-weight: 600;
-  line-height: 1.2;
-  white-space: nowrap;
-}
-.chat-fast-mode svg {
-  flex: 0 0 auto;
-}
 .presence-inline {
   width: 6px;
   height: 6px;
@@ -2885,6 +2868,17 @@
     SFMono-Regular,
     Menlo,
     monospace;
+}
+.composer-model > button > .composer-fast-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: #e5a04d;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.composer-fast-mode svg {
+  flex: 0 0 auto;
 }
 .composer-model > button > strong {
   overflow: hidden;

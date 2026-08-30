@@ -367,7 +367,7 @@ function createWindow(): BrowserWindow {
                       composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
                       const fastDeadline = Date.now() + 5_000;
                       while (Date.now() < fastDeadline) {
-                        const indicator = document.querySelector('.chat-fast-mode');
+                        const indicator = document.querySelector('.composer-model > button .composer-fast-mode');
                         if (indicator?.textContent?.trim() === 'Fast' && indicator.querySelector('svg')) {
                           fastIndicator = true;
                           break;
@@ -380,7 +380,7 @@ function createWindow(): BrowserWindow {
                       composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
                       const clearDeadline = Date.now() + 5_000;
                       while (Date.now() < clearDeadline) {
-                        if (!document.querySelector('.chat-fast-mode')) {
+                        if (!document.querySelector('.composer-fast-mode')) {
                           fastIndicatorCleared = true;
                           break;
                         }
@@ -587,16 +587,19 @@ function createWindow(): BrowserWindow {
             commandTextarea.dispatchEvent(new Event('input', { bubbles: true }));
             commandTextarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
             await wait(1800);
-            const fastModeIndicator = document.querySelector('.chat-fast-mode');
+            const fastModeIndicator = document.querySelector('.composer-model > button .composer-fast-mode');
             assert(fastModeIndicator, 'Fast mode indicator did not appear after /fast on');
             assert(fastModeIndicator.textContent?.trim() === 'Fast', 'Fast mode indicator label is incorrect');
             assert(fastModeIndicator.querySelector('svg'), 'Fast mode indicator has no lightning icon');
             assert(fastModeIndicator.getBoundingClientRect().width > 0, 'Fast mode indicator is not visible');
+            const fastStatusParts = Array.from(fastModeIndicator.closest('button')?.querySelectorAll(':scope > span') ?? []).map((part) => part.textContent?.trim());
+            assert(fastStatusParts.at(-1) === 'Fast', 'Fast mode indicator is not the final composer status item');
+            assert(!document.querySelector('.chat-header .chat-fast-mode'), 'Fast mode indicator still appears in the chat header');
             commandValueSetter.call(commandTextarea, '/fast off');
             commandTextarea.dispatchEvent(new Event('input', { bubbles: true }));
             commandTextarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
             await wait(1800);
-            assert(!document.querySelector('.chat-fast-mode'), 'Fast mode indicator remained after /fast off');
+            assert(!document.querySelector('.composer-fast-mode'), 'Fast mode indicator remained after /fast off');
             commandValueSetter.call(commandTextarea, '/compact');
             commandTextarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(50);
