@@ -1764,6 +1764,12 @@ export class GjcAcpController {
   // cannot release the phase for it; a new record appearing is the evidence that
   // GJC finished. Without this the indicator stayed up for the rest of the session.
   private readonly compactionRecordBaseline = new Map<string, number>();
+  // Latest durable compaction record timestamp observed for each session. Live
+  // phase updates at or before this watermark are delayed stale delivery.
+  private readonly compactionRecordWatermark = new Map<string, number>();
+  // Timestamped compacting phases start a distinct cycle. A durable record older
+  // than this boundary belongs to the preceding cycle and cannot finish this one.
+  private readonly compactionStartedAt = new Map<string, number>();
   // Sessions the live ACP signal currently reports as working. The persisted
   // transcript lags behind that signal, so it is not allowed to report one of
   // these idle until GJC itself says the turn ended.
@@ -1934,6 +1940,8 @@ export class GjcAcpController {
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
+    this.compactionRecordWatermark.clear();
+    this.compactionStartedAt.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.suppressedUserMessageKeys.clear();
@@ -2952,13 +2960,62 @@ export class GjcAcpController {
           },
         ];
       });
+      const compactionTimestamps = envelopes
+        .filter((envelope) => envelope.type === "compaction")
+        .map((envelope) =>
+          typeof envelope.timestamp === "string"
+            ? Date.parse(envelope.timestamp)
+            : typeof envelope.ts === "string"
+              ? Date.parse(envelope.ts)
+              : NaN,
+        )
+        .filter((timestamp) => Number.isFinite(timestamp));
+      const latestCompactionTimestamp =
+        compactionTimestamps.length > 0
+          ? Math.max(...compactionTimestamps)
+          : undefined;
+      if (
+        latestCompactionTimestamp !== undefined &&
+        generation === this.generation &&
+        this.sessions.has(sessionId)
+      ) {
+        // This is a monotonic fact from the durable transcript, not a verdict about
+        // the active run revision. Record it before any await so an older live phase
+        // arriving on the ACP channel cannot overtake the file completion receipt.
+        const previous = this.compactionRecordWatermark.get(sessionId);
+        if (
+          previous === undefined ||
+          latestCompactionTimestamp > previous
+        )
+          this.compactionRecordWatermark.set(
+            sessionId,
+            latestCompactionTimestamp,
+          );
+      }
       const persistedTurn = persistedTurnState(envelopes);
+      // A new compaction record is the durable completion receipt for the requested
+      // cycle. It outranks a live `compacting` phase because that phase can remain
+      // stuck in the in-memory marker when no separate idle update is delivered.
+      // Only clear those live markers when the persisted turn is terminal; a real
+      // concurrent prompt remains authoritative while its transcript is running.
+      const baseline = this.compactionRecordBaseline.get(sessionId);
+      const compactionCompleted =
+        this.compactingSessions.has(sessionId) &&
+        baseline !== undefined &&
+        compactionRecordCount(envelopes) > baseline &&
+        (this.compactionStartedAt.get(sessionId) === undefined ||
+          (latestCompactionTimestamp !== undefined &&
+            latestCompactionTimestamp >
+              this.compactionStartedAt.get(sessionId)!)) &&
+        !persistedTurn.running;
+
       const transcriptRunning = persistedTurn.running;
       const turnRunning =
         transcriptRunning ||
         this.activePromptSessions.has(sessionId) ||
         (this.workingPhaseSessions.has(sessionId) &&
-          !this.runtimeIdleSessions.has(sessionId));
+          !this.runtimeIdleSessions.has(sessionId) &&
+          !compactionCompleted);
       // A transcript that has not changed since the live signal reported work is the
       // same snapshot that signal already superseded, so it carries no news. Once the
       // file grows and still reports no active turn, it has observed the work end and
@@ -2974,6 +3031,18 @@ export class GjcAcpController {
         generation === this.generation &&
         revision === this.currentRunRevision(sessionId);
       if (lifecycleCurrent) {
+        if (compactionCompleted) {
+          this.compactingSessions.delete(sessionId);
+          this.compactionRecordBaseline.delete(sessionId);
+          this.compactionStartedAt.delete(sessionId);
+          this.liveRunningSessions.delete(sessionId);
+          this.liveRunningDigests.delete(sessionId);
+          this.transcriptRunningSessions.delete(sessionId);
+          this.discoveredRunStates.delete(sessionId);
+          this.workingPhaseSessions.delete(sessionId);
+          this.runtimeIdleSessions.delete(sessionId);
+          this.patchSessionRuntime(sessionId, { phase: undefined });
+        }
         if (persistedTurn.pendingAsyncWork)
           this.pendingAsyncWorkSessions.add(sessionId);
         else this.pendingAsyncWorkSessions.delete(sessionId);
@@ -2988,14 +3057,8 @@ export class GjcAcpController {
       }
       // A terminal-owned session gets no live phase report, so the transcript is the
       // only place its finished compaction is recorded.
-      if (lifecycleCurrent && this.compactingSessions.has(sessionId)) {
-        const baseline = this.compactionRecordBaseline.get(sessionId) ?? 0;
-        if (compactionRecordCount(envelopes) > baseline) {
-          this.compactingSessions.delete(sessionId);
-          this.compactionRecordBaseline.delete(sessionId);
-          this.patchSessionRuntime(sessionId, { phase: undefined });
-        }
-      }
+      // `compactionCompleted` was handled before computing turnRunning so the
+      // completion receipt can settle status in this same transcript read.
       if (lifecycleCurrent && !this.activePromptSessions.has(sessionId)) {
         const status = turnRunning ? "running" : "idle";
         const current = this.sessions.get(sessionId)?.status;
@@ -3011,7 +3074,7 @@ export class GjcAcpController {
           // The terminal row predates a newly accepted compaction. Only a new
           // compaction record or a live non-compacting phase can release it.
           if (
-            !this.compactingSessions.has(sessionId) &&
+            (!this.compactingSessions.has(sessionId) || compactionCompleted) &&
             (transcriptAdvanced || !this.liveRunningSessions.has(sessionId))
           ) {
             this.liveRunningSessions.delete(sessionId);
@@ -3341,21 +3404,21 @@ export class GjcAcpController {
     }
   }
 
-  /**
-   * Counts the compactions already recorded on disk. A read failure returns 0 so a
-   * later record still clears the phase; the alternative is an indicator that never
-   * goes away.
-   */
-  private async persistedCompactionCount(sessionId: string): Promise<number> {
+  /** Counts compactions already recorded on disk, or reports an unavailable baseline. */
+  private async persistedCompactionCount(
+    sessionId: string,
+  ): Promise<number | undefined> {
     try {
       const filePath = await this.locateSharedTranscriptFile(sessionId);
-      if (!filePath) return 0;
+      if (!filePath) return undefined;
       const info = await stat(filePath);
       return compactionRecordCount(
         await this.readTranscriptEnvelopes(filePath, info),
       );
     } catch {
-      return 0;
+      // Zero means the transcript was read and contained no compactions. Treating
+      // an I/O failure as zero lets any historical record falsely finish new work.
+      return undefined;
     }
   }
 
@@ -3364,11 +3427,12 @@ export class GjcAcpController {
     // Terminal-owned sessions must route through the persistent control plane (or
     // broker fallback) instead of being rejected for lacking a second attachment.
     const statusBefore = this.sessions.get(sessionId)?.status;
+    const baseline = await this.persistedCompactionCount(sessionId);
     this.compactingSessions.add(sessionId);
-    this.compactionRecordBaseline.set(
-      sessionId,
-      await this.persistedCompactionCount(sessionId),
-    );
+    this.compactionStartedAt.delete(sessionId);
+    if (baseline === undefined)
+      this.compactionRecordBaseline.delete(sessionId);
+    else this.compactionRecordBaseline.set(sessionId, baseline);
     this.patchSessionRuntime(sessionId, {
       phase: "compacting",
       status: "running",
@@ -3390,6 +3454,7 @@ export class GjcAcpController {
       // underneath would be reported idle.
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);
+      this.compactionStartedAt.delete(sessionId);
       this.patchSessionRuntime(sessionId, {
         phase: undefined,
         ...(statusBefore && statusBefore !== "running"
@@ -4235,6 +4300,7 @@ export class GjcAcpController {
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
+    this.compactionStartedAt.delete(sessionId);
     this.updateSessionStatus(sessionId, "idle");
     await this.fireAbort(sessionId);
     this.cancellingSessions.delete(sessionId);
@@ -5218,6 +5284,8 @@ export class GjcAcpController {
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
+    this.compactionRecordWatermark.delete(sessionId);
+    this.compactionStartedAt.delete(sessionId);
     this.suppressedUserMessageKeys.delete(sessionId);
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
@@ -5282,6 +5350,8 @@ export class GjcAcpController {
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
+    this.compactionRecordWatermark.clear();
+    this.compactionStartedAt.clear();
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
@@ -5387,6 +5457,8 @@ export class GjcAcpController {
       this.discoveredRunStates.clear();
       this.compactingSessions.clear();
       this.compactionRecordBaseline.clear();
+      this.compactionRecordWatermark.clear();
+      this.compactionStartedAt.clear();
       this.activeAssistantMessages.clear();
       this.activeThoughts.clear();
         this.suppressedUserMessageKeys.clear();
@@ -6568,27 +6640,49 @@ export class GjcAcpController {
         ? update._meta.gjcPhase
         : undefined;
     const running = update._meta?.gjcRunning;
-    if (phase === "compacting") {
+    const compactionState =
+      update._meta?.gjcCompactionState === "start" ||
+      update._meta?.gjcCompactionState === "end"
+        ? update._meta.gjcCompactionState
+        : undefined;
+    const phaseTimestamp =
+      typeof update.updatedAt === "string" ? Date.parse(update.updatedAt) : NaN;
+    const staleOrderedPhase =
+      (phase === "compacting" || phase === "working") &&
+      Number.isFinite(phaseTimestamp) &&
+      (this.compactionRecordWatermark.get(sessionId) ?? -Infinity) >=
+        phaseTimestamp;
+    if (phase === "compacting" && !staleOrderedPhase) {
       session.phase = "compacting";
       this.compactingSessions.add(sessionId);
+      if (Number.isFinite(phaseTimestamp))
+        this.compactionStartedAt.set(sessionId, phaseTimestamp);
       if (!this.locallyAbortedSessions.has(sessionId))
         session.status = "running";
-    } else if (phase) {
+    } else if (phase && !staleOrderedPhase) {
       // GJC reporting any other phase is the authority that compaction ended, so
       // this is where a locally started compaction is released. Returning from the
       // control call only meant the request was accepted.
-      if (phase === "responding" || phase === "idle") {
+      if (
+        (phase === "working" && update.updatedAt !== undefined) ||
+        phase === "responding" ||
+        phase === "idle"
+      ) {
         this.compactingSessions.delete(sessionId);
         this.compactionRecordBaseline.delete(sessionId);
+        this.compactionStartedAt.delete(sessionId);
       }
       session.phase =
         phase === "responding" || phase === "idle" ? undefined : phase;
     }
-    // A report carrying `updatedAt` is describing an actual change of state; one without
-    // it is GJC restating a slot. Remembering which sessions were last said to be working
-    // by a real report is what lets the bootstrap idle that follows be recognised.
+    // A report carrying `updatedAt` is describing an actual change of state; GJC's
+    // explicit compaction start/end events are ordered lifecycle evidence too, even
+    // though current releases omit updatedAt on those two notifications.
+    const lifecycleChanged =
+      update.updatedAt !== undefined || compactionState !== undefined;
     const runtimeConfirmedWorkingCycle =
-      update.updatedAt !== undefined &&
+      lifecycleChanged &&
+      !staleOrderedPhase &&
       (running === true || (phase !== undefined && phase !== "idle"));
     if (runtimeConfirmedWorkingCycle) {
       this.advanceRunRevision(sessionId);
@@ -6596,7 +6690,7 @@ export class GjcAcpController {
       this.runtimeIdleSessions.delete(sessionId);
     }
     const runtimeFinishedWorkingCycle =
-      update.updatedAt !== undefined &&
+      lifecycleChanged &&
       (phase === "idle" || (phase === undefined && running === false)) &&
       this.workingPhaseSessions.has(sessionId);
     if (runtimeFinishedWorkingCycle) {
@@ -6605,7 +6699,11 @@ export class GjcAcpController {
       // its watcher will call this again when that row arrives.
       void this.readPersistedTranscript(sessionId);
     }
-    if (running === true && !this.locallyAbortedSessions.has(sessionId)) {
+    if (
+      running === true &&
+      !staleOrderedPhase &&
+      !this.locallyAbortedSessions.has(sessionId)
+    ) {
       if (session.status !== "running" && !runtimeConfirmedWorkingCycle)
         this.advanceRunRevision(sessionId);
       session.status = "running";
@@ -6615,6 +6713,12 @@ export class GjcAcpController {
         // read can tell an unchanged stale snapshot from one that watched it end.
         void this.rememberLiveRunningTranscriptSize(sessionId);
       }
+    }
+    if (phase === "compacting" && !staleOrderedPhase) {
+      // Capture the revision only after this event has advanced it. Starting this
+      // read earlier made it stale itself synchronously, so a completion record
+      // already on disk could never clear the newly armed working marker.
+      void this.readPersistedTranscript(sessionId).catch(() => undefined);
     }
     // A prompt this window sent owns the status until its own round trip settles,
     // because GJC reports gjcRunning:false for the state *before* the prompt was
@@ -6678,6 +6782,7 @@ export class GjcAcpController {
       this.discoveredRunStates.delete(sessionId);
       this.compactingSessions.delete(sessionId);
       this.compactionRecordBaseline.delete(sessionId);
+      this.compactionStartedAt.delete(sessionId);
       this.workingPhaseSessions.delete(sessionId);
       this.runtimeIdleSessions.delete(sessionId);
       if (session.phase === "compacting") session.phase = undefined;

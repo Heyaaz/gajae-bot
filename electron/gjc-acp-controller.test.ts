@@ -4058,12 +4058,14 @@ describe("sessionInfoToAgentSession", () => {
       };
       activePromptSessions: Set<string>;
       sessions: Map<string, typeof session>;
+      compactionRecordWatermark: Map<string, number>;
       brokerControl: typeof brokerControl;
     };
     internals.startup = Promise.resolve();
     internals.connection = { signal: { aborted: false }, cancel, extMethod };
     internals.brokerControl = brokerControl;
     internals.activePromptSessions.add(session.id);
+    internals.compactionRecordWatermark.set(session.id, 1_788_076_860_000);
     settle.add(session.id);
     internals.sessions.set(session.id, { ...session, status: "running" });
     const pending = controller.cancelRun(session.id);
@@ -4089,6 +4091,9 @@ describe("sessionInfoToAgentSession", () => {
     );
     expect(brokerControl).toHaveBeenCalledWith(session.id, "turn.abort", {});
     expect(internals.sessions.get(session.id)?.status).toBe("idle");
+    expect(internals.compactionRecordWatermark.get(session.id)).toBe(
+      1_788_076_860_000,
+    );
     controller.dispose();
   });
 
@@ -5058,7 +5063,7 @@ describe("listSessions status from the transcript", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("keeps the compaction baseline while an unrelated phase is reported", async () => {
+  it("keeps the compaction baseline for unrelated or stale phases", async () => {
     // The baseline is how the transcript path recognises the compaction record this
     // window asked for. Dropping it on any phase update -- a stray "thinking" while
     // compaction is still running -- left that path with nothing to compare against,
@@ -5071,6 +5076,7 @@ describe("listSessions status from the transcript", () => {
       sessions: Map<string, { id: string; status: string; phase?: string }>;
       compactingSessions: Set<string>;
       compactionRecordBaseline: Map<string, number>;
+      compactionRecordWatermark: Map<string, number>;
       patchSessionInfo: (id: string, update: unknown) => void;
     };
     internals.sessions.set("session-1", {
@@ -5080,6 +5086,19 @@ describe("listSessions status from the transcript", () => {
     });
     internals.compactingSessions.add("session-1");
     internals.compactionRecordBaseline.set("session-1", 3);
+    internals.compactionRecordWatermark.set(
+      "session-1",
+      Date.parse("2026-08-30T08:01:00.000Z"),
+    );
+
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-30T08:00:00.000Z",
+      _meta: { gjcPhase: "working", gjcRunning: true },
+    });
+
+    expect(internals.compactionRecordBaseline.get("session-1")).toBe(3);
+    expect(internals.compactingSessions.has("session-1")).toBe(true);
 
     internals.patchSessionInfo("session-1", {
       sessionUpdate: "session_info_update",
@@ -5099,6 +5118,7 @@ describe("listSessions status from the transcript", () => {
       sessions: Map<string, { id: string; status: string; phase?: string }>;
       compactingSessions: Set<string>;
       compactionRecordBaseline: Map<string, number>;
+      compactionRecordWatermark: Map<string, number>;
       patchSessionInfo: (id: string, update: unknown) => void;
     };
     internals.sessions.set("session-1", {
@@ -5108,10 +5128,15 @@ describe("listSessions status from the transcript", () => {
     });
     internals.compactingSessions.add("session-1");
     internals.compactionRecordBaseline.set("session-1", 3);
+    internals.compactionRecordWatermark.set(
+      "session-1",
+      Date.parse("2026-08-30T08:01:00.000Z"),
+    );
 
     internals.patchSessionInfo("session-1", {
       sessionUpdate: "session_info_update",
-      _meta: { gjcPhase: "responding" },
+      updatedAt: "2026-08-30T08:02:00.000Z",
+      _meta: { gjcPhase: "working", gjcRunning: true },
     });
 
     expect(internals.compactionRecordBaseline.has("session-1")).toBe(false);
@@ -5800,6 +5825,81 @@ describe("listSessions status from the transcript", () => {
       ),
     ).toHaveLength(0);
 
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("records compaction watermark before a stale working phase can overtake it", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-compaction-watermark-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "before" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "stop", content: "done" },
+      })}\n${JSON.stringify({
+        type: "compaction",
+        id: "c1",
+        timestamp: "2026-08-30T08:01:00.000Z",
+        summary: "compacted",
+      })}\n`,
+    );
+    let releaseImages: () => void = () => undefined;
+    let imagesStarted: () => void = () => undefined;
+    const imageGate = new Promise<void>((resolve) => {
+      releaseImages = resolve;
+    });
+    const started = new Promise<void>((resolve) => {
+      imagesStarted = resolve;
+    });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string; phase?: string }>;
+      compactingSessions: Set<string>;
+      compactionRecordBaseline: Map<string, number>;
+      compactionRecordWatermark: Map<string, number>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      resolveToolImages: () => Promise<void>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.sessions.set("session-1", {
+      id: "session-1",
+      status: "running",
+      phase: "compacting",
+    });
+    internals.compactingSessions.add("session-1");
+    internals.compactionRecordBaseline.set("session-1", 0);
+    internals.locateSharedTranscriptFile = async () => file;
+    internals.resolveToolImages = async () => {
+      imagesStarted();
+      await imageGate;
+    };
+
+    const completionRead = internals.readPersistedTranscript("session-1");
+    await started;
+    expect(internals.compactionRecordWatermark.get("session-1")).toBe(
+      Date.parse("2026-08-30T08:01:00.000Z"),
+    );
+
+    internals.patchSessionInfo("session-1", {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-30T08:00:00.000Z",
+      _meta: { gjcPhase: "working", gjcRunning: true },
+    });
+    expect(internals.compactionRecordBaseline.get("session-1")).toBe(0);
+
+    releaseImages();
+    await completionRead;
+
+    expect(internals.sessions.get("session-1")?.phase).toBeUndefined();
+    expect(internals.sessions.get("session-1")?.status).toBe("idle");
     controller.dispose();
     await rm(root, { recursive: true, force: true });
   });
@@ -8941,10 +9041,10 @@ describe("session status authority", () => {
     controller.dispose();
   });
 
-  it("releases the compacting phase from the transcript for a terminal-owned session", async () => {
-    // A terminal-owned session never receives session_info_update, so the live
-    // signal cannot release the phase. Its transcript records the finished
-    // compaction, and that record is the evidence.
+  it("releases the compacting phase from the transcript without a live idle update", async () => {
+    // A terminal-owned session receives no live phase updates, while an attached
+    // session may receive `compacting` but miss the matching idle update. In both
+    // cases the transcript record is the durable completion evidence.
     const root = await mkdtemp(path.join(tmpdir(), "gjc-compact-"));
     const file = path.join(root, "session.jsonl");
     await writeFile(
@@ -8977,8 +9077,12 @@ describe("session status authority", () => {
       connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
       sessions: Map<string, typeof session>;
       terminalOnlySessions: Set<string>;
+      workingPhaseSessions: Set<string>;
+      compactionRecordBaseline: Map<string, number>;
+      compactionStartedAt: Map<string, number>;
       locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
       readPersistedTranscript: (id: string) => Promise<unknown>;
+      patchSessionInfo: (id: string, update: unknown) => void;
     };
     internals.startup = Promise.resolve();
     internals.connection = { signal: { aborted: false }, extMethod };
@@ -8988,6 +9092,19 @@ describe("session status authority", () => {
 
     await controller.compactSession(session.id);
     expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+
+    // A real live phase report can arrive after the local request and leave the
+    // working marker set. The compaction record below must outrank that stale
+    // phase even when no separate live idle update arrives.
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: {
+        gjcPhase: "compacting",
+        gjcCompactionState: "start",
+        gjcRunning: true,
+      },
+    });
+    expect(internals.workingPhaseSessions.has(session.id)).toBe(true);
 
     // The transcript still ends at the response from before compaction. That old
     // terminal row cannot settle the newly accepted compaction operation.
@@ -9007,7 +9124,7 @@ describe("session status authority", () => {
       })}\n${JSON.stringify({
         type: "compaction",
         id: "c1",
-        timestamp: new Date().toISOString(),
+        timestamp: "2026-08-30T08:01:00.000Z",
         summary: "compacted",
       })}\n`,
     );
@@ -9015,8 +9132,100 @@ describe("session status authority", () => {
 
     expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
     expect(internals.sessions.get(session.id)?.status).toBe("idle");
+
+    // Delivery crosses the ACP and filesystem channels. A delayed copy of the
+    // earlier start event cannot resurrect work after the durable record won.
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-30T08:00:00.000Z",
+      _meta: { gjcPhase: "compacting", gjcRunning: true },
+    });
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
+    expect(internals.workingPhaseSessions.has(session.id)).toBe(false);
+
+    // A later timestamp is a genuinely new cycle and must still become active.
+    // Keep the prior baseline to reproduce a completion read that had not applied
+    // before this newer start arrived.
+    internals.compactionRecordBaseline.set(session.id, 0);
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-30T08:02:00.000Z",
+      _meta: { gjcPhase: "compacting", gjcRunning: true },
+    });
+    await internals.readPersistedTranscript(session.id);
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    expect(internals.workingPhaseSessions.has(session.id)).toBe(true);
+    expect(internals.compactionStartedAt.get(session.id)).toBe(
+      Date.parse("2026-08-30T08:02:00.000Z"),
+    );
+
+    await appendFile(
+      file,
+      `${JSON.stringify({
+        type: "compaction",
+        id: "c2",
+        timestamp: "2026-08-30T08:03:00.000Z",
+        summary: "new cycle compacted",
+      })}\n`,
+    );
+    await internals.readPersistedTranscript(session.id);
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    expect(internals.sessions.get(session.id)?.status).toBe("idle");
     controller.dispose();
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("reconciles after recording production-shaped compaction lifecycle events", () => {
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const observedRevisions: number[] = [];
+    const internals = controller as unknown as {
+      sessions: Map<string, typeof session>;
+      currentRunRevision: (id: string) => number;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set(session.id, session);
+    internals.readPersistedTranscript = async (id) => {
+      observedRevisions.push(internals.currentRunRevision(id));
+      return undefined;
+    };
+    const before = internals.currentRunRevision(session.id);
+
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: {
+        gjcPhase: "compacting",
+        gjcCompactionState: "start",
+        gjcRunning: true,
+      },
+    });
+
+    const afterStart = internals.currentRunRevision(session.id);
+    expect(afterStart).toBe(before + 1);
+    expect(observedRevisions).toEqual([afterStart]);
+
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      _meta: {
+        gjcPhase: "responding",
+        gjcCompactionState: "end",
+        gjcRunning: true,
+      },
+    });
+
+    expect(internals.currentRunRevision(session.id)).toBe(afterStart + 1);
+    expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
   });
 
   it("does not treat an earlier compaction as the one just requested", async () => {
@@ -9085,6 +9294,112 @@ describe("session status authority", () => {
     await internals.readPersistedTranscript(session.id);
 
     expect(internals.sessions.get(session.id)?.phase).toBeUndefined();
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not settle a live external compaction from an old record without a baseline", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-compact-external-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "compaction",
+        id: "old",
+        timestamp: "2026-08-01T00:00:00.000Z",
+        summary: "old",
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "after" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "done" },
+      })}\n`,
+    );
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, typeof session>;
+      compactionRecordBaseline: Map<string, number>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+      patchSessionInfo: (id: string, update: unknown) => void;
+    };
+    internals.sessions.set(session.id, session);
+    internals.locateSharedTranscriptFile = async () => file;
+
+    internals.patchSessionInfo(session.id, {
+      sessionUpdate: "session_info_update",
+      updatedAt: "2026-08-30T08:00:00.000Z",
+      _meta: { gjcPhase: "compacting", gjcRunning: true },
+    });
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.compactionRecordBaseline.has(session.id)).toBe(false);
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("does not fabricate a zero compaction baseline after a transcript read failure", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-compact-unreadable-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(
+      file,
+      `${JSON.stringify({
+        type: "compaction",
+        id: "old",
+        timestamp: "2026-08-01T00:00:00.000Z",
+        summary: "old",
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "user", content: "after" },
+      })}\n${JSON.stringify({
+        type: "message",
+        message: { role: "assistant", stopReason: "end_turn", content: "done" },
+      })}\n`,
+    );
+    const extMethod = vi.fn().mockResolvedValue({ ok: true, accepted: true });
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const session = sessionInfoToAgentSession({
+      sessionId: "session-1",
+      cwd: "/tmp/project",
+    });
+    let locateCalls = 0;
+    const internals = controller as unknown as {
+      startup: Promise<void>;
+      connection: { signal: { aborted: boolean }; extMethod: typeof extMethod };
+      sessions: Map<string, typeof session>;
+      terminalOnlySessions: Set<string>;
+      compactionRecordBaseline: Map<string, number>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+    };
+    internals.startup = Promise.resolve();
+    internals.connection = { signal: { aborted: false }, extMethod };
+    internals.sessions.set(session.id, session);
+    internals.terminalOnlySessions.add(session.id);
+    internals.locateSharedTranscriptFile = async () => {
+      locateCalls += 1;
+      return locateCalls === 1 ? undefined : file;
+    };
+
+    await controller.compactSession(session.id);
+    await internals.readPersistedTranscript(session.id);
+
+    expect(internals.compactionRecordBaseline.has(session.id)).toBe(false);
+    expect(internals.sessions.get(session.id)?.phase).toBe("compacting");
+    expect(internals.sessions.get(session.id)?.status).toBe("running");
     controller.dispose();
     await rm(root, { recursive: true, force: true });
   });
