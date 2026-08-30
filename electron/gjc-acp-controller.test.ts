@@ -5497,6 +5497,96 @@ describe("listSessions status from the transcript", () => {
     ).toBe(true);
   });
 
+  it("settles a detached task observed complete through job polling", () => {
+    // Captured from this parent session. A task batch persisted one async launch
+    // marker, then the caller inspected completion through the generic `job` tool.
+    // The later IRC messages were only delayed notifications; they did not start a
+    // new turn. Ignoring this terminal delivery kept the already-finished parent
+    // session running after its final assistant stop.
+    const rows = [
+      { type: "message", message: { role: "user", content: "audit" } },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "task",
+          details: {
+            async: {
+              state: "running",
+              jobId: "4-ControllerStatusAudit",
+              type: "task",
+            },
+          },
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "job",
+          details: {
+            jobs: [
+              {
+                id: "4-ControllerStatusAudit",
+                type: "task",
+                status: "completed",
+              },
+              {
+                id: "5-RendererStatusAudit",
+                type: "task",
+                status: "completed",
+              },
+            ],
+          },
+        },
+      },
+    ];
+
+    expect(persistedTranscriptRunning(rows)).toBe(true);
+    expect(
+      persistedTranscriptRunning([
+        ...rows,
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "done" },
+        },
+        {
+          type: "custom_message",
+          customType: "irc:incoming",
+          content: "late audit notification",
+        },
+      ]),
+    ).toBe(false);
+
+    // Merely observing the job while it is still running cannot close the marker.
+    expect(
+      persistedTranscriptRunning([
+        rows[0],
+        rows[1],
+        {
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolName: "job",
+            details: {
+              jobs: [
+                {
+                  id: "4-ControllerStatusAudit",
+                  type: "task",
+                  status: "running",
+                },
+              ],
+            },
+          },
+        },
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "early" },
+        },
+      ]),
+    ).toBe(true);
+  });
+
   it("does not resurrect an awaited detached task on a later run-state refresh", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "gjc-awaited-task-"));
     const file = path.join(root, "session.jsonl");

@@ -611,6 +611,29 @@ function persistedTurnState(rows: unknown[]): PersistedTurnState {
       for (const jobId of details.terminalIds)
         if (typeof jobId === "string") pendingAsyncJobs.delete(jobId);
     }
+    if (
+      message.role === "toolResult" &&
+      message.toolName === "job" &&
+      Array.isArray(details?.jobs)
+    ) {
+      // The generic job inspector is the fallback completion channel used when a
+      // detached task is polled instead of awaited through `subagent`. Its snapshot
+      // includes running entries too, so only explicit terminal task states release
+      // durable launch markers.
+      for (const candidate of details.jobs) {
+        if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
+          continue;
+        const job = candidate as Record<string, unknown>;
+        if (
+          job.type === "task" &&
+          typeof job.id === "string" &&
+          (job.status === "completed" ||
+            job.status === "failed" ||
+            job.status === "cancelled")
+        )
+          pendingAsyncJobs.delete(job.id);
+      }
+    }
     if (message.role === "user") {
       lastUser = index;
       abandoned = false;
