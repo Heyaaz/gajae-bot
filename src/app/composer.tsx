@@ -172,6 +172,19 @@ export function Composer({
   const effortValueRef = useRef(currentEffort);
   effortValueRef.current = currentEffort;
 
+  const discardPrepared = useCallback(
+    (attachments: Array<{ token?: string }>): void => {
+      const tokens = attachments.flatMap((attachment) =>
+        attachment.token ? [attachment.token] : [],
+      );
+      if (tokens.length === 0 || !settingsBridge) return;
+      void settingsBridge.discardAttachments(tokens).catch((error) =>
+        setAttachmentError(error instanceof Error ? error.message : String(error)),
+      );
+    },
+    [settingsBridge],
+  );
+
   const addDroppedImages = useCallback(
     async (files: FileList | readonly File[]): Promise<void> => {
       if (!settingsBridge) return;
@@ -180,23 +193,18 @@ export function Composer({
         if (images.length + files.length > 6)
           throw new Error("이미지는 메시지당 최대 6장까지 첨부할 수 있습니다");
         const all = Array.from(files);
-        // Only a file dragged from the OS carries a path the main process can
-        // read. A drag from a browser or another app has none, so those are read
-        // in the renderer instead of failing the whole drop.
-        const withPath = all.filter((file) =>
-          Boolean(settingsBridge.pathForFile(file)),
-        );
-        const withoutPath = all.filter(
-          (file) => !settingsBridge.pathForFile(file),
-        );
-        const attachments = withPath.length
-          ? await settingsBridge.readImages(
-              withPath.map((file) => settingsBridge.pathForFile(file)),
-            )
+        // Only a file selected or dragged from the OS has a main-authorizable
+        // native identity. Browser-originated images stay inline; an actual native
+        // validation failure must surface rather than silently bypassing the main
+        // process capability boundary.
+        const native = all.filter((file) => settingsBridge.isNativeFile(file));
+        const pathless = all.filter((file) => !settingsBridge.isNativeFile(file));
+        const attachments = native.length
+          ? await settingsBridge.prepareImages(native)
           : [];
-        const inline = withoutPath.length
+        const inline = pathless.length
           ? await droppedImageAttachments(
-              withoutPath,
+              pathless,
               images.length + attachments.length,
             )
           : [];
@@ -221,11 +229,10 @@ export function Composer({
         if (textFiles.length > 0) {
           if (!settingsBridge)
             throw new Error("파일 읽기 브리지를 사용할 수 없습니다");
-          const paths = textFiles.map((file) =>
-            settingsBridge.pathForFile(file),
-          );
-          const selected = await settingsBridge.readFiles(paths);
-          setFiles((current) => [...current, ...selected].slice(0, 5));
+          const selected = await settingsBridge.prepareFiles(textFiles);
+          const combined = [...files, ...selected];
+          discardPrepared(combined.slice(5));
+          setFiles(combined.slice(0, 5));
         }
       } catch (error) {
         setAttachmentError(
@@ -233,7 +240,7 @@ export function Composer({
         );
       }
     },
-    [addDroppedImages, settingsBridge],
+    [addDroppedImages, discardPrepared, files, settingsBridge],
   );
 
   useEffect(() => {
@@ -533,12 +540,12 @@ export function Composer({
     setAttachmentError("");
     setChoosingImages(true);
     try {
-      const paths = Array.from(selectedFiles).map((file) =>
-        settingsBridge.pathForFile(file),
-      );
-      const selected = await settingsBridge.readImages(paths);
-      if (selected.length > 0)
-        setImages((current) => [...current, ...selected].slice(0, 6));
+      const selected = await settingsBridge.prepareImages(Array.from(selectedFiles));
+      if (selected.length > 0) {
+        const combined = [...images, ...selected];
+        discardPrepared(combined.slice(6));
+        setImages(combined.slice(0, 6));
+      }
     } catch (error) {
       setAttachmentError(
         error instanceof Error ? error.message : String(error),
@@ -553,11 +560,10 @@ export function Composer({
     if (!settingsBridge || !selectedFiles?.length) return;
     setAttachmentError("");
     try {
-      const paths = Array.from(selectedFiles).map((file) =>
-        settingsBridge.pathForFile(file),
-      );
-      const selected = await settingsBridge.readFiles(paths);
-      setFiles((current) => [...current, ...selected].slice(0, 5));
+      const selected = await settingsBridge.prepareFiles(Array.from(selectedFiles));
+      const combined = [...files, ...selected];
+      discardPrepared(combined.slice(5));
+      setFiles(combined.slice(0, 5));
     } catch (error) {
       setAttachmentError(
         error instanceof Error ? error.message : String(error),
@@ -793,11 +799,12 @@ export function Composer({
               <button
                 type="button"
                 aria-label={`Remove ${image.name}`}
-                onClick={() =>
+                onClick={() => {
+                  discardPrepared([image]);
                   setImages((current) =>
                     current.filter((item) => item.id !== image.id),
-                  )
-                }
+                  );
+                }}
               >
                 <X size={12} />
               </button>
@@ -813,11 +820,12 @@ export function Composer({
               <button
                 type="button"
                 aria-label={`Remove ${file.name}`}
-                onClick={() =>
+                onClick={() => {
+                  discardPrepared([file]);
                   setFiles((current) =>
                     current.filter((item) => item.id !== file.id),
-                  )
-                }
+                  );
+                }}
               >
                 <X size={12} />
               </button>

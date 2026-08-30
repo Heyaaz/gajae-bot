@@ -1,14 +1,29 @@
 # Gajae
 
-Electron desktop client for [GJC](https://github.com/gajae-code) sessions. Chat, live transcript sync, steer, cancel, and model switching all run on the same GJC session files as the terminal CLI.
+Electron desktop client for [GJC](https://github.com/Yeachan-Heo/gajae-code) sessions. Chat, live transcript sync, steer, cancel, and model switching all run on the same GJC session files as the terminal CLI.
 
 The app is a separate SDK connection from a TUI `gjc` process. They share session artifacts; they do not share a connection.
 
-## Requirements
+## User setup
 
-- macOS arm64
-- Node.js 24+
-- GJC CLI (`gjc`) on `PATH` or at a known install location
+- Apple-silicon macOS (arm64 only)
+- Bun 1.4 or newer for the GJC runtime
+- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.15.5` or newer (the current compatibility target is `gajae-code@0.15.5`)
+
+For a clean install, install GJC first, then copy the notarized Gajae release to
+`/Applications`:
+
+```bash
+bun add -g gajae-code@0.15.5
+cd Gajae-0.1.0-darwin-arm64
+shasum -a 256 -c Gajae-0.1.0-darwin-arm64.zip.sha256
+ditto -x -k Gajae-0.1.0-darwin-arm64.zip .
+cp -R Gajae.app /Applications/Gajae.app
+```
+
+The app is version `0.1.0`; that is the desktop app release version and is
+separate from the GJC CLI version. Update each independently. Keep `gjc` on
+`PATH` or set its path in app settings.
 
 Lookup order for the executable:
 
@@ -19,9 +34,12 @@ Lookup order for the executable:
 5. `/opt/homebrew/bin/gjc`
 6. `/usr/local/bin/gjc`
 
-Default model preset is `GOAT` (`codex-lb/gpt-5.6-sol:medium`). If `~/.gjc/agent/models.yml` defines it, that mapping wins.
+Default model preset is `codex-medium`. If `~/.gjc/agent/models.yml` defines it, that mapping wins.
 
-## Run
+## Run (developers)
+
+Developers need Node.js 24 or newer. The local development package uses an
+ad-hoc signature:
 
 ```bash
 npm install
@@ -36,7 +54,35 @@ Package:
 npm run package:mac
 ```
 
-Output is `release/Gajae-darwin-arm64/Gajae.app`. Copy it to `/Applications/Gajae.app` to install.
+For a public release, first store notarization credentials in the login
+Keychain, then provide the Developer ID identity, Keychain profile, and an
+explicit confirmation that the bundled artwork is cleared for redistribution.
+The release script refuses to create an ad-hoc or unnotarized artifact when any
+gate is missing:
+
+```bash
+xcrun notarytool store-credentials gajae-notary \
+  --apple-id release@example.com --team-id TEAMID
+
+GJC_DEVELOPER_IDENTITY='Developer ID Application: Example (TEAMID)' \
+GAJA_NOTARY_KEYCHAIN_PROFILE='gajae-notary' \
+GAJAE_ASSET_RIGHTS_CONFIRMED=1 \
+npm run package:mac -- --public-release
+```
+
+Never put these credentials in the repository or the packaged application. A
+successful public release produces the portable pair:
+
+```text
+release/Gajae-0.1.0-darwin-arm64/Gajae-0.1.0-darwin-arm64.zip
+release/Gajae-0.1.0-darwin-arm64/Gajae-0.1.0-darwin-arm64.zip.sha256
+```
+
+Published version artifacts are immutable. Bump `package.json` before creating a
+different build; the release script refuses to overwrite a same-version ZIP.
+
+The local ad-hoc development package remains at
+`release/Gajae-darwin-arm64/Gajae.app` and is not a public distribution artifact.
 
 ## Use
 
@@ -60,7 +106,7 @@ GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait
 ### Model / effort
 
 - `/model` — open the preset picker
-- `/model GOAT` — switch immediately. `gajae-code/GOAT` and a unique prefix also match. Unknown names are not sent as chat; they show an error
+- `/model codex-medium` — switch immediately. A unique preset prefix also matches. Unknown names are not sent as chat; they show an error
 - `Shift+Tab` — cycle thinking effort
 
 ### Shortcuts
@@ -96,7 +142,7 @@ discovery drops non-live sessions on purpose.
 
 - Search by session id prefix, title, or workspace
 - Ids show 12 characters; 8 collide across real sessions
-- The newest `HISTORY_SESSION_LIMIT` (60) sessions are offered, since summarising
+- The newest `HISTORY_SESSION_LIMIT` (250) sessions are offered, since summarising
   each row costs a file read
 - A long first request is summarised to one line and deep paths are shortened, so
   a row cannot push the id and time out of the dialog
@@ -107,7 +153,12 @@ holding the dialog open.
 
 The full session id sits under the title in the inspector and copies on click.
 
-## GJC runtime patches
+## Developer notes
+
+Bundled original project artwork is not claimed as third-party material. Asset
+redistribution must be confirmed before distributing a binary release.
+
+## GJC runtime compatibility
 
 Desktop Esc/Stop sends:
 
@@ -121,23 +172,15 @@ confirm: true
 idempotencyKey: "gajae-abort-<uuid>"
 ```
 
-Stock GJC terminal owned abort only works when the requesting connection owns the turn. The desktop app does not, so that path returns `no_active_turn` / `terminal_no_effect`.
-
-GJC changes required for this app (in `gajae-code`):
+Gajae requires the following SDK behavior, shipped by the supported
+`gajae-code@0.15.5` runtime:
 
 1. Forward `idempotencyKey` on CLI `control_request` envelopes
 2. `turn.abort` `operator: true` — another connection can stop owned work. Requires `confirm: true`
 3. Plain `turn.abort {}` is session-scoped — stops the current turn even when the requester is not the owner (empty-Enter flush)
 
-Patched files:
-
-- `packages/coding-agent/src/sdk/cli/session-cli.ts`
-- `packages/coding-agent/src/sdk/host/control/dispatch.ts`
-- `packages/coding-agent/src/sdk/host/control/operations.ts`
-- `packages/coding-agent/src/sdk/host/session-runtime.ts`
-- `packages/coding-agent/src/sdk/bus/index.ts`
-
-A running `gjc` / `gjc --resume` process does not hot-reload these patches. Restart the session host. Editing a global install is overwritten on the next package install.
+Older GJC versions are unsupported. After updating GJC, restart running `gjc` /
+`gjc --resume` session hosts because they do not hot-reload runtime code.
 
 If the CLI rejects the `operator` field, the app reports failure instead of pretending the run stopped.
 
@@ -176,3 +219,9 @@ npm run verify
 - Electron main: `electron/`
 - Renderer: `src/`
 - IPC contract: `shared/`
+
+## License
+
+Gajae source code is available under the [MIT License](LICENSE). A public binary
+release is produced only after the maintainer separately confirms redistribution
+rights for the bundled artwork.

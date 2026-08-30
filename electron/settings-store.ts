@@ -8,10 +8,12 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
+import { homedir } from 'node:os'
 import path from 'node:path'
 import type { AgentControlPreferences, GjcPermissionHandling } from '../shared/agent-contract.js'
 
 const PERMISSION_MODES = new Set<GjcPermissionHandling>(['prompt', 'auto', 'always-allow'])
+export const DEFAULT_MODEL_PRESET = 'codex-medium'
 
 function validModelPreset(value: unknown): value is string {
   return typeof value === 'string'
@@ -20,8 +22,12 @@ function validModelPreset(value: unknown): value is string {
     && !/[\p{Cc}\p{Cf}]/u.test(value)
 }
 
-function validDirectory(value: unknown): value is string {
+export function validDirectory(value: unknown): value is string {
   if (typeof value !== 'string' || !path.isAbsolute(value) || !existsSync(value)) return false
+  // Electron patches fs so an app.asar archive reports itself as a virtual
+  // directory. It is still not a legal process cwd: Node spawn rejects it with
+  // ENOTDIR. Reject the archive and every virtual path inside it explicitly.
+  if (value.split(path.sep).some((segment) => segment.toLowerCase().endsWith('.asar'))) return false
   try {
     return statSync(value).isDirectory()
   } catch {
@@ -45,13 +51,17 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
     ? value as Partial<AgentControlPreferences>
     : {}
   return {
-    workspace: validDirectory(candidate.workspace) ? path.resolve(candidate.workspace) : path.resolve(defaultWorkspace),
+    workspace: validDirectory(candidate.workspace)
+      ? path.resolve(candidate.workspace)
+      : validDirectory(defaultWorkspace)
+        ? path.resolve(defaultWorkspace)
+        : homedir(),
     workspaceLabel: typeof candidate.workspaceLabel === 'string' && candidate.workspaceLabel.trim()
       ? candidate.workspaceLabel.trim().slice(0, 60)
       : 'Private workspace',
     modelPreset: validModelPreset(candidate.modelPreset)
       ? candidate.modelPreset.trim()
-      : 'codex-medium',
+      : DEFAULT_MODEL_PRESET,
     permissionHandling: PERMISSION_MODES.has(candidate.permissionHandling as GjcPermissionHandling)
       ? candidate.permissionHandling as GjcPermissionHandling
       : 'prompt',
@@ -66,7 +76,7 @@ export class SettingsStore {
 
   constructor(userDataDirectory: string, defaultWorkspace: string) {
     this.filePath = path.join(userDataDirectory, 'agent-control-settings.json')
-    this.defaultWorkspace = path.resolve(defaultWorkspace)
+    this.defaultWorkspace = validDirectory(defaultWorkspace) ? path.resolve(defaultWorkspace) : homedir()
     this.preferences = this.read()
   }
 
@@ -74,7 +84,7 @@ export class SettingsStore {
     return { ...this.preferences }
   }
 
-  save(value: unknown): AgentControlPreferences {
+  validate(value: unknown): AgentControlPreferences {
     const preferences = parsePreferences(value, this.defaultWorkspace)
     if (!validDirectory((value as Partial<AgentControlPreferences> | null)?.workspace)) {
       throw new Error('Workspace must be an existing absolute directory')
@@ -89,6 +99,11 @@ export class SettingsStore {
       throw new Error('GJC executable must be blank or an executable absolute path')
     }
 
+    return preferences
+  }
+
+  save(value: unknown): AgentControlPreferences {
+    const preferences = this.validate(value)
     this.preferences = preferences
     this.persist()
     return this.get()

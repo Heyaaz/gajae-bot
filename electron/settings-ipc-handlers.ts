@@ -6,12 +6,15 @@ import path from 'node:path'
 import type { AgentControlPreferences, FileAttachment, ImageAttachment } from '../shared/agent-contract.js'
 import { SETTINGS_IPC } from '../shared/settings-ipc.js'
 import type { SettingsStore } from './settings-store.js'
+import type { AttachmentStore } from './attachment-store.js'
+import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
 const MAX_IMAGE_COUNT = 6
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 const MAX_FILE_COUNT = 5
+const MAX_FILE_BYTES = 25 * 1024 * 1024
 const FILE_MIME_TYPES: Readonly<Record<string, string>> = {
   '.txt': 'text/plain', '.md': 'text/markdown', '.markdown': 'text/markdown',
   '.json': 'application/json', '.yaml': 'application/yaml', '.yml': 'application/yaml',
@@ -43,7 +46,7 @@ export async function pickerDirectory(candidate: unknown, fallbackDirectory?: st
   return app?.getPath?.('home') ?? homedir()
 }
 
-async function imageAttachment(filePath: string, index = 0): Promise<ImageAttachment> {
+async function imageAttachment(filePath: string, store: AttachmentStore, senderId: number, index = 0): Promise<ImageAttachment> {
   const extension = path.extname(filePath).toLowerCase()
   if (!IMAGE_EXTENSIONS.has(extension)) throw new Error(`${path.basename(filePath)}은(는) 지원하는 이미지 형식이 아닙니다`)
   const handle = await open(filePath, 'r')
@@ -61,7 +64,9 @@ async function imageAttachment(filePath: string, index = 0): Promise<ImageAttach
       : extension === '.webp' ? 'image/webp'
         : extension === '.gif' ? 'image/gif'
           : 'image/jpeg'
-    return { id: `image-${Date.now()}-${index}`, name: path.basename(filePath), mimeType, path: path.resolve(filePath), data: buffer.toString('base64') }
+    const metadata = { name: path.basename(filePath), mimeType, size: before.size, mtimeMs: before.mtimeMs }
+    const record = await store.issue(senderId, 'image', filePath, metadata)
+    return { id: `image-${Date.now()}-${index}`, name: metadata.name, mimeType, token: record.token, data: buffer.toString('base64') }
   } finally {
     await handle.close()
   }
@@ -71,58 +76,108 @@ export function fileMimeType(filePath: string): string | undefined {
   return FILE_MIME_TYPES[path.extname(filePath).toLowerCase()]
 }
 
-export async function fileAttachment(filePath: string): Promise<FileAttachment> {
+export async function fileAttachment(filePath: string, store: AttachmentStore, senderId: number): Promise<FileAttachment> {
   const resolved = path.resolve(filePath)
   if (/[\0\r\n]/u.test(resolved)) throw new Error(`${path.basename(filePath)}의 경로에 지원하지 않는 문자가 있습니다`)
   const info = await stat(resolved)
   if (!info.isFile()) throw new Error(`${path.basename(filePath)} is not a file`)
-  return { id: `file-${randomUUID()}`, name: path.basename(resolved), mimeType: fileMimeType(resolved) ?? 'application/octet-stream', size: info.size, path: resolved }
+  if (info.size > MAX_FILE_BYTES) throw new Error(`${path.basename(filePath)} exceeds the 25 MiB limit`)
+  const name = path.basename(resolved)
+  const mimeType = fileMimeType(resolved) ?? 'application/octet-stream'
+  const record = await store.issue(senderId, 'file', resolved, { name, mimeType, size: info.size, mtimeMs: info.mtimeMs })
+  return { id: `file-${randomUUID()}`, name, mimeType, size: info.size, token: record.token }
 }
 
 export function registerSettingsIpcHandlers(
   store: SettingsStore,
+  attachments: AttachmentStore,
+  security: IpcSecurity,
   onPreferencesSaved?: (preferences: AgentControlPreferences) => Promise<boolean>,
   onGjcUpdated?: () => Promise<void>,
 ): () => void {
-  ipcMain.handle(SETTINGS_IPC.getPreferences, () => store.get())
-  ipcMain.handle(SETTINGS_IPC.chooseWorkspace, async (_event, currentPath: unknown) => {
+  ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
+  ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
     const current = typeof currentPath === 'string' && path.isAbsolute(currentPath) ? path.dirname(currentPath) : undefined
     const defaultPath = await pickerDirectory(current)
-    app.focus({ steal: true })
-    const selected = dialog.showOpenDialogSync({
+    const selected = await dialog.showOpenDialog(security.owner(event), {
       title: 'Choose Gajae project',
       defaultPath,
       properties: ['openDirectory', 'dontAddToRecent'],
     })
-    return selected?.[0] ?? null
-  })
-  ipcMain.handle(SETTINGS_IPC.readImages, async (_event, paths: unknown) => {
-    if (!Array.isArray(paths) || paths.some((value) => typeof value !== 'string' || !path.isAbsolute(value))) {
-      throw new Error('이미지 경로가 올바르지 않습니다')
+    return selected.canceled ? null : selected.filePaths[0] ?? null
+  }))
+  ipcMain.handle(SETTINGS_IPC.prepareImages, security.guarded(async (event, records: unknown) => {
+    if (!Array.isArray(records) || records.some((value) => !value || typeof value !== 'object' || typeof (value as { path?: unknown }).path !== 'string' || !path.isAbsolute((value as { path: string }).path))) {
+      throw new Error('이미지 파일이 올바르지 않습니다')
     }
-    if (paths.length > MAX_IMAGE_COUNT) throw new Error(`이미지는 메시지당 최대 ${MAX_IMAGE_COUNT}장까지 첨부할 수 있습니다`)
-    return Promise.all(paths.map(imageAttachment))
-  })
-  ipcMain.handle(SETTINGS_IPC.readFiles, async (_event, paths: unknown) => {
-    if (!Array.isArray(paths) || paths.some((value) => typeof value !== 'string' || !path.isAbsolute(value))) {
-      throw new Error('파일 경로가 올바르지 않습니다')
+    if (records.length > MAX_IMAGE_COUNT) throw new Error(`이미지는 메시지당 최대 ${MAX_IMAGE_COUNT}장까지 첨부할 수 있습니다`)
+    const prepared: ImageAttachment[] = []
+    try {
+      for (let index = 0; index < records.length; index += 1) {
+        const filePath = (records[index] as { path: string }).path
+        try { prepared.push(await imageAttachment(filePath, attachments, event.sender.id, index)) }
+        catch (error) {
+          console.error(`Image attachment preparation failed for ${path.basename(filePath)}`, error)
+          throw new Error(`${path.basename(filePath)}: 이미지를 준비하지 못했습니다`)
+        }
+      }
+      return prepared
+    } catch (error) {
+      const tokens = prepared.flatMap((attachment) => attachment.token ? [attachment.token] : [])
+      if (tokens.length > 0) attachments.revoke(event.sender.id, tokens)
+      throw error
     }
-    if (paths.length > MAX_FILE_COUNT) throw new Error(`파일은 메시지당 최대 ${MAX_FILE_COUNT}개까지 첨부할 수 있습니다`)
-    return Promise.all(paths.map(fileAttachment))
-  })
-  ipcMain.handle(SETTINGS_IPC.setWorkspaceLabel, (_event, label: unknown) => store.setWorkspaceLabel(label))
-  ipcMain.handle(SETTINGS_IPC.savePreferences, async (_event, preferences: AgentControlPreferences) => {
-    const saved = store.save(preferences)
+  }))
+  ipcMain.handle(SETTINGS_IPC.prepareFiles, security.guarded(async (event, records: unknown) => {
+    if (!Array.isArray(records) || records.some((value) => !value || typeof value !== 'object' || typeof (value as { path?: unknown }).path !== 'string' || !path.isAbsolute((value as { path: string }).path))) {
+      throw new Error('파일이 올바르지 않습니다')
+    }
+    if (records.length > MAX_FILE_COUNT) throw new Error(`파일은 메시지당 최대 ${MAX_FILE_COUNT}개까지 첨부할 수 있습니다`)
+    const prepared: FileAttachment[] = []
+    try {
+      for (const value of records) {
+        const filePath = (value as { path: string }).path
+        try { prepared.push(await fileAttachment(filePath, attachments, event.sender.id)) }
+        catch (error) {
+          console.error(`File attachment preparation failed for ${path.basename(filePath)}`, error)
+          throw new Error(`${path.basename(filePath)}: 파일을 준비하지 못했습니다`)
+        }
+      }
+      return prepared
+    } catch (error) {
+      if (prepared.length > 0)
+        attachments.revoke(event.sender.id, prepared.map((attachment) => attachment.token))
+      throw error
+    }
+  }))
+  ipcMain.handle(SETTINGS_IPC.discardAttachments, security.guarded((event, tokens: unknown) => {
+    if (
+      !Array.isArray(tokens) ||
+      tokens.length === 0 ||
+      tokens.length > MAX_IMAGE_COUNT + MAX_FILE_COUNT ||
+      tokens.some((token) => typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/u.test(token))
+    ) throw new Error('첨부 권한이 올바르지 않습니다')
+    attachments.revoke(event.sender.id, [...new Set(tokens)])
+  }))
+  ipcMain.handle(SETTINGS_IPC.setWorkspaceLabel, security.guarded((_event, label: unknown) => store.setWorkspaceLabel(label)))
+  ipcMain.handle(SETTINGS_IPC.savePreferences, security.guarded(async (event, preferences: AgentControlPreferences) => {
+    const validated = store.validate(preferences)
+    await security.authorizeDestructive(event, {
+      message: 'Apply runtime settings?',
+      detail: `${validated.workspace} · ${validated.modelPreset} · ${validated.permissionHandling}`,
+    })
+    const saved = store.save(validated)
     const runtimeReconnected = await onPreferencesSaved?.(saved) ?? false
     return { preferences: saved, runtimeReconnected }
-  })
+  }))
   const executable = () => store.get().gjcExecutable || process.env.GJC_BIN || 'gjc'
-  ipcMain.handle(SETTINGS_IPC.checkGjcUpdate, () => checkGjcUpdate(executable()))
-  ipcMain.handle(SETTINGS_IPC.installGjcUpdate, async () => {
+  ipcMain.handle(SETTINGS_IPC.checkGjcUpdate, security.guarded(() => checkGjcUpdate(executable())))
+  ipcMain.handle(SETTINGS_IPC.installGjcUpdate, security.guarded(async (event) => {
+    await security.authorizeDestructive(event, { message: 'Install GJC update?' })
     const status = await installGjcUpdate(executable())
     await onGjcUpdated?.()
     return status
-  })
+  }))
 
   return () => {
     for (const channel of Object.values(SETTINGS_IPC)) ipcMain.removeHandler(channel)

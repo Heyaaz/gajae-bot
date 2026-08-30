@@ -2,7 +2,17 @@
   "name": "agent-control",
   "productName": "Gajae",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
+  "description": "A native macOS desktop client for GJC coding-agent sessions.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Heyaaz/gajae-bot.git"
+  },
+  "homepage": "https://github.com/Heyaaz/gajae-bot#readme",
+  "bugs": {
+    "url": "https://github.com/Heyaaz/gajae-bot/issues"
+  },
   "type": "module",
   "main": "dist-electron/electron/main.js",
   "scripts": {
@@ -18,7 +28,8 @@
     "desktop:offline-smoke": "electron scripts/offline-shell-smoke.mjs",
     "desktop:attachment-smoke": "electron scripts/attachment-render-smoke.mjs",
     "desktop:inspector-smoke": "electron scripts/inspector-open-smoke.mjs",
-    "package:mac": "npm run build && electron-packager . Gajae --platform=darwin --arch=arm64 --out=release --overwrite --app-bundle-id=com.gajae.desktop --app-version=0.0.0 --icon=src/assets/gajae-icon.icns --prune=true --asar --ignore='^/(artifacts|release|\\.git|\\.gjc)$' && codesign --force --deep --sign - release/Gajae-darwin-arm64/Gajae.app",
+    "desktop:clean-install-smoke": "node scripts/packaged-clean-install-smoke.mjs",
+    "package:mac": "node package-mac.mjs",
     "gjc:e2e": "npm run build && node scripts/gjc-acp-e2e.mjs",
     "lint": "oxlint",
     "test": "vitest run",
@@ -33,8 +44,7 @@
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1",
-    "zod": "^4.4.3"
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

@@ -356,7 +356,7 @@ describe("session drafts", () => {
           name: "note.md",
           mimeType: "text/markdown",
           size: 12,
-          path: "/tmp/note.md",
+          token: "file-capability",
         },
       ],
     });

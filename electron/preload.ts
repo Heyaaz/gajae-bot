@@ -115,11 +115,17 @@ const settings: SettingsDesktopBridge = Object.freeze({
   getPreferences: () => ipcRenderer.invoke(SETTINGS_IPC.getPreferences),
   chooseWorkspace: (currentPath: string) =>
     ipcRenderer.invoke(SETTINGS_IPC.chooseWorkspace, currentPath),
-  pathForFile: (file: File) => webUtils.getPathForFile(file),
-  readImages: (paths: string[]) =>
-    ipcRenderer.invoke(SETTINGS_IPC.readImages, paths),
-  readFiles: (paths: string[]) =>
-    ipcRenderer.invoke(SETTINGS_IPC.readFiles, paths),
+  isNativeFile: (file: File) => Boolean(webUtils.getPathForFile(file)),
+  prepareImages: (files: File[]) =>
+    ipcRenderer.invoke(SETTINGS_IPC.prepareImages, files.map((file) => ({
+      path: webUtils.getPathForFile(file), name: file.name, type: file.type, size: file.size,
+    }))),
+  prepareFiles: (files: File[]) =>
+    ipcRenderer.invoke(SETTINGS_IPC.prepareFiles, files.map((file) => ({
+      path: webUtils.getPathForFile(file), name: file.name, type: file.type, size: file.size,
+    }))),
+  discardAttachments: (tokens: string[]) =>
+    ipcRenderer.invoke(SETTINGS_IPC.discardAttachments, tokens),
   setWorkspaceLabel: (label: string) =>
     ipcRenderer.invoke(SETTINGS_IPC.setWorkspaceLabel, label),
   savePreferences: (preferences: AgentControlPreferences) =>

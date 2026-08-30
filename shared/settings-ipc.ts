@@ -1,8 +1,9 @@
 export const SETTINGS_IPC = {
   getPreferences: "agent-control:settings:get-preferences",
   chooseWorkspace: "agent-control:settings:choose-workspace",
-  readImages: "agent-control:settings:read-images",
-  readFiles: "agent-control:settings:read-files",
+  prepareImages: "agent-control:settings:prepare-images",
+  prepareFiles: "agent-control:settings:prepare-files",
+  discardAttachments: "agent-control:settings:discard-attachments",
   setWorkspaceLabel: "agent-control:settings:set-workspace-label",
   savePreferences: "agent-control:settings:save-preferences",
   checkGjcUpdate: "agent-control:settings:check-gjc-update",

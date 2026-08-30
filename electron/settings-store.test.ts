@@ -1,10 +1,11 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { SettingsStore, parsePreferences } from './settings-store.js'
+import { DEFAULT_MODEL_PRESET, SettingsStore, parsePreferences, validDirectory } from './settings-store.js'
 import { SessionMetadataStore } from './session-metadata-store.js'
 import { fileAttachment, fileMimeType, pickerDirectory } from './settings-ipc-handlers.js'
+import { AttachmentStore } from './attachment-store.js'
 
 const temporaryDirectories: string[] = []
 
@@ -28,21 +29,25 @@ describe('text file attachments', () => {
     await expect(pickerDirectory(path.join(directory, 'vanished'), directory)).resolves.toBe(directory)
   })
 
-  it('references source files by absolute path without reading their contents', async () => {
+  it('returns an opaque capability without exposing the source path', async () => {
     const directory = temporaryDirectory()
     const file = path.join(directory, 'example.ts')
     writeFileSync(file, 'export const value = 1\n')
+    const attachments = new AttachmentStore()
+    attachments.activateSender(7)
 
     expect(fileMimeType(file)).toBe('text/typescript')
-    await expect(fileAttachment(file)).resolves.toMatchObject({
+    const selected = await fileAttachment(file, attachments, 7)
+    expect(selected).toMatchObject({
       name: 'example.ts',
       mimeType: 'text/typescript',
       size: 23,
-      path: file,
     })
+    expect(selected).not.toHaveProperty('path')
+    expect(selected.token).toMatch(/^[A-Za-z0-9_-]{40,}$/u)
   })
 
-  it('accepts arbitrary local file types and sizes as path references', async () => {
+  it('issues capabilities for supported and arbitrary local file types', async () => {
     const directory = temporaryDirectory()
     const unsupported = path.join(directory, 'archive.zip')
     const binary = path.join(directory, 'binary.txt')
@@ -50,10 +55,12 @@ describe('text file attachments', () => {
     writeFileSync(unsupported, 'not accepted')
     writeFileSync(binary, Buffer.from([0, 1, 2]))
     writeFileSync(oversized, Buffer.alloc(2 * 1024 * 1024 + 1, 97))
+    const attachments = new AttachmentStore()
+    attachments.activateSender(7)
 
-    await expect(fileAttachment(unsupported)).resolves.toMatchObject({ path: unsupported, mimeType: 'application/octet-stream' })
-    await expect(fileAttachment(binary)).resolves.toMatchObject({ path: binary, size: 3 })
-    await expect(fileAttachment(oversized)).resolves.toMatchObject({ path: oversized, size: 2 * 1024 * 1024 + 1 })
+    await expect(fileAttachment(unsupported, attachments, 7)).resolves.toMatchObject({ mimeType: 'application/octet-stream' })
+    await expect(fileAttachment(binary, attachments, 7)).resolves.toMatchObject({ size: 3 })
+    await expect(fileAttachment(oversized, attachments, 7)).resolves.toMatchObject({ size: 2 * 1024 * 1024 + 1 })
   })
 })
 
@@ -72,6 +79,28 @@ describe('SettingsStore', () => {
   it('accepts a configured custom GJC model profile', () => {
     const workspace = temporaryDirectory()
     expect(parsePreferences({ modelPreset: 'GOAT', workspace }, workspace).modelPreset).toBe('GOAT')
+  })
+
+  it('uses an existing directory and the public GJC preset for a fresh store', () => {
+    const root = temporaryDirectory()
+    const preferences = new SettingsStore(path.join(root, 'user-data'), root).get()
+
+    expect(statSync(preferences.workspace).isDirectory()).toBe(true)
+    expect(preferences.workspace).not.toContain('.asar')
+    expect(preferences.modelPreset).toBe(DEFAULT_MODEL_PRESET)
+  })
+
+  it('rejects an asar path as the default workspace', () => {
+    const asarPath = path.join(temporaryDirectory(), 'app.asar')
+    // A directory reproduces Electron's fs view of a mounted asar. Existence and
+    // isDirectory alone are insufficient even though ordinary Node sees an archive
+    // as a file.
+    mkdirSync(asarPath)
+    const preferences = parsePreferences(undefined, asarPath)
+
+    expect(validDirectory(asarPath)).toBe(false)
+    expect(statSync(preferences.workspace).isDirectory()).toBe(true)
+    expect(preferences.workspace).not.toBe(path.resolve(asarPath))
   })
 
   it('persists workspace, preset, permission mode, and executable', () => {

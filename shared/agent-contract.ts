@@ -120,7 +120,7 @@ export interface ImageAttachment {
   id: string;
   name: string;
   mimeType: string;
-  path?: string;
+  token?: string;
   data: string;
 }
 
@@ -129,7 +129,7 @@ export interface FileAttachment {
   name: string;
   mimeType: string;
   size: number;
-  path: string;
+  token: string;
 }
 
 export interface MessageInput {
@@ -508,9 +508,10 @@ export interface GjcDesktopBridge {
 export interface SettingsDesktopBridge {
   getPreferences(): Promise<AgentControlPreferences>;
   chooseWorkspace(currentPath: string): Promise<string | null>;
-  pathForFile(file: File): string;
-  readImages(paths: string[]): Promise<ImageAttachment[]>;
-  readFiles(paths: string[]): Promise<FileAttachment[]>;
+  isNativeFile(file: File): boolean;
+  prepareImages(files: File[]): Promise<ImageAttachment[]>;
+  prepareFiles(files: File[]): Promise<FileAttachment[]>;
+  discardAttachments(tokens: string[]): Promise<void>;
   setWorkspaceLabel(label: string): Promise<string>;
   savePreferences(preferences: AgentControlPreferences): Promise<{
     preferences: AgentControlPreferences;

@@ -1552,7 +1552,7 @@ describe("messageTextWithFiles", () => {
             name: "notes.txt",
             mimeType: "text/plain",
             size: 5,
-            path: "/tmp/project/notes.txt",
+            nativePath: "/tmp/project/notes.txt",
           },
         ],
       }),
@@ -1570,7 +1570,7 @@ describe("messageTextWithFiles", () => {
             id: "image-1",
             name: "screen.png",
             mimeType: "image/png",
-            path: "/tmp/screen.png",
+            nativePath: "/tmp/screen.png",
             data: "aW1hZ2U=",
           },
         ],
@@ -2085,9 +2085,10 @@ describe("sessionInfoToAgentSession", () => {
   });
 
   it("sends text and image blocks through the ACP prompt", async () => {
+    const events: AgentEvent[] = [];
     const controller = new GjcAcpController({
       workspace: "/tmp/project",
-      emit: () => undefined,
+      emit: (event) => events.push(event),
     });
     const prompt = vi.fn().mockResolvedValue({ stopReason: "end_turn" });
     const internals = controller as unknown as {
@@ -2119,7 +2120,7 @@ describe("sessionInfoToAgentSession", () => {
           id: "image-1",
           name: "screen.png",
           mimeType: "image/png",
-          path: "/tmp/screen.png",
+          nativePath: "/tmp/screen.png",
           data: "aW1hZ2U=",
         },
       ],
@@ -2132,6 +2133,17 @@ describe("sessionInfoToAgentSession", () => {
         { type: "text", text: expect.stringContaining('- "/tmp/screen.png"') },
       ],
     });
+    const optimistic = events.find(
+      (event) =>
+        event.type === "transcript.appended" &&
+        event.item.kind === "message" &&
+        event.item.role === "user",
+    );
+    expect(optimistic).toMatchObject({
+      type: "transcript.appended",
+      item: { content: expect.stringContaining('- "screen.png"') },
+    });
+    expect(JSON.stringify(optimistic)).not.toContain("/tmp/screen.png");
     controller.dispose();
   });
 
@@ -7732,6 +7744,12 @@ describe("GjcAcpController MUST surfaces", () => {
     await expect(
       controller.resolveToolCall("tool-1", { optionId: "invented" }),
     ).rejects.toThrow("Unknown permission option");
+    expect(
+      controller.toolDecisionInfo("tool-1", { optionId: "reject" }),
+    ).toEqual({ name: "거부", requiresConfirmation: false });
+    expect(
+      controller.toolDecisionInfo("tool-1", { optionId: "always" }),
+    ).toEqual({ name: "항상 허용", requiresConfirmation: true });
     await controller.resolveToolCall("tool-1", { optionId: "always" });
 
     await expect(response).resolves.toEqual({
@@ -8568,7 +8586,7 @@ describe("GjcAcpController MUST surfaces", () => {
           name: "notes.txt",
           mimeType: "text/plain",
           size: 5,
-          path: "/tmp/project/notes.txt",
+          nativePath: "/tmp/project/notes.txt",
         },
       ],
     });

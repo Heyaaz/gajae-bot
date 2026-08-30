@@ -46,7 +46,6 @@ import type {
   CreateSessionInput,
   ImageAttachment,
   MessageDelivery,
-  MessageInput,
   NoticeActivity,
   PlanActivity,
   ToolActivity,
@@ -67,6 +66,14 @@ import type {
 } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
+
+export interface ResolvedMessageInput {
+  text: string;
+  images: Array<Omit<ImageAttachment, "token"> & { nativePath?: string }>;
+  files: Array<Omit<import("../shared/agent-contract.js").FileAttachment, "token"> & {
+    nativePath: string;
+  }>;
+}
 
 const GJC_ACCENT = "#ff8a34";
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -388,12 +395,23 @@ function sharedContentText(content: unknown): string {
     .join("");
 }
 
+function sanitizeLocalAttachmentBlocks(text: string): string {
+  return text.replace(/(<local-(?:images|files)>[\s\S]*?<\/local-(?:images|files)>)/gu, (block) =>
+    block.split("\n").map((line) => {
+      if (!line.startsWith("- ")) return line;
+      const raw = line.slice(2).trim();
+      try { return `- ${JSON.stringify(path.basename(JSON.parse(raw) as string))}`; }
+      catch { return `- ${path.basename(raw)}`; }
+    }).join("\n"),
+  );
+}
+
 function attachedPathsText(
-  input: Pick<MessageInput, "images" | "files">,
+  input: Pick<ResolvedMessageInput, "images" | "files">,
 ): string {
-  const files = input.files.map((file) => file.path);
+  const files = input.files.map((file) => file.nativePath);
   const images = input.images.flatMap((image) =>
-    image.path ? [image.path] : [],
+    image.nativePath ? [image.nativePath] : [],
   );
   if (files.length === 0 && images.length === 0) return "";
   const blocks = [
@@ -409,7 +427,7 @@ function attachedPathsText(
   return `\n\n${blocks}`;
 }
 
-export function messageTextWithFiles(input: MessageInput): string {
+export function messageTextWithFiles(input: ResolvedMessageInput): string {
   return `${input.text.trim()}${attachedPathsText(input)}`.trim();
 }
 
@@ -864,10 +882,11 @@ export function sharedTranscriptItems(
     const sourceId =
       typeof row.id === "string" && row.id ? row.id : `row-${items.length}`;
     const createdAt = transcriptTime(row.ts ?? row.timestamp);
-    const body =
+    const body = sanitizeLocalAttachmentBlocks(
       typeof row.body === "string" && row.body
         ? row.body
-        : sharedContentText(row.content);
+        : sharedContentText(row.content),
+    );
     if (row.type === "compaction") {
       const summary = typeof row.summary === "string" ? row.summary.trim() : "";
       const tokensBefore =
@@ -934,19 +953,6 @@ export function sharedTranscriptItems(
     }
     if (row.role !== "assistant") continue;
     const content = Array.isArray(row.content) ? row.content : [];
-    const text =
-      body ||
-      content
-        .flatMap((part) =>
-          part &&
-          typeof part === "object" &&
-          !Array.isArray(part) &&
-          (part as Record<string, unknown>).type === "text" &&
-          typeof (part as Record<string, unknown>).text === "string"
-            ? [String((part as Record<string, unknown>).text)]
-            : [],
-        )
-        .join("");
     const aborted =
       row.stopReason === "aborted" ||
       row.stopReason === "cancelled" ||
@@ -3401,7 +3407,7 @@ export class GjcAcpController {
   private appendLocalUserMessage(
     sessionId: string,
     text: string,
-    input: MessageInput,
+    input: ResolvedMessageInput,
   ): void {
     const echoes = this.echoedPromptTexts.get(sessionId) ?? [];
     echoes.push(normalizeQueuedRequestText(text));
@@ -3411,8 +3417,14 @@ export class GjcAcpController {
       kind: "message",
       sessionId,
       role: "user",
-      content: text,
-      ...(input.images?.length ? { images: input.images } : {}),
+      content: sanitizeLocalAttachmentBlocks(text),
+      ...(input.images?.length
+        ? {
+            images: input.images.map(
+              ({ nativePath: _nativePath, ...image }) => image,
+            ),
+          }
+        : {}),
       createdAt: nowLabel(),
       streaming: false,
     };
@@ -3444,7 +3456,7 @@ export class GjcAcpController {
 
   async steerSession(
     sessionId: string,
-    input: MessageInput,
+    input: ResolvedMessageInput,
     options?: { echo?: boolean },
   ): Promise<void> {
     const text = messageTextWithFiles(input)
@@ -3477,7 +3489,7 @@ export class GjcAcpController {
     }
   }
 
-  async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
+  async queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<void> {
     const text = messageTextWithFiles(input);
     if (!text) throw new Error("Follow-up text is required");
     const connection = await this.requireConnection();
@@ -3838,7 +3850,7 @@ export class GjcAcpController {
 
   private async executeSdkSlashCommand(
     sessionId: string,
-    input: MessageInput,
+    input: ResolvedMessageInput,
   ): Promise<boolean> {
     if (input.images?.length || input.files?.length) return false;
     const match = /^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/iu.exec(
@@ -4074,7 +4086,7 @@ export class GjcAcpController {
 
   async sendMessage(
     sessionId: string,
-    input: MessageInput,
+    input: ResolvedMessageInput,
   ): Promise<MessageDelivery> {
     this.locallyAbortedSessions.delete(sessionId);
     if (await this.executeSdkSlashCommand(sessionId, input)) return "prompt";
@@ -4430,7 +4442,18 @@ export class GjcAcpController {
     }
   }
 
-  async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
+  toolDecisionInfo(
+    toolId: string,
+    decision: ToolDecision,
+  ): { name: string; requiresConfirmation: boolean } {
+    const option = this.permissionOption(toolId, decision);
+    return {
+      name: option.name,
+      requiresConfirmation: option.kind.startsWith("allow"),
+    };
+  }
+
+  private permissionOption(toolId: string, decision: ToolDecision) {
     const pending = this.pendingPermissions.get(toolId);
     if (!pending)
       throw new Error(`No pending permission for tool call ${toolId}`);
@@ -4439,6 +4462,12 @@ export class GjcAcpController {
     );
     if (!option)
       throw new Error(`Unknown permission option ${decision.optionId}`);
+    return option;
+  }
+
+  async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
+    const pending = this.pendingPermissions.get(toolId)!;
+    const option = this.permissionOption(toolId, decision);
     this.pendingPermissions.delete(toolId);
     pending.resolve({
       outcome: { outcome: "selected", optionId: option.optionId },

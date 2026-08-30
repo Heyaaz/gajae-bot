@@ -15,6 +15,16 @@ dist-ssr
 .gjc/_session-*
 .gjc/state
 *.local
+.env
+.env.*
+!.env.example
+.npmrc
+*.p12
+*.cer
+*.key
+*.pem
+AuthKey_*.p8
+notarytool-profile*
 release
 .gajae-artifacts
 docs

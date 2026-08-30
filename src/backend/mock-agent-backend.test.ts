@@ -87,7 +87,7 @@ describe("MockAgentBackend", () => {
           id: "image-1",
           name: "screen.png",
           mimeType: "image/png",
-          path: "/tmp/screen.png",
+          token: "image-capability",
           data: "aW1hZ2U=",
         },
       ],
@@ -186,7 +186,7 @@ describe("MockAgentBackend", () => {
           name: "notes.txt",
           mimeType: "text/plain",
           size: 4,
-          path: "/tmp/notes.txt",
+          token: "file-capability",
         },
       ],
     });

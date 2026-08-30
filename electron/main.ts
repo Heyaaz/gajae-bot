@@ -22,7 +22,7 @@ import { GjcAcpController } from "./gjc-acp-controller.js";
 import { registerGjcIpcHandlers } from "./gjc-ipc-handlers.js";
 import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
-import { SettingsStore } from "./settings-store.js";
+import { SettingsStore, validDirectory } from "./settings-store.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
 import { ManagementService } from "./desktop-services.js";
 import { registerDesktopServicesIpcHandlers } from "./desktop-services-ipc-handlers.js";
@@ -30,26 +30,43 @@ import { ProductivityService } from "./productivity-service.js";
 import { registerProductivityIpcHandlers } from "./productivity-ipc-handlers.js";
 import { AutomationService } from "./automation-service.js";
 import { registerAutomationIpcHandlers } from "./automation-ipc-handlers.js";
+import {
+  IpcSecurity,
+  expectedTopLevelUrl,
+  nativeDestructiveConfirmation,
+  rendererLaunchConfig,
+} from "./ipc-security.js";
+import { AttachmentStore } from "./attachment-store.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const developmentUrl = process.env.VITE_DEV_SERVER_URL;
-const mockSmokeMode = process.argv.includes("--smoke");
-const gjcSmokeMode = process.argv.includes("--gjc-smoke");
-const smokeMode = mockSmokeMode || gjcSmokeMode;
+const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode } = rendererLaunchConfig(app.isPackaged);
+
 app.setName("Gajae");
-app.setPath("userData", path.join(app.getPath("appData"), "Agent Control"));
-const appIconPath = path.join(app.getAppPath(), "src/assets/gajae-icon.png");
+const isolatedUserData = process.env.GAJAE_USER_DATA_DIR?.trim();
+app.setPath(
+  "userData",
+  isolatedUserData && path.isAbsolute(isolatedUserData)
+    ? path.resolve(isolatedUserData)
+    : path.join(app.getPath("appData"), "Agent Control"),
+);
+const appIconPath = app.isPackaged
+  ? path.join(process.resourcesPath, "electron.icns")
+  : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
 const userDataDirectory = app.getPath("userData");
-const settingsStore = new SettingsStore(userDataDirectory, app.getAppPath());
+// User files must never be rooted in the read-only packaged app.asar. Documents
+// is a real filesystem directory in both development and packaged launches.
+const settingsStore = new SettingsStore(userDataDirectory, app.getPath("documents"));
 const preferences = settingsStore.get();
 const presetOverride = process.env.AGENT_CONTROL_GJC_PRESET;
 const modelPreset = presetOverride?.trim()
   ? presetOverride.trim()
   : preferences.modelPreset;
-const workspace = path.resolve(
-  process.env.AGENT_CONTROL_WORKSPACE ?? preferences.workspace,
-);
+const requestedWorkspace = process.env.AGENT_CONTROL_WORKSPACE;
+const workspace = validDirectory(requestedWorkspace)
+  ? path.resolve(requestedWorkspace)
+  : preferences.workspace;
 const sessionMetadata = new SessionMetadataStore(userDataDirectory);
+const attachmentStore = new AttachmentStore();
 let productivityService: ProductivityService | undefined;
 
 // The most recent notification this process handed to macOS. The smoke run
@@ -153,7 +170,10 @@ const gjcController = new GjcAcpController({
   artifactDirectory: path.join(userDataDirectory, "artifacts"),
   emit: broadcastAgentEvent,
 });
-const unregisterGjcIpc = registerGjcIpcHandlers(gjcController);
+export const ipcSecurity = new IpcSecurity(
+  !app.isPackaged && smokeMode ? async () => true : nativeDestructiveConfirmation,
+);
+const unregisterGjcIpc = registerGjcIpcHandlers(gjcController, attachmentStore, ipcSecurity);
 const desktopManagement = new ManagementService(
   process.env.GJC_BIN || preferences.gjcExecutable || "gjc",
 );
@@ -180,6 +200,8 @@ const automationService = new AutomationService({
 });
 const unregisterSettingsIpc = registerSettingsIpcHandlers(
   settingsStore,
+  attachmentStore,
+  ipcSecurity,
   async (updated) => {
     desktopManagement.setExecutable(
       process.env.GJC_BIN || updated.gjcExecutable || "gjc",
@@ -198,15 +220,15 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
   },
 );
 const unregisterDesktopServicesIpc =
-  registerDesktopServicesIpcHandlers(desktopManagement);
+  registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
 productivityService = new ProductivityService(
   gjcController,
   path.join(userDataDirectory, "productivity.sqlite"),
 );
 const unregisterProductivityIpc =
-  registerProductivityIpcHandlers(productivityService);
+  registerProductivityIpcHandlers(productivityService, ipcSecurity);
 const unregisterAutomationIpc =
-  registerAutomationIpcHandlers(automationService);
+  registerAutomationIpcHandlers(automationService, ipcSecurity);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -227,6 +249,17 @@ function createWindow(): BrowserWindow {
       sandbox: true,
     },
   });
+  const expectedUrl = expectedTopLevelUrl(
+    developmentUrl,
+    app.getAppPath(),
+    !app.isPackaged && !developmentUrl && mockSmokeMode,
+  );
+  ipcSecurity.register(window, expectedUrl);
+  const senderId = window.webContents.id;
+  attachmentStore.activateSender(senderId);
+  window.webContents.once("destroyed", () =>
+    attachmentStore.revokeSender(senderId),
+  );
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
@@ -258,9 +291,6 @@ function createWindow(): BrowserWindow {
   });
 
   window.webContents.on("will-navigate", (event, url) => {
-    const expectedUrl =
-      developmentUrl ??
-      `file://${path.join(app.getAppPath(), "dist/index.html")}`;
     if (url !== expectedUrl) event.preventDefault();
   });
 
@@ -543,7 +573,11 @@ function createWindow(): BrowserWindow {
             assert(restoredLastRect.top < restoredRect.bottom && restoredLastRect.bottom <= restoredRect.bottom + 2, 'Restored session newest message is outside the viewport');
             document.querySelector('.inspector > header .icon-button')?.click();
             assert(!document.querySelector('.connection-pill'), 'Bottom-right connection chip still renders');
-            assert(typeof window.agentControlDesktop?.settings.pathForFile === 'function', 'Chromium file chooser bridge did not render');
+            assert(typeof window.agentControlDesktop?.settings.isNativeFile === 'function', 'Native file identity bridge did not render');
+            assert(typeof window.agentControlDesktop?.settings.prepareImages === 'function', 'Opaque image preparation bridge did not render');
+            assert(typeof window.agentControlDesktop?.settings.prepareFiles === 'function', 'Opaque file preparation bridge did not render');
+            assert(typeof window.agentControlDesktop?.settings.discardAttachments === 'function', 'Attachment discard bridge did not render');
+            assert(window.agentControlDesktop?.settings.pathForFile === undefined, 'Renderer still exposes native file paths');
             const attachmentButton = document.querySelector('button[title="이미지 첨부"]');
             assert(attachmentButton, 'Image attachment action did not render');
             assert(document.querySelector('button[title="파일 첨부"]'), 'Text file attachment action did not render');
@@ -973,11 +1007,11 @@ function createWindow(): BrowserWindow {
     });
   }
 
-  if (developmentUrl) {
+  if (!app.isPackaged && developmentUrl) {
     void window.loadURL(developmentUrl);
   } else {
     void window.loadFile(path.join(app.getAppPath(), "dist/index.html"), {
-      query: mockSmokeMode ? { backend: "mock" } : undefined,
+      query: !app.isPackaged && mockSmokeMode ? { backend: "mock" } : undefined,
     });
   }
 
@@ -1005,10 +1039,12 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  ipcSecurity.dispose();
   unregisterGjcIpc();
   unregisterSettingsIpc();
   unregisterDesktopServicesIpc();
   unregisterProductivityIpc();
   unregisterAutomationIpc();
   gjcController.dispose();
+  attachmentStore.dispose();
 });

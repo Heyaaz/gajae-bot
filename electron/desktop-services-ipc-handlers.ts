@@ -1,7 +1,9 @@
 import { ipcMain } from 'electron'
+import type { IpcMainInvokeEvent } from 'electron'
 import type { McpServerInput } from '../shared/agent-contract.js'
 import { DESKTOP_SERVICES_IPC as IPC } from '../shared/desktop-services-ipc.js'
 import { ManagementService } from './desktop-services.js'
+import { IpcSecurity } from './ipc-security.js'
 
 function requiredString(value: unknown, label: string, maximum = 512): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum || [...value].some((character) => {
@@ -36,25 +38,43 @@ function mcpInput(value: unknown): McpServerInput {
   }
 }
 
-export function registerDesktopServicesIpcHandlers(management: ManagementService): () => void {
+export function registerDesktopServicesIpcHandlers(management: ManagementService, security: IpcSecurity): () => void {
   const managementChannels = Object.values(IPC.management)
 
-  ipcMain.handle(IPC.management.getSnapshot, (_event, value: unknown) => management.getSnapshot(workspace(value)))
-  ipcMain.handle(IPC.management.addMcpServer, (_event, value: unknown, input: unknown) => management.addMcpServer(workspace(value), mcpInput(input)))
-  ipcMain.handle(IPC.management.removeMcpServer, (_event, value: unknown, scope: unknown, name: unknown) => {
+  ipcMain.handle(IPC.management.getSnapshot, security.guarded((_event, value: unknown) => management.getSnapshot(workspace(value))))
+  ipcMain.handle(IPC.management.addMcpServer, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, input: unknown) => {
+    const target = workspace(value)
+    const server = mcpInput(input)
+    await security.authorizeDestructive(event, { message: 'Add MCP server?', detail: `This will add the MCP server "${server.name}".` })
+    return management.addMcpServer(target, server)
+  }))
+  ipcMain.handle(IPC.management.removeMcpServer, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, scope: unknown, name: unknown) => {
     if (scope !== 'user' && scope !== 'project') throw new Error('MCP scope is invalid')
-    return management.removeMcpServer(workspace(value), scope, requiredString(name, 'MCP server name', 128))
-  })
-  ipcMain.handle(IPC.management.setPluginEnabled, (_event, value: unknown, name: unknown, enabled: unknown) => {
+    const target = workspace(value)
+    const serverName = requiredString(name, 'MCP server name', 128)
+    await security.authorizeDestructive(event, { message: 'Remove MCP server?', detail: `This will remove the MCP server "${serverName}".` })
+    return management.removeMcpServer(target, scope, serverName)
+  }))
+  ipcMain.handle(IPC.management.setPluginEnabled, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, name: unknown, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('Plugin enabled state is invalid')
-    return management.setPluginEnabled(workspace(value), requiredString(name, 'Plugin name', 128), enabled)
-  })
-  ipcMain.handle(IPC.management.installPlugin, (_event, value: unknown, target: unknown, scope: unknown) => {
+    const workspacePath = workspace(value)
+    const pluginName = requiredString(name, 'Plugin name', 128)
+    await security.authorizeDestructive(event, { message: 'Change plugin status?', detail: `This will ${enabled ? 'enable' : 'disable'} plugin "${pluginName}".` })
+    return management.setPluginEnabled(workspacePath, pluginName, enabled)
+  }))
+  ipcMain.handle(IPC.management.installPlugin, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, target: unknown, scope: unknown) => {
     if (scope !== 'user' && scope !== 'project') throw new Error('Plugin scope is invalid')
-    return management.installPlugin(workspace(value), requiredString(target, 'Plugin target', 256), scope)
-  })
-  ipcMain.handle(IPC.management.uninstallPlugin, (_event, value: unknown, name: unknown) =>
-    management.uninstallPlugin(workspace(value), requiredString(name, 'Plugin name', 128)))
+    const workspacePath = workspace(value)
+    const pluginTarget = requiredString(target, 'Plugin target', 256)
+    await security.authorizeDestructive(event, { message: 'Install plugin?', detail: `This will install plugin "${pluginTarget}".` })
+    return management.installPlugin(workspacePath, pluginTarget, scope)
+  }))
+  ipcMain.handle(IPC.management.uninstallPlugin, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, name: unknown) => {
+    const workspacePath = workspace(value)
+    const pluginName = requiredString(name, 'Plugin name', 128)
+    await security.authorizeDestructive(event, { message: 'Uninstall plugin?', detail: `This will uninstall plugin "${pluginName}".` })
+    return management.uninstallPlugin(workspacePath, pluginName)
+  }))
 
   return () => {
     for (const channel of managementChannels) ipcMain.removeHandler(channel)
