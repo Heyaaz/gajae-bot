@@ -580,13 +580,13 @@ function persistedTurnState(rows: unknown[]): PersistedTurnState {
       !Array.isArray(value.message)
         ? (value.message as Record<string, unknown>)
         : value;
+    const details =
+      message.details &&
+      typeof message.details === "object" &&
+      !Array.isArray(message.details)
+        ? (message.details as Record<string, unknown>)
+        : undefined;
     if (message.role === "toolResult" && message.toolName === "task") {
-      const details =
-        message.details &&
-        typeof message.details === "object" &&
-        !Array.isArray(message.details)
-          ? (message.details as Record<string, unknown>)
-          : undefined;
       const asyncState =
         details?.async &&
         typeof details.async === "object" &&
@@ -598,6 +598,18 @@ function persistedTurnState(rows: unknown[]): PersistedTurnState {
         if (asyncState?.state === "running") pendingAsyncJobs.add(jobId);
         else pendingAsyncJobs.delete(jobId);
       }
+    }
+    if (
+      message.role === "toolResult" &&
+      message.toolName === "subagent" &&
+      Array.isArray(details?.terminalIds)
+    ) {
+      // An explicit `subagent await` consumes completion inside the tool result, so
+      // GJC does not need to append a later custom_message/async-result. terminalIds
+      // is the tool's authoritative set: timed-out and interrupted waits omit it for
+      // jobs that are still alive.
+      for (const jobId of details.terminalIds)
+        if (typeof jobId === "string") pendingAsyncJobs.delete(jobId);
     }
     if (message.role === "user") {
       lastUser = index;

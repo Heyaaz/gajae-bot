@@ -5414,6 +5414,169 @@ describe("listSessions status from the transcript", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("settles a detached task completed through subagent await", () => {
+    // Captured from the QuotaBar session. A task launch persists the durable async
+    // marker, but an explicit `subagent await` reports completion as a normal tool
+    // result rather than `custom_message/async-result`. Ignoring this second real
+    // delivery shape leaves the job pending forever, so a later discovery poll turns
+    // an already-finished row back to running.
+    const rows = [
+      { type: "message", message: { role: "user", content: "work" } },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "task",
+          details: {
+            async: {
+              state: "running",
+              jobId: "0-FixRouterDatabasePath",
+              type: "task",
+            },
+          },
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "subagent",
+          details: {
+            subagents: [
+              {
+                id: "0-FixRouterDatabasePath",
+                jobId: "0-FixRouterDatabasePath",
+                status: "completed",
+              },
+            ],
+            terminalIds: ["0-FixRouterDatabasePath"],
+          },
+        },
+      },
+    ];
+
+    // Completion is not itself the turn boundary; the model still has to finish.
+    expect(persistedTranscriptRunning(rows)).toBe(true);
+    expect(
+      persistedTranscriptRunning([
+        ...rows,
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "done" },
+        },
+      ]),
+    ).toBe(false);
+
+    // `condition:any_terminal` can return while a sibling is still alive. Only the
+    // IDs explicitly proven terminal are cleared; the other detached job continues
+    // to hold the cycle open.
+    expect(
+      persistedTranscriptRunning([
+        rows[0],
+        rows[1],
+        {
+          type: "message",
+          message: {
+            role: "toolResult",
+            toolName: "task",
+            details: {
+              async: {
+                state: "running",
+                jobId: "1-StillRunning",
+                type: "task",
+              },
+            },
+          },
+        },
+        rows[2],
+        {
+          type: "message",
+          message: { role: "assistant", stopReason: "stop", content: "done" },
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("does not resurrect an awaited detached task on a later run-state refresh", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-awaited-task-"));
+    const file = path.join(root, "session.jsonl");
+    const rows = [
+      { type: "message", message: { role: "user", content: "work" } },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "task",
+          details: {
+            async: {
+              state: "running",
+              jobId: "0-FixRouterDatabasePath",
+              type: "task",
+            },
+          },
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          toolName: "subagent",
+          details: {
+            subagents: [
+              {
+                id: "0-FixRouterDatabasePath",
+                jobId: "0-FixRouterDatabasePath",
+                status: "completed",
+              },
+            ],
+            awaitOutcome: "completed",
+            terminalIds: ["0-FixRouterDatabasePath"],
+          },
+        },
+      },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          stopReason: "stop",
+          content: "done",
+        },
+      },
+    ];
+    await writeFile(file, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`);
+    const events: AgentEvent[] = [];
+    const controller = new GjcAcpController({
+      workspace: "/tmp/project",
+      emit: (event) => events.push(event),
+    });
+    const internals = controller as unknown as {
+      sessions: Map<string, { id: string; status: string }>;
+      pendingAsyncWorkSessions: Set<string>;
+      locateSharedTranscriptFile: (id: string) => Promise<string | undefined>;
+      readPersistedTranscript: (id: string) => Promise<unknown>;
+      republishRunState: (id: string) => Promise<void>;
+    };
+    internals.sessions.set("quota", { id: "quota", status: "idle" });
+    internals.locateSharedTranscriptFile = async () => file;
+
+    // A full transcript refresh keeps an idle row idle. The old parser nevertheless
+    // left pendingAsyncWorkSessions set, and the later 15-second discovery/watcher
+    // refresh promoted that same unchanged transcript to running.
+    await internals.readPersistedTranscript("quota");
+    expect(internals.pendingAsyncWorkSessions.has("quota")).toBe(false);
+    await internals.republishRunState("quota");
+    expect(internals.sessions.get("quota")?.status).toBe("idle");
+    expect(
+      events.some(
+        (event) =>
+          event.type === "session.updated" && event.session.status === "running",
+      ),
+    ).toBe(false);
+
+    controller.dispose();
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("expands an ambiguous run-state tail before settling a long detached cycle", async () => {
     // In the captured turn, 386KB was written between the detached task launch and
     // the first assistant stop, beyond the 256KB discovery tail. A tail containing
