@@ -509,6 +509,12 @@ function createWindow(): BrowserWindow {
             // title is the stable part of the row.
             const selectedTitle = selectedBefore.querySelector('strong')?.textContent?.trim();
             assert(selectedTitle, 'Selected session row had no title');
+            const originalTranscript = document.querySelector('.transcript');
+            assert(originalTranscript && originalTranscript.scrollHeight > originalTranscript.clientHeight, 'Original session transcript is not scrollable');
+            originalTranscript.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+            originalTranscript.scrollTop = 0;
+            originalTranscript.dispatchEvent(new Event('scroll', { bubbles: true }));
+            await wait(80);
             const stuckRow = Array.from(document.querySelectorAll('.session-row')).find((node) => node.textContent?.includes('M1 Air box health'));
             assert(stuckRow, 'Terminal-only session row did not render');
             stuckRow.click();
@@ -524,9 +530,17 @@ function createWindow(): BrowserWindow {
               const row = Array.from(document.querySelectorAll('.session-row')).find((node) => node.querySelector('strong')?.textContent?.trim() === selectedTitle);
               assert(row, 'Original session row disappeared: ' + selectedTitle);
               row.click();
-              await wait(120);
+              await wait(900);
             };
             await restoreSelection();
+            const restoredTranscript = document.querySelector('.transcript');
+            const restoredLastSlot = restoredTranscript?.querySelector('.transcript-slot[data-last="true"]');
+            assert(restoredTranscript && restoredLastSlot, 'Restored session did not render its newest transcript block');
+            const restoredGap = restoredTranscript.scrollHeight - restoredTranscript.scrollTop - restoredTranscript.clientHeight;
+            const restoredRect = restoredTranscript.getBoundingClientRect();
+            const restoredLastRect = restoredLastSlot.getBoundingClientRect();
+            assert(restoredGap <= 4, 'Restored session opened away from its newest message: ' + restoredGap);
+            assert(restoredLastRect.top < restoredRect.bottom && restoredLastRect.bottom <= restoredRect.bottom + 2, 'Restored session newest message is outside the viewport');
             document.querySelector('.inspector > header .icon-button')?.click();
             assert(!document.querySelector('.connection-pill'), 'Bottom-right connection chip still renders');
             assert(typeof window.agentControlDesktop?.settings.pathForFile === 'function', 'Chromium file chooser bridge did not render');

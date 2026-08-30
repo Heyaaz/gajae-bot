@@ -39,6 +39,7 @@ import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
 const GESTURE_WINDOW_MS = 400;
 
 export interface TranscriptProps {
+  sessionId: string;
   items: TranscriptItem[];
   compacting?: boolean;
   revealItemId?: string;
@@ -49,6 +50,7 @@ export interface TranscriptProps {
 }
 
 export function Transcript({
+  sessionId,
   items,
   compacting = false,
   revealItemId,
@@ -79,6 +81,7 @@ export function Transcript({
   // has stopped.
   const gestureAtRef = useRef(0);
   const touchYRef = useRef<number | undefined>(undefined);
+  const sessionRef = useRef(sessionId);
   const [following, setFollowing] = useState(true);
 
   const blocks = useMemo(() => groupTranscriptItems(items), [items]);
@@ -110,6 +113,32 @@ export function Transcript({
   });
 
   const virtualItems = virtualizer.getVirtualItems();
+
+  // A Transcript instance stays mounted while the user moves between sessions. The
+  // old session's scroll offset, measured row heights, and "reading history" intent
+  // are not valid in the new one. Reusing them is what opened a restored session 866px
+  // above its newest message. Reset only when identity changes -- remounting the whole
+  // virtualizer introduced an initial wide-layout measurement overlap.
+  useLayoutEffect(() => {
+    if (sessionRef.current === sessionId) return;
+    sessionRef.current = sessionId;
+    followingRef.current = true;
+    scrolledAwayRef.current = false;
+    gestureAtRef.current = 0;
+    touchYRef.current = undefined;
+    selfScrollingRef.current = true;
+    setFollowing(true);
+    virtualizer.measure();
+    if (blocks.length > 0)
+      virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+    const frame = requestAnimationFrame(() => {
+      const element = transcriptRef.current;
+      if (element && followingRef.current)
+        element.scrollTop = element.scrollHeight - element.clientHeight;
+      selfScrollingRef.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [blocks.length, sessionId, virtualizer]);
 
   // Measure slots the first time they mount.
   //

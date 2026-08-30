@@ -47,6 +47,12 @@ app.whenReady().then(async () => {
     for (let i = 0; i < 60 && !document.querySelector('.composer textarea'); i += 1) await wait(100);
     const box = document.querySelector('.composer textarea');
     if (!box) return { error: 'composer never mounted' };
+    // Session selection resets the virtualized transcript on its next frame. This
+    // probe mutates React's private value tracker rather than sending trusted keyboard
+    // input, so doing both in the same frame lets the controlled textarea restore its
+    // prior empty DOM value before React observes the synthetic event. Attachment
+    // rendering is the behavior under test here; session switching has its own smoke.
+    await wait(150);
     // React tracks the last value it wrote and drops an input event whose value it
     // believes it already has, so the tracker is cleared before setting the draft.
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;

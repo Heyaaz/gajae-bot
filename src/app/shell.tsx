@@ -1140,6 +1140,7 @@ export default function App() {
                 }
               />
               <Transcript
+                sessionId={selectedSession.id}
                 items={selectedTranscript}
                 compacting={selectedSession.phase === "compacting"}
                 revealItemId={
