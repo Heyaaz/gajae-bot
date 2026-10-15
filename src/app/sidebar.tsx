@@ -16,7 +16,24 @@ import { memo, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { connectionStateLabel, statusLabel } from "./format";
 import { sessionListModel } from "./sidebar-model";
-import type { SessionGroupId } from "./sidebar-model";
+import type {
+  SessionFamilySummary,
+  SessionGroupId,
+  SessionRowNode,
+} from "./sidebar-model";
+
+/** What a closed family reports instead of the rows it is holding back. */
+function familySummaryLabel(
+  hidden: number,
+  summary: SessionFamilySummary | null,
+): string {
+  const counts = [
+    summary?.failed ? `실패 ${summary.failed}` : "",
+    summary?.unread ? `안읽음 ${summary.unread}` : "",
+    summary?.working ? `작업 중 ${summary.working}` : "",
+  ].filter(Boolean);
+  return [`포크 ${hidden}개 숨김`, ...counts].join(" · ");
+}
 
 export interface SessionRowProps {
   session: AgentSession;
@@ -24,6 +41,14 @@ export interface SessionRowProps {
   selected: boolean;
   renaming: boolean;
   renameValue: string;
+  /** Nesting depth under a family head: 0 for a root row. */
+  depth?: number;
+  /** Set on a family head: the rows it is holding back while it is closed. */
+  hidden?: number;
+  hiddenSummary?: SessionFamilySummary | null;
+  /** Set on a family head: opens and closes the forks under it. */
+  familyOpen?: boolean;
+  onToggleFamily?: () => void;
   onSelect: () => void;
   onContextMenu: (event: ReactMouseEvent) => void;
   onRenameChange: (value: string) => void;
@@ -37,6 +62,11 @@ export function SessionRow({
   selected,
   renaming,
   renameValue,
+  depth = 0,
+  hidden = 0,
+  hiddenSummary = null,
+  familyOpen,
+  onToggleFamily,
   onSelect,
   onContextMenu,
   onRenameChange,
@@ -46,9 +76,12 @@ export function SessionRow({
   const stateLabel = statusLabel(session.status, session.phase);
   return (
     <div
-      className={`session-row ${selected ? "is-selected" : ""}`}
+      className={`session-row ${selected ? "is-selected" : ""} ${
+        depth > 0 ? "session-row--nested" : ""
+      }`}
       role="button"
       tabIndex={0}
+      data-depth={depth}
       onClick={() => {
         if (!renaming) onSelect();
       }}
@@ -98,6 +131,25 @@ export function SessionRow({
         <span className="session-row__subtitle">{session.subtitle}</span>
       </span>
       <span className="session-row__meta">
+        {/* A fork is nested under the session it came from, and closing it has to
+            leave the count of what it is holding back: the rows behind it can be
+            working or unread without being on screen. */}
+        {onToggleFamily && (
+          <button
+            type="button"
+            className="session-family-toggle"
+            aria-expanded={familyOpen}
+            aria-label={familySummaryLabel(hidden, hiddenSummary)}
+            title={familySummaryLabel(hidden, hiddenSummary)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleFamily();
+            }}
+          >
+            <span aria-hidden="true">{familyOpen ? "▾" : "▸"}</span>
+            {hidden > 0 && <em>{hidden}</em>}
+          </button>
+        )}
         {/* The state used to sit between the title and the clock as a word, which
             pushed the title aside for something the group header already says. */}
         <span
@@ -181,9 +233,18 @@ function SidebarView({
   const [expandedGroups, setExpandedGroups] = useState<
     ReadonlySet<SessionGroupId>
   >(() => new Set());
+  // Forks are nested until the user closes them, so this holds the closed ones.
+  const [collapsedFamilies, setCollapsedFamilies] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const model = useMemo(
-    () => sessionListModel(sessions, { expanded: expandedGroups }),
-    [sessions, expandedGroups],
+    () =>
+      sessionListModel(sessions, {
+        expanded: expandedGroups,
+        collapsedFamilies,
+        selectedId,
+      }),
+    [sessions, expandedGroups, collapsedFamilies, selectedId],
   );
   // The digits the main process sends for ⌘1-⌘9 index the same list, so the numbers on
   // the rows have to come from the model rather than from a second reading of the
@@ -197,6 +258,15 @@ function SidebarView({
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
       else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleFamily(headId: string): void {
+    setCollapsedFamilies((current) => {
+      const next = new Set(current);
+      if (next.has(headId)) next.delete(headId);
+      else next.add(headId);
       return next;
     });
   }
@@ -233,7 +303,8 @@ function SidebarView({
     else setWorkspaceValue(workspaceLabel);
   }
 
-  function renderSession(session: AgentSession) {
+  function renderNode(node: SessionRowNode) {
+    const { session } = node;
     return (
       <SessionRow
         key={session.id}
@@ -242,6 +313,13 @@ function SidebarView({
         selected={session.id === selectedId}
         renaming={session.id === renamingId}
         renameValue={renameValue}
+        depth={node.depth}
+        hidden={node.hidden}
+        hiddenSummary={node.hiddenSummary}
+        familyOpen={!collapsedFamilies.has(session.id)}
+        onToggleFamily={
+          node.familyHead ? () => toggleFamily(session.id) : undefined
+        }
         onSelect={() => onSelect(session.id)}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -253,6 +331,18 @@ function SidebarView({
         onRenameCancel={() => setRenamingId(null)}
       />
     );
+  }
+
+  function renderSession(session: AgentSession) {
+    // Pinned rows stay leaves: the rail keeps them out of the state groups, so a
+    // fork of a pinned session has no head here to hang under.
+    return renderNode({
+      session,
+      depth: 0,
+      familyHead: false,
+      hidden: 0,
+      hiddenSummary: null,
+    });
   }
 
   return (
@@ -297,7 +387,7 @@ function SidebarView({
             <header>
               <span>{group.label}</span>
             </header>
-            {group.sessions.map(renderSession)}
+            {group.rows.map(renderNode)}
             {group.overflow > 0 && (
               <button
                 type="button"

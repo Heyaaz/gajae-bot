@@ -399,6 +399,37 @@ function markUpdated(session: AgentSession, timestamp?: string): void {
   session.updatedAtMs = timestampMs(timestamp) ?? Date.now();
 }
 
+/**
+ * The session a transcript's envelope says it was forked from.
+ *
+ * GJC writes `parentSession` next to the id and cwd on the first line, and some of
+ * its paths store the source's *file path* there instead of its id, so the value is
+ * reduced the same way the file layout spells it: drop the directory, the ".jsonl"
+ * suffix, and everything before the last `_`. A session that names itself is not
+ * its own parent.
+ */
+export function parentSessionOf(
+  envelope: string | undefined,
+  sessionId: string,
+): string | undefined {
+  if (!envelope) return undefined;
+  let row: Record<string, unknown>;
+  try {
+    row = JSON.parse(envelope) as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  if (row.type !== "session" || typeof row.parentSession !== "string")
+    return undefined;
+  const name = row.parentSession.trim().split("/").at(-1) ?? "";
+  const id = (
+    name.endsWith(".jsonl") ? name.slice(0, -`.jsonl`.length) : name
+  )
+    .split("_")
+    .at(-1);
+  return id && id !== sessionId ? id : undefined;
+}
+
 function textFromContent(content: ContentBlock): string {
   if (content.type === "text") return content.text;
   if (content.type === "audio") return "[Audio attachment]";
@@ -2275,6 +2306,9 @@ export class GjcSdkController {
                 currentSession?.status === "starting"
               ? currentSession.status
               : (transcriptStatus ?? currentSession?.status ?? "idle");
+      // Lineage is not on the broker row this loop is reading, so it comes from the
+      // session's own envelope.
+      const parentId = await this.sessionParentId(info.sessionId);
       if (
         !revisionChanged &&
         currentSession &&
@@ -2314,6 +2348,7 @@ export class GjcSdkController {
           currentSession?.unread ??
           false,
         worktree: this.sessionMetadata?.getWorktree(info.sessionId),
+        parentId: parentId ?? currentSession?.parentId,
       };
       session.title =
         this.sessionMetadata?.getAlias(session.id) ?? session.title;
@@ -2441,6 +2476,46 @@ export class GjcSdkController {
         : row,
     );
     this.emitEvent({ type: "session.updated", session: { ...session } });
+  }
+
+  /**
+   * Parent session ids, keyed by session id, with `null` for a transcript that was
+   * read and named no source.
+   *
+   * A fork writes the link into the new session's envelope when it creates the
+   * file and never revises it, so one read per session is enough -- and the negative
+   * answer has to be cached too, or every discovery pass would re-read the head of
+   * every root session in the list.
+   */
+  private readonly sessionParents = new Map<string, string | null>();
+
+  /**
+   * The session a row was forked from, read from its transcript envelope.
+   *
+   * The broker's session list carries identity and liveness only, so lineage comes
+   * from the same session file the history scan already reads a bounded head of.
+   * A session whose file is not on disk yet answers with the id it already carries,
+   * which keeps a fork this window made from losing its link to a slow write.
+   */
+  private async sessionParentId(
+    sessionId: string,
+  ): Promise<string | undefined> {
+    const cached = this.sessionParents.get(sessionId);
+    if (cached !== undefined) return cached ?? undefined;
+    try {
+      const filePath = await this.locateSharedTranscriptFile(sessionId);
+      if (!filePath) return this.sessions.get(sessionId)?.parentId;
+      const id = parentSessionOf(
+        (await transcriptHeadLines(filePath))[0],
+        sessionId,
+      );
+      this.sessionParents.set(sessionId, id ?? null);
+      return id;
+    } catch {
+      // An unreadable transcript is not evidence of a root: keep whatever the row
+      // already reports rather than erasing a link we had.
+      return this.sessions.get(sessionId)?.parentId;
+    }
   }
 
   /**
@@ -5045,6 +5120,7 @@ export class GjcSdkController {
     // Each entry holds a transcript's parsed envelopes, measured at 6.3MB apiece.
     this.sharedTranscriptReads.clear();
     this.sharedSessionFiles.clear();
+    this.sessionParents.clear();
     this.transcripts.clear();
     this.messageKeys.clear();
     this.activeAssistantMessages.clear();
@@ -6786,6 +6862,9 @@ export class GjcSdkController {
       status: "idle",
       updatedAt: "now",
       updatedAtMs: Date.now(),
+      // The fork this window asked for already knows the source; the envelope read
+      // only has to cover sessions this window did not create.
+      parentId: input.sourceSessionId,
       pinned: false,
       unread: false,
       accent: GJC_ACCENT,

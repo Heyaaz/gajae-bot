@@ -70,6 +70,15 @@ export interface AgentSession {
    * order instead.
    */
   updatedAtMs?: number;
+  /**
+   * The session this row was forked from, when the runtime recorded one.
+   *
+   * GJC writes the source id into the forked transcript's envelope
+   * (`parentSession`), which is the only place the link survives: the broker's
+   * session list reports identity and liveness, not lineage. Rows without it are
+   * roots, and the rail leaves them top-level.
+   */
+  parentId?: string;
   pinned: boolean;
   unread: boolean;
   accent: string;

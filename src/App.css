@@ -491,6 +491,39 @@
   border-radius: 9px;
   cursor: pointer;
 }
+.session-row--nested {
+  /* A fork reads as belonging to the row above it. The indent is the whole cue:
+     a second border or a background would compete with the group header. */
+  padding-left: 22px;
+  min-height: 44px;
+}
+.session-row--nested .session-row__topline strong {
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.session-family-toggle {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 4px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 1.2;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.session-family-toggle em {
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-style: normal;
+  font-weight: 650;
+}
+.session-family-toggle:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.05);
+}
 
 .session-row:hover {
   background: rgba(255, 255, 255, 0.035);

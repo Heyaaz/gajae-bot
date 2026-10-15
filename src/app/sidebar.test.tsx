@@ -161,6 +161,58 @@ describe("Sidebar session groups", () => {
   });
 });
 
+describe("Sidebar families", () => {
+  it("nests a fork under the session it came from", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([
+          session(0, { id: "parent", updatedAtMs: 2_000 }),
+          session(1, {
+            id: "child",
+            parentId: "parent",
+            status: "idle",
+            updatedAtMs: 1_000,
+          }),
+        ]),
+      ),
+    );
+    expect(markup).toContain('data-depth="1"');
+    expect(markup).toContain("session-row--nested");
+    // The head carries the control, and a fork is open until the user closes it.
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain("포크 0개 숨김");
+  });
+
+  it("places a family where its fork needs an answer", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([
+          session(0, { id: "parent", status: "idle", updatedAtMs: 2_000 }),
+          session(1, {
+            id: "child",
+            parentId: "parent",
+            status: "waiting",
+            updatedAtMs: 1_000,
+          }),
+        ]),
+      ),
+    );
+    expect(headings(markup)).toEqual(["확인 필요"]);
+    expect(markup).toContain("Session 0");
+    expect(markup).toContain("Session 1");
+  });
+
+  it("gives a leaf row no family control", () => {
+    const markup = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0, { status: "idle" })])),
+    );
+    expect(markup).not.toContain("session-family-toggle");
+    expect(markup).not.toContain("session-row--nested");
+  });
+});
+
 describe("Sidebar row state", () => {
   it("does not flag the row the user is already reading", () => {
     const markup = renderToStaticMarkup(
