@@ -294,8 +294,12 @@ the same session), and the turn keeps running. The same payload over a live
 terminal aborts are available only through the Broker control route"). Stop
 therefore reports that it could not confirm the abort instead of claiming the run
 stopped; the transcript stays the source of truth for whether work continued.
-Reported upstream as https://github.com/Yeachan-Heo/gajae-code/issues/6772 with the
-exact reproduction and the `no_active_turn` gate it stops at.
+Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6776 (reported as
+https://github.com/Yeachan-Heo/gajae-code/issues/6772): the active-submission lookup
+was scoped to the aborting connection and ignored the broker-authorized `operator`
+flag, so a running turn is now fenced and stopped (`turn:"stopped"`) instead of
+reporting `no_active_turn`. Gajae already sends `operator: true` with `--confirm`, so
+Stop needs no app change once the runtime carrying the fix is installed.
 
 **Known limitation on 0.18.11:** `session.delete` requires the durable transcript
 path, and a call that omits it is refused with `invalid_input`
