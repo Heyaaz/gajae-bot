@@ -83,7 +83,7 @@ describe("sessionListModel", () => {
       session({ id: "pinned", pinned: true, status: "idle" }),
       session({ id: "other", status: "idle" }),
     ]);
-    expect(model.pinned.map((row) => row.id)).toEqual(["pinned"]);
+    expect(model.pinned.map((row) => row.session.id)).toEqual(["pinned"]);
     expect(rowsOf(model)).toEqual(["other"]);
   });
 
@@ -96,7 +96,10 @@ describe("sessionListModel", () => {
       session({ id: "pin-new", pinned: true, updatedAtMs: 5_000 }),
     ]);
     expect(rowsOf(model)).toEqual(["new", "mid", "old"]);
-    expect(model.pinned.map((row) => row.id)).toEqual(["pin-new", "pin-old"]);
+    expect(model.pinned.map((row) => row.session.id)).toEqual([
+      "pin-new",
+      "pin-old",
+    ]);
   });
 
   it("keeps backend order when a row has no sortable timestamp", () => {
@@ -277,8 +280,35 @@ describe("session families", () => {
     expect(closed.groups[0].rows[0].hidden).toBe(2);
   });
 
-  it("counts a family as one slot against the group cap", () => {
-    const rows = [
+  it("brings a fork into the pinned section when its head is pinned", () => {
+    const model = sessionListModel([
+      session({ id: "head", pinned: true, status: "idle", updatedAtMs: 9_000 }),
+      fork("kid", "head", { status: "idle", updatedAtMs: 8_000 }),
+    ]);
+    // The pin holds the family together: the fork renders under its head instead of
+    // becoming a top-level row in whichever group it would have reached.
+    expect(model.pinned.map((node) => node.session.id)).toEqual(["head", "kid"]);
+    expect(model.pinned.map((node) => node.depth)).toEqual([0, 1]);
+    expect(model.pinned[0].familyHead).toBe(true);
+    expect(rowsOf(model)).toEqual([]);
+  });
+
+  it("keeps a pinned fork out of its head's family", () => {
+    const model = sessionListModel([
+      session({ id: "head", status: "idle", updatedAtMs: 9_000 }),
+      fork("pinned-kid", "head", {
+        pinned: true,
+        status: "idle",
+        updatedAtMs: 8_000,
+      }),
+      fork("kid", "head", { status: "idle", updatedAtMs: 7_000 }),
+    ]);
+    // A pinned fork is a row of the pinned section; its head keeps the rest.
+    expect(model.pinned.map((node) => node.session.id)).toEqual(["pinned-kid"]);
+    expect(rowsOf(model)).toEqual(["head", "kid"]);
+  });
+
+  it("counts a family as one slot against the group cap", () => {    const rows = [
       ...Array.from({ length: 5 }, (_, index) =>
         session({ id: `solo${index}`, status: "idle", updatedAtMs: 9_000 - index }),
       ),

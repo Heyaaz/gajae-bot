@@ -333,18 +333,6 @@ function SidebarView({
     );
   }
 
-  function renderSession(session: AgentSession) {
-    // Pinned rows stay leaves: the rail keeps them out of the state groups, so a
-    // fork of a pinned session has no head here to hang under.
-    return renderNode({
-      session,
-      depth: 0,
-      familyHead: false,
-      hidden: 0,
-      hiddenSummary: null,
-    });
-  }
-
   return (
     <aside className="sidebar">
       <div className="window-drag-region" aria-hidden="true" />
@@ -378,7 +366,7 @@ function SidebarView({
               <span>고정됨</span>
               <MoreHorizontal size={15} />
             </header>
-            {model.pinned.map(renderSession)}
+            {model.pinned.map(renderNode)}
           </section>
         )}
 

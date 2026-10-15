@@ -106,7 +106,8 @@ export interface SessionGroupBlock {
 }
 
 export interface SessionListModel {
-  pinned: AgentSession[];
+  /** Pinned families, head first; a pin brings a fork with it. */
+  pinned: SessionRowNode[];
   groups: SessionGroupBlock[];
   /** Rows in ⌘-digit order. */
   shortcuts: AgentSession[];
@@ -230,24 +231,82 @@ export function sessionListModel(
     selectedId,
   }: SessionListOptions = {},
 ): SessionListModel {
-  const pinned = sessions
+  const pinnedSessions = sessions
     .filter((session) => session.pinned)
     .slice()
     .sort(byRecency);
-  const rows = sessions.filter((session) => !session.pinned);
-  const byId = new Map(rows.map((session) => [session.id, session]));
-  const { members, headOf } = familyLayout(rows);
-  // A family is placed by its most actionable member, and every member lands in
-  // that group: a working child is why its completed parent is worth looking at,
-  // and splitting them across groups would hide the relationship the nesting exists
-  // to show.
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  // Families are resolved across the whole list before it splits into sections: a
+  // pinned head has to be able to bring its forks with it, and whether a section
+  // owns a family cannot be decided one section at a time.
+  const { members, headOf } = familyLayout(sessions);
+  // A pinned head keeps its family: the forks render under it in 고정됨 rather than
+  // dissolving into whichever groups they would have reached on their own. A pinned
+  // fork whose head is not pinned is the other case -- it stays pinned and leaves the
+  // family, which is the same "no parent in this list" rule the groups already use.
+  const pinnedHeads = new Set(
+    pinnedSessions
+      .filter((session) => (members.get(session.id)?.length ?? 0) > 0)
+      .map((session) => session.id),
+  );
+  const claimedByPinnedHead = (sessionId: string): boolean => {
+    const head = headOf.get(sessionId);
+    return head !== undefined && pinnedHeads.has(head);
+  };
+  /** The rows a family renders as: its head, then the members it is showing. */
+  const familyNodes = (
+    root: AgentSession,
+    family: readonly AgentSession[],
+  ): SessionRowNode[] => {
+    const open = !collapsedFamilies?.has(root.id);
+    // A closed family never hides the row the user is reading, or the approval it is
+    // waiting on. Everything else waits behind the count on the head.
+    const kept = family.filter(
+      (member) => member.id === selectedId || member.status === "waiting",
+    );
+    const visible = open ? family : kept;
+    const hidden = open
+      ? []
+      : family.filter((member) => !visible.includes(member));
+    const nodes: SessionRowNode[] = [
+      {
+        session: root,
+        depth: 0,
+        familyHead: family.length > 0,
+        hidden: hidden.length,
+        hiddenSummary: hidden.length > 0 ? summarize(hidden) : null,
+      },
+    ];
+    for (const member of visible)
+      nodes.push({
+        session: member,
+        depth: depthOf(member, root.id, byId),
+        familyHead: false,
+        hidden: 0,
+        hiddenSummary: null,
+      });
+    return nodes;
+  };
+
+  const pinned: SessionRowNode[] = [];
+  const shortcuts: AgentSession[] = [];
+  for (const session of pinnedSessions) {
+    if (claimedByPinnedHead(session.id)) continue;
+    shortcuts.push(session);
+    pinned.push(...familyNodes(session, members.get(session.id) ?? []));
+  }
+
+  // A family is placed by its most actionable member, and every member lands in that
+  // group: a working child is why its completed parent is worth looking at, and
+  // splitting them across groups would hide the relationship the nesting exists to
+  // show. Pinned members are left out: they render in their own section.
   const familyGroup = new Map<string, SessionGroupId>();
   for (const [head, family] of members) {
     const headSession = byId.get(head);
     if (!headSession) continue;
     familyGroup.set(
       head,
-      [headSession, ...family]
+      [headSession, ...family.filter((session) => !session.pinned)]
         .map(sessionGroupOf)
         .reduce((best, group) =>
           SESSION_GROUP_ORDER.indexOf(group) < SESSION_GROUP_ORDER.indexOf(best)
@@ -264,11 +323,14 @@ export function sessionListModel(
   };
 
   const groups: SessionGroupBlock[] = [];
-  const shortcuts: AgentSession[] = [...pinned];
   for (const id of SESSION_GROUP_ORDER) {
-    const roots = rows
+    const roots = sessions
       .filter(
-        (session) => !headOf.has(session.id) && groupOf(session) === id,
+        (session) =>
+          !session.pinned &&
+          !claimedByPinnedHead(session.id) &&
+          !headOf.has(session.id) &&
+          groupOf(session) === id,
       )
       .slice()
       .sort(byRecency);
@@ -280,33 +342,10 @@ export function sessionListModel(
     const shown = expanded?.has(id) ? roots : roots.slice(0, limit);
     const nodes: SessionRowNode[] = [];
     for (const root of shown) {
-      const family = members.get(root.id) ?? [];
-      const open = !collapsedFamilies?.has(root.id);
-      // A closed family never hides the row the user is reading, or the approval it
-      // is waiting on. Everything else waits behind the count on the head.
-      const kept = family.filter(
-        (member) =>
-          member.id === selectedId || member.status === "waiting",
+      const family = (members.get(root.id) ?? []).filter(
+        (member) => !member.pinned,
       );
-      const visible = open ? family : kept;
-      const hidden = open
-        ? []
-        : family.filter((member) => !visible.includes(member));
-      nodes.push({
-        session: root,
-        depth: 0,
-        familyHead: family.length > 0,
-        hidden: hidden.length,
-        hiddenSummary: hidden.length > 0 ? summarize(hidden) : null,
-      });
-      for (const member of visible)
-        nodes.push({
-          session: member,
-          depth: depthOf(member, root.id, byId),
-          familyHead: false,
-          hidden: 0,
-          hiddenSummary: null,
-        });
+      nodes.push(...familyNodes(root, family));
     }
     groups.push({
       id,
