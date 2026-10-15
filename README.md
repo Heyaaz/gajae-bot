@@ -49,7 +49,9 @@ ad-hoc signature:
 npm install
 npm test
 npm run dev          # Vite renderer
+npm run dev:web      # remote client renderer in a browser
 npm run dev:desktop  # Electron + Vite
+npm run build:web    # dist/web: served by the host, bundled into the app
 ```
 
 Package:
@@ -174,6 +176,65 @@ holding the dialog open.
 
 The full session id sits under the title in the inspector and copies on click.
 
+## Remote access
+
+A phone or a second personal machine runs the same app as a *remote client* of
+the host, over an HTTPS address the host publishes with Tailscale Serve. It is not
+a second runtime: both clients drive the one `GjcAcpController` in the host
+process, so a session started here shows up there and the result of an action is
+the same on both screens.
+
+Setup, on the desktop, in Settings → 원격 접속:
+
+1. Turn it on. The host binds `127.0.0.1:8791` (configurable) and maps it with
+   `tailscale serve --bg --https=443`. Loopback only; Tailscale Funnel / public
+   exposure is not supported.
+2. Press `보기 전용 코드` or `조작 가능 코드`. A code is valid for five minutes and
+   works exactly once.
+3. Scan the QR code, or open `https://<machine>.<tailnet>.ts.net/` and type the
+   code.
+
+What a paired device may do:
+
+| Permission        | Allowed                                                                                            | Refused (stays desktop-only)                                                    |
+| ----------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| 보기 전용 (view)   | session list, status, transcripts, diffs, artifacts, queued messages                                | everything below                                                                  |
+| 조작 가능 (control) | those, plus send, steer, queue, cancel, tool approval, mark read                                   | create/delete/rename/compact sessions, git commit/push, file preview, host settings |
+
+Host-destructive work keeps its native confirmation dialog, which a remote
+device cannot answer, so it is not exposed at all. The permission is enforced in
+the host: a view-only device that calls the control endpoints directly gets
+`403`.
+
+Security shape:
+
+- `Host` and `Origin` are checked against this machine's loopback and tailnet
+  names, and a cross-origin write is refused before authentication.
+- Static app assets are public; session data never is. The device token travels
+  in an `Authorization` header, never in a URL.
+- A device token is 32 random bytes. The host stores only `HMAC(secret, token)`
+  in `remote-devices.json` (mode `0600`); the phone keeps the token in
+  `localStorage`.
+- A pairing code is carried in the URL fragment (`#pair=…`), which browsers never
+  send to a server, and is removed from the address bar before it is used.
+- `접근 해제` deletes the device record immediately: later requests answer `401`
+  and the device's open event stream is closed.
+
+Reconnection and duplicate safety:
+
+- The event stream is `text/event-stream` with sequence numbers. A reconnect
+  resumes from the last sequence the client actually received; a gap the host can
+  no longer replay becomes a snapshot refresh instead of a guess.
+- Every control request carries an operation ID. A repeat replays the recorded
+  outcome instead of running the instruction twice, and
+  `GET /api/operations/<id>` answers what happened to a request whose reply was
+  lost.
+- A control request that dies without an answer is never resent: the client looks
+  the outcome up and reports `전송 결과를 확인할 수 없습니다` when there is none.
+
+The remote client installs as a PWA. Its service worker caches static app assets
+only — `/api/` responses and the device token are always fetched live.
+
 ## Developer notes
 
 Bundled original project artwork is not claimed as third-party material. Asset
@@ -285,8 +346,11 @@ npm run verify
 ```
 
 - Electron main: `electron/`
+- Remote access host: `electron/remote/`
 - Renderer: `src/`
-- IPC contract: `shared/`
+- Remote client: `src/remote/`
+- IPC and protocol contracts: `shared/`
+- PWA assets and the web build: `web/`, `vite.web.config.ts`
 
 ## License
 

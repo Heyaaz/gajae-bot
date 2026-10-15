@@ -122,7 +122,7 @@ function bytesToBase64(bytes: Uint8Array): string {
 export async function droppedImageAttachments(
   files: readonly File[],
   existingCount: number,
-) {
+): Promise<ImageAttachment[]> {
   if (files.length === 0) return [];
   if (existingCount + files.length > MAX_MESSAGE_IMAGES)
     throw new Error("Attach at most 6 images per message");

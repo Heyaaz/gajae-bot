@@ -84,9 +84,9 @@ const [outputDirectory] = await packager({
   // publishes them as runtime code.
   ignore: [
     /^\/\.[^/]+(?:\/|$)/,
-    /^\/(?:src|electron|scripts|build|artifacts|release|docs)(?:\/|$)/,
+    /^\/(?:src|electron|scripts|build|artifacts|release|docs|web)(?:\/|$)/,
     /^\/(?:README(?:\.[^/]+)?|CHANGELOG(?:\.[^/]+)?|package-lock\.json|package-mac\.mjs)$/,
-    /^\/(?:tsconfig|vite\.config|vitest\.config)(?:\.[^/]+)?$/,
+    /^\/(?:tsconfig|vite\.config|vite\.web\.config|vitest\.config)(?:\.[^/]+)?$/,
     /\/(?:test|tests|__tests__)(?:\/|$)/,
     /\/(?:[^/]+)\.(?:test|spec)\.[^/]+$/,
     /\/node_modules\/\.cache(?:\/|$)/,

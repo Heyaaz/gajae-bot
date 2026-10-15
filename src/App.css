@@ -4190,3 +4190,355 @@
     padding: 24px 20px;
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Remote access
+
+   The desktop host renders the settings panel below; a phone renders the same
+   app with the sidebar as a drawer instead of a column.
+   --------------------------------------------------------------------------- */
+
+.nav-toggle,
+.nav-backdrop {
+  display: none;
+}
+
+.remote-strip {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  max-width: min(680px, calc(100% - 32px));
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px 7px 13px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: rgba(27, 27, 30, 0.96);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  box-shadow: var(--shadow-lg);
+  transform: translateX(-50%);
+}
+
+.remote-strip__label {
+  color: var(--text-primary);
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.remote-strip__detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-strip.is-viewonly {
+  border-color: rgba(227, 179, 106, 0.45);
+}
+
+.remote-strip.is-offline {
+  border-color: rgba(238, 123, 123, 0.45);
+}
+
+.remote-gate {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: 24px;
+}
+
+.remote-gate__card {
+  display: grid;
+  width: min(420px, 100%);
+  gap: 12px;
+  padding: 28px 26px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.remote-gate__mark {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 12px;
+}
+
+.remote-gate__mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.remote-gate h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.remote-gate__detail,
+.remote-gate__hint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.remote-gate__origin {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.remote-gate__form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.remote-gate__code {
+  padding: 10px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 16px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  background: var(--bg-app);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.remote-gate__form .button-primary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.remote-gate__error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+}
+
+.composer-readonly {
+  display: block;
+  padding: 6px 10px;
+  color: var(--warning);
+  font-size: 12px;
+  background: rgba(227, 179, 106, 0.12);
+  border-radius: var(--radius-sm);
+}
+
+.remote-panel .settings-panel {
+  gap: 14px;
+}
+
+.remote-port {
+  display: flex;
+  gap: 8px;
+}
+
+.remote-port input {
+  width: 96px;
+  padding: 7px 10px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.remote-status {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 10px;
+}
+
+.remote-status > span:nth-child(2),
+.remote-pairing > span:first-child,
+.remote-devices li > span:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.remote-status small,
+.remote-pairing small,
+.remote-devices small {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.remote-status__dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+}
+
+.remote-status__dot.is-on {
+  background: var(--success);
+}
+
+.remote-status__dot.is-warn {
+  background: var(--warning);
+}
+
+.remote-status__dot.is-off {
+  background: var(--danger);
+}
+
+.remote-pairing {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.remote-pairing__actions {
+  display: flex;
+  gap: 7px;
+}
+
+.remote-pairing__actions button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.remote-pairing__code {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--bg-app);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+}
+
+.remote-pairing__code code {
+  font-size: 19px;
+  letter-spacing: 0.22em;
+}
+
+.remote-pairing__code span {
+  flex: 1;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+}
+
+.remote-qr {
+  display: grid;
+  width: 220px;
+  padding: 8px;
+  place-items: center;
+  background: #fff;
+  border-radius: var(--radius-md);
+}
+
+.remote-qr svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.remote-devices__title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.remote-devices {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.remote-devices li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.remote-devices__actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.remote-devices__actions select {
+  padding: 6px 8px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+@media (max-width: 560px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    zoom: 1;
+  }
+  /* The session list covers the conversation instead of holding a column open;
+     the toggle above it is the only way back to it. */
+  .sidebar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 30;
+    width: min(86vw, 320px);
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-102%);
+    transition: transform 160ms ease;
+  }
+  .app-shell.is-nav-open .sidebar {
+    transform: none;
+  }
+  .nav-toggle {
+    position: absolute;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    left: calc(10px + env(safe-area-inset-left, 0px));
+    z-index: 20;
+    display: grid;
+    width: 34px;
+    height: 34px;
+    place-items: center;
+    color: var(--text-secondary);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+  }
+  .app-shell.is-nav-open .nav-toggle {
+    display: none;
+  }
+  .nav-backdrop {
+    position: absolute;
+    inset: 0;
+    z-index: 29;
+    display: block;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  .chat-header {
+    padding-left: 54px;
+  }
+  .composer {
+    padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px));
+  }
+  .remote-strip {
+    top: calc(8px + env(safe-area-inset-top, 0px));
+  }
+}

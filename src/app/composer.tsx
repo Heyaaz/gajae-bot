@@ -56,6 +56,8 @@ export interface ComposerProps {
   onWorkspaceChange: (workspace: string) => void;
   onConfigChange: (configId: string, value: string) => void;
   onCycleThinking: () => void;
+  /** Set on a view-only remote device: the host would refuse every control. */
+  readOnly?: boolean;
 }
 
 export function Composer({
@@ -78,6 +80,7 @@ export function Composer({
   onWorkspaceChange,
   onConfigChange,
   onCycleThinking,
+  readOnly = false,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [images, setImages] = useState<ImageAttachment[]>([]);
@@ -187,7 +190,6 @@ export function Composer({
 
   const addDroppedImages = useCallback(
     async (files: FileList | readonly File[]): Promise<void> => {
-      if (!settingsBridge) return;
       setAttachmentError("");
       try {
         if (images.length + files.length > 6)
@@ -197,6 +199,11 @@ export function Composer({
         // native identity. Browser-originated images stay inline; an actual native
         // validation failure must surface rather than silently bypassing the main
         // process capability boundary.
+        if (!settingsBridge) {
+          const inline = await droppedImageAttachments(all, images.length);
+          setImages((current) => [...current, ...inline]);
+          return;
+        }
         const native = all.filter((file) => settingsBridge.isNativeFile(file));
         const pathless = all.filter((file) => !settingsBridge.isNativeFile(file));
         const attachments = native.length
@@ -228,7 +235,9 @@ export function Composer({
         if (imageFiles.length > 0) await addDroppedImages(imageFiles);
         if (textFiles.length > 0) {
           if (!settingsBridge)
-            throw new Error("파일 읽기 브리지를 사용할 수 없습니다");
+            throw new Error(
+              "원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요.",
+            );
           const selected = await settingsBridge.prepareFiles(textFiles);
           const combined = [...files, ...selected];
           discardPrepared(combined.slice(5));
@@ -445,6 +454,10 @@ export function Composer({
   }, [releasePendingQueue, running]);
 
   function submit(): void {
+    if (readOnly) {
+      setAttachmentError("보기 전용 기기입니다. 조작은 데스크톱에서 해주세요.");
+      return;
+    }
     const content = (textareaRef.current?.value ?? value).trim();
     if (
       content &&
@@ -540,11 +553,15 @@ export function Composer({
   }
 
   async function acceptImages(selectedFiles: FileList | null): Promise<void> {
-    if (!settingsBridge || !selectedFiles?.length || choosingImages) return;
+    if (!selectedFiles?.length || choosingImages) return;
     setAttachmentError("");
     setChoosingImages(true);
     try {
-      const selected = await settingsBridge.prepareImages(Array.from(selectedFiles));
+      // Without the desktop bridge this is the remote client: a picked file is
+      // read straight into the message instead of through a native path lease.
+      const selected = settingsBridge
+        ? await settingsBridge.prepareImages(Array.from(selectedFiles))
+        : await droppedImageAttachments(Array.from(selectedFiles), images.length);
       if (selected.length > 0) {
         const combined = [...images, ...selected];
         discardPrepared(combined.slice(6));
@@ -561,7 +578,14 @@ export function Composer({
   }
 
   async function acceptFiles(selectedFiles: FileList | null): Promise<void> {
-    if (!settingsBridge || !selectedFiles?.length) return;
+    if (!selectedFiles?.length) return;
+    if (!settingsBridge) {
+      setAttachmentError(
+        "원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요.",
+      );
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      return;
+    }
     setAttachmentError("");
     try {
       const selected = await settingsBridge.prepareFiles(Array.from(selectedFiles));
@@ -578,7 +602,11 @@ export function Composer({
   }
 
   async function browseWorkspace(): Promise<void> {
-    if (!settingsBridge) return;
+    if (!settingsBridge) {
+      setWorkspaceOpen(false);
+      setAttachmentError("원격 연결에서는 워크스페이스를 바꿀 수 없습니다.");
+      return;
+    }
     setWorkspaceOpen(false);
     try {
       const selected = await settingsBridge.chooseWorkspace(workspace);
@@ -842,6 +870,11 @@ export function Composer({
           ))}
         </div>
       )}
+      {readOnly && (
+        <small className="composer-readonly">
+          보기 전용 기기입니다. 이 기기에서는 대화 조회만 가능합니다.
+        </small>
+      )}
       {attachmentError && (
         <small className="composer-error">{attachmentError}</small>
       )}
@@ -866,9 +899,10 @@ export function Composer({
       <textarea
         ref={textareaRef}
         aria-label={`${sessionTitle}에게 메시지 보내기`}
-        placeholder="무엇이든 요청하세요"
+        placeholder={readOnly ? "보기 전용 기기입니다" : "무엇이든 요청하세요"}
         rows={1}
         value={value}
+        disabled={readOnly}
         onChange={(event) => {
           setValue(event.target.value);
           setHistoryCursor(-1);
@@ -945,7 +979,7 @@ export function Composer({
             className="icon-button"
             type="button"
             title="이미지 첨부"
-            disabled={images.length >= 6}
+            disabled={readOnly || images.length >= 6}
             aria-busy={choosingImages}
             onClick={() => imageInputRef.current?.click()}
           >
@@ -1119,6 +1153,7 @@ export function Composer({
             <button
               className="send-button"
               type="submit"
+              disabled={readOnly}
               title={running ? "이어서 보내기" : "메시지 보내기"}
             >
               <ArrowUp size={18} />
@@ -1127,7 +1162,7 @@ export function Composer({
             <button
               className="send-button send-button--stop"
               type="button"
-              disabled={!running}
+              disabled={!running || readOnly}
               onClick={() => {
                 onCancel();
                 setPendingQueue([]);

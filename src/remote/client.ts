@@ -1,0 +1,587 @@
+import type { AgentEvent } from "../../shared/agent-contract.js";
+import {
+  REMOTE_API,
+  createRemoteOperationId,
+  isRemotePermission,
+  type RemoteClientStatus,
+  type RemoteEventFrame,
+  type RemoteOperationOutcome,
+  type RemotePairingBody,
+  type RemotePermission,
+  type RemoteSnapshot,
+  type RemoteStreamFrame,
+} from "../../shared/remote-protocol.js";
+
+/**
+ * The phone-side connection to the host.
+ *
+ * Three behaviors matter more than the request plumbing:
+ *
+ * - The device token lives in storage, never in a URL or a log line. A pairing
+ *   code arrives in the URL fragment, is consumed immediately, and is removed
+ *   from the address bar before any request is made.
+ * - Reconnection resumes the event stream from the last sequence number the
+ *   client actually saw, and a gap the host cannot replay turns into a snapshot
+ *   refresh instead of a guess.
+ * - A control request that fails without an answer is *never* resent. The client
+ *   asks the host for the recorded outcome and reports an unknown state if there
+ *   is none, because "maybe it ran" is a fact the user must see.
+ */
+
+export const TOKEN_STORAGE_KEY = "gajae.remote.token";
+
+export interface TokenStorage {
+  read(): string | null;
+  write(token: string): void;
+  clear(): void;
+}
+
+export function browserTokenStorage(): TokenStorage {
+  return {
+    read: () => {
+      try {
+        return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+      } catch {
+        return null;
+      }
+    },
+    write: (token: string) => {
+      try {
+        window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+      } catch {
+        // A browser that refuses storage still works for this session; the user
+        // pairs again next launch.
+      }
+    },
+    clear: () => {
+      try {
+        window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+      } catch {
+        // Ignore.
+      }
+    },
+  };
+}
+
+export interface RemoteRequestErrorDetails {
+  /** The host answered with a status; the request is known to have been received. */
+  status?: number;
+  code?: string;
+  /** The request never got an answer, so the outcome is unknown. */
+  uncertain?: boolean;
+  operationId?: string;
+}
+
+export class RemoteRequestError extends Error {
+  readonly status?: number;
+  readonly code?: string;
+  readonly uncertain: boolean;
+  readonly operationId?: string;
+
+  constructor(message: string, details: RemoteRequestErrorDetails = {}) {
+    super(message);
+    this.name = "RemoteRequestError";
+    if (details.status !== undefined) this.status = details.status;
+    if (details.code !== undefined) this.code = details.code;
+    this.uncertain = details.uncertain === true;
+    if (details.operationId !== undefined) this.operationId = details.operationId;
+  }
+}
+
+/** `#pair=ABCD1234` survives a scan without ever reaching a server log. */
+export function readPairingCodeFromHash(hash: string): string | null {
+  const value = hash.startsWith("#") ? hash.slice(1) : hash;
+  if (!value) return null;
+  const params = new URLSearchParams(value);
+  const code = params.get("pair");
+  if (!code) return null;
+  const normalized = code.replace(/[\s-]/gu, "").toUpperCase();
+  return /^[2-9A-HJKMNP-Z]{8}$/u.test(normalized) ? normalized : null;
+}
+
+export interface ReconnectOptions {
+  minDelayMs?: number;
+  maxDelayMs?: number;
+  jitter?: () => number;
+}
+
+/** Bounded exponential backoff: a phone waking up should not hammer the host. */
+export function nextReconnectDelay(attempt: number, options: ReconnectOptions = {}): number {
+  const min = options.minDelayMs ?? 1000;
+  const max = options.maxDelayMs ?? 15_000;
+  const base = Math.min(max, min * 2 ** Math.max(0, attempt - 1));
+  const jitter = options.jitter ?? Math.random;
+  return Math.round(base * (0.75 + jitter() * 0.5));
+}
+
+export interface SseFrame {
+  event: string;
+  data: unknown;
+  id?: string;
+}
+
+/** Incremental `text/event-stream` parser; feed it chunks, read whole frames. */
+export class SseParser {
+  private buffer = "";
+
+  push(chunk: string): SseFrame[] {
+    this.buffer += chunk;
+    const frames: SseFrame[] = [];
+    for (;;) {
+      const separator = this.buffer.indexOf("\n\n");
+      if (separator === -1) break;
+      const block = this.buffer.slice(0, separator);
+      this.buffer = this.buffer.slice(separator + 2);
+      const frame = parseBlock(block);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+}
+
+function parseBlock(block: string): SseFrame | undefined {
+  if (!block || block.startsWith(":")) return undefined;
+  let event = "message";
+  let data = "";
+  let id: string | undefined;
+  for (const line of block.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+    else if (line.startsWith("data:")) data += line.slice("data:".length).trim();
+    else if (line.startsWith("id:")) id = line.slice("id:".length).trim();
+  }
+  if (!data) return undefined;
+  try {
+    return { event, data: JSON.parse(data) as unknown, ...(id ? { id } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+export interface RemoteClientOptions {
+  baseUrl?: string;
+  storage?: TokenStorage;
+  fetchImpl?: typeof fetch;
+  deviceName?: () => string;
+  onResync?: () => void;
+  onEvent?: (event: AgentEvent) => void;
+  now?: () => number;
+  /** Backoff bounds for the event stream; tests shrink these. */
+  reconnect?: ReconnectOptions;
+}
+
+const DEVICE_NAME_KEY = "gajae.remote.deviceName";
+
+export class RemoteClient {
+  private readonly baseUrl: string;
+  private readonly storage: TokenStorage;
+  private readonly fetchImpl: typeof fetch;
+  private readonly listeners = new Set<(status: RemoteClientStatus) => void>();
+  private readonly deviceName: () => string;
+  private token: string | null;
+  private status: RemoteClientStatus;
+  private lastSeq = 0;
+  private attempt = 0;
+  private stream?: AbortController;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private closed = false;
+
+  private readonly options: RemoteClientOptions;
+
+  constructor(options: RemoteClientOptions = {}) {
+    this.options = options;
+    this.baseUrl = (options.baseUrl ?? defaultBaseUrl()).replace(/\/$/u, "");
+    this.storage = options.storage ?? browserTokenStorage();
+    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
+    this.deviceName = options.deviceName ?? defaultDeviceName;
+    this.token = this.storage.read();
+    this.status = this.token
+      ? { state: "connecting", detail: "호스트에 연결하는 중입니다." }
+      : { state: "pairing" };
+  }
+
+  get permission(): RemotePermission | undefined {
+    return this.status.permission;
+  }
+
+  getStatus(): RemoteClientStatus {
+    return this.status;
+  }
+
+  subscribe(listener: (status: RemoteClientStatus) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private setStatus(status: RemoteClientStatus): void {
+    this.status = status;
+    for (const listener of this.listeners) listener(status);
+  }
+
+  private authorized(): Record<string, string> {
+    return this.token ? { Authorization: `Bearer ${this.token}` } : {};
+  }
+
+  private url(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
+
+  /** Consumes a pairing code and stores the device token. */
+  async pair(rawCode: string): Promise<void> {
+    const code = rawCode.replace(/[\s-]/gu, "").toUpperCase();
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.url(REMOTE_API.pair), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, deviceName: this.deviceName() }),
+      });
+    } catch {
+      throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
+    }
+    if (response.status !== 200) {
+      const body = await readErrorBody(response);
+      throw new RemoteRequestError(body.message, { status: response.status, code: body.code });
+    }
+    const body = (await response.json()) as RemotePairingBody;
+    if (typeof body.token !== "string" || !isRemotePermission(body.device?.permission)) {
+      throw new RemoteRequestError("호스트가 올바른 기기 정보를 보내지 않았습니다.");
+    }
+    this.token = body.token;
+    this.storage.write(body.token);
+    this.setStatus({
+      state: "connected",
+      permission: body.device.permission,
+      deviceName: body.device.name,
+    });
+  }
+
+  /** Forgets this device's token locally. The host keeps its record until revoked there. */
+  forget(): void {
+    this.token = null;
+    this.storage.clear();
+    this.setStatus({ state: "pairing" });
+  }
+
+  async snapshot(): Promise<RemoteSnapshot> {
+    const body = await this.request<RemoteSnapshot>(REMOTE_API.state);
+    if (isRemotePermission(body.device?.permission))
+      this.setStatus({
+        state: "connected",
+        permission: body.device.permission,
+        deviceName: body.device.name,
+      });
+    return body;
+  }
+
+  async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(this.url(path), {
+        ...init,
+        headers: { ...(init.headers ?? {}), ...this.authorized() },
+      });
+    } catch {
+      if (this.status.state === "connected")
+        this.setStatus({ ...this.status, state: "offline", detail: "호스트에 연결할 수 없습니다." });
+      throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
+    }
+    if (response.status === 401) {
+      // The host no longer recognizes this device. That is terminal until the
+      // owner pairs it again, so the token is dropped rather than retried.
+      this.forget();
+      this.setStatus({
+        state: "revoked",
+        detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+      });
+      throw new RemoteRequestError("이 기기의 접근이 해제되었습니다.", { status: 401, code: "revoked" });
+    }
+    if (!response.ok) {
+      const body = await readErrorBody(response);
+      throw new RemoteRequestError(body.message, { status: response.status, code: body.code });
+    }
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
+  }
+
+  private async readResult<T>(path: string): Promise<T> {
+    const body = await this.request<{ result: T }>(path);
+    return body.result;
+  }
+
+  private unwrapOutcome(outcome: RemoteOperationOutcome): unknown {
+    if (outcome.state === "failed")
+      throw new RemoteRequestError(outcome.message ?? "요청이 실패했습니다.", {
+        code: "failed",
+        operationId: outcome.operationId,
+      });
+    return outcome.result ?? null;
+  }
+
+  /**
+   * Runs one control operation. The operation ID makes the host's answer
+   * replayable, so a lost connection is resolved by looking the outcome up
+   * rather than by sending the instruction twice.
+   */
+  async control<T>(path: string, payload: Record<string, unknown> = {}): Promise<T> {
+    const operationId = createRemoteOperationId();
+    try {
+      const outcome = await this.request<RemoteOperationOutcome>(path, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, operationId }),
+      });
+      return this.unwrapOutcome(outcome) as T;
+    } catch (error) {
+      if (!(error instanceof RemoteRequestError) || !error.uncertain) throw error;
+      const outcome = await this.lookupOperation(operationId);
+      if (outcome) return this.unwrapOutcome(outcome) as T;
+      throw new RemoteRequestError(
+        "전송 결과를 확인할 수 없습니다. 중복 실행을 막기 위해 다시 보내지 않았습니다. 데스크톱에서 상태를 확인해 주세요.",
+        { uncertain: true, operationId, code: "unknown-outcome" },
+      );
+    }
+  }
+
+  async lookupOperation(operationId: string): Promise<RemoteOperationOutcome | undefined> {
+    try {
+      return await this.request<RemoteOperationOutcome>(REMOTE_API.operation(operationId));
+    } catch (error) {
+      if (error instanceof RemoteRequestError && error.status === 404) return undefined;
+      return undefined;
+    }
+  }
+
+  listSessions() {
+    return this.snapshot().then((value) => value.sessions);
+  }
+
+  async connection() {
+    const snapshot = await this.snapshot();
+    return snapshot.connection;
+  }
+
+  transcript(sessionId: string) {
+    return this.readResult<unknown[]>(REMOTE_API.transcript(sessionId));
+  }
+
+  queued(sessionId: string) {
+    return this.readResult<unknown[]>(REMOTE_API.queued(sessionId));
+  }
+
+  goal(sessionId: string) {
+    return this.readResult<unknown>(REMOTE_API.goal(sessionId));
+  }
+
+  subagents(sessionId: string) {
+    return this.readResult<unknown[]>(REMOTE_API.subagents(sessionId));
+  }
+
+  gitStatus(sessionId: string) {
+    return this.readResult<unknown>(REMOTE_API.gitStatus(sessionId));
+  }
+
+  diff(sessionId: string) {
+    return this.readResult<unknown>(REMOTE_API.diff(sessionId));
+  }
+
+  artifact(sessionId: string, artifactId: string) {
+    return this.readResult<unknown>(REMOTE_API.artifact(sessionId, artifactId));
+  }
+
+  historySessions() {
+    return this.readResult<unknown[]>(REMOTE_API.historySessions);
+  }
+
+  sendMessage(sessionId: string, input: unknown) {
+    return this.control<"prompt" | "steer">(REMOTE_API.messages(sessionId), { input });
+  }
+
+  steer(sessionId: string, input: unknown) {
+    return this.control<void>(REMOTE_API.steer(sessionId), { input });
+  }
+
+  queueFollowUp(sessionId: string, input: unknown) {
+    return this.control<void>(REMOTE_API.followUps(sessionId), { input });
+  }
+
+  flushFollowUps(sessionId: string) {
+    return this.control<boolean>(REMOTE_API.flushFollowUps(sessionId));
+  }
+
+  cancelRun(sessionId: string) {
+    return this.control<void>(REMOTE_API.cancel(sessionId));
+  }
+
+  markRead(sessionId: string) {
+    return this.control<void>(REMOTE_API.read(sessionId));
+  }
+
+  resolveToolCall(toolId: string, optionId: string) {
+    return this.control<void>(REMOTE_API.toolCallDecision(toolId), { decision: { optionId } });
+  }
+
+  /** Opens the event stream and keeps it open until `closeRealtime`. */
+  startRealtime(): void {
+    if (!this.token || this.closed || this.stream) return;
+    void this.openStream();
+  }
+
+  private async openStream(): Promise<void> {
+    const controller = new AbortController();
+    this.stream = controller;
+    const since = this.lastSeq > 0 ? this.lastSeq : undefined;
+    try {
+      const response = await this.fetchImpl(
+        this.url(`${REMOTE_API.events}${since === undefined ? "" : `?since=${since}`}`),
+        { headers: { ...this.authorized(), Accept: "text/event-stream" }, signal: controller.signal },
+      );
+      if (response.status === 401) {
+        this.stream = undefined;
+        this.forget();
+        this.setStatus({
+          state: "revoked",
+          detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+        });
+        return;
+      }
+      if (!response.ok || !response.body) throw new Error(`stream refused: ${response.status}`);
+      this.attempt = 0;
+      if (this.status.state !== "connected" || this.status.permission === undefined) {
+        const snapshot = await this.snapshot().catch(() => undefined);
+        if (!snapshot) throw new Error("snapshot unavailable");
+      }
+      const parser = new SseParser();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+          this.handleFrame(frame);
+        }
+      }
+      throw new Error("stream ended");
+    } catch {
+      // A closed stream is normal on sleep, network switch, and host restart.
+    } finally {
+      if (this.stream === controller) this.stream = undefined;
+      this.scheduleReconnect();
+    }
+  }
+
+  private handleFrame(frame: SseFrame): void {
+    if (frame.event === "hello") {
+      const hello = frame.data as { seq?: number; device?: { permission?: unknown; name?: string } };
+      if (typeof hello.seq === "number" && hello.seq > this.lastSeq) {
+        // The host is ahead of us: this is a fresh stream, and the snapshot call
+        // in openStream already covered anything before it.
+        this.lastSeq = hello.seq;
+      }
+      if (isRemotePermission(hello.device?.permission))
+        this.setStatus({
+          state: "connected",
+          permission: hello.device.permission,
+          deviceName: hello.device.name,
+        });
+      return;
+    }
+    if (frame.event === "revoked") {
+      this.forget();
+      this.setStatus({
+        state: "revoked",
+        detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+      });
+      this.closeRealtime();
+      return;
+    }
+    if (frame.event === "resync") {
+      const notice = frame.data as RemoteStreamFrame;
+      if (typeof notice.seq === "number") this.lastSeq = notice.seq;
+      this.requestResync();
+      return;
+    }
+    if (frame.event === "agent") {
+      const payload = frame.data as RemoteEventFrame;
+      if (typeof payload?.seq === "number") this.lastSeq = Math.max(this.lastSeq, payload.seq);
+      if (payload?.event) this.options.onEvent?.(payload.event);
+    }
+  }
+
+  private requestResync(): void {
+    this.options.onResync?.();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed || !this.token || this.reconnectTimer) return;
+    if (this.status.state === "revoked") return;
+    this.attempt += 1;
+    const delay = nextReconnectDelay(this.attempt, this.options.reconnect);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (!this.closed && this.token) void this.openStream();
+    }, delay);
+    if (typeof this.reconnectTimer.unref === "function") this.reconnectTimer.unref();
+  }
+
+  closeRealtime(): void {
+    this.stream?.abort();
+    this.stream = undefined;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+  }
+
+  dispose(): void {
+    this.closed = true;
+    this.closeRealtime();
+    this.listeners.clear();
+  }
+
+  /** Reconnects immediately: used when the app returns to the foreground. */
+  async resume(): Promise<void> {
+    if (!this.token || this.closed) return;
+    this.closeRealtime();
+    await this.snapshot().catch(() => undefined);
+    this.startRealtime();
+  }
+}
+
+async function readErrorBody(response: Response): Promise<{ code?: string; message: string }> {
+  try {
+    const body = (await response.json()) as { error?: { code?: string; message?: string } };
+    return {
+      ...(body.error?.code ? { code: body.error.code } : {}),
+      message: body.error?.message ?? `요청이 실패했습니다 (${response.status})`,
+    };
+  } catch {
+    return { message: `요청이 실패했습니다 (${response.status})` };
+  }
+}
+
+function defaultBaseUrl(): string {
+  if (typeof window !== "undefined" && window.location?.origin) return window.location.origin;
+  return "http://127.0.0.1";
+}
+
+function defaultDeviceName(): string {
+  const fallback = "원격 기기";
+  if (typeof navigator === "undefined") return fallback;
+  const stored = (() => {
+    try {
+      return window.localStorage.getItem(DEVICE_NAME_KEY);
+    } catch {
+      return null;
+    }
+  })();
+  if (stored) return stored;
+  const guess = [navigator.userAgent.match(/iPhone|iPad|Android|Macintosh|Windows/u)?.[0]]
+    .filter((value): value is string => Boolean(value))
+    .join(" ");
+  const name = guess ? `${guess} (${fallback})` : fallback;
+  try {
+    window.localStorage.setItem(DEVICE_NAME_KEY, name);
+  } catch {
+    // Non-fatal.
+  }
+  return name;
+}
+
