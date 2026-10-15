@@ -5,6 +5,7 @@ export const SETTINGS_IPC = {
   prepareFiles: "agent-control:settings:prepare-files",
   discardAttachments: "agent-control:settings:discard-attachments",
   setWorkspaceLabel: "agent-control:settings:set-workspace-label",
+  setThoughtsExpanded: "agent-control:settings:set-thoughts-expanded",
   savePreferences: "agent-control:settings:save-preferences",
   checkGjcUpdate: "agent-control:settings:check-gjc-update",
   installGjcUpdate: "agent-control:settings:install-gjc-update",

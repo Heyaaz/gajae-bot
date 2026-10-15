@@ -11,6 +11,13 @@ import { RemoteAccessPanel } from "./remote-access-panel";
 
 export interface SettingsDialogProps {
   connection: BackendConnection;
+  /**
+   * The shell's current reasoning-card preference.
+   *
+   * The dialog seeds its own object from it so a card toggled moments before opening
+   * settings is not clobbered by a draft built from an older read.
+   */
+  thoughtsExpanded: boolean;
   onClose: () => void;
   onSaved: (preferences: AgentControlPreferences) => void;
   updateStatus: GjcUpdateStatus | null;
@@ -22,6 +29,7 @@ export interface SettingsDialogProps {
 
 export function SettingsDialog({
   connection,
+  thoughtsExpanded,
   onClose,
   onSaved,
   updateStatus,
@@ -37,6 +45,7 @@ export function SettingsDialog({
     modelPreset: detectedPreset,
     permissionHandling: "prompt",
     gjcExecutable: "",
+    thoughtsExpanded,
   };
   const [tab, setTab] = useState<
     "gjc" | "workspace" | "remote" | "mcp" | "skills" | "usage" | "automations"
@@ -275,6 +284,22 @@ export function SettingsDialog({
                         ...current,
                         permissionHandling:
                           value as AgentControlPreferences["permissionHandling"],
+                      }))
+                    }
+                  />
+                </label>
+                <label className="settings-toggle-row">
+                  <span>
+                    <strong>추론 카드 펼치기</strong>
+                    <small>추론(thinking) 기록을 모든 세션에서 펼친 상태로 둡니다</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={preferences.thoughtsExpanded}
+                    onChange={(event) =>
+                      setPreferences((current) => ({
+                        ...current,
+                        thoughtsExpanded: event.target.checked,
                       }))
                     }
                   />

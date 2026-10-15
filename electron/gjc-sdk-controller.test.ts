@@ -267,6 +267,8 @@ describe("GjcSdkController CLI seam", () => {
     (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
     await controller.cancelRun("s1");
     expect(cli.rawControl).toHaveBeenCalledWith("s1", "turn.abort", { mode: "terminal", scope: "owned", operator: true }, expect.objectContaining({ confirm: true, idempotencyKey: expect.stringMatching(/^gajae-abort-/), repo: "/repo" }));
+    // A host that serves the operator route is never asked twice.
+    expect(cli.rawControl).toHaveBeenCalledTimes(1);
   });
 
   it("does not publish idle or cancellation from an unconfirmed abort ACK", async () => {
@@ -1068,17 +1070,138 @@ describe("shared terminal session control", () => {
     controller.dispose();
   });
 
-  it("does not turn an operator Stop refusal into loss of ordinary shared control", async () => {
+  it("releases held work when the host only refuses the operator Stop", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
     internals.attachedSessions.add("s1");
+    // A directly launched TUI host has no indexed lifecycle identity for the broker
+    // route the operator abort needs, while its public metadata route answers.
     cli.rawControl.mockRejectedValue(new SdkCliError("session_unavailable", "no lifecycle authority"));
-    await expect(controller.cancelRun("s1")).rejects.toThrow("소유자 중지");
+    // Resolving true is the assertion that the owned-stop refusal never surfaced: the
+    // renderer releases its held work as a steer instead of reading a blocking error.
+    await expect(controller.flushQueuedNow("s1")).resolves.toBe(true);
+    expect(cli.queryItems).toHaveBeenCalledWith("s1", "session.metadata", {}, { repo: "/repo" });
+    expect(cli.rawControl).toHaveBeenCalledTimes(1);
+    // The refusal is not mistaken for a lost session: the row keeps its controls.
     expect(internals.terminalOnlySessions.has("s1")).toBe(false);
     expect(internals.attachedSessions.has("s1")).toBe(true);
-    expect(internals.sessions.get("s1").status).toBe("running");
-    expect(cli.rawControl).toHaveBeenCalledTimes(1);
-    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("still fails the release when the metadata probe cannot reach the session", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    cli.rawControl.mockRejectedValue(new SdkCliError("session_unavailable", "no route"));
+    cli.queryItems.mockRejectedValue(new SdkCliError("session_unavailable", "no route"));
+    await expect(controller.flushQueuedNow("s1")).rejects.toThrow("공유 제어 경로");
+    expect(internals.terminalOnlySessions.has("s1")).toBe(true);
+    controller.dispose();
+  });
+
+  it("falls back to the ordinary abort for a Stop the operator route refuses", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
+    internals.attachedSessions.add("s1");
+    internals.transcripts.set("s1", []);
+    (cli.rawControl as any).mockImplementation((_id: string, _op: string, input: Record<string, unknown>) =>
+      input.operator
+        ? Promise.reject(new SdkCliError("session_unavailable", "no lifecycle authority"))
+        : Promise.resolve({ aborted: true }),
+    );
+    await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+    // The fallback is the shape a CLI cancel uses: no mode, scope, or operator key,
+    // and no confirm/idempotency flag either.
+    expect(cli.rawControl).toHaveBeenNthCalledWith(2, "s1", "turn.abort", {}, { repo: "/repo" });
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    expect(internals.terminalOnlySessions.has("s1")).toBe(false);
+    expect(internals.attachedSessions.has("s1")).toBe(true);
+    controller.dispose();
+  });
+
+  it("names the owned-work limit when a plain abort confirms the cancel", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
+    internals.attachedSessions.add("s1");
+    internals.transcripts.set("s1", []);
+    internals.liveRunningSessions.add("s1");
+    (cli.rawControl as any).mockImplementation((_id: string, _op: string, input: Record<string, unknown>) =>
+      input.operator
+        ? Promise.reject(new SdkCliError("session_unavailable", "no lifecycle authority"))
+        : Promise.resolve({ turn: "stopped" }),
+    );
+    await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    expect(internals.liveRunningSessions.has("s1")).toBe(false);
+    const notice = (internals.transcripts.get("s1") ?? []).find(
+      (item: { kind: string }) => item.kind === "notice",
+    );
+    expect(notice?.title).toBe("작업 취소됨");
+    // One short sentence for the limit, not the blocking paragraph the operator
+    // refusal used to be reported with.
+    expect(notice?.content).toBe(
+      "진행 중인 작업이 취소되어 종료됐습니다. 다만 이 호스트의 백그라운드 작업은 중지 여부가 확인되지 않았습니다.",
+    );
+    controller.dispose();
+  });
+
+  it("states the owned-work limit even when an earlier cancel is already noted", async () => {
+    const notices = (transcripts: any[]) =>
+      transcripts.filter((item: { kind: string }) => item.kind === "notice");
+    const rebuilt = {
+      id: "shared-cancelled-1",
+      kind: "notice",
+      sessionId: "s1",
+      title: "작업 취소됨",
+      content: "진행 중인 작업이 취소되어 종료됐습니다.",
+      tone: "neutral",
+      createdAt: "now",
+    };
+    // The rebuilt row already carries the plain sentence, so an operator-route cancel
+    // of the same run adds nothing.
+    const settled = harness();
+    settled.internals.sessions.set("s1", { ...session(), status: "running" });
+    settled.internals.transcripts.set("s1", [{ ...rebuilt }]);
+    (settled.cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
+    await settled.controller.cancelRun("s1");
+    expect(notices(settled.internals.transcripts.get("s1"))).toHaveLength(1);
+    settled.controller.dispose();
+    // A cancel that could not cover owned work states the limit instead of reusing
+    // the earlier sentence that does not mention it.
+    const fallback = harness();
+    fallback.internals.sessions.set("s1", { ...session(), status: "running" });
+    fallback.internals.transcripts.set("s1", [{ ...rebuilt }]);
+    (fallback.cli.rawControl as any).mockImplementation((_id: string, _op: string, input: Record<string, unknown>) =>
+      input.operator
+        ? Promise.reject(new SdkCliError("session_unavailable", "no lifecycle authority"))
+        : Promise.resolve({ aborted: true }),
+    );
+    await fallback.controller.cancelRun("s1");
+    const appended = notices(fallback.internals.transcripts.get("s1"));
+    expect(appended).toHaveLength(2);
+    expect(appended[1].content).toContain("중지 여부가 확인되지 않았습니다");
+    fallback.controller.dispose();
+  });
+
+  it("clears the row quietly when the plain abort finds no active turn", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
+    internals.attachedSessions.add("s1");
+    internals.transcripts.set("s1", []);
+    internals.liveRunningSessions.add("s1");
+    internals.workingPhaseSessions.add("s1");
+    (cli.rawControl as any).mockImplementation((_id: string, _op: string, input: Record<string, unknown>) =>
+      input.operator
+        ? Promise.reject(new SdkCliError("session_unavailable", "no lifecycle authority"))
+        : Promise.resolve({ aborted: false, turn: "no_active_turn" }),
+    );
+    await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    expect(internals.liveRunningSessions.has("s1")).toBe(false);
+    expect(internals.workingPhaseSessions.has("s1")).toBe(false);
+    // Nothing was stopped, so nothing announces a cancellation and the window does
+    // not fence the session: live evidence of work elsewhere can still show.
+    expect(internals.transcripts.get("s1")).toEqual([]);
+    expect(internals.locallyAbortedSessions.has("s1")).toBe(false);
     controller.dispose();
   });
 

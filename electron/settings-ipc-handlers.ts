@@ -160,6 +160,13 @@ export function registerSettingsIpcHandlers(
     attachments.revoke(event.sender.id, [...new Set(tokens)])
   }))
   ipcMain.handle(SETTINGS_IPC.setWorkspaceLabel, security.guarded((_event, label: unknown) => store.setWorkspaceLabel(label)))
+  // A reading preference, not a runtime change: it is saved on its own so toggling a
+  // reasoning card never raises the whole-settings confirmation a savePreferences
+  // call would.
+  ipcMain.handle(SETTINGS_IPC.setThoughtsExpanded, security.guarded((_event, expanded: unknown) => {
+    if (typeof expanded !== 'boolean') throw new Error('Thought card expansion must be a boolean')
+    return store.setThoughtsExpanded(expanded)
+  }))
   ipcMain.handle(SETTINGS_IPC.savePreferences, security.guarded(async (event, preferences: AgentControlPreferences) => {
     const validated = store.validate(preferences)
     await security.authorizeDestructive(event, {

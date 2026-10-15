@@ -14,6 +14,14 @@ export interface AgentControlPreferences {
   modelPreset: string;
   permissionHandling: GjcPermissionHandling;
   gjcExecutable: string;
+  /**
+   * Whether reasoning (thought) cards render expanded.
+   *
+   * One value for the whole window instead of a flag per card: a card is re-created
+   * as the transcript streams, so state owned by the card died with it and every new
+   * thought arrived collapsed again.
+   */
+  thoughtsExpanded: boolean;
 }
 
 /**
@@ -599,6 +607,13 @@ export interface SettingsDesktopBridge {
   prepareFiles(files: File[]): Promise<FileAttachment[]>;
   discardAttachments(tokens: string[]): Promise<void>;
   setWorkspaceLabel(label: string): Promise<string>;
+  /**
+   * Persists the reasoning-card preference alone.
+   *
+   * A whole-object save would re-run the runtime-settings authorization prompt, so a
+   * reading preference gets its own non-destructive channel.
+   */
+  setThoughtsExpanded(expanded: boolean): Promise<boolean>;
   savePreferences(preferences: AgentControlPreferences): Promise<{
     preferences: AgentControlPreferences;
     runtimeReconnected: boolean;

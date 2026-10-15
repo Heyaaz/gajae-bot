@@ -123,6 +123,15 @@ controls when the session advertises `service_tier.set`. `/fast` or `/fast toggl
 toggles configured intent; `/fast on`, `/fast off`, and `/fast status` are also
 available. Configured Fast intent does not prove a provider applied priority service.
 
+### Reasoning cards
+
+Reasoning cards follow one window-wide preference instead of per-card state:
+펼치기 on any card expands every reasoning card, including later turns and other
+sessions, and 접기 collapses them all. The value persists in
+`agent-control-settings.json` and can also be set in 설정 → GJC → 추론 카드 펼치기.
+Streaming cards keep their header, `생각 중…` label and spinner, and follow the
+same setting for their content.
+
 ### Slash commands and skills
 
 The command palette combines desktop actions with controls advertised by the live
@@ -168,10 +177,11 @@ required for ordinary shared interaction.
 
 Operator-owned Stop has a separate GJC authority requirement: a directly launched
 TUI can answer queries and steering while lacking the indexed lifecycle identity
-required for terminal/owned-work abort. Such a refusal does not disable ordinary
-controls, and the app does not claim the turn or background work stopped. Full
-operator-owned Stop on those hosts requires upstream support; no weaker abort or
-process signal is substituted.
+required for terminal/owned-work abort. When the operator route is refused but the
+host still answers, Stop falls back to the ordinary `turn.abort` and the cancellation
+notice states that this host's background work is not confirmed stopped; the window
+never claims it, and no signal or process kill is substituted. A refused release
+(Empty Enter) hands the held work over as a steer instead of failing.
 
 ### Permission handling
 
@@ -284,6 +294,28 @@ only — `/api/` responses and the device token are always fetched live.
 Bundled original project artwork is not claimed as third-party material. Asset
 redistribution must be confirmed before distributing a binary release.
 
+Settings writes go through one of two paths, and the choice is part of the
+contract:
+
+- `settings.savePreferences` replaces the whole preferences object and runs
+  `authorizeDestructive`, which raises the OS “Apply runtime settings?” prompt.
+  Use it for settings that change what the runtime does: workspace, model preset,
+  approval mode, GJC executable.
+- Field-only channels validate one value, rewrite that one field and reuse the
+  store's `persist()` — no prompt. Use them for display and reading preferences.
+  `setWorkspaceLabel` and `setThoughtsExpanded` are the existing ones; a card
+  toggle that raised a native modal on every click is why the second exists.
+  A new field-only channel needs all three pieces: an entry in
+  `shared/settings-ipc.ts`, the bridge method in `electron/preload.ts`, and a
+  handler in `electron/settings-ipc-handlers.ts` that validates the value and
+  does not call `authorizeDestructive`. `SettingsStore.validate()` stays the
+  whole-object gate; the field setter checks only its own field, so an unrelated
+  stale value cannot block a display toggle.
+
+Card typography: every text element inside a card sets its own size. An unstyled
+`<p>` or `<small>` inherits the browser's 16px default, which renders larger than
+the card's own title in a UI whose body text is 9–12px.
+
 ## GJC SDK session CLI compatibility
 
 Gajae supports installed `gajae-code` version `0.18.11` or newer, and is verified
@@ -389,6 +421,9 @@ The receipt failures themselves come from the GJC ledger and are not fixable her
 - Force `idle` / “cancelled” UI from the abort ACK alone
 - Treat session delete as hiding a row in the list
 - Treat an unverifiable lifecycle receipt as a failed operation
+- Route a display-only preference through `settings.savePreferences` (whole-object save, native confirm modal); add a field-only channel instead
+- Keep a card's own copy of a window-wide preference, or let it fall behind the stored value
+- Render card text without a rule of its own and let the 16px browser default decide its size
 
 ## Develop
 

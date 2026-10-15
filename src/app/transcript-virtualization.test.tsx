@@ -7,6 +7,7 @@ import {
 import {
   transcriptAnchorScrollTop,
   transcriptRestoreSettled,
+  transcriptRestoreWidthDecision,
   transcriptViewportAnchor,
   type TranscriptAnchorRow,
 } from "./transcript";
@@ -247,5 +248,58 @@ describe("holding the reading position across a width change", () => {
     expect(transcriptRestoreSettled({ ...settled, remaining: 109_274 }, false)).toBe(
       true,
     );
+  });
+});
+
+describe("restoring only when the reading width really changed", () => {
+  // The report: typing in the composer made the blocks shake. Typing grows the composer,
+  // the composer takes its height from the transcript, and the transcript's scrollbar
+  // flickers as the two heights cross -- and the restore was watching the column's
+  // clientWidth, which a scrollbar changes by its own width. Measured at a 900px window:
+  // the transcript is 494px wide with a classic scrollbar and 494px with none, while
+  // clientWidth reads 485 and 494 and the centered column it feeds goes 451 -> 460. Every
+  // flick started a full multi-frame anchored restoration, which is the shake.
+  const SCROLLBAR_PX = 9;
+  const WINDOW_READING_WIDTH = 494;
+  const COLUMN_PX = WINDOW_READING_WIDTH - 48;
+
+  it("ignores the width a scrollbar subtracts from the column", () => {
+    // clientWidth twice, for the two scrollbar states, against a reading width that has
+    // not moved.
+    expect(COLUMN_PX + SCROLLBAR_PX).not.toBe(COLUMN_PX);
+
+    expect(
+      transcriptRestoreWidthDecision(WINDOW_READING_WIDTH, WINDOW_READING_WIDTH, 0),
+    ).toBe("unchanged");
+    // Even if a restoration is running for an unrelated width, a scrollbar flicker is
+    // still not a reading width and does not touch it.
+    expect(
+      transcriptRestoreWidthDecision(WINDOW_READING_WIDTH, WINDOW_READING_WIDTH, 260),
+    ).toBe("unchanged");
+  });
+
+  it("does not let a keystroke restart a restoration already in flight", () => {
+    // The reading width moved once -- the inspector opened -- but the restoration is
+    // already converging on that width. The observer fires again on the next frame, as it
+    // does on every layout tick; re-anchoring the restore from there is what kept one
+    // running for as long as the user kept typing.
+    const opened = 286;
+    expect(transcriptRestoreWidthDecision(opened, WINDOW_READING_WIDTH, opened)).toBe(
+      "covered",
+    );
+    // A width the restoration is not handling is a new re-wrap and does start one.
+    expect(transcriptRestoreWidthDecision(350, opened, opened)).toBe("restore");
+  });
+
+  it("starts a restoration when the space itself changes", () => {
+    // Opening the inspector, resizing the window, or the shell settling at startup are the
+    // real ones: text re-wraps, so the reading position has to be restored.
+    const opened = 286;
+    expect(transcriptRestoreWidthDecision(opened, WINDOW_READING_WIDTH, 0)).toBe(
+      "restore",
+    );
+    expect(
+      transcriptRestoreWidthDecision(WINDOW_READING_WIDTH, opened, opened),
+    ).toBe("restore");
   });
 });

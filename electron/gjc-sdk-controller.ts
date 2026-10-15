@@ -1932,11 +1932,28 @@ export const SHARED_ROUTE_UNAVAILABLE_MESSAGE =
 // `lifecycleRequestId` (`Broker.#sessionControlAuthority`) and the host compares it
 // against `GJC_LIFECYCLE_REQUEST_ID` (`hasBrokerRuntimeAbortCapability`); a directly
 // launched TUI host need not carry that identity, so metadata, prompts, and
-// steering keep working while Stop is refused. There is no ordinary `turn.abort`
-// fallback: it has a different contract and cannot substantiate that owned work
-// stopped, so this reports the refusal instead of claiming the work is gone.
+// steering keep working while Stop is refused. The refusal is a classification
+// rather than the end of the story: `flushQueuedNow` releases the work the window
+// is holding instead of failing, and `cancelRun` falls back to the ordinary
+// `turn.abort` route, so this text reaches the user only once no route could make
+// the session stop.
 export const OWNED_STOP_UNAVAILABLE_MESSAGE =
   "이 세션은 앱에서 계속 제어할 수 있지만, GJC가 이 호스트의 소유자 중지(Stop) 권한을 확인할 수 없습니다. 작업과 백그라운드 작업이 멈췄다면 그 결과는 확정되지 않았습니다. 세션이 중지를 허용하면 다시 시도해 주세요.";
+
+/**
+ * The refusal above as its own type, so callers classify it instead of matching the
+ * user-facing text. `cause` carries the failure of the fallback route when one was
+ * tried and did not confirm a stop.
+ */
+class OwnedStopUnavailableError extends Error {
+  constructor(cause?: unknown) {
+    super(
+      OWNED_STOP_UNAVAILABLE_MESSAGE,
+      ...(cause === undefined ? [] : [{ cause }]),
+    );
+    this.name = "OwnedStopUnavailableError";
+  }
+}
 
 /**
  * Canonical identity for a workspace directory.
@@ -4184,7 +4201,7 @@ export class GjcSdkController {
             throw new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
           }
           this.terminalOnlySessions.delete(sessionId);
-          throw new Error(OWNED_STOP_UNAVAILABLE_MESSAGE);
+          throw new OwnedStopUnavailableError();
         }
         this.markTerminalOnly(sessionId);
         throw new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
@@ -4238,7 +4255,18 @@ export class GjcSdkController {
       // The window owns its pending queue, so it already knows there is work to
       // release. GJC reports no waiting steer of its own -- turn.steer is consumed
       // by the open turn -- so there is nothing here to confirm against.
-      await this.abortOwnedThroughControl(sessionId);
+      //
+      // A host that refuses the operator-owned Stop still serves ordinary control,
+      // and the held work is released by the renderer as a steer that the next turn
+      // boundary consumes. Failing that refusal here would leave the user's text
+      // stuck in the composer over a stop this window was never able to substantiate
+      // anyway, so the refusal is not an error for a release. A session the metadata
+      // probe could not reach still throws (see controlSession).
+      try {
+        await this.abortOwnedThroughControl(sessionId);
+      } catch (error) {
+        if (!(error instanceof OwnedStopUnavailableError)) throw error;
+      }
       this.updateSessionStatus(sessionId, "running");
       return true;
     } catch (error) {
@@ -4850,25 +4878,24 @@ export class GjcSdkController {
     this.cancellationPromises.set(sessionId, completion);
     this.cancellingSessions.add(sessionId);
     try {
-      await this.fireAbort(sessionId);
-      this.finalizeThought(sessionId);
-      this.finalizeAssistantMessage(sessionId);
-      this.finalizeAllMessages(sessionId);
-      this.cancelOpenTools(sessionId);
-      this.cancelPermissionsForSession(sessionId);
-      this.appendCancelledNotice(sessionId);
-      this.locallyAbortedSessions.add(sessionId);
-      // Only confirmed aborts may clear run authority and publish idle.
-      this.liveRunningSessions.delete(sessionId);
-      this.liveRunningDigests.delete(sessionId);
-      this.transcriptRunningSessions.delete(sessionId);
-      this.workingPhaseSessions.delete(sessionId);
-      this.runtimeIdleSessions.delete(sessionId);
-      this.pendingAsyncWorkSessions.delete(sessionId);
-      this.discoveredRunStates.delete(sessionId);
-      this.compactingSessions.delete(sessionId);
-      this.compactionRecordBaseline.delete(sessionId);
-      this.compactionStartedAt.delete(sessionId);
+      const stop = await this.fireAbort(sessionId);
+      if (stop === "no_active_turn") {
+        // Nothing was running, so nothing was cancelled: the run state this window
+        // was showing is cleared so the row settles at idle, and the transcript is
+        // left alone -- it stays the source of truth for whether work continued on
+        // another connection. A notice here would claim a stop that did not happen.
+        this.clearRunState(sessionId);
+      } else {
+        this.finalizeThought(sessionId);
+        this.finalizeAssistantMessage(sessionId);
+        this.finalizeAllMessages(sessionId);
+        this.cancelOpenTools(sessionId);
+        this.cancelPermissionsForSession(sessionId);
+        this.appendCancelledNotice(sessionId, stop === "plain");
+        this.locallyAbortedSessions.add(sessionId);
+        // Only confirmed aborts may clear run authority and publish idle.
+        this.clearRunState(sessionId);
+      }
       this.updateSessionStatus(sessionId, "idle");
       resolveCancellation();
     } catch (error) {
@@ -4884,18 +4911,106 @@ export class GjcSdkController {
     return completion;
   }
 
-  private async fireAbort(sessionId: string): Promise<void> {
-    await this.abortOwnedThroughControl(sessionId);
+  /**
+   * Drops this window's run-authority state for a session whose run is over.
+   */
+  private clearRunState(sessionId: string): void {
+    this.liveRunningSessions.delete(sessionId);
+    this.liveRunningDigests.delete(sessionId);
+    this.transcriptRunningSessions.delete(sessionId);
+    this.workingPhaseSessions.delete(sessionId);
+    this.runtimeIdleSessions.delete(sessionId);
+    this.pendingAsyncWorkSessions.delete(sessionId);
+    this.discoveredRunStates.delete(sessionId);
+    this.compactingSessions.delete(sessionId);
+    this.compactionRecordBaseline.delete(sessionId);
+    this.compactionStartedAt.delete(sessionId);
   }
 
-  private appendCancelledNotice(sessionId: string): void {
+  /**
+   * Stops the run, through the operator route when the host serves it and through the
+   * ordinary abort when the host answers but refuses the operator-owned Stop.
+   *
+   * The result names what was confirmed: `owned` stopped this window's turn and the
+   * work the runtime counts as owned, `plain` stopped the turn through the ordinary
+   * route only, and `no_active_turn` means there was no turn to stop at all.
+   */
+  private async fireAbort(
+    sessionId: string,
+  ): Promise<"owned" | "plain" | "no_active_turn"> {
+    try {
+      await this.abortOwnedThroughControl(sessionId);
+      return "owned";
+    } catch (error) {
+      if (!(error instanceof OwnedStopUnavailableError)) throw error;
+    }
+    const disposition = await this.abortPlainThroughControl(sessionId);
+    return disposition === "stopped" ? "plain" : "no_active_turn";
+  }
+
+  /**
+   * Ordinary `turn.abort` -- the payload and route a CLI cancel uses.
+   *
+   * Verified against gjc/0.18.11: `session-cli.ts` diverts `turn.abort` to the broker
+   * `session.control` route only when the payload carries an `operator` key
+   * (`operatorAbortBrokerRequest`), so this shape travels the ordinary Router control
+   * path a directly launched TUI host does serve. Its dispositions (`session-runtime`
+   * `abort`) are `{aborted:true}` -- the run is gone -- for this connection's own
+   * turn, `{aborted:false, turn:"no_active_turn"}` when this connection owned no
+   * active run, and `{aborted:false, reason:"queue_terminal_unconfirmed"}` when it
+   * could not confirm. `turn:"stopped"` is the terminal-abort confirmation, accepted
+   * here too so a runtime that answers the ordinary route with the terminal
+   * disposition still reads as confirmed.
+   *
+   * Only a confirmation counts as stopped. The ordinary route stops this connection's
+   * turn and nothing the runtime holds as work owned by another connection, so its
+   * confirmation never substantiates that owned background work stopped.
+   *
+   * A route failure is reported as the owned-stop refusal instead of marking the
+   * session read-only: a refused Stop is not evidence that the session lost ordinary
+   * control (the metadata probe just proved it answers), and the refusal keeps the
+   * retry guidance the user can act on.
+   */
+  private async abortPlainThroughControl(
+    sessionId: string,
+  ): Promise<"stopped" | "no_active_turn"> {
+    const cli = await this.requireCli();
+    const answer = await cli
+      .rawControl(sessionId, "turn.abort", {}, { repo: this.repoFor(sessionId) })
+      .catch((error: unknown): never => {
+        throw new OwnedStopUnavailableError(error);
+      });
+    if (answer?.turn === "stopped" || answer?.aborted === true) return "stopped";
+    // No active turn on this connection: nothing was stopped, and that is not a
+    // failure to report.
+    if (answer?.turn === "no_active_turn") return "no_active_turn";
+    throw new Error(
+      `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(answer ?? null)}`,
+    );
+  }
+
+  private appendCancelledNotice(
+    sessionId: string,
+    ownedWorkUnconfirmed = false,
+  ): void {
+    // A plain abort stops this connection's turn; reaching the work the runtime
+    // counts as owned needs the operator route, so that cancel states the limit in
+    // one sentence instead of claiming background work stopped.
+    const content = ownedWorkUnconfirmed
+      ? "진행 중인 작업이 취소되어 종료됐습니다. 다만 이 호스트의 백그라운드 작업은 중지 여부가 확인되지 않았습니다."
+      : "진행 중인 작업이 취소되어 종료됐습니다.";
     const items = this.transcripts.get(sessionId) ?? [];
     // The persisted transcript reports an aborted turn as `shared-cancelled-`,
     // so checking only for this window's own prefix announced the same
-    // cancellation a second time once the rebuild had already landed.
+    // cancellation a second time once the rebuild had already landed. The caveat is
+    // part of the notice, so a cancel that states it is not swallowed by an earlier
+    // cancel that does not.
     if (
       items.some(
-        (item) => item.kind === "notice" && item.title === "작업 취소됨",
+        (item) =>
+          item.kind === "notice" &&
+          item.title === "작업 취소됨" &&
+          item.content === content,
       )
     )
       return;
@@ -4904,7 +5019,7 @@ export class GjcSdkController {
       kind: "notice",
       sessionId,
       title: "작업 취소됨",
-      content: "진행 중인 작업이 취소되어 종료됐습니다.",
+      content,
       tone: "neutral",
       createdAt: nowLabel(),
     });

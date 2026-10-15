@@ -133,6 +133,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
     ipcRenderer.invoke(SETTINGS_IPC.discardAttachments, tokens),
   setWorkspaceLabel: (label: string) =>
     ipcRenderer.invoke(SETTINGS_IPC.setWorkspaceLabel, label),
+  setThoughtsExpanded: (expanded: boolean) =>
+    ipcRenderer.invoke(SETTINGS_IPC.setThoughtsExpanded, expanded),
   savePreferences: (preferences: AgentControlPreferences) =>
     ipcRenderer.invoke(SETTINGS_IPC.savePreferences, preferences),
   checkGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkGjcUpdate),

@@ -133,6 +133,44 @@ export function transcriptRestoreSettled(
   return follow ? frame.remaining <= 1 : true;
 }
 
+/**
+ * The width the reading column lays text out at, in the scroller's own pixels.
+ *
+ * The border box, not `clientWidth`: a scrollbar appearing or disappearing subtracts
+ * itself from `clientWidth` without changing the space the transcript was given, and the
+ * centered column is a percentage of exactly that space. Measured at a 900px window, the
+ * transcript is 494px wide with a classic scrollbar and 494px with none -- `clientWidth`
+ * reads 485 and 494 for those two states -- while the column it centers goes 451 -> 460,
+ * so the old comparison saw a resize every time the scrollbar flickered and ran a full
+ * anchored restoration while the user was typing.
+ */
+function transcriptReadingWidth(scroller: HTMLElement): number {
+  return scroller.offsetWidth;
+}
+
+/**
+ * Whether a reading width that just came in starts a restoration, or is left to the
+ * restoration already in flight.
+ *
+ * Three answers, and the middle one is what keeps a restore from restarting on every
+ * keystroke:
+ *
+ *   - unchanged: a scrollbar, a composer that grew a line, or any other layout the
+ *     reading width does not depend on. Nothing re-wraps, so nothing runs.
+ *   - changed into a restoration already covering that width: it is converging on the
+ *     position for this width already, and re-anchoring mid-flight is what made a
+ *     restore run for as long as the user kept typing.
+ *   - changed otherwise: a genuine re-wrap, so the position is restored at the new width.
+ */
+export function transcriptRestoreWidthDecision(
+  readingWidth: number,
+  lastWidth: number,
+  coveredWidth: number,
+): "unchanged" | "covered" | "restore" {
+  if (readingWidth === lastWidth) return "unchanged";
+  return readingWidth === coveredWidth ? "covered" : "restore";
+}
+
 /** Unzoomed offset of an element's top edge from the scroll container's content origin. */
 function layoutTopWithin(
   element: HTMLElement,
@@ -148,6 +186,9 @@ export interface TranscriptProps {
   sessionId: string;
   items: TranscriptItem[];
   compacting?: boolean;
+  /** The persisted, window-wide reasoning-card preference. */
+  thoughtsExpanded?: boolean;
+  onToggleThoughtsExpanded?: () => void;
   revealItemId?: string;
   onRevealComplete?: (itemId: string) => void;
   onResolveTool: (toolId: string, optionId: string) => void;
@@ -158,6 +199,8 @@ export function Transcript({
   sessionId,
   items,
   compacting = false,
+  thoughtsExpanded = false,
+  onToggleThoughtsExpanded,
   revealItemId,
   onRevealComplete,
   onResolveTool,
@@ -189,6 +232,10 @@ export function Transcript({
   // Frames of the in-flight resize restoration, so a gesture, a session switch, or the
   // next resize can take it over instead of a stale correction landing on top of it.
   const restoreFrameRef = useRef(0);
+  // The reading width the in-flight restoration was started for. The observer compares
+  // against it so a restoration already converging on a position is never restarted for a
+  // width it is already handling -- which is what kept it running while the user typed.
+  const restoreReadingWidthRef = useRef(0);
   const resizePreparedRef = useRef(false);
   const stableViewportRef = useRef<{
     width: number;
@@ -238,7 +285,7 @@ export function Transcript({
     const content = scroller?.querySelector<HTMLElement>(".transcript-window");
     if (!scroller || !content || restoreFrameRef.current || selfScrollingRef.current || resizePreparedRef.current) return;
     const saved = stableViewportRef.current;
-    const width = content.parentElement?.clientWidth ?? scroller.clientWidth;
+    const width = transcriptReadingWidth(scroller);
     if (saved && saved.width !== width) return;
     const top = layoutTopWithin(content, scroller);
     if (top === null) return;
@@ -435,6 +482,7 @@ export function Transcript({
 
   function releaseResizeRestore(): void {
     restoreFrameRef.current = 0;
+    restoreReadingWidthRef.current = 0;
     selfScrollingRef.current = false;
     resizePreparedRef.current = false;
     stableViewportRef.current = null;
@@ -468,6 +516,9 @@ export function Transcript({
     const windowTop = layoutTopWithin(windowEl, scroller);
     if (windowTop === null) return;
     cancelResizeRestore();
+    // This restoration now covers the reading width it was started for, so the observer
+    // does not start a second one for the same width.
+    restoreReadingWidthRef.current = transcriptReadingWidth(scroller);
     const session = sessionRef.current;
     // Frozen before measure(), and never re-read from the live flags: the scroll events
     // the reset causes are not the user scrolling away, so they must not change which
@@ -591,16 +642,33 @@ export function Transcript({
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript) return;
-    // Observe the reading column, not just its scroller: opening the inspector can
-    // change the centered column width independently. Mounted rows remeasure while
-    // the restoration preserves the reading anchor; offscreen estimates stay intact.
-    const column = transcript.querySelector<HTMLElement>(".transcript-column") ?? transcript;
-    let lastWidth = column.clientWidth;
+    // Observing the reading column itself made every scrollbar flicker a resize: the
+    // column is a percentage of the scroller's content box, so a scrollbar appearing or
+    // disappearing shrank it by its width while the space the transcript was given -- the
+    // thing text actually re-wraps against -- had not moved at all. Typing grows the
+    // composer, the composer steals height from the transcript, and the scrollbar state
+    // that depends on those two heights flickers; each flick ran a restoration, which is
+    // what shook the blocks under the reader.
+    //
+    // So the observed width is the scroller's border box and nothing else changes it:
+    // opening the inspector, resizing the window, or the layout settling at startup. A
+    // reading width already under a restoration is not restarted either -- the restore in
+    // flight is converging on the same position, and re-anchoring it mid-flight is what
+    // made a restore run for as long as the user kept typing.
+    let lastReadingWidth = transcriptReadingWidth(transcript);
     const observer = new ResizeObserver(() => {
       const element = transcriptRef.current;
-      const width = column.clientWidth;
-      if (!element || width === lastWidth) return;
-      lastWidth = width;
+      if (!element) return;
+      const readingWidth = transcriptReadingWidth(element);
+      const decision = transcriptRestoreWidthDecision(
+        readingWidth,
+        lastReadingWidth,
+        restoreReadingWidthRef.current,
+      );
+      if (decision === "unchanged") return;
+      lastReadingWidth = readingWidth;
+      if (decision === "covered") return;
+      restoreReadingWidthRef.current = readingWidth;
       // A resize is not the user scrolling away, so following must survive it: the reset
       // below briefly puts the scroll position far from the bottom, and the scroll events
       // that causes had been switching following off -- which then cancelled the restore
@@ -608,7 +676,7 @@ export function Transcript({
       // suppression itself and hands it back once it is done or the user takes over.
       startResizeRestore();
     });
-    observer.observe(column);
+    observer.observe(transcript);
     return () => {
       cancelResizeRestore();
       observer.disconnect();
@@ -660,8 +728,8 @@ export function Transcript({
     const transcript = transcriptRef.current;
     if (!transcript) return;
     if (selfScrollingRef.current) return;
-    const columnWidth = transcript.querySelector<HTMLElement>(".transcript-column")?.clientWidth ?? transcript.clientWidth;
-    if (stableViewportRef.current && stableViewportRef.current.width !== columnWidth) return;
+    const readingWidth = transcriptReadingWidth(transcript);
+    if (stableViewportRef.current && stableViewportRef.current.width !== readingWidth) return;
     const nearBottom = shouldFollowTranscript(
       transcript.scrollHeight,
       transcript.scrollTop,
@@ -787,6 +855,8 @@ export function Transcript({
                   >
                     <TranscriptItemView
                       item={block.item}
+                      thoughtsExpanded={thoughtsExpanded}
+                      onToggleThoughtsExpanded={onToggleThoughtsExpanded}
                       onResolveTool={onResolveTool}
                       onReadArtifact={onReadArtifact}
                     />
@@ -801,6 +871,8 @@ export function Transcript({
                       >
                         <TranscriptItemView
                           item={tool}
+                          thoughtsExpanded={thoughtsExpanded}
+                          onToggleThoughtsExpanded={onToggleThoughtsExpanded}
                           onResolveTool={onResolveTool}
                           onReadArtifact={onReadArtifact}
                         />
@@ -1166,13 +1238,21 @@ export function TodoCard({
   );
 }
 
+/**
+ * A reasoning card. Whether it is open is not the card's own business: the transcript
+ * streams a card into existence and the runtime can re-send the same thought as a new
+ * row, so a flag owned by the card was lost whenever the card was. The window-wide
+ * preference is what makes one 펼치기/접기 click hold for every card.
+ */
 export function ThoughtCard({
   item,
+  expanded,
+  onToggle,
 }: {
   item: Extract<TranscriptItem, { kind: "thought" }>;
+  expanded: boolean;
+  onToggle?: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const open = item.streaming || expanded;
   return (
     <article className={`thought-card ${item.streaming ? "is-streaming" : ""}`}>
       <header>
@@ -1184,13 +1264,13 @@ export function ThoughtCard({
           <button
             type="button"
             className="thought-toggle"
-            onClick={() => setExpanded((value) => !value)}
+            onClick={onToggle}
           >
-            {open ? "접기" : "펼치기"}
+            {expanded ? "접기" : "펼치기"}
           </button>
         )}
       </header>
-      {open && (
+      {expanded && (
         <div
           className={`thought-content ${item.streaming ? "is-streaming" : "markdown-body"}`}
         >
@@ -1209,10 +1289,14 @@ export function ThoughtCard({
 
 export const TranscriptItemView = memo(function TranscriptItemView({
   item,
+  thoughtsExpanded = false,
+  onToggleThoughtsExpanded,
   onResolveTool,
   onReadArtifact,
 }: {
   item: TranscriptItem;
+  thoughtsExpanded?: boolean;
+  onToggleThoughtsExpanded?: () => void;
   onResolveTool: TranscriptProps["onResolveTool"];
   onReadArtifact: TranscriptProps["onReadArtifact"];
 }) {
@@ -1327,7 +1411,13 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   }
 
   if (item.kind === "thought") {
-    return <ThoughtCard item={item} />;
+    return (
+      <ThoughtCard
+        item={item}
+        expanded={thoughtsExpanded}
+        onToggle={onToggleThoughtsExpanded}
+      />
+    );
   }
 
   if (item.kind === "plan") {

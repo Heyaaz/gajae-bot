@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -74,6 +74,7 @@ describe('SettingsStore', () => {
       modelPreset: 'codex-medium',
       permissionHandling: 'prompt',
       gjcExecutable: '',
+      thoughtsExpanded: false,
     })
   })
 
@@ -104,7 +105,7 @@ describe('SettingsStore', () => {
     expect(preferences.workspace).not.toBe(path.resolve(asarPath))
   })
 
-  it('persists workspace, preset, permission mode, and executable', () => {
+  it('persists workspace, preset, permission mode, executable, and the reasoning-card preference', () => {
     const root = temporaryDirectory()
     const userData = path.join(root, 'user-data')
     const workspace = path.join(root, 'workspace')
@@ -120,12 +121,49 @@ describe('SettingsStore', () => {
       modelPreset: 'my-custom-profile',
       permissionHandling: 'auto',
       gjcExecutable: executable,
+      thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
+  })
+
+  it('toggles the reasoning-card preference alone and reads a missing or junk value as collapsed', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+
+    expect(store.get().thoughtsExpanded).toBe(false)
+    expect(store.setThoughtsExpanded(true)).toBe(true)
+    // The toggle writes one field: the rest of the object survives it untouched.
+    expect(new SettingsStore(userData, root).get()).toMatchObject({ thoughtsExpanded: true, workspace: path.resolve(root), modelPreset: DEFAULT_MODEL_PRESET })
+
+    // A file written before this preference existed carries no key at all.
+    const file = path.join(userData, 'agent-control-settings.json')
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    delete stored.thoughtsExpanded
+    writeFileSync(file, JSON.stringify(stored))
+    expect(new SettingsStore(userData, root).get().thoughtsExpanded).toBe(false)
+
+    stored.thoughtsExpanded = 'yes'
+    writeFileSync(file, JSON.stringify(stored))
+    expect(new SettingsStore(userData, root).get().thoughtsExpanded).toBe(false)
+
+    expect(parsePreferences({}, root).thoughtsExpanded).toBe(false)
+    expect(parsePreferences({ thoughtsExpanded: 1 }, root).thoughtsExpanded).toBe(false)
+    expect(parsePreferences({ thoughtsExpanded: null }, root).thoughtsExpanded).toBe(false)
+  })
+
+  it('saves a settings file that never carried the preference and refuses a junk one', () => {
+    const root = temporaryDirectory()
+    const store = new SettingsStore(path.join(root, 'user-data'), root)
+    const base = { workspace: root, workspaceLabel: 'Private workspace', modelPreset: 'codex-medium', permissionHandling: 'prompt', gjcExecutable: '' }
+
+    expect(store.validate(base).thoughtsExpanded).toBe(false)
+    expect(store.validate({ ...base, thoughtsExpanded: true }).thoughtsExpanded).toBe(true)
+    expect(() => store.validate({ ...base, thoughtsExpanded: 'open' })).toThrow('Thought card expansion must be a boolean')
   })
 
   it('rejects invalid workspace scope', () => {
@@ -137,6 +175,7 @@ describe('SettingsStore', () => {
       modelPreset: 'codex-medium',
       permissionHandling: 'prompt',
       gjcExecutable: '',
+      thoughtsExpanded: false,
     })).toThrow('Workspace must be an existing absolute directory')
   })
 })

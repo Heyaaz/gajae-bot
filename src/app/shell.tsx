@@ -12,6 +12,7 @@ import type {
 import type {
   AgentCommand,
   AgentConfigOption,
+  AgentControlPreferences,
   AgentEvent,
   AgentSession,
   BackendConnection,
@@ -161,7 +162,25 @@ export default function App() {
   // On a phone the session list is a drawer, not a column: 76px of permanent rail
   // is a fifth of the screen. Wide windows never see this control.
   const [navOpen, setNavOpen] = useState(false);
-  const [workspaceLabel, setWorkspaceLabel] = useState("개인 Workspace");
+  // The whole object the store answered with is kept, not only the label the sidebar
+  // renders: the reasoning-card preference is a field of it, and a card toggles that
+  // one field through the bridge without touching the rest.
+  const [preferences, setPreferences] = useState<AgentControlPreferences>({
+    workspace: "",
+    workspaceLabel: "개인 Workspace",
+    modelPreset: DEFAULT_MODEL_PRESET,
+    permissionHandling: "prompt",
+    gjcExecutable: "",
+    thoughtsExpanded: false,
+  });
+  const preferencesRef = useRef(preferences);
+  // The card toggle is a stable callback so the memo'd transcript rows keep their
+  // identity, which means it reads the current value through this ref rather than
+  // closing over the render that created it.
+  useEffect(() => {
+    preferencesRef.current = preferences;
+  }, [preferences]);
+  const workspaceLabel = preferences.workspaceLabel;
   const pendingSessions = useRef(new Map<string, Promise<AgentSession>>());
   const selectedIdRef = useRef<string | null>(null);
 
@@ -275,8 +294,8 @@ export default function App() {
     const settingsBridge = window.agentControlDesktop?.settings;
     if (!settingsBridge) return;
     let active = true;
-    void settingsBridge.getPreferences().then((preferences) => {
-      if (active) setWorkspaceLabel(preferences.workspaceLabel);
+    void settingsBridge.getPreferences().then((loaded) => {
+      if (active) setPreferences(loaded);
     });
     return () => {
       active = false;
@@ -976,7 +995,8 @@ export default function App() {
     try {
       const saved =
         await window.agentControlDesktop?.settings.setWorkspaceLabel(label);
-      if (saved) setWorkspaceLabel(saved);
+      if (saved)
+        setPreferences((current) => ({ ...current, workspaceLabel: saved }));
     } catch (error) {
       setAppError(error instanceof Error ? error.message : String(error));
     }
@@ -1105,6 +1125,33 @@ export default function App() {
     }
     setSettingsOpen(true);
   }, [backend]);
+  // A card's 펼치기/접기 is optimistic: the click has to land on every visible card at
+  // once, and the store is what says whether the write happened. A refused write puts
+  // the previous value back, so the window never shows a preference it did not save.
+  const toggleThoughtsExpanded = useCallback((): void => {
+    const current = preferencesRef.current.thoughtsExpanded;
+    const next = !current;
+    if (!settingsBridge) {
+      // A browser is the remote client of a host, and the preference belongs to the host.
+      setAppError("설정은 Gajae 데스크톱 앱에서 열 수 있습니다.");
+      return;
+    }
+    setPreferences((latest) => ({ ...latest, thoughtsExpanded: next }));
+    void settingsBridge.setThoughtsExpanded(next).then(
+      (saved) =>
+        setPreferences((latest) => ({
+          ...latest,
+          thoughtsExpanded: saved,
+        })),
+      (error: unknown) => {
+        setPreferences((latest) => ({
+          ...latest,
+          thoughtsExpanded: current,
+        }));
+        setAppError(humanErrorMessage(error));
+      },
+    );
+  }, [settingsBridge]);
   const startFork = useCallback((session: AgentSession) => {
     void handlersRef.current.forkSession(session);
   }, []);
@@ -1286,6 +1333,8 @@ export default function App() {
                 sessionId={selectedSession.id}
                 items={selectedTranscript}
                 compacting={selectedSession.phase === "compacting"}
+                thoughtsExpanded={preferences.thoughtsExpanded}
+                onToggleThoughtsExpanded={toggleThoughtsExpanded}
                 revealItemId={
                   revealTarget?.sessionId === selectedSession.id
                     ? revealTarget.itemId
@@ -1421,12 +1470,13 @@ export default function App() {
       {settingsOpen && (
         <SettingsDialog
           connection={connection}
+          thoughtsExpanded={preferences.thoughtsExpanded}
           onClose={() => setSettingsOpen(false)}
-          onSaved={(preferences) => {
-            setWorkspaceLabel(preferences.workspaceLabel);
+          onSaved={(saved) => {
+            setPreferences(saved);
             setConnection((current) => ({
               ...current,
-              workspace: preferences.workspace,
+              workspace: saved.workspace,
             }));
           }}
           updateStatus={updateStatus}

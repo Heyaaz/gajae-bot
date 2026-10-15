@@ -541,6 +541,220 @@ function checkToggles(cases, reflow) {
   return failures
 }
 
+// The reported bug: typing in the composer made the blocks shake. Typing grows the
+// composer, the composer takes its height from the transcript, and the transcript's
+// scrollbar state flips as the two heights cross. The restoration was watching the
+// column's clientWidth, which a scrollbar changes by its own width -- the column is a
+// percentage of the scroller's content box -- so every flick ran a multi-frame anchored
+// restoration on top of the keyboard, reading as the blocks jumping up and down.
+//
+// Two facts are measured. First, the space the transcript was given does not move while
+// the scrollbar flickers, so nothing re-wraps and nothing may run: the restoration writes
+// its correction into `scrollTop` from inside a frame loop, and that is what `restores`
+// counts. Second, the two blocks under the reader's eye keep their offsets. The composer
+// is grown the way typed lines grow it -- the same height rule the composer applies to
+// itself, past the 196px where it starts scrolling its own text -- so the height that
+// makes the scrollbar flicker is real rather than scripted.
+const TYPED_LINES =
+  'typing into the composer while the scrollbar flickers must not move the blocks below '.repeat(24)
+// Matches the composer's own ceiling (composer.tsx): past this its textarea scrolls
+// instead of growing, so the transcript keeps the height it had.
+const COMPOSER_MAX_HEIGHT_PX = 196
+const TYPING_SETTLE_MS = 250
+
+const typingProbe = `(async (typed, settleMs, maxComposerPx) => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 80 && !document.querySelector('.session-row'); i += 1) await wait(100);
+  const row = document.querySelector('.session-row');
+  if (!row) return { error: 'no session rows' };
+  row.click();
+  for (let i = 0; i < 80 && !document.querySelector('.transcript-column'); i += 1) await wait(100);
+  const transcript = document.querySelector('.transcript');
+  const column = document.querySelector('.transcript-column');
+  const textarea = document.querySelector('.composer textarea');
+  if (!transcript || !column || !textarea) return { error: 'transcript or composer is missing' };
+  await wait(1200);
+
+  // Reading older content, so the restoration has an anchor to preserve and a jump is
+  // visible as a moved block rather than as a scroll position nobody can see.
+  transcript.scrollTop = Math.round(transcript.scrollHeight * 0.45);
+  await wait(900);
+
+  // The correction loop writes from inside a requestAnimationFrame callback, while the
+  // only scrollTop assignment a gesture or the follow correction makes happens outside
+  // one, so the flag separates the restoration's writes from everything else.
+  let inFrame = false;
+  const restores = [];
+  const requestFrame = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = (callback) =>
+    requestFrame((time) => {
+      inFrame = true;
+      try {
+        return callback(time);
+      } finally {
+        inFrame = false;
+      }
+    });
+  const descriptor = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+  Object.defineProperty(Element.prototype, 'scrollTop', {
+    configurable: true,
+    get() {
+      return descriptor.get.call(this);
+    },
+    set(value) {
+      if (inFrame && this.classList && this.classList.contains('transcript')) {
+        restores.push({ at: Math.round(performance.now()), value: Math.round(value) });
+      }
+      return descriptor.set.call(this, value);
+    },
+  });
+
+  // The two blocks whose bounding boxes this is about: the first two entries painted in
+  // the viewport, re-read every frame because a re-wrap remounts rows.
+  const visiblePair = () => {
+    const viewport = transcript.getBoundingClientRect();
+    return [...document.querySelectorAll('.transcript-entry')]
+      .map((entry) => ({ id: entry.id || 'tool-run', box: entry.getBoundingClientRect() }))
+      .filter((entry) => entry.box.width > 0 && entry.box.height > 0 && entry.box.bottom > viewport.top + 1 && entry.box.top < viewport.bottom)
+      .slice(0, 2)
+      .map((entry) => ({ id: entry.id, top: Math.round(entry.box.top * 100) / 100 }));
+  };
+  const geometry = () => ({
+    readingWidth: transcript.offsetWidth,
+    scrollTop: Math.round(transcript.scrollTop * 100) / 100,
+    pair: visiblePair(),
+  });
+
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+  if (textarea.disabled) return { error: 'the composer is read-only in this window' };
+  // The composer owns its own growth; this runs the same rule against the text it is
+  // holding, so the height the transcript loses is the height typing really costs it.
+  const growComposer = () => {
+    textarea.style.height = 'auto';
+    textarea.style.height = 
+      \`\${Math.min(Math.max(textarea.scrollHeight, 52), maxComposerPx)}px\`;
+  };
+  // Emptied first: this probe runs at more than one window size against the same
+  // renderer, and a composer left full from the previous case cannot grow again.
+  textarea.focus();
+  setter.call(textarea, '');
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  growComposer();
+  await wait(200);
+  const composerHeightStart = Math.round(textarea.getBoundingClientRect().height);
+  if (composerHeightStart >= maxComposerPx) {
+    return { error: 'the composer starts at its ceiling (' + composerHeightStart + 'px)' };
+  }
+  const before = geometry();
+  restores.length = 0;
+  let stop = false;
+  let driftPx = 0;
+  const ticker = (async () => {
+    while (!stop) {
+      const pair = visiblePair();
+      if (pair.length !== before.pair.length) {
+        driftPx = Math.max(driftPx, 999);
+      } else {
+        for (let i = 0; i < pair.length; i += 1) {
+          if (pair[i].id !== before.pair[i].id) {
+            driftPx = Math.max(driftPx, 999);
+          } else {
+            driftPx = Math.max(driftPx, Math.abs(pair[i].top - before.pair[i].top));
+          }
+        }
+      }
+      await wait(16);
+    }
+  })();
+
+  // Typed in two halves: the first grows the composer by a line, the second crosses the
+  // height where the scrollbar flips.
+  const half = Math.floor(typed.length / 2);
+  let composerGrowthPx = 0;
+  for (const chunk of [typed.slice(0, half), typed.slice(half)]) {
+    textarea.focus();
+    setter.call(textarea, chunk);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+    growComposer();
+    await wait(500);
+    composerGrowthPx = Math.max(
+      composerGrowthPx,
+      Math.round(textarea.getBoundingClientRect().height) - composerHeightStart,
+    );
+    // The flicker itself: the scrollbar comes and goes without the transcript being
+    // given a different width. The real composer does this to itself as lines are added.
+    transcript.style.overflowY = 'hidden';
+    await wait(300);
+    transcript.style.overflowY = '';
+    await wait(300);
+  }
+  await wait(settleMs);
+  stop = true;
+  await ticker;
+  const after = geometry();
+  return {
+    restores: restores.length,
+    // Bounded: only the frame times and values are useful in the log, and a long
+    // restoration would otherwise print sixty of them.
+    restoreWrites: restores.slice(0, 6),
+    driftPx: Math.round(driftPx * 100) / 100,
+    readingWidth: before.readingWidth,
+    readingWidthAfter: after.readingWidth,
+    textareaHeightBefore: composerHeightStart,
+    textareaHeightAfter: Math.round(textarea.getBoundingClientRect().height),
+    composerGrowthPx,
+    composerValue: textarea.value.length,
+    composerScrollHeight: textarea.scrollHeight,
+    composerDisabled: textarea.disabled,
+    columnWidth: column.clientWidth,
+    columnWidthAfter: Math.round(column.getBoundingClientRect().width),
+    scrollTopMoved: Math.abs(after.scrollTop - before.scrollTop) > 0.5,
+    before,
+    after,
+  };
+})(${JSON.stringify(TYPED_LINES)}, ${TYPING_SETTLE_MS}, ${COMPOSER_MAX_HEIGHT_PX})`
+
+function checkTyping(result) {
+  if (result.error) return [`typing: ${result.error}`]
+  const failures = []
+  // Without a composer that actually grew there is no height change and the case would
+  // pass on a still frame. More typed text than 196px of it is what guarantees that.
+  if (result.composerScrollHeight <= COMPOSER_MAX_HEIGHT_PX) {
+    failures.push(
+      `typing: the typed text is too short to grow the composer ` +
+        `(${result.composerScrollHeight}px of it)`,
+    )
+  }
+  if (result.composerGrowthPx <= 0) {
+    failures.push(
+      `typing: the composer did not grow (${result.textareaHeightBefore}px throughout)`,
+    )
+  }
+  // The scrollbar flicker is the point of the case: the column's clientWidth moves while
+  // the space the transcript was given does not.
+  if (result.columnWidth === result.columnWidthAfter) {
+    failures.push(
+      `typing: the flicker did not reach the column (${result.columnWidth}px throughout)`,
+    )
+  }
+  if (result.readingWidthAfter !== result.readingWidth) {
+    failures.push(
+      `typing: the reading width changed (${result.readingWidth} -> ` +
+        `${result.readingWidthAfter}px)`,
+    )
+  }
+  if (result.restores > 0) {
+    failures.push(
+      `typing: ${result.restores} anchored restoration frames ran for a layout the ` +
+        `reading width does not depend on (first wrote ${result.restoreWrites[0]?.value})`,
+    )
+  }
+  if (result.driftPx > HISTORY_TOLERANCE_PX) {
+    failures.push(`typing: a block moved ${result.driftPx}px under the reader`)
+  }
+  return failures
+}
+
 function checkModelMenu(opened, scrolled) {
   if (opened.error) return [`model menu: ${opened.error}`]
   if (scrolled.error) return [`model menu: ${scrolled.error}`]
@@ -687,6 +901,13 @@ app.whenReady().then(async () => {
     for (const failure of checkToggles(cases, width >= 980)) {
       failures.push(`${width}px: ${failure}`)
     }
+
+    // Typing is measured at the same sizes. 880px is where the reading column is no
+    // longer capped at 760px, so a scrollbar flicker reaches it; 1400px is the wide case
+    // where the restoration must stay out of the keyboard's way for its own reasons.
+    const typing = await win.webContents.executeJavaScript(typingProbe)
+    console.log(JSON.stringify(typing))
+    for (const failure of checkTyping(typing)) failures.push(`${width}px: ${failure}`)
   }
 
   clearTimeout(failAfter)

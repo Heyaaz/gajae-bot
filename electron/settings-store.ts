@@ -66,6 +66,9 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
       ? candidate.permissionHandling as GjcPermissionHandling
       : 'prompt',
     gjcExecutable: validExecutable(candidate.gjcExecutable) ? candidate.gjcExecutable : '',
+    // Junk in a stored file reads as collapsed. Only a stored `true` opens the cards,
+    // so a hand-edited or older value cannot leave the preference stuck open.
+    thoughtsExpanded: candidate.thoughtsExpanded === true,
   }
 }
 
@@ -98,6 +101,12 @@ export class SettingsStore {
     if (!validExecutable((value as Partial<AgentControlPreferences> | null)?.gjcExecutable)) {
       throw new Error('GJC executable must be blank or an executable absolute path')
     }
+    // A stored file written before this preference existed has no key at all; only a
+    // value that is present and not a boolean is a mistake worth refusing.
+    const thoughtsExpanded = (value as Partial<AgentControlPreferences> | null)?.thoughtsExpanded
+    if (thoughtsExpanded !== undefined && typeof thoughtsExpanded !== 'boolean') {
+      throw new Error('Thought card expansion must be a boolean')
+    }
 
     return preferences
   }
@@ -114,6 +123,12 @@ export class SettingsStore {
     this.preferences = { ...this.preferences, workspaceLabel: value.trim().slice(0, 60) }
     this.persist()
     return this.preferences.workspaceLabel
+  }
+
+  setThoughtsExpanded(value: boolean): boolean {
+    this.preferences = { ...this.preferences, thoughtsExpanded: value }
+    this.persist()
+    return this.preferences.thoughtsExpanded
   }
 
   private persist(): void {
