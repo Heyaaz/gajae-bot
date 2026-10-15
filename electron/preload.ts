@@ -16,6 +16,11 @@ import type {
 } from "../shared/agent-contract.js";
 import type { ProductivityDesktopBridge } from "../shared/productivity-ipc.js";
 import type {
+  RemoteDesktopBridge,
+  RemotePermission,
+} from "../shared/remote-protocol.js";
+import { REMOTE_IPC } from "../shared/remote-ipc.js";
+import type {
   AutomationDesktopBridge,
   AutomationInput,
 } from "../shared/automation-ipc.js";
@@ -165,6 +170,22 @@ const automations: AutomationDesktopBridge = Object.freeze({
     ipcRenderer.invoke(AUTOMATION_IPC.listRuns, automationId),
   runNow: (id: string) => ipcRenderer.invoke(AUTOMATION_IPC.runNow, id),
 });
+const remote: RemoteDesktopBridge = Object.freeze({
+  getState: () => ipcRenderer.invoke(REMOTE_IPC.getState),
+  setEnabled: (enabled: boolean) =>
+    ipcRenderer.invoke(REMOTE_IPC.setEnabled, enabled),
+  setPort: (port: number) => ipcRenderer.invoke(REMOTE_IPC.setPort, port),
+  issuePairingCode: (permission: RemotePermission) =>
+    ipcRenderer.invoke(REMOTE_IPC.issuePairingCode, permission),
+  clearPairingCode: () => ipcRenderer.invoke(REMOTE_IPC.clearPairingCode),
+  setDevicePermission: (deviceId: string, permission: RemotePermission) =>
+    ipcRenderer.invoke(REMOTE_IPC.setDevicePermission, deviceId, permission),
+  revokeDevice: (deviceId: string) =>
+    ipcRenderer.invoke(REMOTE_IPC.revokeDevice, deviceId),
+  forgetDevice: (deviceId: string) =>
+    ipcRenderer.invoke(REMOTE_IPC.forgetDevice, deviceId),
+  refresh: () => ipcRenderer.invoke(REMOTE_IPC.refresh),
+});
 contextBridge.exposeInMainWorld(
   "agentControlDesktop",
   Object.freeze({
@@ -178,6 +199,7 @@ contextBridge.exposeInMainWorld(
     management,
     productivity,
     automations,
+    remote,
     onCycleEffort: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on(DESKTOP_IPC.cycleEffort, wrapped);

@@ -38,6 +38,8 @@ import {
   rendererLaunchConfig,
 } from "./ipc-security.js";
 import { AttachmentStore } from "./attachment-store.js";
+import { RemoteAccessService } from "./remote/service.js";
+import { registerRemoteIpcHandlers } from "./remote-ipc-handlers.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode } = rendererLaunchConfig(app.isPackaged);
@@ -74,6 +76,9 @@ const workspace = validDirectory(requestedWorkspace)
 const sessionMetadata = new SessionMetadataStore(userDataDirectory);
 const attachmentStore = new AttachmentStore();
 let productivityService: ProductivityService | undefined;
+// Declared before the controller so the event fan-out below can reach it; the
+// instance itself is created once the controller exists.
+let remoteAccess: RemoteAccessService | undefined;
 
 // The most recent notification this process handed to macOS. The smoke run
 // asserts against it so "the app sends the notification" is a checked fact.
@@ -97,6 +102,9 @@ function broadcastAgentEvent(event: AgentEvent): void {
   for (const window of windows) {
     if (!window.isDestroyed()) window.webContents.send(GJC_IPC.event, event);
   }
+  // The remote devices watch the same runtime, so they see the same events the
+  // desktop windows do rather than a separately polled view.
+  remoteAccess?.publish(event);
   if (event.type !== "session.activity") return;
   if (
     !announcesSessionActivity(
@@ -235,6 +243,15 @@ const unregisterProductivityIpc =
   registerProductivityIpcHandlers(productivityService, ipcSecurity);
 const unregisterAutomationIpc =
   registerAutomationIpcHandlers(automationService, ipcSecurity);
+remoteAccess = new RemoteAccessService({
+  userDataDirectory,
+  webRoot: path.join(app.getAppPath(), "dist/web"),
+  version: app.getVersion(),
+  workspace: () => workspace,
+  host: gjcController,
+  log: (message) => console.log(`remote access: ${message}`),
+});
+const unregisterRemoteIpc = registerRemoteIpcHandlers(remoteAccess, ipcSecurity);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -1036,6 +1053,7 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(() => {
+  void remoteAccess?.start();
   void automationService
     .initialize()
     .catch((error) =>
@@ -1062,6 +1080,8 @@ app.on("before-quit", () => {
   unregisterDesktopServicesIpc();
   unregisterProductivityIpc();
   unregisterAutomationIpc();
+  unregisterRemoteIpc();
+  void remoteAccess?.dispose();
   gjcController.dispose();
   attachmentStore.dispose();
 });
