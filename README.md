@@ -310,7 +310,7 @@ blindly retry"), so a refused delete is indistinguishable from a delete that may
 have half-applied. Gajae passes the path it located and, when the call still fails,
 treats it as an unknown lifecycle outcome: it preserves the transcript, metadata,
 and worktree and marks the session as recovering rather than reporting a deletion
-it cannot prove. Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6771
+it cannot prove. Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6777
 (the disabled-outcome code stays conservative; the refusal class becomes a
 `lifecycle_input_refused` diagnostic).
 
