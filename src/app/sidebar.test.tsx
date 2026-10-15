@@ -2,7 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AgentSession, BackendConnection } from "../backend/types";
-import { Sidebar } from "./sidebar";
+import { consumeEscapeKey, SessionRow, Sidebar } from "./sidebar";
+import type { SessionRowProps } from "./sidebar";
 
 const connection: BackendConnection = {
   state: "connected",
@@ -246,5 +247,167 @@ describe("Sidebar row state", () => {
     expect(markup).toContain('class="session-state-dot session-state-dot--compacting"');
     expect(markup).toContain('aria-label="확인 필요"');
     expect(markup).toContain('title="압축 중"');
+  });
+});
+
+/**
+ * The handlers sit on the elements SessionRow builds, and the component is a plain
+ * function, so the row can be driven without a DOM: what it returns is the row, and
+ * the keys and clicks it reacts to are the props on the elements under it.
+ */
+interface TestEvent {
+  key: string;
+  target: unknown;
+  currentTarget: unknown;
+  defaultPrevented: boolean;
+  propagationStopped: boolean;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}
+
+interface TestElement {
+  props: {
+    className?: string;
+    children?: unknown;
+    onClick?: (event: TestEvent) => void;
+    onKeyDown?: (event: TestEvent) => void;
+  };
+}
+
+function testEvent(
+  key: string,
+  target: unknown,
+  currentTarget: unknown = target,
+): TestEvent {
+  const event: TestEvent = {
+    key,
+    target,
+    currentTarget,
+    defaultPrevented: false,
+    propagationStopped: false,
+    preventDefault: () => {
+      event.defaultPrevented = true;
+    },
+    stopPropagation: () => {
+      event.propagationStopped = true;
+    },
+  };
+  return event;
+}
+
+function rowElement(overrides: Partial<SessionRowProps> = {}): TestElement {
+  return SessionRow({
+    session: session(0, { status: "idle" }),
+    selected: false,
+    renaming: false,
+    renameValue: "",
+    onSelect: noop,
+    onContextMenu: noop,
+    onRenameChange: noop,
+    onRenameCommit: noop,
+    onRenameCancel: noop,
+    ...overrides,
+  }) as unknown as TestElement;
+}
+
+function findByClass(node: unknown, className: string): TestElement | null {
+  if (typeof node !== "object" || node === null) return null;
+  const element = node as TestElement;
+  if (!("props" in element)) return null;
+  if (element.props.className === className) return element;
+  const children = Array.isArray(element.props.children)
+    ? element.props.children
+    : [element.props.children];
+  for (const child of children) {
+    const found = findByClass(child, className);
+    if (found) return found;
+  }
+  return null;
+}
+
+describe("Sidebar row keyboard", () => {
+  it("selects once for Enter and Space, and stops what Space would do", () => {
+    // The row is a div, so nothing but this handler keeps Space from scrolling the
+    // list out from under the row the user just picked, and nothing keeps the key
+    // from selecting twice.
+    for (const key of ["Enter", " "]) {
+      const selects: string[] = [];
+      const row = rowElement({ onSelect: () => selects.push("select") });
+      const event = testEvent(key, row);
+      row.props.onKeyDown!(event);
+      expect(selects).toHaveLength(1);
+      expect(event.defaultPrevented).toBe(true);
+    }
+
+    // A key the row does not own leaves before the default is touched, so it still
+    // reaches whatever is listening for it above the row.
+    const ignores: string[] = [];
+    const row = rowElement({ onSelect: () => ignores.push("select") });
+    const other = testEvent("a", row);
+    row.props.onKeyDown!(other);
+    expect(ignores).toEqual([]);
+    expect(other.defaultPrevented).toBe(false);
+  });
+
+  it("leaves a nested control's keyboard activation to the control", () => {
+    // Enter or Space on the focused family disclosure bubbles to the row. While the
+    // row claimed it, the head was selected and the forks it holds stayed shut: the
+    // row ate the key, so the button's own activation never ran either.
+    const selects: string[] = [];
+    const toggles: string[] = [];
+    const row = rowElement({
+      onToggleFamily: () => toggles.push("toggle"),
+      onSelect: () => selects.push("select"),
+    });
+    const toggle = findByClass(row, "session-family-toggle");
+    expect(toggle).toBeTruthy();
+    // A key on the button arrives at the row with the button as the target and the
+    // row as the current target, which is the pair the row has to tell apart.
+    const keydown = testEvent(" ", toggle, row);
+    row.props.onKeyDown!(keydown);
+    expect(selects).toEqual([]);
+    // Left alone, the button keeps the default that makes it toggle.
+    expect(keydown.defaultPrevented).toBe(false);
+
+    const click = testEvent("", toggle);
+    toggle!.props.onClick!(click);
+    expect(toggles).toHaveLength(1);
+    expect(click.propagationStopped).toBe(true);
+    expect(selects).toEqual([]);
+  });
+
+  it("closes the rename field on Escape instead of selecting the row", () => {
+    const selects: string[] = [];
+    const cancels: string[] = [];
+    const row = rowElement({
+      renaming: true,
+      renameValue: "Session 0",
+      onRenameCancel: () => cancels.push("cancel"),
+      onSelect: () => selects.push("select"),
+    });
+    const input = findByClass(row, "session-rename-input");
+    expect(input).toBeTruthy();
+    const event = testEvent("Escape", input);
+    input!.props.onKeyDown!(event);
+    expect(cancels).toHaveLength(1);
+    expect(event.defaultPrevented).toBe(true);
+    expect(event.propagationStopped).toBe(true);
+    expect(selects).toEqual([]);
+  });
+
+  it("consumes Escape for the workspace field too", () => {
+    // The workspace field is the other inline editor, and it sits behind state a
+    // render-free test cannot open, so the consumer both fields call is asserted
+    // here. Without it the key reached the app-wide handler, which cancels the
+    // running session instead of closing the field.
+    const escape = testEvent("Escape", null);
+    expect(consumeEscapeKey(escape)).toBe(true);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(escape.propagationStopped).toBe(true);
+
+    const letter = testEvent("a", null);
+    expect(consumeEscapeKey(letter)).toBe(false);
+    expect(letter.defaultPrevented).toBe(false);
+    expect(letter.propagationStopped).toBe(false);
   });
 });

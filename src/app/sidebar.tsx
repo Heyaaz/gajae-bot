@@ -35,6 +35,22 @@ function familySummaryLabel(
   return [`포크 ${hidden}개 숨김`, ...counts].join(" · ");
 }
 
+/**
+ * Escape belongs to whichever inline editor is open: it closes that field instead
+ * of reaching the app-wide Escape handler, which would cancel the session running
+ * under the field the user is still typing in.
+ */
+export function consumeEscapeKey(event: {
+  key: string;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}): boolean {
+  if (event.key !== "Escape" && event.key !== "Esc") return false;
+  event.preventDefault();
+  event.stopPropagation();
+  return true;
+}
+
 export interface SessionRowProps {
   session: AgentSession;
   shortcutNumber?: number;
@@ -87,8 +103,15 @@ export function SessionRow({
       }}
       onContextMenu={onContextMenu}
       onKeyDown={(event) => {
-        if (!renaming && (event.key === "Enter" || event.key === " "))
-          onSelect();
+        // A key that lands on a nested control belongs to that control: the family
+        // disclosure has to toggle without also selecting the head it sits on, and
+        // the rename input owns Enter and Escape while it is open.
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        // The row is a div, so Space would scroll the list out from under the row
+        // the user just picked.
+        event.preventDefault();
+        if (!renaming) onSelect();
       }}
       aria-pressed={selected}
     >
@@ -105,7 +128,7 @@ export function SessionRow({
               onKeyDown={(event) => {
                 event.stopPropagation();
                 if (event.key === "Enter") onRenameCommit();
-                if (event.key === "Escape") onRenameCancel();
+                if (consumeEscapeKey(event)) onRenameCancel();
               }}
             />
           ) : (
@@ -436,7 +459,7 @@ function SidebarView({
                 onBlur={commitWorkspaceName}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") commitWorkspaceName();
-                  if (event.key === "Escape") {
+                  if (consumeEscapeKey(event)) {
                     setEditingWorkspace(false);
                     setWorkspaceValue(workspaceLabel);
                   }

@@ -51,6 +51,57 @@ import { RecentRequestStrip, Transcript } from "./transcript";
 import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
+/**
+ * Whether a key press is the shell's abort gesture.
+ *
+ * This is the whole of the shortcut's claim to Escape. It used to be read in the
+ * capture phase, ahead of every handler nearer the key, so pressing Escape while
+ * typing a session name cancelled the run behind the editor the user was closing.
+ * The key now travels the bubble phase and each of these guards hands it back.
+ */
+export function escapeCancelsRun(input: {
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  defaultPrevented: boolean;
+  textEntry: boolean;
+  surfaceOpen: boolean;
+}): boolean {
+  if (input.key !== "Escape" && input.key !== "Esc") return false;
+  if (input.metaKey || input.ctrlKey || input.altKey || input.shiftKey)
+    return false;
+  // A nearer handler already took the key -- the rename field consumes Escape.
+  if (input.defaultPrevented) return false;
+  // Typing owns Escape. The composer cancels the run from its own handler, so
+  // claiming the key here as well would cancel the same run twice; an editor or a
+  // dialog field only closes itself.
+  if (input.textEntry) return false;
+  // While a dismissible surface is up, Escape closes it and nothing else.
+  if (input.surfaceOpen) return false;
+  return true;
+}
+
+/**
+ * Whether the key landed in a field the user is typing into.
+ *
+ * Duck-typed instead of `instanceof HTMLElement` so the rule stays readable and
+ * testable outside a DOM.
+ */
+export function isTextEntryTarget(target: unknown): boolean {
+  const element = target as
+    | { tagName?: unknown; isContentEditable?: unknown }
+    | null;
+  if (!element || typeof element !== "object") return false;
+  if (element.isContentEditable === true) return true;
+  return (
+    element.tagName === "INPUT" ||
+    element.tagName === "TEXTAREA" ||
+    element.tagName === "SELECT"
+  );
+}
+
 export default function App() {
   const backend = useAgentBackend();
   const [connection, setConnection] = useState<BackendConnection>({
@@ -779,6 +830,17 @@ export default function App() {
     [backend, resolveSessionId],
   );
 
+  // Dismissible surfaces own Escape while they are up: the key's job there is to
+  // close the surface, and cancelling a run behind the dialog the user is reading is
+  // never what they asked for. The dialogs only bind Escape on their own fields, so
+  // with focus anywhere else in the dialog the key used to reach the abort shortcut.
+  const dismissibleSurfaceOpen =
+    searchOpen ||
+    newSessionOpen ||
+    resumeOpen ||
+    settingsOpen ||
+    deleteCandidate !== null;
+
   useEffect(() => {
     const unsubscribe = window.agentControlDesktop?.onSessionShortcut(
       (shortcut) => {
@@ -803,33 +865,37 @@ export default function App() {
     });
     function abortWithEscape(event: globalThis.KeyboardEvent): void {
       if (
-        (event.key !== "Escape" && event.key !== "Esc") ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.altKey
+        !escapeCancelsRun({
+          key: event.key,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          shiftKey: event.shiftKey,
+          defaultPrevented: event.defaultPrevented,
+          textEntry: isTextEntryTarget(event.target),
+          surfaceOpen: dismissibleSurfaceOpen,
+        })
       )
-        return;
-      if (searchOpen || settingsOpen || newSessionOpen || deleteCandidate)
         return;
       event.preventDefault();
       const session = selectedSessionRef.current;
       if (session) void cancelRun(session.id);
     }
-    window.addEventListener("keydown", abortWithEscape, true);
+    // Bubble phase, not capture: a dialog field, the rename editor and the composer
+    // are all nearer the key and each one decides for itself whether Escape means
+    // "close me" or "stop the run".
+    window.addEventListener("keydown", abortWithEscape);
     return () => {
       unsubscribe?.();
       unsubscribeAbort?.();
-      window.removeEventListener("keydown", abortWithEscape, true);
+      window.removeEventListener("keydown", abortWithEscape);
     };
   }, [
     connection.workspace,
     createSession,
-    deleteCandidate,
-    newSessionOpen,
-    searchOpen,
+    dismissibleSurfaceOpen,
     selectSession,
     selectedSession?.workspace,
-    settingsOpen,
     shortcutSessions,
     cancelRun,
   ]);
@@ -928,7 +994,14 @@ export default function App() {
     sessionId: string,
     title: string,
   ): Promise<void> {
-    await backend.renameSession(await resolveSessionId(sessionId), title);
+    // The sidebar commits a rename from Enter or blur, so no caller holds this
+    // promise: a refused rename reached the renderer's unhandled-rejection queue as
+    // its only record. Reporting here also makes the promise it hands back resolve.
+    try {
+      await backend.renameSession(await resolveSessionId(sessionId), title);
+    } catch (error) {
+      setAppError(humanErrorMessage(error));
+    }
   }
 
   function openResumePicker(): void {

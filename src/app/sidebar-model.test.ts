@@ -330,4 +330,161 @@ describe("session families", () => {
       "solo4",
     ]);
   });
+
+  it("keeps the family of the row being read past the cap", () => {
+    const rows = [
+      ...Array.from({ length: 5 }, (_, index) =>
+        session({ id: `solo${index}`, status: "idle", updatedAtMs: 9_000 - index }),
+      ),
+      session({ id: "head", status: "idle", updatedAtMs: 1_000 }),
+      fork("kid1", "head", { status: "idle", updatedAtMs: 900 }),
+      fork("kid2", "head", { status: "idle", updatedAtMs: 800 }),
+    ];
+    const model = sessionListModel(rows, { selectedId: "kid2" });
+    const [group] = model.groups;
+    // The cap decides which families the group leads with, not whether the row the
+    // user is reading is on the rail: its whole family comes along.
+    expect(group.rows.map((node) => node.session.id)).toEqual([
+      "solo0",
+      "solo1",
+      "solo2",
+      "solo3",
+      "solo4",
+      "head",
+      "kid1",
+      "kid2",
+    ]);
+    expect(group.rows.slice(5).map((node) => node.depth)).toEqual([0, 1, 1]);
+    // Every root is on screen, so there is nothing left to open.
+    expect(group.overflow).toBe(0);
+    // The kept family sits past the cap and takes no digit from the capped rows.
+    expect(model.shortcuts.map((row) => row.id)).toEqual([
+      "solo0",
+      "solo1",
+      "solo2",
+      "solo3",
+      "solo4",
+    ]);
+  });
+
+  it("keeps a selected root on the rail when the cap would drop it", () => {
+    const rows = Array.from({ length: 7 }, (_, index) =>
+      session({ id: `s${index}`, status: "idle", updatedAtMs: 7_000 - index }),
+    );
+    const model = sessionListModel(rows, { selectedId: "s6" });
+    const [group] = model.groups;
+    expect(group.rows.map((node) => node.session.id)).toEqual([
+      "s0",
+      "s1",
+      "s2",
+      "s3",
+      "s4",
+      "s6",
+    ]);
+    // s5 is still behind 더 보기, so the count is the row that is missing.
+    expect(group.overflow).toBe(1);
+    expect(model.shortcuts.map((row) => row.id)).toEqual([
+      "s0",
+      "s1",
+      "s2",
+      "s3",
+      "s4",
+    ]);
+  });
+
+  it("moves the forks below a pinned fork into the pinned section with it", () => {
+    const model = sessionListModel([
+      session({ id: "a", status: "idle", updatedAtMs: 3_000 }),
+      fork("b", "a", { pinned: true, status: "idle", updatedAtMs: 2_000 }),
+      fork("c", "b", { status: "idle", updatedAtMs: 1_000 }),
+    ]);
+    // The pin is where the branch heads now: b draws c instead of leaving it at
+    // depth 2 under a, where its own fork no longer sits beside it.
+    expect(model.pinned.map((node) => node.session.id)).toEqual(["b", "c"]);
+    expect(model.pinned.map((node) => node.depth)).toEqual([0, 1]);
+    expect(model.pinned[0].familyHead).toBe(true);
+    expect(rowsOf(model)).toEqual(["a"]);
+  });
+
+  it("leaves the forks above a pinned fork in the group", () => {
+    const model = sessionListModel([
+      session({ id: "a", status: "idle", updatedAtMs: 4_000 }),
+      fork("b", "a", { status: "idle", updatedAtMs: 3_000 }),
+      fork("c", "b", { pinned: true, status: "idle", updatedAtMs: 2_000 }),
+      fork("d", "c", { status: "idle", updatedAtMs: 1_000 }),
+    ]);
+    // Only the pinned fork and what hangs below it move: the rest of the chain keeps
+    // its nesting, and no row is drawn twice.
+    expect(model.pinned.map((node) => node.session.id)).toEqual(["c", "d"]);
+    expect(model.pinned.map((node) => node.depth)).toEqual([0, 1]);
+    expect(rowsOf(model)).toEqual(["a", "b"]);
+    expect(model.groups[0].rows.map((node) => node.depth)).toEqual([0, 1]);
+  });
+
+  it("keeps a pinned fork inside the family of the pinned head above it", () => {
+    const model = sessionListModel([
+      session({ id: "head", pinned: true, status: "idle", updatedAtMs: 4_000 }),
+      fork("kid", "head", { pinned: true, status: "idle", updatedAtMs: 3_000 }),
+      fork("grandkid", "kid", { status: "idle", updatedAtMs: 2_000 }),
+    ]);
+    // The outermost pin owns the branch: the pin below it renders as a row of that
+    // family instead of starting a second one.
+    expect(model.pinned.map((node) => node.session.id)).toEqual([
+      "head",
+      "kid",
+      "grandkid",
+    ]);
+    expect(model.pinned.map((node) => node.depth)).toEqual([0, 1, 2]);
+    expect(model.pinned.filter((node) => node.familyHead)).toHaveLength(1);
+    expect(rowsOf(model)).toEqual([]);
+  });
+
+  it("places a family by the members it still draws", () => {
+    const model = sessionListModel([
+      session({ id: "a", status: "idle", updatedAtMs: 3_000 }),
+      fork("b", "a", { pinned: true, status: "running", updatedAtMs: 2_000 }),
+      fork("c", "b", { status: "running", updatedAtMs: 1_000 }),
+    ]);
+    // b and c render in 고정됨, so the work below the pin cannot be the reason a
+    // lands in 작업 중 while its own row belongs in 완료.
+    expect(model.groups.map((group) => group.id)).toEqual(["completed"]);
+    expect(rowsOf(model)).toEqual(["a"]);
+  });
+
+  it("keeps a pinned row of a cycle out of a family", () => {
+    const model = sessionListModel([
+      session({
+        id: "left",
+        parentId: "right",
+        pinned: true,
+        status: "idle",
+        updatedAtMs: 2_000,
+      }),
+      session({
+        id: "right",
+        parentId: "left",
+        status: "idle",
+        updatedAtMs: 1_000,
+      }),
+    ]);
+    // A cycle has no head, so the pin moves the one row it always did instead of
+    // turning the pair into a family and dragging right along.
+    expect(model.pinned.map((node) => node.session.id)).toEqual(["left"]);
+    expect(model.pinned[0].familyHead).toBe(false);
+    expect(rowsOf(model)).toEqual(["right"]);
+  });
+
+  it("moves the forks below a pinned row whose own parent is missing", () => {
+    const model = sessionListModel([
+      fork("orphan", "gone", {
+        pinned: true,
+        status: "idle",
+        updatedAtMs: 2_000,
+      }),
+      fork("kid", "orphan", { status: "idle", updatedAtMs: 1_000 }),
+    ]);
+    expect(model.pinned.map((node) => node.session.id)).toEqual(["orphan", "kid"]);
+    expect(model.pinned.map((node) => node.depth)).toEqual([0, 1]);
+    expect(rowsOf(model)).toEqual([]);
+  });
 });

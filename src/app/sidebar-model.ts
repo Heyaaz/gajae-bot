@@ -101,12 +101,15 @@ export interface SessionGroupBlock {
    * showing, then single sessions.
    */
   rows: SessionRowNode[];
-  /** Roots this group is holding back, 0 when everything fits. */
+  /**
+   * Roots this group is not showing. An opened group keeps the count of roots
+   * past the cap, so the control that closes it again stays reachable.
+   */
   overflow: number;
 }
 
 export interface SessionListModel {
-  /** Pinned families, head first; a pin brings a fork with it. */
+  /** Pinned families, head first; a pin brings its forks with it. */
   pinned: SessionRowNode[];
   groups: SessionGroupBlock[];
   /** Rows in ⌘-digit order. */
@@ -122,7 +125,7 @@ export interface SessionListOptions {
    */
   collapsedFamilies?: ReadonlySet<string>;
   limit?: number;
-  /** The row the user is reading, which a closed family never hides. */
+  /** The row the user is reading, which neither a closed family nor the cap hides. */
   selectedId?: string | null;
 }
 
@@ -131,16 +134,40 @@ interface FamilyLayout {
   members: Map<string, AgentSession[]>;
   /** Member id -> the head it hangs under. */
   headOf: Map<string, string>;
+  /** Row id -> the parent it was forked from, when that parent is in this list. */
+  parentOf: Map<string, string>;
+  /** Parent id -> the rows forked from it, newest first. */
+  childrenOf: Map<string, AgentSession[]>;
+}
+
+/** Every row forked below a head, parent before its own children, newest first. */
+function descendantsOf(
+  childrenOf: ReadonlyMap<string, readonly AgentSession[]>,
+  head: string,
+): AgentSession[] {
+  const ordered: AgentSession[] = [];
+  const visited = new Set([head]);
+  const walk = (parent: string): void => {
+    for (const child of childrenOf.get(parent) ?? []) {
+      if (visited.has(child.id)) continue;
+      visited.add(child.id);
+      ordered.push(child);
+      walk(child.id);
+    }
+  };
+  walk(head);
+  return ordered;
 }
 
 /**
  * Links rows to the session they were forked from.
  *
- * A row whose parent is not in this list -- filtered out, pinned into another
- * section, or simply older than the window -- stays top-level instead of hanging
- * under a head that is not rendered. Chains flatten onto one head: a fork of a fork
- * belongs to the same family, which is what keeps a family from splitting across
- * groups.
+ * A row whose parent is not in this list -- filtered out, or simply older than the
+ * window -- stays top-level instead of hanging under a head that is not rendered.
+ * Chains flatten onto one head: a fork of a fork belongs to the same family, which
+ * is what keeps a family from splitting across groups. Which section draws that
+ * family, and whether a pin in the middle of it redraws the branch, is decided per
+ * section by the caller.
  */
 function familyLayout(rows: readonly AgentSession[]): FamilyLayout {
   const byId = new Map(rows.map((session) => [session.id, session]));
@@ -179,20 +206,9 @@ function familyLayout(rows: readonly AgentSession[]): FamilyLayout {
   const members = new Map<string, AgentSession[]>();
   for (const head of headOf.values()) {
     if (members.has(head)) continue;
-    const ordered: AgentSession[] = [];
-    const visited = new Set([head]);
-    const walk = (parent: string): void => {
-      for (const child of childrenOf.get(parent) ?? []) {
-        if (visited.has(child.id)) continue;
-        visited.add(child.id);
-        ordered.push(child);
-        walk(child.id);
-      }
-    };
-    walk(head);
-    members.set(head, ordered);
+    members.set(head, descendantsOf(childrenOf, head));
   }
-  return { members, headOf };
+  return { childrenOf, headOf, members, parentOf };
 }
 
 function depthOf(
@@ -239,19 +255,40 @@ export function sessionListModel(
   // Families are resolved across the whole list before it splits into sections: a
   // pinned head has to be able to bring its forks with it, and whether a section
   // owns a family cannot be decided one section at a time.
-  const { members, headOf } = familyLayout(sessions);
-  // A pinned head keeps its family: the forks render under it in 고정됨 rather than
-  // dissolving into whichever groups they would have reached on their own. A pinned
-  // fork whose head is not pinned is the other case -- it stays pinned and leaves the
-  // family, which is the same "no parent in this list" rule the groups already use.
-  const pinnedHeads = new Set(
-    pinnedSessions
-      .filter((session) => (members.get(session.id)?.length ?? 0) > 0)
-      .map((session) => session.id),
-  );
-  const claimedByPinnedHead = (sessionId: string): boolean => {
-    const head = headOf.get(sessionId);
-    return head !== undefined && pinnedHeads.has(head);
+  const { childrenOf, headOf, members, parentOf } = familyLayout(sessions);
+  // A pin is a move to the top of the rail, so it takes the forks below it: the
+  // descendants of a -> pinned b -> c render under b rather than waiting at depth 2
+  // under a head whose fork is no longer beside them. A row outside the layout -- a
+  // cycle, or a parent this list never had -- has no family to inherit, so its pin
+  // moves the one row it always did.
+  const pinnedFamilies = new Map<string, AgentSession[]>();
+  for (const session of pinnedSessions) {
+    if (!headOf.has(session.id) && !members.has(session.id)) continue;
+    const family = descendantsOf(childrenOf, session.id);
+    if (family.length > 0) pinnedFamilies.set(session.id, family);
+  }
+  /**
+   * The pinned row a row renders under: itself when it owns a family, the pinned
+   * ancestor that took it along when it sits below one, null when no pin owns it.
+   */
+  const pinnedBranchOf = (sessionId: string): string | null => {
+    let branch = pinnedFamilies.has(sessionId) ? sessionId : null;
+    let cursor = sessionId;
+    const seen = new Set([sessionId]);
+    for (let step = 0; step < FAMILY_DEPTH_LIMIT; step += 1) {
+      const parent = parentOf.get(cursor);
+      if (!parent || seen.has(parent)) break;
+      seen.add(parent);
+      // The outermost pin owns the branch: a pinned fork below a pinned head stays
+      // inside that head's family instead of splitting the branch across two rows.
+      if (pinnedFamilies.has(parent)) branch = parent;
+      cursor = parent;
+    }
+    return branch;
+  };
+  const claimedByPinnedBranch = (sessionId: string): boolean => {
+    const branch = pinnedBranchOf(sessionId);
+    return branch !== null && branch !== sessionId;
   };
   /** The rows a family renders as: its head, then the members it is showing. */
   const familyNodes = (
@@ -291,22 +328,29 @@ export function sessionListModel(
   const pinned: SessionRowNode[] = [];
   const shortcuts: AgentSession[] = [];
   for (const session of pinnedSessions) {
-    if (claimedByPinnedHead(session.id)) continue;
+    // A pin nested below another pin renders inside that branch: its head draws it.
+    if (claimedByPinnedBranch(session.id)) continue;
     shortcuts.push(session);
-    pinned.push(...familyNodes(session, members.get(session.id) ?? []));
+    pinned.push(...familyNodes(session, pinnedFamilies.get(session.id) ?? []));
   }
 
   // A family is placed by its most actionable member, and every member lands in that
   // group: a working child is why its completed parent is worth looking at, and
   // splitting them across groups would hide the relationship the nesting exists to
-  // show. Pinned members are left out: they render in their own section.
+  // show. Pinned members are left out, and so are the forks a pinned row took with
+  // it: both render in the pinned section and cannot be the reason a group is placed.
   const familyGroup = new Map<string, SessionGroupId>();
   for (const [head, family] of members) {
     const headSession = byId.get(head);
     if (!headSession) continue;
     familyGroup.set(
       head,
-      [headSession, ...family.filter((session) => !session.pinned)]
+      [
+        headSession,
+        ...family.filter(
+          (session) => !session.pinned && !claimedByPinnedBranch(session.id),
+        ),
+      ]
         .map(sessionGroupOf)
         .reduce((best, group) =>
           SESSION_GROUP_ORDER.indexOf(group) < SESSION_GROUP_ORDER.indexOf(best)
@@ -328,7 +372,7 @@ export function sessionListModel(
       .filter(
         (session) =>
           !session.pinned &&
-          !claimedByPinnedHead(session.id) &&
+          !claimedByPinnedBranch(session.id) &&
           !headOf.has(session.id) &&
           groupOf(session) === id,
       )
@@ -338,20 +382,38 @@ export function sessionListModel(
     // Digits are assigned from the collapsed list: a group opened with 더 보기 adds
     // rows to the rail without renumbering the ones already numbered, so ⌘3 keeps
     // opening the row the user learned. A family is one digit, wherever it is open.
-    shortcuts.push(...roots.slice(0, limit));
-    const shown = expanded?.has(id) ? roots : roots.slice(0, limit);
-    const nodes: SessionRowNode[] = [];
-    for (const root of shown) {
-      const family = (members.get(root.id) ?? []).filter(
-        (member) => !member.pinned,
+    const capped = roots.slice(0, limit);
+    shortcuts.push(...capped);
+    const opened = expanded?.has(id) ?? false;
+    const familyOf = (root: AgentSession): AgentSession[] =>
+      (members.get(root.id) ?? []).filter(
+        (member) => !member.pinned && !claimedByPinnedBranch(member.id),
       );
-      nodes.push(...familyNodes(root, family));
-    }
+    // The row the user is reading is never behind 더 보기: the cap decides which
+    // families the group leads with, not whether the open session is on the rail.
+    // The kept family renders after the capped roots, so the rows the digits point
+    // at keep their order and nothing beyond the cap takes a digit of its own.
+    const kept =
+      opened || !selectedId
+        ? []
+        : roots
+            .slice(limit)
+            .filter(
+              (root) =>
+                root.id === selectedId ||
+                familyOf(root).some((member) => member.id === selectedId),
+            );
+    const shown = opened ? roots : [...capped, ...kept];
+    const nodes: SessionRowNode[] = [];
+    for (const root of shown) nodes.push(...familyNodes(root, familyOf(root)));
     groups.push({
       id,
       label: SESSION_GROUP_LABELS[id],
       rows: nodes,
-      overflow: Math.max(0, roots.length - limit),
+      // An opened group keeps the cap's count so the 접기 control stays reachable.
+      overflow: opened
+        ? Math.max(0, roots.length - limit)
+        : roots.length - shown.length,
     });
   }
   return {

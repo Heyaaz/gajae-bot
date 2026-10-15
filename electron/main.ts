@@ -302,15 +302,12 @@ function createWindow(): BrowserWindow {
       window.webContents.send(DESKTOP_IPC.cycleEffort);
       return;
     }
-    if (
-      (input.key === "Escape" || input.key === "Esc") &&
-      !input.meta &&
-      !input.control &&
-      !input.alt &&
-      !input.shift
-    ) {
-      window.webContents.send(DESKTOP_IPC.abortRun);
-    }
+    // Escape is deliberately not forwarded from here. This handler runs before the
+    // renderer sees the key and cannot tell a rename editor or a dialog field from
+    // the transcript, so re-sending every Escape as an abort cancelled runs the user
+    // was still typing into. The renderer owns the key instead: its DOM handler checks
+    // the target and the open surfaces before cancelling. Explicit aborts still use
+    // DESKTOP_IPC.abortRun.
   });
 
   window.webContents.on("will-navigate", (event, url) => {
