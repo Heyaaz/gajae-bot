@@ -283,6 +283,9 @@ export class RemoteClient {
   }
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
+    // Which token this request answers with: a refusal that arrives after a later
+    // pairing is about a token this client no longer holds.
+    const presented = this.token;
     let response: Response;
     try {
       response = await this.fetchImpl(this.url(path), {
@@ -295,12 +298,20 @@ export class RemoteClient {
       throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
     }
     if (response.status === 401) {
+      if (this.token !== presented) {
+        // A pairing landed while this request was in flight. Dropping the token now
+        // would undo it and send the user back to the screen they just cleared.
+        throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
+          status: 401,
+          code: "unauthorized",
+        });
+      }
       // A token the host no longer recognizes is terminal until the owner pairs
       // again, so it is dropped rather than retried. With no token to drop the
       // device was never paired: that is where pairing starts, not a revocation.
-      const presented = this.token !== null;
+      const held = presented !== null;
       this.forget();
-      if (presented) {
+      if (held) {
         this.setStatus({
           state: "revoked",
           detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",

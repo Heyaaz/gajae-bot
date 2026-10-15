@@ -172,6 +172,17 @@ describe("remote operation surface", () => {
   });
 });
 
+/**
+ * A port the owner's own app is not on: tests must not reach it by accident, and
+ * the default port is exactly what the app takes when remote access is on.
+ */
+let portCursor = 20_000 + Math.floor(Math.random() * 20_000)
+function nextTestPort(): number {
+  portCursor += 1
+  if (portCursor > 60_000) portCursor = 20_001
+  return portCursor
+}
+
 describe("remote access service", () => {
   async function service(
     options: { port?: number; ownerLogin?: string; calls?: string[] } = {},
@@ -208,6 +219,9 @@ describe("remote access service", () => {
       log: (message) => logs.push(message),
     });
     services.push(instance);
+    // The default port is the one the owner's own app uses, so a test that took it
+    // would talk to that app instead of the instance under test.
+    await instance.setPort(nextTestPort());
     return { instance, directory, logs };
   }
 
@@ -283,7 +297,7 @@ describe("remote access service", () => {
     const { instance } = await service();
     const enabled = await instance.setEnabled(true);
     const firstPort = enabled.port;
-    const moved = await instance.setPort(firstPort === 8791 ? 8792 : 8791);
+    const moved = await instance.setPort(nextTestPort());
     expect(moved.port).not.toBe(firstPort);
     await expect(fetch(`http://127.0.0.1:${firstPort}${REMOTE_API.state}`)).rejects.toThrow();
     const stopped = await instance.setEnabled(false);

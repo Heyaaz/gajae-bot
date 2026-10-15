@@ -43,7 +43,9 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 /** A fetch double that records every request and routes by path. */
-function recorder(routes: (call: Call) => Response | Promise<Response> | undefined) {
+function recorder(
+  routes: (call: Call) => Response | undefined | Promise<Response | undefined>,
+) {
   const calls: Call[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
@@ -435,6 +437,43 @@ describe("tailnet identity access", () => {
     const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
     await expect(client.snapshot()).rejects.toThrow(/연결되어 있지 않/u);
     expect(client.getStatus()).toMatchObject({ state: "pairing" });
+    client.dispose();
+  });
+});
+
+describe("pairing while a request is in flight", () => {
+  it("keeps the token a late refusal would have dropped", async () => {
+    // The app boots by asking for a snapshot with no token. A refusal that arrives
+    // after the user's code landed is about the token the client no longer holds;
+    // acting on it would undo the pairing and show the pairing screen again.
+    const storage = memoryStorage(null);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { fetchImpl } = recorder(async (call) => {
+      if (call.url.endsWith(REMOTE_API.pair))
+        return jsonResponse(200, {
+          deviceId: "d-1",
+          token: TOKEN,
+          device: { id: "d-1", name: "iPhone", permission: "control", via: "device" },
+          server: { version: "0.1.0", workspace: "/tmp/ws", protocol: 1 },
+        });
+      if (call.url.endsWith(REMOTE_API.state)) {
+        await gate;
+        return jsonResponse(401, {
+          error: { code: "unauthorized", message: "A device token is required" },
+        });
+      }
+      return undefined;
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    const boot = client.snapshot().catch(() => undefined);
+    await client.pair("ABCD2345");
+    release();
+    await boot;
+    expect(client.getStatus()).toMatchObject({ state: "connected", permission: "control" });
+    expect(storage.value).toBe(TOKEN);
     client.dispose();
   });
 });
