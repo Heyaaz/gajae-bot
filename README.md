@@ -118,6 +118,26 @@ the current turn and releases the held work through steering in order.
 - `/model codex-medium` — switch immediately. A unique preset prefix also matches. Unknown names are not sent as chat; they show an error
 - `Shift+Tab` — cycle thinking effort
 
+The model picker has a separately scrollable profile list and Fast on/off
+controls when the session advertises `service_tier.set`. `/fast` or `/fast toggle`
+toggles configured intent; `/fast on`, `/fast off`, and `/fast status` are also
+available. Configured Fast intent does not prove a provider applied priority service.
+
+### Slash commands and skills
+
+The command palette combines desktop actions with controls advertised by the live
+GJC SDK. `/skills` lists session skills, `/skill:<name> <request>` submits skill
+work, `/progress` reads project progress, `/reload` reloads runtime components, and
+`/plan on|off` changes plan mode when those SDK operations are available. Skill
+work follows the same held-work rules as prompts; session controls execute immediately.
+
+On attachment, skills are discovered from `skill.list/state` until the runtime
+publishes its authoritative command list. GJC 0.18.11 does not expose a complete
+CLI slash-command registry query, and its skill rows can omit visibility metadata.
+An authoritative command update replaces that provisional skill list. TUI-only
+commands and commands without a public SDK equivalent are not claimed as supported;
+desktop slash commands are not a complete copy of the CLI command surface.
+
 ### Shortcuts
 
 | Key         | Action                |

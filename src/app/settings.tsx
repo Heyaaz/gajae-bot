@@ -401,7 +401,9 @@ export function SettingsDialog({
             </div>
           )}
 
-          {tab !== "automations" && (
+          {/* Remote access applies each change immediately and carries its own
+              footnote, so the preferences save bar would be dead weight there. */}
+          {tab !== "automations" && tab !== "remote" && (
             <footer className="settings-footer">
               <span>
                 {dirty

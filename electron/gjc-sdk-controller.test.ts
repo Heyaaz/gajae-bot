@@ -11,6 +11,7 @@ import {
   gitBranchFromHeader,
   inferToolName,
   persistedTranscriptRunning,
+  sharedTranscriptItems,
   toolStatus,
   readableModelLabel,
   historySessionSummary,
@@ -467,5 +468,573 @@ describe("GjcSdkController CLI seam", () => {
       if (worktreePath) await rm(path.dirname(worktreePath), { recursive: true, force: true });
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * Runtime-backed slash discovery and the SDK control commands.
+ *
+ * The palette has two lifetimes: before GJC publishes an
+ * `available_commands_update` this window synthesizes dynamic entries from the
+ * runtime's own session state, and after it the runtime's list is the authority.
+ * These tests pin both, plus the rule that a recognized command whose capability
+ * is missing is refused instead of being forwarded as prompt text.
+ */
+describe("SDK slash commands", () => {
+  const capabilityRows = (...operations: string[]) => [{ operations }];
+
+  it("discovers skills on attach and lets a later pass remove one", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    const rows: Record<string, unknown[]> = {
+      "runtime.capabilities": capabilityRows("skill.list/state"),
+      "skill.list/state": [
+        { name: "ci-green", description: "Make CI green" },
+        { name: "hidden-skill", description: "not for the palette", hidden: true },
+      ],
+    };
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => rows[query] ?? [],
+    );
+
+    await internals.refreshSdkCommands("s1");
+    const discovered = internals.sessionCommands.get("s1") as Array<{
+      name: string;
+      hint?: string;
+      description: string;
+    }>;
+    // `/skills` is this window's adapter spec for the same capability; the skill
+    // entry is the synthesized one this test is about.
+    expect(discovered.map((command) => command.name)).toEqual([
+      "skills",
+      "skill:ci-green",
+    ]);
+    expect(discovered[1]).toMatchObject({
+      description: "Make CI green",
+      hint: "[instructions]",
+    });
+
+    // A skill that disappears from runtime state leaves the palette with it.
+    rows["skill.list/state"] = [{ name: "other-skill", description: "Other" }];
+    await internals.refreshSdkCommands("s1");
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map(
+        (command) => command.name,
+      ),
+    ).toEqual(["skills", "skill:other-skill"]);
+  });
+
+  it("drops synthesized skills once the runtime advertises its own list", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) =>
+        query === "runtime.capabilities"
+          ? capabilityRows("skill.list/state")
+          : [{ name: "ci-green", description: "Make CI green" }],
+    );
+    await internals.refreshSdkCommands("s1");
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map((c) => c.name),
+    ).toContain("skill:ci-green");
+
+    // An advertised list that names no skills is authority over the synthesized
+    // set: the runtime said this session has none.
+    await internals.refreshSdkCommands("s1", []);
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map((c) => c.name),
+    ).not.toContain("skill:ci-green");
+
+    // And a new advertised list replaces the previous one whole.
+    await internals.refreshSdkCommands("s1", [
+      { name: "skill:other", description: "Other" },
+    ]);
+    await internals.refreshSdkCommands("s1", []);
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map((c) => c.name),
+    ).not.toContain("skill:other");
+  });
+
+  it("honors a session config that disables skills", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => {
+        if (query === "runtime.capabilities")
+          return capabilityRows("skill.list/state", "config.list/get");
+        if (query === "skill.list/state")
+          return [{ name: "ci-green", description: "Make CI green" }];
+        return [{ key: "skills", value: { enableSkillCommands: false } }];
+      },
+    );
+    await internals.refreshSdkCommands("s1");
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map((c) => c.name),
+    ).not.toContain("skill:ci-green");
+  });
+
+  it("refuses a recognized command the runtime does not advertise", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("session.rename"),
+    );
+    await expect(
+      controller.sendMessage("s1", { text: "/tools", images: [], files: [] }),
+    ).rejects.toThrow(/\/tools is unavailable in this GJC runtime/u);
+    expect(cli.send).not.toHaveBeenCalled();
+  });
+
+  it("dispatches the added commands as semantic controls", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => {
+        if (query === "runtime.capabilities")
+          return capabilityRows(
+            "skill.list/state",
+            "session.progress",
+            "runtime.reload",
+            "mode.plan.set",
+          );
+        if (query === "skill.list/state")
+          return [{ name: "ci-green", description: "Make CI green" }];
+        if (query === "session.progress")
+          return [{ schema: "gjc.project_progress.v1", todos: { total: 2 } }];
+        return [];
+      },
+    );
+    (cli.rawControl as any).mockResolvedValue({ reloaded: true });
+
+    await controller.sendMessage("s1", { text: "/skills", images: [], files: [] });
+    await controller.sendMessage("s1", { text: "/progress", images: [], files: [] });
+    await controller.sendMessage("s1", {
+      text: "/reload skills,config",
+      images: [],
+      files: [],
+    });
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "runtime.reload",
+      { components: ["skills", "config"] },
+      expect.objectContaining({ repo: "/repo" }),
+    );
+    await controller.sendMessage("s1", { text: "/plan off", images: [], files: [] });
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "mode.plan.set",
+      { on: false },
+      expect.objectContaining({ repo: "/repo" }),
+    );
+    expect(cli.send).not.toHaveBeenCalled();
+
+    // A component the runtime would reject is refused here, before the round trip.
+    await expect(
+      controller.sendMessage("s1", { text: "/reload everything", images: [], files: [] }),
+    ).rejects.toThrow(/Unknown reload component: everything/u);
+    expect(cli.rawControl).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps /skill:<name> as agent work instead of an SDK control", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    internals.messageKeys.set("s1", new Map());
+    internals.attachedSessions.add("s1");
+    internals.awaitPromptSettlement = vi.fn(async () => undefined);
+    await controller.sendMessage("s1", {
+      text: "/skill:ci-green fix the build",
+      images: [],
+      files: [],
+    });
+    expect(cli.send).toHaveBeenCalledWith(
+      "s1",
+      "/skill:ci-green fix the build",
+      expect.objectContaining({ opRef: expect.any(String) }),
+    );
+    expect(cli.rawControl).not.toHaveBeenCalled();
+  });
+
+  it("clears fast mode with the tier that omits the parameter and keeps a scoped tier", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), serviceTier: "claude-only" });
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("service_tier.set"),
+    );
+
+    await controller.sendMessage("s1", { text: "/fast on", images: [], files: [] });
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "service_tier.set",
+      { tier: "claude-only" },
+      expect.objectContaining({ repo: "/repo" }),
+    );
+    expect(internals.sessions.get("s1")?.serviceTier).toBe("claude-only");
+
+    await controller.sendMessage("s1", { text: "/fast off", images: [], files: [] });
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "service_tier.set",
+      { tier: "none" },
+      expect.objectContaining({ repo: "/repo" }),
+    );
+    expect(internals.sessions.get("s1")?.serviceTier).toBe("none");
+    expect(cli.send).not.toHaveBeenCalled();
+  });
+
+  it("reports the configured fast tier and refuses a blind toggle", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) =>
+        query === "runtime.capabilities"
+          ? capabilityRows("service_tier.set")
+          : [],
+    );
+
+    await expect(
+      controller.sendMessage("s1", { text: "/fast", images: [], files: [] }),
+    ).rejects.toThrow(/Use \/fast on or \/fast off/u);
+    expect(cli.rawControl).not.toHaveBeenCalled();
+
+    internals.sessions.set("s1", { ...session(), serviceTier: "priority" });
+    await controller.sendMessage("s1", { text: "/fast status", images: [], files: [] });
+    const status = internals.transcripts.get("s1")?.at(-1) as
+      | { content?: string }
+      | undefined;
+    expect(status?.content).toContain("- Configured tier: priority");
+    expect(status?.content).toContain("Configured intent only");
+    expect(cli.send).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unknown fast verb instead of prompting it", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("service_tier.set"),
+    );
+    await expect(
+      controller.sendMessage("s1", { text: "/fast maybe", images: [], files: [] }),
+    ).rejects.toThrow(/Usage: \/fast/u);
+    expect(cli.send).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * Runtime activity visibility.
+ *
+ * The durable session file is the account a rebuild reads, and it carries less than
+ * the runtime does: no plan, no todo store, no reason to keep a custom message the
+ * runtime flagged `display: false`. These tests pin that the app keeps the activity
+ * it actually observed, that a structured tool result survives the rebuild, and
+ * that a todo store which cannot be read never renders as an empty list.
+ */
+describe("runtime activity visibility", () => {
+  const systemRow = (
+    internals: any,
+    sessionId = "s1",
+  ): { id: string; title: string; content: string; sourceType?: string } =>
+    (internals.transcripts.get(sessionId) as Array<{ kind: string }>).find(
+      (item: any) => item.kind === "system",
+    ) as never;
+
+  it("keeps a runtime-hidden custom message as labeled system activity", () => {
+    const items = sharedTranscriptItems("s1", [
+      {
+        type: "custom_message",
+        id: "c1",
+        timestamp: "2026-01-01T00:00:00.000Z",
+        customType: "irc",
+        content: "peer-2: the migration is running",
+        display: false,
+      },
+      {
+        type: "custom_message",
+        id: "c2",
+        timestamp: "2026-01-01T00:00:01.000Z",
+        customType: "skill-prompt",
+        content: "run the release skill",
+        display: true,
+      },
+      {
+        type: "custom_message",
+        id: "c3",
+        timestamp: "2026-01-01T00:00:02.000Z",
+        customType: "empty-hidden",
+        content: "   ",
+        display: false,
+      },
+    ]);
+    // The recorded content is kept, and the recorded customType stays the label:
+    // an unrecognized value is not reclassified into a known kind of activity.
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "system",
+        title: "irc",
+        content: "peer-2: the migration is running",
+        sourceType: "irc",
+        runtimeHidden: true,
+      }),
+      expect.objectContaining({
+        kind: "system",
+        title: "스킬",
+        content: "run the release skill",
+        sourceType: "skill-prompt",
+      }),
+    ]);
+    // Only a row the runtime marked hidden is labeled as hidden.
+    expect(items[1]).not.toHaveProperty("runtimeHidden");
+    // A hidden row with no content is still nothing to show.
+    expect(items).toHaveLength(2);
+  });
+
+  it("keeps a structured tool result when the recorded body is empty", () => {
+    const items = sharedTranscriptItems("s1", [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "call-irc",
+            name: "irc",
+            arguments: { to: "peer-2", text: "migration status?" },
+          },
+          { type: "toolCall", id: "call-empty", name: "read", arguments: { path: "notes.txt" } },
+        ],
+      },
+      {
+        role: "toolResult",
+        toolCallId: "call-irc",
+        body: "",
+        content: [{ type: "text", text: "peer-2: running the migration now" }],
+        details: {
+          messages: [{ from: "peer-2", text: "running the migration now" }],
+          apiKey: "sk-abcdefghijklmnopqrst",
+        },
+      },
+      { role: "toolResult", toolCallId: "call-empty", body: "", content: [] },
+    ]);
+    const irc = items[0];
+    expect(irc).toMatchObject({
+      kind: "tool",
+      id: "call-irc",
+      name: "irc",
+      status: "completed",
+    });
+    const output = (irc as { output?: string }).output ?? "";
+    // The empty body no longer ends the search: the recorded text is used, and the
+    // structured reply survives as data rather than being interpreted.
+    expect(output).toContain("peer-2: running the migration now");
+    expect(output).toContain('"messages"');
+    // Credentials inside a retained payload are redacted by the existing helper.
+    expect(output).not.toContain("sk-abcdefghijklmnopqrst");
+    expect(output).toContain("[REDACTED]");
+    // A result with nothing recorded stays without output instead of inventing one.
+    expect(items[1]).not.toHaveProperty("output");
+  });
+
+  it("keeps an observed plan across a durable rebuild and honors an emptied plan", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "activity-plan-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    try {
+      await transcriptFile(root, "s1", [
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "start" }] },
+        },
+      ]);
+      internals.handleSessionUpdate({
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "plan",
+          entries: [
+            { content: "keep the plan visible", status: "in_progress" },
+            { content: "cover it with a test", status: "pending" },
+          ],
+        },
+      });
+      // The plan is a live-only fact: the durable file records no plan at all.
+      await internals.refreshTranscriptFromFile("s1");
+      const plan = (internals.transcripts.get("s1") as Array<any>).find(
+        (item) => item.kind === "plan",
+      );
+      expect(plan?.entries.map((entry: any) => entry.content)).toEqual([
+        "keep the plan visible",
+        "cover it with a test",
+      ]);
+
+      // An update that really empties the plan clears the retained entries: the
+      // rebuild must not resurrect the previous list.
+      internals.handleSessionUpdate({
+        sessionId: "s1",
+        update: { sessionUpdate: "plan", entries: [] },
+      });
+      await internals.refreshTranscriptFromFile("s1");
+      const emptied = (internals.transcripts.get("s1") as Array<any>).find(
+        (item) => item.kind === "plan",
+      );
+      expect(emptied?.entries).toEqual([]);
+    } finally {
+      controller.dispose();
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes the todo records the runtime returned without goal mode", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "activity-todo-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    const records = [{ id: "task-1", title: "Ship it", status: "pending" }];
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => (query === "todo.list" ? records : []),
+    );
+    try {
+      await transcriptFile(root, "s1", [
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "start" }] },
+        },
+      ]);
+      await internals.readTodoRecords("s1");
+      const row = systemRow(internals);
+      expect(row).toMatchObject({
+        id: "app-todo-s1",
+        title: "할 일 목록",
+        sourceType: "todo.list",
+      });
+      expect(row.content).toContain("- 반환된 작업 기록: 1개");
+      // The record itself is shown, not a task schema this window invented.
+      expect(row.content).toContain('"title": "Ship it"');
+      expect(
+        emit.mock.calls.some(
+          ([event]: any[]) =>
+            event.type === "transcript.appended" && event.item.id === "app-todo-s1",
+        ),
+      ).toBe(true);
+
+      // The goal counters share that observation; a disabled goal is not a reason
+      // to hide the todo list.
+      const goal = await controller.getGoal("s1");
+      expect(goal.enabled).toBe(false);
+      expect(goal.total).toBe(1);
+
+      // A durable rebuild does not delete the source-backed snapshot row.
+      await internals.refreshTranscriptFromFile("s1");
+      expect(
+        (internals.transcripts.get("s1") as Array<{ id: string }>).some(
+          (item) => item.id === "app-todo-s1",
+        ),
+      ).toBe(true);
+    } finally {
+      controller.dispose();
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unreadable todo store as unavailable, then as a stale last success", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    (cli.queryItems as any).mockRejectedValue(
+      new SdkCliError("todo_unavailable", "no Router attachment"),
+    );
+    await internals.readTodoRecords("s1");
+    const unavailable = systemRow(internals);
+    expect(unavailable.content).toContain(
+      "- 조회 실패: no Router attachment",
+    );
+    expect(unavailable.content).toContain("빈 목록이 아닙니다");
+    expect(unavailable.content).not.toContain("반환된 작업 기록");
+    // Nothing successful was observed, so nothing is retained to show as stale.
+    expect(internals.sessionTodoSnapshots.get("s1")?.rows).toBeUndefined();
+
+    // A successful read that really returns nothing is an empty list, and says so.
+    (cli.queryItems as any).mockResolvedValue([]);
+    await internals.readTodoRecords("s1");
+    const empty = systemRow(internals);
+    expect(empty.content).toContain("- 반환된 작업 기록: 0개");
+    expect(empty.content).not.toContain("조회 실패");
+
+    (cli.queryItems as any).mockResolvedValue([
+      { id: "task-1", title: "Ship it", status: "completed" },
+    ]);
+    await internals.readTodoRecords("s1");
+    expect(systemRow(internals).content).toContain('"title": "Ship it"');
+
+    // The last success is kept and explicitly marked stale -- never shown as the
+    // current store, and never replaced by an empty list.
+    (cli.queryItems as any).mockRejectedValue(new Error("provider unreachable"));
+    await internals.readTodoRecords("s1");
+    const stale = systemRow(internals);
+    expect(stale.content).toContain("조회 실패: provider unreachable");
+    expect(stale.content).toContain("stale");
+    expect(stale.content).toContain('"title": "Ship it"');
+    expect(stale.content).not.toContain("빈 목록이 아닙니다");
+  });
+
+  it("drops todo state with the session instead of resurrecting it", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    let release: (rows: unknown[]) => void = () => undefined;
+    (cli.queryItems as any).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const pending = internals.readTodoRecords("s1");
+    // Let the read reach the mocked runtime before the session is removed, so the
+    // guard is exercised against a read that was genuinely in flight.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    internals.removeLocalSession("s1", false);
+    release([]);
+    await pending;
+    expect(internals.sessionTodoSnapshots.has("s1")).toBe(false);
+    expect(internals.todoReads.has("s1")).toBe(false);
+    expect(internals.transcripts.has("s1")).toBe(false);
+  });
+
+  it("shares one todo read between callers that arrive together", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    let reads = 0;
+    (cli.queryItems as any).mockImplementation(async () => {
+      reads += 1;
+      return [];
+    });
+    await Promise.all([
+      internals.readTodoRecords("s1"),
+      internals.readTodoRecords("s1"),
+      internals.readTodoRecords("s1"),
+    ]);
+    expect(reads).toBe(1);
   });
 });

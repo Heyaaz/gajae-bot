@@ -36,6 +36,135 @@ const FAST_SERVICE_TIERS = new Set([
   "claude-only",
 ]);
 
+/**
+ * Apply a Fast tier change through the runtime's own service-tier control.
+ *
+ * The command is sent with no attachments on purpose: the runtime only treats a
+ * slash command as a control when the message carries none, and only a control
+ * applies to the session immediately -- with an attachment the same text would be
+ * delivered as prompt work into the open turn.
+ *
+ * Nothing here predicts the outcome. The composer's indicator follows the
+ * serviceTier the session reports back, so a refused request leaves the buttons on
+ * the tier that is actually in force instead of a state this call invented. That
+ * refusal is reported and consumed rather than re-thrown: the send came from a
+ * button with no awaiting caller, so an escaping rejection would land in the
+ * renderer's unhandled queue.
+ */
+export async function requestFastTier(options: {
+  fast: boolean;
+  send: (input: MessageInput) => Promise<MessageDelivery | undefined>;
+  report: (message: string) => void;
+}): Promise<void> {
+  try {
+    await options.send({
+      text: options.fast ? "/fast on" : "/fast off",
+      images: [],
+      files: [],
+    });
+  } catch (error) {
+    options.report(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/** A Fast request in flight, owned by the session that asked for it. */
+export interface FastTierRequest {
+  sessionId: string;
+}
+
+/**
+ * Whether this session has a Fast request of its own on the wire.
+ *
+ * Ownership is compared instead of holding one boolean, because the composer is a
+ * single mounted component for every session: a request sent from one row can
+ * still be in flight long after the user moved on, and a plain flag left the next
+ * row's buttons disabled behind work that no longer concerned it.
+ */
+export function fastTierBusy(
+  request: FastTierRequest | null,
+  sessionId: string,
+): boolean {
+  return request?.sessionId === sessionId;
+}
+
+/** Whether this session's runtime advertises the Fast service-tier control. */
+export function advertisesFast(
+  commands: readonly { name: string }[],
+): boolean {
+  return commands.some((command) => command.name === "fast");
+}
+
+export interface FastTierControlsProps {
+  commands: readonly { name: string }[];
+  /** Whether the session reports a priority tier right now, never a local guess. */
+  fastMode: boolean;
+  /** A Fast request for this session is still awaiting the runtime. */
+  busy: boolean;
+  readOnly: boolean;
+  onSelect: (fast: boolean) => void;
+}
+
+/**
+ * The Fast pair in the model popover header.
+ *
+ * Two named buttons rather than one toggle: the tier belongs to the runtime, so
+ * each press says which state is being asked for and `aria-pressed` marks the one
+ * in force. The runtime only offers the control when it advertises `/fast`, so a
+ * backend without a service tier shows no buttons at all. Pressing one leaves the
+ * menu open -- the model list is the same menu, and closing it would hide the
+ * profiles the user came for.
+ */
+export function FastTierControls({
+  commands,
+  fastMode,
+  busy,
+  readOnly,
+  onSelect,
+}: FastTierControlsProps) {
+  if (!advertisesFast(commands)) return null;
+  const disabled = readOnly || busy;
+  return (
+    <span
+      className="config-option-menu-fast"
+      role="group"
+      aria-label="Fast 모드"
+    >
+      <button
+        type="button"
+        aria-pressed={fastMode}
+        disabled={disabled}
+        title="Fast 모드 켜기 (/fast on)"
+        onClick={() => onSelect(true)}
+      >
+        Fast on
+      </button>
+      <button
+        type="button"
+        aria-pressed={!fastMode}
+        disabled={disabled}
+        title="Fast 모드 끄기 (/fast off)"
+        onClick={() => onSelect(false)}
+      >
+        Fast off
+      </button>
+    </span>
+  );
+}
+
+/**
+ * The draft a selected palette command leaves in the composer.
+ *
+ * The trailing space is not cosmetic. The palette matches the bare `/name` query,
+ * so leaving the textarea on exactly the value that was selected kept the match
+ * alive and the next Enter re-selected the command instead of submitting it. Only
+ * commands that still need input reach this line -- a hint-less command without the
+ * `skill:` prefix was executed and returned above, and `skill:*` is agent work that
+ * has to stay a draft -- so the space is unconditional.
+ */
+export function selectedCommandDraft(name: string): string {
+  return `/${name} `;
+}
+
 export interface ComposerProps {
   sessionId: string;
   running: boolean;
@@ -89,6 +218,12 @@ export function Composer({
   const [choosingImages, setChoosingImages] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const fastMode = FAST_SERVICE_TIERS.has(serviceTier ?? "");
+  // The Fast request this component sent, if it is still on the wire. It is stored
+  // with the session it was sent from so an unfinished request from another row can
+  // never hold this row's buttons disabled.
+  const [fastRequest, setFastRequest] = useState<FastTierRequest | null>(null);
+  const fastRequestRef = useRef<FastTierRequest | null>(null);
+  const fastBusy = fastTierBusy(fastRequest, sessionId);
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [configMenu, setConfigMenu] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -668,7 +803,7 @@ export function Composer({
       requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }
-    setValue(`/${command.name}${command.hint ? " " : ""}`);
+    setValue(selectedCommandDraft(command.name));
     setCommandIndex(0);
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
@@ -676,6 +811,27 @@ export function Composer({
   function selectConfig(configId: string, selectedValue: string): void {
     onConfigChange(configId, selectedValue);
     setConfigMenu(null);
+  }
+
+  // Fast is applied by the runtime, not by this component: the buttons render the
+  // serviceTier the session reports, and a refused request is surfaced here instead
+  // of flipping the control. The send goes straight to onSend rather than through
+  // submit() on purpose -- the composer's queue holds prompt work for after the open
+  // turn, while a control sent from a running session has to reach the runtime now.
+  async function setFastTier(fast: boolean): Promise<void> {
+    if (readOnly || fastTierBusy(fastRequestRef.current, sessionId)) return;
+    const request: FastTierRequest = { sessionId };
+    fastRequestRef.current = request;
+    setFastRequest(request);
+    setAttachmentError("");
+    try {
+      await requestFastTier({ fast, send: onSend, report: setAttachmentError });
+    } finally {
+      if (fastRequestRef.current === request) fastRequestRef.current = null;
+      // Only the request that is still current may clear the busy state: a refusal
+      // from an abandoned session must not unlock a later request's button.
+      setFastRequest((current) => (current === request ? null : current));
+    }
   }
 
   function handleSubmit(event: FormEvent): void {
@@ -1034,9 +1190,12 @@ export function Composer({
           </span>
           {modelOption && (
             <span className="composer-model">
+              {/* Left enabled during a run: this popover is where the Fast tier is
+                  switched, and the runtime applies a tier to the open session. A
+                  model change mid-turn is refused by the runtime and surfaced by the
+                  shell, which is better than hiding both controls until the turn ends. */}
               <button
                 type="button"
-                disabled={running}
                 title="Model: /model · Effort: ⇧⇥"
                 onClick={() =>
                   setConfigMenu((open) =>
@@ -1077,6 +1236,13 @@ export function Composer({
                 <span className="config-option-menu config-option-menu--model">
                   <header>
                     <strong>모델 프로필</strong>
+                    <FastTierControls
+                      commands={commands}
+                      fastMode={fastMode}
+                      busy={fastBusy}
+                      readOnly={readOnly}
+                      onSelect={(fast) => void setFastTier(fast)}
+                    />
                     <small>
                       {modelOption.options?.length ?? 0}개 사용 가능
                     </small>

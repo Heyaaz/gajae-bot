@@ -45,6 +45,7 @@ import type {
   HistorySession,
   QueuedMessage,
   SubagentSnapshot,
+  SystemNoticeActivity,
   ToolImage,
 } from "../shared/agent-contract.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
@@ -565,6 +566,36 @@ export function toolDiffText(...candidates: unknown[]): string | undefined {
   return undefined;
 }
 
+/**
+ * The readable text a recorded tool result actually holds.
+ *
+ * `body` is preferred when it has content, but an empty or missing body is not an
+ * answer: the recorded text content still carries what the tool returned. That
+ * fall-through matters after a durable rebuild, where the caller has only the row
+ * -- an empty body used to win over populated content and end the search, so the
+ * tool card came back empty for a result the file had recorded in full.
+ *
+ * Structured `details` is kept as bounded, redacted JSON because it is the only
+ * place a structured reply survives a rebuild. Nothing here interprets it: a
+ * recorded result is shown as data, not classified into an activity kind.
+ */
+export function toolResultText(
+  result: Record<string, unknown>,
+  diff?: string,
+): string | undefined {
+  const body = typeof result.body === "string" ? result.body : "";
+  const text = boundedJson(body || sharedContentText(result.content));
+  const details = boundedJson(result.details);
+  const parts = [
+    ...(text ? [text] : []),
+    // A diff already rendered on its own is not repeated as structured payload.
+    ...(details && details !== text && details !== diff
+      ? [`details\n${details}`]
+      : []),
+  ];
+  return parts.length > 0 ? parts.join("\n\n") : undefined;
+}
+
 /** Image parts of a tool result: inline base64, or a content-addressed blob id. */
 export function toolImageRefs(content: unknown): ToolImage[] {
   if (!Array.isArray(content)) return [];
@@ -939,6 +970,40 @@ export function taskSubagents(
   });
 }
 
+/**
+ * The stable transcript id of this window's todo snapshot row.
+ *
+ * The id names the app's presentation row, not a task: the runtime returns no task
+ * identity this controller can rely on, so every read updates the same row instead
+ * of inventing per-task rows.
+ */
+function todoSnapshotRowId(sessionId: string): string {
+  return `app-todo-${sessionId}`;
+}
+
+/**
+ * The runtime's todo store as this window last observed it.
+ *
+ * `rows` and `json` only exist once a read succeeded, which is what lets a failed
+ * read report the previous snapshot as stale instead of an empty list.
+ */
+interface TodoSnapshotState {
+  /** The row currently published for this session's todo store. */
+  row: SystemNoticeActivity;
+  /** The records the last successful read returned. */
+  rows?: unknown[];
+  /** The bounded JSON of those records, as shown in the row. */
+  json?: string;
+  /** When that successful read was observed. */
+  observedAt?: string;
+}
+
+/** One redacted line describing why a todo read could not answer. */
+function todoQueryErrorText(error: string | undefined): string {
+  const line = error?.split("\n")[0]?.trim();
+  return redactSensitiveText(line || "런타임이 응답하지 않았습니다");
+}
+
 function customMessageTitle(customType: unknown): string {
   if (customType === "async-result") return "백그라운드 작업 완료";
   if (customType === "subagent:steer" || customType === "subagent:steer:relay")
@@ -1038,12 +1103,19 @@ export function sharedTranscriptItems(
       continue;
     }
     if (row.type === "custom_message") {
-      if (row.display === false) continue;
       const content =
         typeof row.content === "string"
           ? row.content.trim()
           : sharedContentText(row.content).trim();
+      // `display: false` is the runtime's instruction to its own renderer, not a
+      // reason to drop the row: activity the runtime recorded as hidden is still
+      // recorded activity, and this window shows it as system material. The flag
+      // travels with the row so a card can say it was marked hidden, and the
+      // recorded `customType` travels as its source label -- an unrecognized one
+      // stays unrecognized rather than being folded into a known activity kind.
       if (content) {
+        const sourceType =
+          typeof row.customType === "string" ? row.customType.trim() : "";
         items.push({
           id: `shared-system-${sourceId}`,
           kind: "system",
@@ -1051,6 +1123,8 @@ export function sharedTranscriptItems(
           title: customMessageTitle(row.customType),
           content,
           createdAt,
+          ...(sourceType ? { sourceType } : {}),
+          ...(row.display === false ? { runtimeHidden: true } : {}),
         });
       }
       continue;
@@ -1149,12 +1223,8 @@ export function sharedTranscriptItems(
       }
       if (value.type !== "toolCall" || typeof value.id !== "string") continue;
       const result = toolResults.get(value.id);
-      const output =
-        result &&
-        (typeof result.body === "string"
-          ? result.body
-          : sharedContentText(result.content));
       const diff = toolDiffText(result?.details, result);
+      const output = result ? toolResultText(result, diff) : undefined;
       const images = toolImageRefs(result?.content);
       const target =
         value.arguments &&
@@ -1225,6 +1295,79 @@ type SdkSlashCommandSpec = AgentCommand & {
  * response is authoritative and filters the list before it reaches the renderer.
  * TUI-only commands are intentionally absent: they have no SDK operation to invoke.
  */
+/**
+ * Components `runtime.reload` accepts. Mirrors the runtime's own adapter
+ * validation (`sdk/protocol/adapter-validation.ts`), which rejects anything else
+ * with `invalid_reload_component`.
+ */
+const SDK_RELOAD_COMPONENTS = [
+  "config",
+  "models",
+  "skills",
+  "extensions",
+  "tools",
+] as const;
+
+/**
+ * The `service_tier.set` tier that means "send no service_tier parameter".
+ *
+ * GJC's own `/fast off` clears the tier (`setServiceTier(undefined)`), and the SDK
+ * control cannot carry `undefined` -- the host validates `tier` as one of the
+ * settings values. `none` is that settings value ("Omit service_tier parameter"),
+ * and `resolveServiceTier`/`shouldSendServiceTier` treat it exactly like
+ * `undefined` on the wire, so this is the same request the CLI ends up sending.
+ */
+const SDK_SERVICE_TIER_OFF = "none";
+
+/** Tiers GJC counts as fast-mode intent (`isFastModeEnabled`). */
+const SDK_FAST_SERVICE_TIERS = new Set(["priority", "claude-only", "openai-only"]);
+
+/**
+ * Fast tiers scoped to one provider family. An explicit `/fast on` for one of
+ * these keeps the user's scope instead of widening it to `priority`
+ * (`AgentSession.setFastMode` re-arms an already-enabled tier rather than
+ * replacing it).
+ */
+const SDK_SCOPED_FAST_SERVICE_TIERS = new Set(["claude-only", "openai-only"]);
+
+/**
+ * Whether the session's config explicitly turns skills off.
+ *
+ * Only an explicit false counts: a host that reports nothing about skills leaves
+ * its own default (skill commands are enabled) in force. Both shapes a runtime may
+ * report are read -- flat `skills.enabled` / `skills.enableSkillCommands` keys, and
+ * a nested `skills` group object.
+ */
+function skillsDisabledByConfig(config: readonly unknown[]): boolean {
+  const disabled = (value: unknown): boolean =>
+    value === false || value === "false";
+  const groupDisables = (group: unknown): boolean => {
+    if (!group || typeof group !== "object" || Array.isArray(group)) return false;
+    const value = group as Record<string, unknown>;
+    return (
+      disabled(value.enabled) || disabled(value.enableSkillCommands)
+    );
+  };
+  for (const row of config) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const item = row as Record<string, unknown>;
+    if (
+      disabled(item["skills.enabled"]) ||
+      disabled(item["skills.enableSkillCommands"])
+    )
+      return true;
+    const key = String(item.key ?? item.name ?? item.id ?? "");
+    const value = item.value ?? item.currentValue;
+    if (key === "skills.enabled" || key === "skills.enableSkillCommands") {
+      if (disabled(value)) return true;
+      continue;
+    }
+    const group = key === "skills" ? value ?? item.skills : item.skills;
+    if (group !== undefined && groupDisables(group)) return true;
+  }
+  return false;
+}
+
 const SDK_SLASH_COMMAND_SPECS: readonly SdkSlashCommandSpec[] = [
   {
     name: "context",
@@ -1298,9 +1441,31 @@ const SDK_SLASH_COMMAND_SPECS: readonly SdkSlashCommandSpec[] = [
   },
   {
     name: "fast",
-    description: "Enable or disable priority service tier",
-    hint: "[on|off]",
+    description: "Toggle the priority service tier intent",
+    hint: "[toggle|on|off|status]",
     operations: ["service_tier.set"],
+  },
+  {
+    name: "skills",
+    description: "List the skills this session can run",
+    operations: ["skill.list/state"],
+  },
+  {
+    name: "progress",
+    description: "Show the project progress snapshot",
+    operations: ["session.progress"],
+  },
+  {
+    name: "reload",
+    description: "Reload runtime components",
+    hint: "[config|models|skills|extensions|tools]",
+    operations: ["runtime.reload"],
+  },
+  {
+    name: "plan",
+    description: "Turn plan mode on or off",
+    hint: "[on|off]",
+    operations: ["mode.plan.set"],
   },
   {
     name: "export",
@@ -1934,8 +2099,41 @@ export class GjcSdkController {
   /** Delay between broker polls while recovering a fork's session id. */
   private forkRecoveryIntervalMs = 250;
   private readonly sessionCommands = new Map<string, AgentCommand[]>();
+  /**
+   * Commands the runtime itself advertised (`available_commands_update`).
+   *
+   * This is the authoritative set and is replaced wholesale on every event, so a
+   * command the runtime withdraws disappears from the palette. It is kept apart
+   * from the merged cache because that cache is also fed by this window's adapter
+   * specs and by runtime state discovery, and neither of those may speak for GJC.
+   */
+  private readonly sessionAdvertisedCommands = new Map<string, AgentCommand[]>();
+  /**
+   * Dynamic commands discovered from runtime state on attach/create rather than
+   * from an `available_commands_update`. Replaced wholesale by each discovery pass.
+   */
+  private readonly sessionDiscoveredCommands = new Map<string, AgentCommand[]>();
   private readonly sessionSdkOperations = new Map<string, Set<string>>();
   private readonly sessionConfig = new Map<string, AgentConfigOption[]>();
+  /**
+   * The last plan the runtime reported for a session.
+   *
+   * `sessionUpdate=plan` is the only plan source, and the durable session file does
+   * not record plans. A rescan therefore replaced the transcript array with file
+   * rows and the plan of a session that was still running it disappeared, so the
+   * row is retained here and composed back into every install of that transcript.
+   */
+  private readonly sessionPlans = new Map<string, PlanActivity>();
+  /** The runtime's todo store as this window last observed it, per session. */
+  private readonly sessionTodoSnapshots = new Map<string, TodoSnapshotState>();
+  /**
+   * The in-flight todo read per session.
+   *
+   * Nothing pushes todo changes, so reads are event-driven: a transcript bootstrap
+   * and an observed todo tool completion. Sharing the pending promise keeps a burst
+   * of those from becoming a burst of runtime calls, and no timer polls it.
+   */
+  private readonly todoReads = new Map<string, Promise<unknown[] | undefined>>();
   private readonly terminalOnlySessions = new Set<string>();
   private readonly modelProfiles = new Map<string, AgentConfigOptionValue[]>();
   private readonly explicitSessionThinking = new Map<string, string>();
@@ -2771,6 +2969,7 @@ export class GjcSdkController {
     session.attachment = "attached";
     this.attachedSessions.add(session.id);
     this.startTailFollower(session.id);
+    void this.refreshSdkCommands(session.id);
     await this.refreshModelProfiles(session.id);
     await this.refreshSessionConfigOptions(session.id);
     void this.refreshContextUsage(session.id);
@@ -2820,9 +3019,10 @@ export class GjcSdkController {
       }
     }
     // The controller survives renderer reloads, while command discovery is a
-    // one-shot session event. Re-opening the transcript is the renderer's bootstrap,
-    // so replay the cached snapshot even when the session was already attached and GJC
-    // has no reason to publish its bootstrap updates again.
+    // session event. Re-opening the transcript is the renderer's bootstrap, so
+    // replay the cached snapshot and then rebuild it from the runtime, which is the
+    // only source that still knows the session's commands when GJC has no reason to
+    // publish its bootstrap updates again.
     const commands = this.sessionCommands.get(sessionId);
     if (commands)
       this.emitEvent({
@@ -2830,13 +3030,18 @@ export class GjcSdkController {
         sessionId,
         commands: commands.map((command) => ({ ...command })),
       });
+    void this.refreshSdkCommands(sessionId);
+    // Nothing pushes todo changes either, so the same bootstrap pass reads the
+    // store. It runs whether or not a goal is enabled: a todo list is its own
+    // runtime state, and gating it on goal mode is what hid it.
+    void this.readTodoRecords(sessionId);
     const externallyDriven = !this.activePromptSessions.has(sessionId);
     if (this.terminalOnlySessions.has(sessionId) || externallyDriven) {
       try {
         const shared = await this.readSharedTranscript(sessionId);
         if (shared.length > 0) {
-          this.transcripts.set(sessionId, shared);
-          return shared.map(cloneTranscriptItem);
+          const installed = this.installTranscript(sessionId, shared);
+          return installed.map(cloneTranscriptItem);
         }
         if (this.terminalOnlySessions.has(sessionId))
           return [this.terminalOnlyNotice(sessionId)];
@@ -3221,8 +3426,8 @@ export class GjcSdkController {
               const previousItems = this.transcripts.get(sessionId);
               void this.readPersistedTranscript(sessionId).then((items) => {
                 if (!items || this.disposed) return;
-                this.transcripts.set(sessionId, items);
-                this.publishTranscriptSync(sessionId, previousItems, items);
+                const installed = this.installTranscript(sessionId, items);
+                this.publishTranscriptSync(sessionId, previousItems, installed);
                 // External terminal sessions do not publish usage events to this
                 // renderer. Re-query after transcript changes so the first response
                 // following compaction replaces the pending usage indicator immediately.
@@ -3665,6 +3870,7 @@ export class GjcSdkController {
       | "queue.message.remove"
       | "compaction.run"
       | "mode.goal.operate"
+      | "mode.plan.set"
       | "thinking.set"
       | "thinking.cycle"
       | "model.profile.set"
@@ -3677,6 +3883,7 @@ export class GjcSdkController {
       | "session.cwd.move"
       | "retry.last"
       | "bash.background"
+      | "runtime.reload"
       | "auth.login",
     input: Record<string, unknown>,
     options?: { confirm?: boolean; idempotencyKey?: string },
@@ -3811,8 +4018,13 @@ export class GjcSdkController {
     );
     if (!spec) return false;
     const operations = await this.sdkOperations(sessionId);
+    // A recognized command whose capability this runtime does not advertise is
+    // refused rather than forwarded as prompt text: the same characters would reach
+    // the model as a user request for work GJC just said it cannot dispatch.
     if (!spec.operations.some((operation) => operations.has(operation)))
-      return false;
+      throw new Error(
+        `/${name} is unavailable in this GJC runtime (${spec.operations.join(" and ")} not advertised)`,
+      );
 
     const requireOperation = (operation: string): void => {
       if (!operations.has(operation))
@@ -3846,6 +4058,8 @@ export class GjcSdkController {
         | "session.cwd.move"
         | "retry.last"
         | "bash.background"
+        | "runtime.reload"
+        | "mode.plan.set"
         | "auth.login",
       controlInput: Record<string, unknown> = {},
       options?: { confirm?: boolean },
@@ -3971,12 +4185,121 @@ export class GjcSdkController {
         return output(this.sdkCommandJson(result ?? { level: args }));
       }
       case "fast": {
-        if (args !== "on" && args !== "off")
-          throw new Error("Usage: /fast [on|off]");
-        const tier = args === "on" ? "priority" : "default";
+        const verb = (args || "toggle").toLowerCase();
+        if (!["toggle", "on", "off", "status"].includes(verb))
+          throw new Error("Usage: /fast [toggle|on|off|status]");
+        // The window only knows the tier the session reported (its transcript's
+        // last `service_tier_change` or a tier this window set itself), and GJC
+        // resolves that intent per provider. Every branch below therefore reports
+        // the configured tier, never a claim that the provider honored it.
+        const current = this.sessions.get(sessionId)?.serviceTier;
+        const enabled =
+          current !== undefined && SDK_FAST_SERVICE_TIERS.has(current);
+        if (verb === "status")
+          return output(
+            [
+              "## Fast mode",
+              // A session that never recorded a tier reports none, and none means
+              // no fast intent. The line says which of the two it is instead of
+              // presenting an unread tier as a state the runtime confirmed.
+              `- Intent: ${enabled ? "on" : current ? "off" : "off (no tier reported)"}`,
+              `- Configured tier: ${current ?? "none reported"}`,
+              "- Configured intent only: GJC decides per provider and model whether a",
+              "  request actually carries the fast/priority tier.",
+            ].join("\n"),
+          );
+        const enable = verb === "on" ? true : verb === "off" ? false : !enabled;
+        // A toggle has to know the tier it is inverting: the runtime's own tier can
+        // come from the user's global serviceTier setting, so guessing "off" would
+        // silently downgrade a scoped tier. Ask the session's config once, and
+        // refuse rather than flip a state this window cannot read.
+        const tierSource =
+          verb === "toggle" && current === undefined
+            ? ((await this.sessionConfigRow(sessionId))?.serviceTier as
+                | string
+                | undefined)
+            : current;
+        if (verb === "toggle" && tierSource === undefined)
+          throw new Error(
+            "This session does not report its current service tier, so /fast cannot toggle it. Use /fast on or /fast off.",
+          );
+        const tier =
+          enable
+            ? tierSource && SDK_SCOPED_FAST_SERVICE_TIERS.has(tierSource)
+              ? tierSource
+              : "priority"
+            : SDK_SERVICE_TIER_OFF;
         const result = await control("service_tier.set", { tier });
+        // Mirror what the runtime recorded, including the "none" that stands for a
+        // cleared tier, so the next status reads off instead of unknown.
         this.patchSessionRuntime(sessionId, { serviceTier: tier });
-        return output(this.sdkCommandJson(result ?? { tier }));
+        return output(
+          `Fast mode ${enable ? "enabled" : "disabled"} (configured tier: ${tier}).\n${this.sdkCommandJson(result ?? { tier })}`,
+        );
+      }
+      case "skills": {
+        if (args) throw new Error("Usage: /skills");
+        const skills = (await query("skill.list/state")).flatMap((row) => {
+          if (!row || typeof row !== "object" || Array.isArray(row)) return [];
+          const value = row as Record<string, unknown>;
+          if (typeof value.name !== "string" || !value.name) return [];
+          const description =
+            typeof value.description === "string" ? value.description : "";
+          return [`- ${value.name}${description ? ` — ${description}` : ""}`];
+        });
+        return output(
+          [
+            "## Skills",
+            ...(skills.length > 0
+              ? skills
+              : ["- This session reports no skills."]),
+            "Run one as agent work with `/skill:<name> <request>`.",
+          ].join("\n"),
+        );
+      }
+      case "progress":
+        if (args) throw new Error("Usage: /progress");
+        return output(this.sdkCommandJson(await query("session.progress")));
+      case "reload": {
+        const requested = args.split(/[\s,]+/u).filter(Boolean);
+        const unknown = requested.filter(
+          (component) =>
+            !(SDK_RELOAD_COMPONENTS as readonly string[]).includes(component),
+        );
+        if (unknown.length > 0)
+          throw new Error(
+            `Unknown reload component: ${unknown.join(", ")}. Use one or more of ${SDK_RELOAD_COMPONENTS.join(", ")}.`,
+          );
+        const components =
+          requested.length > 0
+            ? [...new Set(requested)]
+            : [...SDK_RELOAD_COMPONENTS];
+        // gjc/0.18.11 validates this list and then reloads the whole session
+        // (`AgentSession.reload`); the per-component split is the runtime's to
+        // apply, so the reply reports what was requested and what it answered.
+        const result = await control("runtime.reload", { components });
+        // A reload re-reads skills, extensions, and config from disk, so the
+        // palette this window derived from the old ones is stale the moment it
+        // succeeds. Rebuild both sides of the session's reported surface.
+        await Promise.all([
+          this.refreshSdkCommands(sessionId),
+          this.refreshModelProfiles(sessionId).catch(() => undefined),
+          this.refreshSessionConfigOptions(sessionId).catch(() => undefined),
+        ]);
+        return output(
+          `Reload requested for ${components.join(", ")}.\n${this.sdkCommandJson(result ?? { reloaded: true })}`,
+        );
+      }
+      case "plan": {
+        if (args !== "on" && args !== "off")
+          throw new Error("Usage: /plan [on|off]");
+        const on = args === "on";
+        const result = await control("mode.plan.set", { on });
+        if (typeof result?.enabled === "boolean")
+          this.patchSessionRuntime(sessionId, {
+            mode: result.enabled ? "plan" : "default",
+          });
+        return output(this.sdkCommandJson(result ?? { enabled: on }));
       }
       case "export": {
         if (args) throw new Error("This SDK exports to its managed HTML path; use /export without a path");
@@ -4579,29 +4902,114 @@ export class GjcSdkController {
     }
   }
 
+  /**
+   * Rebuilds one session's command palette.
+   *
+   * Three sources feed it:
+   *  - this window's adapter specs, filtered by the operations the runtime
+   *    advertises (`runtime.capabilities`);
+   *  - dynamic commands synthesized from runtime state (`discoverDynamicCommands`),
+   *    which is what fills a skill palette on create/attach before GJC has published
+   *    anything of its own;
+   *  - the runtime's advertised commands (`available_commands_update`), which win on
+   *    a name collision.
+   *
+   * The palette is rebuilt from those sources whole, so a command the runtime stops
+   * listing leaves with it. An authoritative update is also authority over the
+   * synthesized set: once one arrives, even an empty one, the runtime's own list is
+   * used alone and the synthesized entries are dropped instead of being merged back
+   * in. A failing source contributes nothing rather than clearing the palette.
+   */
   private async refreshSdkCommands(
     sessionId: string,
-    advertised: AgentCommand[],
+    advertised?: AgentCommand[],
   ): Promise<void> {
-    try {
-      const operations = [...(await this.sdkOperations(sessionId))];
-      if (operations.length === 0) return;
-      // Runtime-advertised entries win on a name collision. Once GJC publishes its
-      // own built-ins in available_commands_update, the desktop automatically uses
-      // its description and hint rather than the adapter copy above.
-      const commands = [
-        ...new Map(
-          [...sdkSlashCommandsForOperations(operations), ...advertised].map(
-            (command) => [command.name, command],
-          ),
-        ).values(),
-      ];
-      this.sessionCommands.set(sessionId, commands);
-      this.emitEvent({ type: "session.commands", sessionId, commands });
-    } catch {
-      // A cached command update is still useful when a host cannot answer
-      // runtime.capabilities. Never replace it with an empty palette.
+    if (advertised) this.sessionAdvertisedCommands.set(sessionId, advertised);
+    // A capability query that answers nothing is not the same as one that answered
+    // "no": the cached set is reused when there is one, and the adapter specs stay
+    // out of the palette rather than reporting a guess either way.
+    const operations = await this.sdkOperations(sessionId);
+    const authoritative = this.sessionAdvertisedCommands.get(sessionId);
+    const discovered =
+      authoritative === undefined
+        ? await this.discoverDynamicCommands(sessionId, operations).catch(
+            () => undefined,
+          )
+        : undefined;
+    if (discovered) this.sessionDiscoveredCommands.set(sessionId, discovered);
+    else this.sessionDiscoveredCommands.delete(sessionId);
+    if (
+      operations.size === 0 &&
+      authoritative === undefined &&
+      discovered === undefined
+    )
+      // Nothing to rebuild from: never publish an empty palette over a good cache.
+      return;
+    const commands = [
+      ...new Map(
+        [
+          ...sdkSlashCommandsForOperations([...operations]),
+          ...(discovered ?? []),
+          ...(authoritative ?? []),
+        ].map((command) => [command.name, command]),
+      ).values(),
+    ];
+    this.sessionCommands.set(sessionId, commands);
+    this.emitEvent({ type: "session.commands", sessionId, commands });
+  }
+
+  /**
+   * Dynamic commands synthesized from runtime state, used only until the runtime
+   * publishes its own list.
+   *
+   * `skill.list/state` is the only dynamic command source gjc/0.18.11 exposes through
+   * the SDK query surface: there is no query for the slash-command snapshot the
+   * runtime builds for its own UI (`getSessionSlashCommands`, which filters
+   * `skillsSettings.enableSkillCommands` and `skill.hide`), and this window does not
+   * pretend to reproduce that registry. Rows that carry a visibility flag are honored
+   * and a config that explicitly disables skills removes the whole set, but a hidden
+   * skill in a row that carries no flag cannot be told apart from a visible one, so
+   * these entries are advertised as selectable agent work only: `/skill:<name>` is
+   * still delivered to the runtime as a prompt, and the runtime decides whether the
+   * skill runs. They are also dropped as soon as an `available_commands_update`
+   * arrives, since the runtime's own list is the authority on its own commands.
+   */
+  private async discoverDynamicCommands(
+    sessionId: string,
+    operations: ReadonlySet<string>,
+  ): Promise<AgentCommand[] | undefined> {
+    if (!operations.has("skill.list/state")) return undefined;
+    const [skills, config] = await Promise.all([
+      this.querySessionItems(sessionId, "skill.list/state"),
+      operations.has("config.list/get")
+        ? this.querySessionItems(sessionId, "config.list/get")
+        : Promise.resolve([]),
+    ]);
+    if (skillsDisabledByConfig(config)) return [];
+    const commands = new Map<string, AgentCommand>();
+    for (const row of skills) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+      const skill = row as Record<string, unknown>;
+      const name = typeof skill.name === "string" ? skill.name.trim() : "";
+      if (!name) continue;
+      if (
+        skill.hide === true ||
+        skill.hidden === true ||
+        skill.enabled === false ||
+        skill.visible === false
+      )
+        continue;
+      const commandName = `skill:${name}`;
+      if (commands.has(commandName)) continue;
+      const description =
+        typeof skill.description === "string" ? skill.description : "";
+      commands.set(commandName, {
+        name: commandName,
+        description: description || `Run the ${name} skill`,
+        hint: "[instructions]",
+      });
     }
+    return [...commands.values()];
   }
 
   private async sdkOperations(sessionId: string): Promise<Set<string>> {
@@ -4627,9 +5035,11 @@ export class GjcSdkController {
   }
 
   async getGoal(sessionId: string): Promise<GoalSnapshot> {
+    // The todo read is shared with the transcript snapshot row, so the counters here
+    // and the row a user can expand are the same observation of the same store.
     const [goalRows, todoRows] = await Promise.all([
       this.querySessionItems(sessionId, "goal.list/get"),
-      this.querySessionItems(sessionId, "todo.list"),
+      this.readTodoRecords(sessionId),
     ]);
     const state =
       goalRows[0] &&
@@ -4643,7 +5053,7 @@ export class GjcSdkController {
       !Array.isArray(state.goal)
         ? (state.goal as Record<string, unknown>)
         : undefined;
-    const tasks = todoRows
+    const tasks = (todoRows ?? [])
       .flatMap((row) => {
         if (!row || typeof row !== "object" || Array.isArray(row)) return [];
         const value = row as Record<string, unknown>;
@@ -5069,6 +5479,11 @@ export class GjcSdkController {
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
+    this.sessionAdvertisedCommands.delete(sessionId);
+    this.sessionDiscoveredCommands.delete(sessionId);
+    this.sessionPlans.delete(sessionId);
+    this.sessionTodoSnapshots.delete(sessionId);
+    this.todoReads.delete(sessionId);
     this.sessionSdkOperations.delete(sessionId);
     this.sessionConfig.delete(sessionId);
     this.terminalOnlySessions.delete(sessionId);
@@ -5144,6 +5559,11 @@ export class GjcSdkController {
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
+    this.sessionAdvertisedCommands.clear();
+    this.sessionDiscoveredCommands.clear();
+    this.sessionPlans.clear();
+    this.sessionTodoSnapshots.clear();
+    this.todoReads.clear();
     this.sessionSdkOperations.clear();
     this.sessionConfig.clear();
     this.terminalOnlySessions.clear();
@@ -5567,7 +5987,7 @@ export class GjcSdkController {
     const cli = await this.requireCli();
     const cwd = this.repoFor(sessionId);
     if (replay) {
-      this.transcripts.set(sessionId, []);
+      this.installTranscript(sessionId, []);
       this.messageKeys.set(sessionId, new Map());
     }
     const row = await cli.inspectSession(sessionId, { repo: cwd });
@@ -5622,11 +6042,15 @@ export class GjcSdkController {
     await this.refreshModelProfiles(sessionId);
     if (replay) {
       const restored = await this.readSharedTranscript(sessionId).catch(() => []);
-      if (restored.length > 0) this.transcripts.set(sessionId, restored);
+      if (restored.length > 0) this.installTranscript(sessionId, restored);
       this.finalizeAllMessages(sessionId);
     }
     this.attachedSessions.add(sessionId);
     this.startTailFollower(sessionId);
+    // Command discovery must not wait for GJC to publish a bootstrap update: a
+    // session opened in an already-running process never re-sends one, and the tail
+    // frame that carried it may be long past. Ask the runtime directly.
+    void this.refreshSdkCommands(sessionId);
     // The session file is the live account now that no connection streams updates.
     const watched = await this.locateSharedTranscriptFile(sessionId);
     if (watched) this.watchSharedTranscript(sessionId, watched);
@@ -5786,8 +6210,8 @@ export class GjcSdkController {
       () => undefined,
     );
     if (!items || this.disposed) return;
-    this.transcripts.set(sessionId, items);
-    this.publishTranscriptSync(sessionId, previous, items);
+    const installed = this.installTranscript(sessionId, items);
+    this.publishTranscriptSync(sessionId, previous, installed);
   }
 
   private async reconcileTailTerminalState(sessionId: string): Promise<void> {
@@ -5829,10 +6253,13 @@ export class GjcSdkController {
         this.upsertPlan(sessionId, update.entries);
         break;
       case "available_commands_update": {
-        const commands = agentCommands(update.availableCommands);
-        this.sessionCommands.set(sessionId, commands);
-        this.emitEvent({ type: "session.commands", sessionId, commands });
-        void this.refreshSdkCommands(sessionId, commands);
+        // GJC's own command list for this session. An empty update is authoritative
+        // too -- it says the session has no dynamic commands, so the synthesized
+        // skill entries must not be merged back over it.
+        void this.refreshSdkCommands(
+          sessionId,
+          agentCommands(update.availableCommands),
+        );
         break;
       }
       case "config_option_update":
@@ -5938,9 +6365,171 @@ export class GjcSdkController {
     };
     if (existing) Object.assign(existing, plan);
     else this.appendTranscript(plan);
+    // The row the session actually carries is the retained one, so a later durable
+    // rebuild composes the same plan state instead of an earlier copy of it. An
+    // update with no entries is still an update: it clears them.
+    this.sessionPlans.set(sessionId, existing ?? plan);
     this.emitEvent({
       type: "plan.updated",
       plan: { ...plan, entries: plan.entries.map((entry) => ({ ...entry })) },
+    });
+  }
+
+  /**
+   * Install a transcript read as this session's account, keeping what only this
+   * process observed.
+   *
+   * A durable read is authoritative over recorded rows, but it cannot speak for a
+   * live plan or for a todo snapshot this window queried, and both were being
+   * deleted by the replacement. The retained rows are appended in a fixed order so
+   * every rebuild of the same views the same sequence.
+   */
+  private installTranscript(
+    sessionId: string,
+    items: TranscriptItem[],
+  ): TranscriptItem[] {
+    const retained: TranscriptItem[] = [];
+    const plan = this.sessionPlans.get(sessionId);
+    if (plan) retained.push(plan);
+    const todo = this.sessionTodoSnapshots.get(sessionId)?.row;
+    if (todo) retained.push(todo);
+    const missing = retained.filter(
+      (row) => !items.some((item) => item.id === row.id),
+    );
+    const composed = missing.length > 0 ? [...items, ...missing] : items;
+    this.transcripts.set(sessionId, composed);
+    return composed;
+  }
+
+  /**
+   * Read the runtime's todo store and publish it as one transcript row.
+   *
+   * `todo.list` is the only todo source this window has: the tail protocol carries
+   * no todo event and the returned records have no documented schema beyond rows
+   * that may be wrapped in `tasks`. They are therefore retained and shown as data
+   * rather than reduced into task state this window would have to invent, and the
+   * query is strict -- a runtime that cannot answer is recorded as unreadable,
+   * which is not the same thing as an empty list.
+   */
+  private async readTodoRecords(
+    sessionId: string,
+  ): Promise<unknown[] | undefined> {
+    const pending = this.todoReads.get(sessionId);
+    if (pending) return pending;
+    const read = this.queryTodoRecords(sessionId);
+    this.todoReads.set(sessionId, read);
+    try {
+      return await read;
+    } finally {
+      if (this.todoReads.get(sessionId) === read) this.todoReads.delete(sessionId);
+    }
+  }
+
+  private async queryTodoRecords(
+    sessionId: string,
+  ): Promise<unknown[] | undefined> {
+    const observedAt = nowLabel();
+    let rows: unknown[] | undefined;
+    let failure: string | undefined;
+    try {
+      rows = await this.querySessionItems(
+        sessionId,
+        "todo.list",
+        {},
+        { strict: true },
+      );
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+    // A session this controller no longer holds must not have its row resurrected
+    // by a read that was already in flight when the session was removed.
+    if (this.disposed || !this.sessions.has(sessionId)) return undefined;
+    if (rows === undefined)
+      this.publishTodoSnapshot(sessionId, { error: failure, observedAt });
+    else this.publishTodoSnapshot(sessionId, { rows, observedAt });
+    return rows;
+  }
+
+  /**
+   * Record what the todo store held, or that it could not be read.
+   *
+   * A failed read keeps the last successful snapshot on screen and says it is
+   * stale; with no earlier success it says the store is unavailable. Neither case
+   * may render as an empty list.
+   */
+  private publishTodoSnapshot(
+    sessionId: string,
+    observed:
+      | { rows: unknown[]; observedAt: string }
+      | { error: string | undefined; observedAt: string },
+  ): void {
+    const previous = this.sessionTodoSnapshots.get(sessionId);
+    const header = ["- 소스: todo.list (strict 조회)"];
+    let rows = previous?.rows;
+    let json = previous?.json;
+    let observedAt = previous?.observedAt;
+    if ("rows" in observed) {
+      rows = observed.rows;
+      observedAt = observed.observedAt;
+      json = boundedJson(observed.rows) ?? "[]";
+      header.push(
+        `- 관측 시각: ${observed.observedAt}`,
+        `- 반환된 작업 기록: ${observed.rows.length}개`,
+      );
+    } else if (json !== undefined) {
+      header.push(
+        `- 마지막 성공 관측: ${observedAt ?? "알 수 없음"}`,
+        `- 조회 실패: ${todoQueryErrorText(observed.error)}`,
+        "- 상태: 이전 성공 스냅샷 표시 중 (stale)",
+      );
+    } else {
+      header.push(
+        `- 관측 시각: ${observed.observedAt}`,
+        `- 조회 실패: ${todoQueryErrorText(observed.error)}`,
+        "- 상태: 할 일 목록을 확인할 수 없습니다 (빈 목록이 아닙니다)",
+      );
+    }
+    const row: SystemNoticeActivity = {
+      id: todoSnapshotRowId(sessionId),
+      kind: "system",
+      sessionId,
+      title: "할 일 목록",
+      content: [
+        ...header,
+        ...(json === undefined ? [] : ["```json", json, "```"]),
+      ].join("\n"),
+      createdAt: previous?.row.createdAt ?? nowLabel(),
+      sourceType: "todo.list",
+    };
+    this.sessionTodoSnapshots.set(sessionId, {
+      row,
+      ...(rows === undefined ? {} : { rows }),
+      ...(json === undefined ? {} : { json }),
+      ...(observedAt === undefined ? {} : { observedAt }),
+    });
+    this.publishAppRow(sessionId, row);
+  }
+
+  /**
+   * Put an app-owned row into a session's transcript.
+   *
+   * A row that has not changed is not republished: the goal panel and a transcript
+   * bootstrap both read the same store, and each read would otherwise emit an IPC
+   * row with identical content. A session with no installed transcript keeps the row
+   * in its snapshot state, and the next install composes it in.
+   */
+  private publishAppRow(sessionId: string, row: SystemNoticeActivity): void {
+    const items = this.transcripts.get(sessionId);
+    if (items) {
+      const index = items.findIndex((item) => item.id === row.id);
+      const existing = index >= 0 ? items[index] : undefined;
+      if (existing && sameTranscriptItem(existing, row)) return;
+      if (index >= 0) items[index] = row;
+      else items.push(row);
+    }
+    this.emitEvent({
+      type: "transcript.appended",
+      item: cloneTranscriptItem(row),
     });
   }
 
@@ -6102,12 +6691,20 @@ export class GjcSdkController {
           : undefined;
       const mode =
         typeof row.mode === "string" && row.mode ? row.mode : undefined;
-      if (!preset && !thinking && !mode) return;
+      // A host that reports the session's service tier here is read too: /fast
+      // inverts this value, and guessing the direction is how a scoped fast tier
+      // gets silently downgraded.
+      const serviceTier =
+        typeof row.serviceTier === "string" && row.serviceTier
+          ? row.serviceTier
+          : undefined;
+      if (!preset && !thinking && !mode && !serviceTier) return;
       const current = this.sessions.get(sessionId);
       this.patchSessionRuntime(sessionId, {
         ...(preset ? { model: preset } : {}),
         ...(thinking ? { thinking } : {}),
         ...(mode ? { mode } : {}),
+        ...(serviceTier ? { serviceTier } : {}),
       });
       const options = this.sessionConfig.get(sessionId);
       if (options && (preset || thinking || mode)) {
@@ -6542,6 +7139,11 @@ export class GjcSdkController {
     } else {
       this.appendTranscript(patch);
     }
+    // A todo tool that finished is the only live signal that the store may have
+    // changed, and it is not a todo record: it is a request. The store itself is
+    // read back so what is shown is what the runtime recorded, not the input op.
+    if (name === "todo_write" && patch.status === "completed")
+      void this.readTodoRecords(sessionId);
     if (patch.images?.some((image) => image.blobId && !image.dataUrl)) {
       const settled = existing ?? patch;
       void this.resolveToolImages([settled])

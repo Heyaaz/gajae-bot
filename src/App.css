@@ -2944,7 +2944,14 @@
   bottom: calc(100% + 9px);
   left: 0;
   width: 300px;
+  /* A row for the header and a flexible row for the options. Implicit rows are
+     max-content sized, so with 37 profiles the option track grew as tall as its
+     content: max-height clamped the menu, overflow: hidden clipped the rest, and
+     the list itself never overflowed, so nothing could scroll. The list track has
+     to be allowed below its content, and the header keeps its own row, so it stays
+     in place (and grows) whatever controls sit in it. */
   max-height: min(430px, 55vh);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 .config-option-menu--effort {
   bottom: calc(100% + 9px);
@@ -2966,8 +2973,36 @@
   color: var(--text-tertiary);
   font-size: 9px;
 }
+.config-option-menu--model > header {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.config-option-menu-fast {
+  display: flex;
+  width: 100%;
+  gap: 4px;
+}
+.config-option-menu-fast > button {
+  flex: 1;
+  padding: 5px 8px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10px;
+  cursor: pointer;
+}
+.config-option-menu-fast > button[aria-pressed="true"] {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.config-option-menu-fast > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
 .config-option-scroll {
   display: grid;
+  min-height: 0;
   padding: 6px;
   overflow-y: auto;
 }
@@ -4375,127 +4410,351 @@
   border-radius: var(--radius-sm);
 }
 
-.remote-panel .settings-panel {
-  gap: 14px;
-}
+/*
+   Remote settings panel (desktop host)
 
-.remote-port {
-  display: flex;
-  gap: 8px;
-}
+   These classes are used only by the panel, and every text block is allowed to
+   wrap inside its own grid track, so a long MagicDNS address cannot widen the
+   dialog or squeeze a control into a vertical stack. Lists and toolbars wrap
+   instead of relying on the window width, because the settings content column is
+   narrower than the window.
+*/
 
-.remote-port input {
-  width: 96px;
-  padding: 7px 10px;
-  background: var(--bg-app);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-}
-
-.remote-status {
+.remote-panel {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) 28px;
+  gap: 12px;
+  min-width: 0;
+}
+
+.remote-panel h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 12.5px;
+  font-weight: 620;
+}
+
+.remote-panel p {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.remote-panel strong {
+  color: var(--text-primary);
+  font-size: 11.5px;
+  font-weight: 560;
+}
+
+.remote-panel small {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.remote-panel .remote-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 14px;
+  background: #212124;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.remote-panel .remote-card__head {
+  display: flex;
+  min-width: 0;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
 }
 
-.remote-status > span:nth-child(2),
-.remote-pairing > span:first-child,
-.remote-devices li > span:first-child {
+.remote-panel .remote-count {
+  min-width: 21px;
+  padding: 1px 7px;
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+
+/* The enabled control: a real switch, never a squeezed button label. */
+.remote-panel .remote-toggle {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 18px;
+}
+
+.remote-panel .remote-toggle__text {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.remote-panel .remote-switch {
+  display: inline-flex;
+  height: 30px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 12px 0 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 560;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+}
+
+.remote-panel .remote-switch:hover {
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.remote-panel .remote-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.remote-panel .remote-switch__track {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  transition: background 140ms ease;
+}
+
+.remote-panel .remote-switch__thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #cfcfd4;
+  border-radius: 999px;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.remote-panel .remote-switch.is-on {
+  color: var(--text-primary);
+  background: rgba(240, 100, 22, 0.16);
+  border-color: rgba(240, 100, 22, 0.5);
+}
+
+.remote-panel .remote-switch.is-on .remote-switch__track {
+  background: rgba(240, 100, 22, 0.9);
+}
+
+.remote-panel .remote-switch.is-on .remote-switch__thumb {
+  background: #fff;
+  transform: translateX(14px);
+}
+
+/* Connection status and the address the phone opens. */
+.remote-panel .remote-status__line {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  align-items: start;
+  gap: 10px;
+}
+
+.remote-panel .remote-status__text {
   display: grid;
   gap: 3px;
   min-width: 0;
 }
 
-.remote-status small,
-.remote-pairing small,
-.remote-devices small {
-  color: var(--text-tertiary);
-  font-size: 11.5px;
-  overflow-wrap: anywhere;
-}
-
-.remote-status__dot {
-  width: 10px;
-  height: 10px;
+.remote-panel .remote-status__dot {
+  width: 9px;
+  height: 9px;
+  margin-top: 3px;
+  background: var(--text-tertiary);
   border-radius: 999px;
 }
 
-.remote-status__dot.is-on {
+.remote-panel .remote-status__dot.is-on {
   background: var(--success);
 }
 
-.remote-status__dot.is-warn {
+.remote-panel .remote-status__dot.is-warn {
   background: var(--warning);
 }
 
-.remote-status__dot.is-off {
+.remote-panel .remote-status__dot.is-off {
   background: var(--danger);
 }
 
-.remote-pairing {
+.remote-panel .remote-address {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
+  padding: 8px 8px 8px 12px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
 }
 
-.remote-pairing__actions {
-  display: flex;
-  gap: 7px;
+.remote-panel .remote-address__value {
+  min-width: 0;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
-.remote-pairing__actions button {
+.remote-panel .remote-address__value.is-empty {
+  color: var(--text-tertiary);
+  font-family: inherit;
+}
+
+.remote-panel .remote-address__actions {
   display: flex;
-  align-items: center;
   gap: 6px;
 }
 
-.remote-pairing__code {
+.remote-panel .remote-icon-button {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.055);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  text-decoration: none;
+}
+
+.remote-panel .remote-icon-button:hover {
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.remote-panel .remote-icon-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.remote-panel .remote-icon-button.is-done {
+  color: var(--success);
+  border-color: rgba(103, 214, 165, 0.42);
+}
+
+.remote-panel .remote-icon-button--danger:hover {
+  color: #fff;
+  background: rgba(169, 71, 79, 0.85);
+  border-color: transparent;
+}
+
+.remote-panel .remote-guidance {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.remote-panel .remote-guidance li {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.remote-panel .remote-guidance strong {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* Pairing: same weight for both codes, and one clear live code. */
+.remote-panel .remote-pairing {
+  gap: 13px;
+}
+
+.remote-panel .remote-pairing__text {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.remote-panel .remote-pairing__actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(158px, 1fr));
+  gap: 8px;
+}
+
+.remote-panel .remote-pairing__actions button {
+  justify-content: center;
+  white-space: nowrap;
+}
+
+.remote-panel .remote-code {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 10px 10px 10px 13px;
   background: var(--bg-app);
   border: 1px dashed var(--border-strong);
-  border-radius: var(--radius-md);
+  border-radius: 9px;
 }
 
-.remote-pairing__code code {
-  font-size: 19px;
-  letter-spacing: 0.22em;
+.remote-panel .remote-code.is-expired {
+  border-color: rgba(238, 123, 123, 0.45);
 }
 
-.remote-pairing__code span {
-  flex: 1;
-  color: var(--text-tertiary);
-  font-size: 11.5px;
-}
-
-.remote-qr {
+.remote-panel .remote-code__value {
   display: grid;
-  width: 220px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.remote-panel .remote-code__value code {
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  letter-spacing: 0.2em;
+}
+
+.remote-panel .remote-code__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.remote-panel .remote-hint {
+  color: var(--text-secondary);
+}
+
+.remote-panel .remote-qr {
+  display: grid;
+  width: 176px;
+  justify-self: center;
   padding: 8px;
   place-items: center;
   background: #fff;
-  border-radius: var(--radius-md);
+  border-radius: 9px;
 }
 
-.remote-qr svg {
+.remote-panel .remote-qr svg {
   display: block;
   width: 100%;
   height: auto;
 }
 
-.remote-devices__title {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0;
-  font-size: 13px;
-}
-
-.remote-devices {
+/* Paired devices: one row per device, wrapping before it overflows. */
+.remote-panel .remote-devices {
   display: grid;
   gap: 8px;
   margin: 0;
@@ -4503,28 +4762,209 @@
   list-style: none;
 }
 
-.remote-devices li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+.remote-panel .remote-devices li {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
-  padding: 9px 11px;
+  padding: 10px 12px;
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: 9px;
 }
 
-.remote-devices__actions {
+.remote-panel .remote-devices__meta {
+  display: grid;
+  flex: 1 1 150px;
+  gap: 3px;
+  min-width: 0;
+}
+
+.remote-panel .remote-devices__actions {
   display: flex;
   align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.remote-panel .remote-devices__actions select {
+  height: 28px;
+  padding: 0 7px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  background: var(--bg-app);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+}
+
+.remote-panel .remote-empty {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-areas:
+    "icon title"
+    "icon hint";
+  gap: 2px 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed var(--border-strong);
+  border-radius: 9px;
+}
+
+.remote-panel .remote-empty svg {
+  grid-area: icon;
+  margin-top: 1px;
+  color: var(--text-tertiary);
+}
+
+.remote-panel .remote-empty strong {
+  grid-area: title;
+  color: var(--text-secondary);
+}
+
+.remote-panel .remote-empty small {
+  grid-area: hint;
+}
+
+/* Advanced: the loopback port stays reachable but out of the way. */
+.remote-panel .remote-advanced {
+  padding: 0;
+  overflow: hidden;
+}
+
+.remote-panel .remote-advanced > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.remote-panel .remote-advanced > summary::-webkit-details-marker {
+  display: none;
+}
+
+.remote-panel .remote-advanced > summary:hover {
+  color: var(--text-primary);
+}
+
+.remote-panel .remote-advanced__chevron {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  transition: transform 140ms ease;
+}
+
+.remote-panel .remote-advanced[open] .remote-advanced__chevron {
+  transform: rotate(180deg);
+}
+
+.remote-panel .remote-advanced__title {
+  font-weight: 560;
+}
+
+.remote-panel .remote-advanced__meta {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  white-space: nowrap;
+}
+
+.remote-panel .remote-advanced__body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px 13px;
+  border-top: 1px solid var(--border);
+}
+
+.remote-panel .remote-advanced__text {
+  display: grid;
+  flex: 1 1 190px;
+  gap: 3px;
+  min-width: 0;
+}
+
+.remote-panel .remote-advanced__text strong {
+  font-size: 11px;
+}
+
+.remote-panel .remote-port {
+  display: flex;
   gap: 7px;
 }
 
-.remote-devices__actions select {
-  padding: 6px 8px;
+.remote-panel .remote-port input {
+  width: 92px;
+  height: 28px;
+  padding: 0 9px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
   background: var(--bg-app);
   border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
+  border-radius: 7px;
+  outline: 0;
+}
+
+.remote-panel .remote-port input:focus {
+  border-color: rgba(240, 100, 22, 0.58);
+}
+
+/* Loading, warning, and error surfaces. */
+.remote-panel .remote-alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  color: var(--danger);
+  font-size: 11px;
+  line-height: 1.5;
+  background: rgba(238, 123, 123, 0.09);
+  border: 1px solid rgba(238, 123, 123, 0.32);
+  border-radius: 9px;
+}
+
+.remote-panel .remote-alert svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.remote-panel .remote-alert--warning {
+  color: var(--warning);
+  background: rgba(227, 179, 106, 0.1);
+  border-color: rgba(227, 179, 106, 0.34);
+}
+
+.remote-panel .remote-alert--pending {
+  color: var(--text-tertiary);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: var(--border);
+}
+
+.remote-panel .remote-alert--pending .mini-spinner {
+  flex: 0 0 auto;
+  margin-top: 5px;
+}
+
+.remote-panel .remote-footnote {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 0 2px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
+.remote-panel .remote-footnote svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--success);
 }
 
 @media (max-width: 560px) {

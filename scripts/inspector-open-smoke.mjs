@@ -1,5 +1,5 @@
-// Proves two things about a long session that no unit test can hold, because both are
-// layout properties of a real render:
+// Proves three things about a long session that no unit test can hold, because all of
+// them are layout properties of a real render:
 //
 //   1. The detail panel gets its own column instead of covering the transcript. Making
 //      it an overlay was tried as a performance fix: it removed a 65ms reflow but hid up
@@ -7,6 +7,13 @@
 //   2. The transcript is virtualized. Keeping ~800 entries and 20,000 nodes live is what
 //      made every width change re-wrap the whole document in one frame. Only rows near
 //      the viewport may be mounted.
+//   3. The model popover scrolls its own options. It is the tallest popover in the app
+//      and the only one whose contents can outgrow it: at 37 profiles an unconstrained
+//      menu is clamped by its max-height while the option list itself never overflows,
+//      so the profiles past the clip cannot be reached at any window size.
+//   4. Toggling that panel keeps the transcript where it was reading. The width change
+//      re-wraps every block and throws every measured row height away, so the view has to
+//      hold the block the viewport top sits on -- or, when it was following, the bottom.
 //
 // Below 980px there is no room for a third column, so the panel is deliberately an
 // overlay; there it must be fully opaque instead of clear of the text.
@@ -271,6 +278,339 @@ function check(result) {
   return failures
 }
 
+// The model popover with an install-sized profile list. It is the tallest popover in
+// the app and the only one whose contents can outgrow it, which is what broke: the
+// option list grew the menu past its max-height, overflow: hidden clipped the menu, and
+// the list itself never overflowed -- so the profiles past the clip could not be reached
+// at any window size. The mock backend ships six profiles, so the list is padded to an
+// install-sized one (a real config has around 37), then scrolled with real wheel input:
+// a list that is clipped and one that scrolls look identical to a scripted scrollTop.
+const MODEL_PROFILES = 37
+const WHEEL_STEP_PX = 200
+
+const openModelMenuProbe = `(async (profiles) => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 80 && !document.querySelector('.composer-model > button'); i += 1) await wait(100);
+  const trigger = document.querySelector('.composer-model > button');
+  if (!trigger) return { error: 'model menu trigger not found' };
+  if (!document.querySelector('.config-option-menu--model')) trigger.click();
+  for (let i = 0; i < 80 && !document.querySelector('.config-option-menu--model'); i += 1) await wait(25);
+  const menu = document.querySelector('.config-option-menu--model');
+  if (!menu) return { error: 'model menu never opened' };
+  const header = menu.querySelector('header');
+  const scroll = menu.querySelector('.config-option-scroll');
+  if (!header || !scroll) return { error: 'model menu has no header or option list' };
+
+  const groups = [...scroll.querySelectorAll('.config-option-group')];
+  const rowsIn = () => scroll.querySelectorAll('.config-option-group > button').length;
+  if (groups.length === 0 || rowsIn() === 0) return { error: 'model menu has no options' };
+  for (let i = 1, copies = Math.ceil(profiles / rowsIn()); i < copies; i += 1) {
+    for (const group of groups) scroll.append(group.cloneNode(true));
+  }
+  await wait(120);
+
+  // The app zooms its shell (.app-shell { zoom: 1.1 }), so rects inside it are in root
+  // pixels while the styles they are checked against are in the shell's own pixels: a
+  // menu sitting exactly on max-height reads 10% taller than its cap without this.
+  const shell = document.querySelector('.app-shell');
+  const appZoom = shell ? Number.parseFloat(window.getComputedStyle(shell).zoom) || 1 : 1;
+
+  const menuBox = menu.getBoundingClientRect();
+  const headerBox = header.getBoundingClientRect();
+  const scrollBox = scroll.getBoundingClientRect();
+  // Point at the list where a user can see it, which is not its centre while it is
+  // running past the clipped edge.
+  const visibleTop = Math.max(scrollBox.top, menuBox.top, 0);
+  const visibleBottom = Math.min(scrollBox.bottom, menuBox.bottom, window.innerHeight);
+  return {
+    viewportHeight: Math.round(window.innerHeight),
+    appZoom,
+    optionCount: rowsIn(),
+    menuTop: Math.round(menuBox.top),
+    menuBottom: Math.round(menuBox.bottom),
+    menuHeight: Math.round(menuBox.height),
+    menuMaxHeight: Math.round(Number.parseFloat(window.getComputedStyle(menu).maxHeight)),
+    headerTop: Math.round(headerBox.top),
+    headerBottom: Math.round(headerBox.bottom),
+    listTop: Math.round(scrollBox.top),
+    listBottom: Math.round(scrollBox.bottom),
+    listClientHeight: scroll.clientHeight,
+    listContentHeight: scroll.scrollHeight,
+    scrollRange: scroll.scrollHeight - scroll.clientHeight,
+    listCenterX: Math.round((scrollBox.left + scrollBox.right) / 2),
+    listCenterY: Math.round((visibleTop + Math.max(visibleTop, visibleBottom)) / 2),
+  };
+})(${MODEL_PROFILES})`
+
+const readModelMenuProbe = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  await wait(250);
+  const menu = document.querySelector('.config-option-menu--model');
+  if (!menu) return { error: 'model menu closed while scrolling' };
+  const header = menu.querySelector('header');
+  const scroll = menu.querySelector('.config-option-scroll');
+  const rows = [...scroll.querySelectorAll('.config-option-group > button')];
+  if (rows.length === 0) return { error: 'model list is empty' };
+  const lastBox = rows[rows.length - 1].getBoundingClientRect();
+  const menuBox = menu.getBoundingClientRect();
+  const headerBox = header.getBoundingClientRect();
+  const scrollBox = scroll.getBoundingClientRect();
+  const result = {
+    optionCount: rows.length,
+    scrollTop: Math.round(scroll.scrollTop),
+    scrollRange: scroll.scrollHeight - scroll.clientHeight,
+    menuTop: Math.round(menuBox.top),
+    menuBottom: Math.round(menuBox.bottom),
+    headerTop: Math.round(headerBox.top),
+    headerBottom: Math.round(headerBox.bottom),
+    listTop: Math.round(scrollBox.top),
+    listBottom: Math.round(scrollBox.bottom),
+    lastOptionTop: Math.round(lastBox.top),
+    lastOptionBottom: Math.round(lastBox.bottom),
+  };
+  // Leave the page as the next pass expects it: menu closed, transcript back at the
+  // newest message (a wheel that escapes the popover lands behind it).
+  const trigger = document.querySelector('.composer-model > button');
+  if (trigger) trigger.click();
+  await wait(150);
+  const transcript = document.querySelector('.transcript');
+  if (transcript) transcript.scrollTop = transcript.scrollHeight;
+  return result;
+})()`
+
+const BOTTOM_TOLERANCE_PX = 60
+// Rendered pixels, and the whole point of the check: the same block has to stay at the
+// same place on screen. A block that moved to a different offset is a different sentence
+// under the reader's eye, which is the jump being asserted against.
+const HISTORY_TOLERANCE_PX = 4
+
+// Opening and closing the detail panel changes the reading width, which re-wraps every
+// block and discards every measured row height: the view then has to keep the block the
+// viewport top sits on, and its offset, or stay at the bottom when it was following. Only
+// a real click on the panel toggle produces that reflow, and nothing may scroll the
+// transcript between a case's before and after readings -- doing so would mask the jump.
+const toggleProbe = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const transcript = document.querySelector('.transcript');
+  const toggle = [...document.querySelectorAll('button')].find(
+    (b) => b.getAttribute('title') === '세션 정보',
+  );
+  if (!transcript || !toggle) return { error: 'transcript or inspector toggle is missing' };
+
+  const panelOpen = () => Boolean(document.querySelector('.inspector'));
+  const columnWidth = () => {
+    const column = document.querySelector('.transcript-column');
+    return column ? Math.round(column.getBoundingClientRect().width) : 0;
+  };
+  const bottomGap = () =>
+    Math.round(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight);
+  const followButton = () =>
+    [...document.querySelectorAll('button')].some((b) =>
+      (b.textContent || '').includes('최신 내용으로'),
+    );
+  // The first entry the viewport top edge actually reaches, including one it only
+  // partially shows. Re-queried every reading: a re-measure remounts rows.
+  const topEntry = () => {
+    const viewport = transcript.getBoundingClientRect();
+    for (const node of document.querySelectorAll('[id^="transcript-"]')) {
+      const box = node.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) continue;
+      if (box.bottom <= viewport.top + 1) continue;
+      return { id: node.id, top: Math.round((box.top - viewport.top) * 10) / 10 };
+    }
+    return null;
+  };
+  // The reflow lands over several frames, so nothing is read until the position, the
+  // height and the reading width have held still for two ticks in a row.
+  const settle = async () => {
+    let previous = '';
+    let stable = 0;
+    for (let i = 0; i < 40; i += 1) {
+      await wait(40);
+      const now = [
+        Math.round(transcript.scrollTop),
+        transcript.scrollHeight,
+        transcript.clientHeight,
+        columnWidth(),
+      ].join(':');
+      stable = now === previous ? stable + 1 : 0;
+      previous = now;
+      if (stable >= 2) return;
+    }
+  };
+  const snapshot = () => ({
+
+    open: panelOpen(),
+    gap: bottomGap(),
+    follow: followButton(),
+    width: columnWidth(),
+    entry: topEntry(),
+    sameTranscript: transcript === document.querySelector('.transcript'),
+  });
+  const togglePanel = async () => {
+    toggle.click();
+    await wait(60);
+    await settle();
+    return snapshot();
+  };
+
+  const cases = {};
+  if (panelOpen()) await togglePanel();
+
+  // Following the newest message: opening the panel, then closing it, must leave the view
+  // at the bottom both times.
+  transcript.scrollTop = transcript.scrollHeight;
+  await wait(700);
+  cases.bottomOpen = { before: snapshot(), after: await togglePanel() };
+  cases.bottomClose = { before: snapshot(), after: await togglePanel() };
+
+  // Reading older content: the block at the viewport top is the reading position, and it
+  // has to survive both directions of the toggle.
+  transcript.scrollTop = Math.round(transcript.scrollHeight * 0.35);
+  await wait(700);
+  cases.historyOpen = { before: snapshot(), after: await togglePanel() };
+  cases.historyClose = { before: snapshot(), after: await togglePanel() };
+  return cases;
+})()`
+
+function checkToggles(cases, reflow) {
+  if (cases.error) return [`panel toggle: ${cases.error}`]
+  const failures = []
+  const widthCheck = (label, before, after, expectWider) => {
+    // Without a real width change there is no re-wrap, and the case would pass on an
+    // overlay that never reflowed the text at all.
+    if (!reflow) return
+    const changed = expectWider ? after.width > before.width + 20 : after.width < before.width - 20
+    if (!changed) {
+      failures.push(
+        `${label}: reading column did not ${expectWider ? 'widen' : 'narrow'} ` +
+          `(${before.width} -> ${after.width})`,
+      )
+    }
+  }
+  const panelCheck = (label, after, expectOpen) => {
+    if (after.open !== expectOpen) {
+      failures.push(`${label}: panel is ${after.open ? 'open' : 'closed'} after the toggle`)
+    }
+    if (!after.sameTranscript) {
+      failures.push(`${label}: the transcript was remounted by the toggle`)
+    }
+  }
+  const bottomCase = (label, before, after, expectOpen, expectWider) => {
+    panelCheck(label, after, expectOpen)
+    if (Math.abs(after.gap) > BOTTOM_TOLERANCE_PX) {
+      failures.push(
+        `${label}: view sits ${after.gap}px from the newest message after the toggle`,
+      )
+    }
+    if (after.follow) {
+      failures.push(`${label}: 최신 내용으로 is showing while following the bottom`)
+    }
+    widthCheck(label, before, after, expectWider)
+  }
+  const historyCase = (label, before, after, expectOpen, expectWider) => {
+    panelCheck(label, after, expectOpen)
+    if (!before.follow) {
+      failures.push(`${label}: older content was not detected before the toggle`)
+    }
+    if (!after.follow) {
+      failures.push(`${label}: the view went to the bottom instead of keeping its place`)
+    }
+    if (!before.entry || !after.entry) {
+      failures.push(`${label}: no entry at the viewport top to compare`)
+    } else if (after.entry.id !== before.entry.id) {
+      failures.push(
+        `${label}: the block at the viewport top changed ` +
+          `(${before.entry.id} -> ${after.entry.id})`,
+      )
+    } else {
+      const moved = Math.abs(after.entry.top - before.entry.top)
+      if (moved > HISTORY_TOLERANCE_PX) {
+        failures.push(
+          `${label}: the block at the viewport top moved ${moved.toFixed(1)}px`,
+        )
+      }
+    }
+    widthCheck(label, before, after, expectWider)
+  }
+
+  bottomCase('closed -> open at the bottom', cases.bottomOpen.before, cases.bottomOpen.after, true, false)
+  bottomCase('open -> closed at the bottom', cases.bottomClose.before, cases.bottomClose.after, false, true)
+  historyCase('closed -> open in history', cases.historyOpen.before, cases.historyOpen.after, true, false)
+  historyCase('open -> closed in history', cases.historyClose.before, cases.historyClose.after, false, true)
+  return failures
+}
+
+function checkModelMenu(opened, scrolled) {
+  if (opened.error) return [`model menu: ${opened.error}`]
+  if (scrolled.error) return [`model menu: ${scrolled.error}`]
+  const failures = []
+
+  // Padding the list is the harness's job; if React re-rendered it away the numbers
+  // below would pass on a short list and quietly stop covering the bug.
+  if (opened.optionCount < MODEL_PROFILES || scrolled.optionCount < MODEL_PROFILES) {
+    failures.push(
+      `model list padding was lost (${opened.optionCount}/${scrolled.optionCount} of ${MODEL_PROFILES} rows)`,
+    )
+  }
+  // A menu that runs off screen cannot be pointed at, let alone scrolled.
+  if (opened.menuTop < 0 || opened.menuBottom > opened.viewportHeight + 1) {
+    failures.push(
+      `model menu runs off screen (${opened.menuTop}..${opened.menuBottom} of ${opened.viewportHeight})`,
+    )
+  }
+  if (opened.menuHeight > opened.menuMaxHeight * opened.appZoom + 1) {
+    failures.push(
+      `model menu is ${opened.menuHeight}px tall against a ` +
+        `${Math.round(opened.menuMaxHeight * opened.appZoom)}px cap`,
+    )
+  }
+  // The list has to be shorter than its contents: equal heights are the reported bug,
+  // where the menu clipped the list instead of giving it something to scroll.
+  if (opened.scrollRange <= 0) {
+    failures.push(
+      `model list does not scroll: ${opened.listClientHeight}px box for ` +
+        `${opened.listContentHeight}px of ${opened.optionCount} profiles`,
+    )
+  }
+  // ...and it has to stay inside the menu rather than running past the clipped edge.
+  if (scrolled.listBottom > scrolled.menuBottom + 1) {
+    failures.push(
+      `model list runs ${scrolled.listBottom - scrolled.menuBottom}px past the menu edge`,
+    )
+  }
+  if (scrolled.listTop < opened.headerBottom - 1) {
+    failures.push('model list overlaps the menu header')
+  }
+  // The header owns its own row, so scrolling the list must not move or clip it.
+  if (Math.abs(scrolled.headerTop - opened.headerTop) > 1) {
+    failures.push(
+      `menu header moved ${scrolled.headerTop - opened.headerTop}px while the list scrolled`,
+    )
+  }
+  if (scrolled.headerTop < scrolled.menuTop - 1 || scrolled.headerBottom > scrolled.menuBottom + 1) {
+    failures.push('menu header is clipped by the menu')
+  }
+
+  if (scrolled.scrollTop <= 0) {
+    failures.push(
+      `wheel over the model list did not scroll it (scrollTop ${scrolled.scrollTop})`,
+    )
+  }
+  if (scrolled.scrollTop < scrolled.scrollRange - 4) {
+    failures.push(
+      `wheel stopped ${scrolled.scrollRange - scrolled.scrollTop}px short of the last profile`,
+    )
+  }
+  if (
+    scrolled.lastOptionBottom > scrolled.listBottom + 1 ||
+    scrolled.lastOptionTop < scrolled.listTop - 1
+  ) {
+    failures.push('last profile is outside the list after scrolling to the end')
+  }
+  return failures
+}
+
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1400, height: 900, show: false })
   await win.loadFile(path.join(root, 'dist', 'index.html'), {
@@ -282,6 +622,20 @@ app.whenReady().then(async () => {
   // reached the screen.
   win.webContents.setZoomFactor(1.1)
   await new Promise((r) => setTimeout(r, 300))
+
+  // Wheel events go through the debugger protocol rather than sendInputEvent: the
+  // latter needs the window focused, and this smoke runs off screen with show: false.
+  // Input.dispatchMouseEvent coordinates are CSS pixels of the viewport.
+  win.webContents.debugger.attach('1.3')
+  const wheel = (x, y, deltaY) =>
+    win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseWheel',
+      x,
+      y,
+      deltaX: 0,
+      deltaY,
+      pointerType: 'mouse',
+    })
 
   const failures = []
   // A wide window (own column) and a narrow one (deliberate overlay) exercise both rules.
@@ -295,6 +649,44 @@ app.whenReady().then(async () => {
     const result = await win.webContents.executeJavaScript(probe)
     console.log(JSON.stringify(result))
     for (const failure of check(result)) failures.push(`${width}px: ${failure}`)
+
+    // The model popover is measured at the same sizes. Wheel input, not a scripted
+    // scrollTop: only the wheel proves the gesture is claimed by the list instead of
+    // passing through the clipped menu to the transcript behind it.
+    const opened = await win.webContents.executeJavaScript(openModelMenuProbe)
+    console.log(JSON.stringify(opened))
+    if (!opened.error) {
+      // Enough steps to reach the end from where it starts; the cap keeps a pathological
+      // range from eating the smoke's timeout instead of failing on the assertion.
+      const steps = Math.min(Math.ceil(opened.scrollRange / WHEEL_STEP_PX) + 3, 40)
+      for (let i = 0; i < steps; i += 1) {
+        await wheel(opened.listCenterX, opened.listCenterY, WHEEL_STEP_PX)
+        await new Promise((r) => setTimeout(r, 50))
+      }
+    }
+    const scrolled = opened.error
+      ? opened
+      : await win.webContents.executeJavaScript(readModelMenuProbe)
+    console.log(JSON.stringify(scrolled))
+    for (const failure of checkModelMenu(opened, scrolled)) {
+      failures.push(`${width}px: ${failure}`)
+    }
+  }
+
+  // The panel toggle on its own. The passes above prove the geometry at each width; these
+  // click the toggle and prove the view keeps its place across the reflow it causes, once
+  // at a width where the panel takes its own column and once where it overlays.
+  for (const [width, height] of [
+    [1400, 900],
+    [880, 780],
+  ]) {
+    win.setSize(width, height)
+    await new Promise((r) => setTimeout(r, 900))
+    const cases = await win.webContents.executeJavaScript(toggleProbe)
+    console.log(JSON.stringify(cases))
+    for (const failure of checkToggles(cases, width >= 980)) {
+      failures.push(`${width}px: ${failure}`)
+    }
   }
 
   clearTimeout(failAfter)

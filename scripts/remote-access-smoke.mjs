@@ -2,6 +2,7 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { createServer } from 'node:net'
 import { GJC_IPC } from '../dist-electron/shared/gjc-ipc.js'
 import { SETTINGS_IPC } from '../dist-electron/shared/settings-ipc.js'
 import { DeviceStore } from '../dist-electron/electron/remote/devices.js'
@@ -70,6 +71,14 @@ async function request(url, init = {}) {
 }
 
 async function main() {
+  // Never collide with the user's running desktop listener on the default port.
+  const portProbe = createServer()
+  await new Promise((resolve, reject) => {
+    portProbe.once('error', reject)
+    portProbe.listen(0, '127.0.0.1', resolve)
+  })
+  const smokePort = portProbe.address().port
+  await new Promise((resolve, reject) => portProbe.close((error) => error ? reject(error) : resolve()))
   const host = {
     getConnection: async () => connection,
     listSessions: async () => [session],
@@ -104,6 +113,7 @@ async function main() {
   const unregisterRemote = registerRemoteIpcHandlers(service, {
     guarded: (handler) => handler,
   })
+  await service.setPort(smokePort)
 
   // Anything the window asks for that this smoke does not model answers empty, so a
   // missing handler cannot be mistaken for a runtime failure.
@@ -253,6 +263,8 @@ async function main() {
     tab?.click()
     await new Promise((resolve) => setTimeout(resolve, 400))
     const body = document.querySelector('.settings-content')?.textContent ?? ''
+    const panel = document.querySelector('.remote-panel')
+    const toggle = panel?.querySelector('[role="switch"]')
     return {
       dialogOpen: Boolean(document.querySelector('.settings-dialog')),
       tabFound: Boolean(tab),
@@ -260,6 +272,10 @@ async function main() {
       mentionsTailscale: body.includes('Tailscale'),
       listsDevice: body.includes('Smoke iPhone'),
       showsPermission: body.includes('보기 전용'),
+      noHorizontalOverflow: Boolean(panel && panel.scrollWidth <= panel.clientWidth + 1),
+      switchLabelFits: Boolean(toggle && toggle.scrollWidth <= toggle.clientWidth + 1),
+      hasAccessibleSwitch: Boolean(toggle?.getAttribute('aria-labelledby')),
+      noUnrelatedSaveFooter: !document.querySelector('.settings-footer'),
     }
   })()`)
   require_(pairingPanel.dialogOpen, 'Settings dialog did not open')
@@ -268,6 +284,10 @@ async function main() {
   require_(pairingPanel.mentionsTailscale, 'Panel did not report Tailscale state')
   require_(pairingPanel.listsDevice, 'Panel did not list the paired device')
   require_(pairingPanel.showsPermission, 'Panel did not show the device permission')
+  require_(pairingPanel.noHorizontalOverflow, 'Remote panel overflows horizontally')
+  require_(pairingPanel.switchLabelFits, 'Remote switch label is clipped')
+  require_(pairingPanel.hasAccessibleSwitch, 'Remote enabled switch is not labelled')
+  require_(pairingPanel.noUnrelatedSaveFooter, 'Remote settings shows an unrelated Save footer')
 
   const revoked = await window.webContents.executeJavaScript(
     `window.agentControlDesktop.remote.revokeDevice(${JSON.stringify(paired.body.deviceId)})`,

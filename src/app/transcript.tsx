@@ -38,6 +38,102 @@ import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
 // cannot cancel it.
 const GESTURE_WINDOW_MS = 400;
 
+// How many frames in a row the position, the measured total, and the viewport height have
+// to agree before a resize restoration is finished. Landing on the current bottom is not
+// the same thing as measurement having stopped: after a width change rows are re-measured
+// one frame at a time, and each pass moves the bottom again.
+const RESTORE_STABLE_FRAMES = 3;
+// Bounded work. A restoration that cannot settle gives up instead of fighting the user.
+const RESTORE_MAX_FRAMES = 60;
+
+/** A mounted transcript row, in the unzoomed layout pixels the virtualizer positions it with. */
+export interface TranscriptAnchorRow {
+  /** Block key, as the virtualizer keys the row. */
+  key: string;
+  /** Row top edge, measured from the scroll container's content origin. */
+  top: number;
+  /** Painted row height at the current width. */
+  height: number;
+}
+
+export interface TranscriptViewportAnchor {
+  key: string;
+  /** Distance from the viewport top to the row's top; negative when the row is clipped. */
+  offset: number;
+}
+
+/**
+ * The row the viewport top edge falls on: the first mounted row whose painted bottom
+ * passes that edge, with its offset from the edge.
+ *
+ * The first *mounted* row is not the answer -- overscan keeps a screenful of rows above
+ * the viewport mounted, and anchoring on one of those names a different place in the
+ * conversation than the one being read.
+ */
+export function transcriptViewportAnchor(
+  rows: TranscriptAnchorRow[],
+  viewportTop: number,
+): TranscriptViewportAnchor | null {
+  for (const row of rows) {
+    if (row.top + row.height <= viewportTop) continue;
+    return { key: row.key, offset: row.top - viewportTop };
+  }
+  return null;
+}
+
+/**
+ * Scroll offset that puts a row's top back at `offset` from the viewport top.
+ *
+ * Layout pixels throughout: offsetTop and offsetHeight are not scaled by the window's zoom
+ * level while getBoundingClientRect is, and a zoom-scaled offset folded into scrollTop is
+ * 10% wrong at the 110% this app is read at.
+ */
+export function transcriptAnchorScrollTop(
+  windowTop: number,
+  rowStart: number,
+  offset: number,
+): number {
+  return windowTop + rowStart - offset;
+}
+
+/**
+ * Whether a frame says the reading position has stopped moving.
+ *
+ * Landing on the target is not enough. After `measure()` the mounted rows are re-measured
+ * one frame at a time, so a frame can look settled -- position on the bottom, anchor on its
+ * offset -- and still be followed by the reflow that moves everything. Measured live, that
+ * released the correction with the view 902px short of the bottom and the 최신 내용으로
+ * button back on screen. A row still on its estimate, or geometry that moved since the
+ * last frame, is the same statement: not finished yet.
+ */
+export function transcriptRestoreSettled(
+  frame: {
+    /** The write reached the wanted offset, rather than being clamped short of it. */
+    landed: boolean;
+    /** Distance from the viewport bottom to the content bottom, in layout pixels. */
+    remaining: number;
+    /** A mounted row is still carrying the size estimate instead of its measured height. */
+    measuring: boolean;
+    /** The total and the viewport height match the previous frame. */
+    unchangedGeometry: boolean;
+  },
+  follow: boolean,
+): boolean {
+  if (!frame.landed || frame.measuring || !frame.unchangedGeometry) return false;
+  return follow ? frame.remaining <= 1 : true;
+}
+
+/** Unzoomed offset of an element's top edge from the scroll container's content origin. */
+function layoutTopWithin(
+  element: HTMLElement,
+  container: HTMLElement,
+): number | null {
+  const box = container.getBoundingClientRect();
+  const scale = container.offsetHeight > 0 ? box.height / container.offsetHeight : 1;
+  if (!scale) return null;
+  return (element.getBoundingClientRect().top - box.top) / scale + container.scrollTop;
+}
+
 export interface TranscriptProps {
   sessionId: string;
   items: TranscriptItem[];
@@ -82,9 +178,24 @@ export function Transcript({
   const gestureAtRef = useRef(0);
   const touchYRef = useRef<number | undefined>(undefined);
   const sessionRef = useRef(sessionId);
+  // Frames of the in-flight resize restoration, so a gesture, a session switch, or the
+  // next resize can take it over instead of a stale correction landing on top of it.
+  const restoreFrameRef = useRef(0);
+  const resizePreparedRef = useRef(false);
+  const stableViewportRef = useRef<{
+    width: number;
+    follow: boolean;
+    anchor: TranscriptViewportAnchor | null;
+  } | null>(null);
   const [following, setFollowing] = useState(true);
 
   const blocks = useMemo(() => groupTranscriptItems(items), [items]);
+  // The restoration runs across frames and has to name the anchored block, so it reads the
+  // current blocks rather than the ones its effect closed over.
+  const blocksRef = useRef(blocks);
+  useLayoutEffect(() => {
+    blocksRef.current = blocks;
+  }, [blocks]);
 
   // Only the blocks near the viewport are mounted. A full session used to keep ~800
   // entries and 20,000 nodes live, which made every width change -- opening the detail
@@ -114,6 +225,41 @@ export function Transcript({
 
   const virtualItems = virtualizer.getVirtualItems();
 
+  function rememberViewport(): void {
+    const scroller = transcriptRef.current;
+    const content = scroller?.querySelector<HTMLElement>(".transcript-window");
+    if (!scroller || !content || restoreFrameRef.current || selfScrollingRef.current || resizePreparedRef.current) return;
+    const saved = stableViewportRef.current;
+    const width = content.parentElement?.clientWidth ?? scroller.clientWidth;
+    if (saved && saved.width !== width) return;
+    const top = layoutTopWithin(content, scroller);
+    if (top === null) return;
+    stableViewportRef.current = {
+      width,
+      follow: followingRef.current,
+      anchor: currentViewportAnchor(scroller, top),
+    };
+  }
+
+  useLayoutEffect(() => {
+    rememberViewport();
+  });
+
+  useEffect(() => {
+    const prepare = (event: Event): void => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (!target.closest('button[title="세션 정보"], .inspector header button')) return;
+      rememberViewport();
+      resizePreparedRef.current = true;
+      requestAnimationFrame(() => {
+        if (restoreFrameRef.current === 0) resizePreparedRef.current = false;
+      });
+    };
+    window.addEventListener("click", prepare, true);
+    return () => window.removeEventListener("click", prepare, true);
+  }, []);
+
   // A Transcript instance stays mounted while the user moves between sessions. The
   // old session's scroll offset, measured row heights, and "reading history" intent
   // are not valid in the new one. Reusing them is what opened a restored session 866px
@@ -121,7 +267,10 @@ export function Transcript({
   // virtualizer introduced an initial wide-layout measurement overlap.
   useLayoutEffect(() => {
     if (sessionRef.current === sessionId) return;
+    // A pending restoration belongs to the session the user left.
+    cancelResizeRestore();
     sessionRef.current = sessionId;
+    stableViewportRef.current = null;
     followingRef.current = true;
     scrolledAwayRef.current = false;
     gestureAtRef.current = 0;
@@ -242,54 +391,218 @@ export function Transcript({
     };
   }, [blocks.length, items]);
 
+  /**
+   * Where the viewport top sits right now, read before `measure()` discards the row
+   * heights. Only mounted rows can answer it, and only the one the viewport actually
+   * reaches counts.
+   *
+   * The row tops come from the rendered transforms rather than the virtualizer's live
+   * items: those can already carry the reflowed heights while the browser is still
+   * painting the previous frame, and the anchor has to describe what the user is looking
+   * at, not what React is about to draw.
+   */
+  function currentViewportAnchor(
+    scroller: HTMLElement,
+    _windowTop: number,
+  ): TranscriptViewportAnchor | null {
+    const rows: TranscriptAnchorRow[] = [];
+    const box = scroller.getBoundingClientRect();
+    const scale = box.height / scroller.offsetHeight || 1;
+    for (const slot of scroller.querySelectorAll<HTMLElement>(
+      ".transcript-slot",
+    )) {
+      const block = blocksRef.current[Number(slot.dataset.index)];
+      const start = Number.parseFloat(
+        slot.style.transform.match(/-?[\d.]+/u)?.[0] ?? "",
+      );
+      if (!block || !Number.isFinite(start)) continue;
+      rows.push({
+        key: block.id,
+        top: scroller.scrollTop + (slot.getBoundingClientRect().top - box.top) / scale,
+        height: slot.offsetHeight,
+      });
+    }
+    return transcriptViewportAnchor(rows, scroller.scrollTop);
+  }
+
+  function releaseResizeRestore(): void {
+    restoreFrameRef.current = 0;
+    selfScrollingRef.current = false;
+    resizePreparedRef.current = false;
+    stableViewportRef.current = null;
+    rememberViewport();
+  }
+
+  // A pending restoration is dropped the moment the user takes over -- a wheel or touch
+  // gesture, a search reveal, the latest-content button, a session switch, or the next
+  // width change -- or its frames would write the old position on top of the new intent.
+  function cancelResizeRestore(): void {
+    if (restoreFrameRef.current === 0) return;
+    cancelAnimationFrame(restoreFrameRef.current);
+    releaseResizeRestore();
+  }
+
+  /**
+   * Re-establish the reading position across a width change.
+   *
+   * A width change re-wraps every block, so `measure()` throws every measured height away
+   * and rows are re-measured one frame at a time. Restoring a raw scrollTop does not
+   * survive that: rows are repositioned from estimates, which moves the block the user was
+   * reading and can even clamp the position. So the reading position is frozen first --
+   * whether the view was following the bottom, and for older content the block the viewport
+   * top sits on plus its offset -- and then the offset is corrected every frame until the
+   * position, the total, and the viewport height hold still.
+   */
+  function startResizeRestore(): void {
+    const scroller = transcriptRef.current;
+    const windowEl = scroller?.querySelector<HTMLElement>(".transcript-window");
+    if (!scroller || !windowEl) return;
+    const windowTop = layoutTopWithin(windowEl, scroller);
+    if (windowTop === null) return;
+    cancelResizeRestore();
+    const session = sessionRef.current;
+    // Frozen before measure(), and never re-read from the live flags: the scroll events
+    // the reset causes are not the user scrolling away, so they must not change which
+    // position is being restored.
+    const saved = stableViewportRef.current;
+    const follow = saved?.follow ?? followingRef.current;
+    const anchor = follow ? null : saved?.anchor ?? currentViewportAnchor(scroller, windowTop);
+    followingRef.current = follow;
+    setFollowing(follow);
+    selfScrollingRef.current = true;
+    // Mounted rows are remeasured at the new width. Keep offscreen measurements
+    // rather than replacing the entire history with estimates during a resize.
+    if (!follow && !anchor) {
+      releaseResizeRestore();
+      return;
+    }
+    let attempts = 0;
+    let stableFrames = 0;
+    let previous: {
+      total: number;
+      height: number;
+      scrollHeight: number;
+    } | null = null;
+    const step = (): void => {
+      restoreFrameRef.current = 0;
+      const element = transcriptRef.current;
+      if (!element || sessionRef.current !== session) {
+        releaseResizeRestore();
+        return;
+      }
+      attempts += 1;
+      let waiting = false;
+      let target = element.scrollHeight - element.clientHeight;
+      if (!follow && anchor) {
+        const index = blocksRef.current.findIndex(
+          (block) => block.id === anchor.key,
+        );
+        if (index < 0) {
+          releaseResizeRestore();
+          return;
+        }
+        const row = virtualizer
+          .getVirtualItems()
+          .find((item) => item.index === index);
+        if (row) {
+          const slot = element.querySelector<HTMLElement>(`.transcript-slot[data-index="${index}"]`);
+          if (slot) {
+            const box = element.getBoundingClientRect();
+            const scale = box.height / element.offsetHeight || 1;
+            target = element.scrollTop + (slot.getBoundingClientRect().top - box.top) / scale - anchor.offset;
+          } else {
+            target = transcriptAnchorScrollTop(windowTop, row.start, anchor.offset);
+            waiting = true;
+          }
+        } else {
+          // The reset estimates can clamp the scroll position out of the anchored row's
+          // range. Aim at where the virtualizer puts the row; the offset is corrected as
+          // soon as it is mounted and measured again.
+          const offset = virtualizer.getOffsetForIndex(index, "start");
+          if (!offset) {
+            releaseResizeRestore();
+            return;
+          }
+          target = transcriptAnchorScrollTop(0, offset[0], anchor.offset);
+          waiting = true;
+        }
+      }
+      const wanted = Math.max(0, target);
+      element.scrollTop = wanted;
+      const total = virtualizer.getTotalSize();
+      const remaining =
+        element.scrollHeight - element.scrollTop - element.clientHeight;
+      const unchangedGeometry =
+        previous !== null &&
+        Math.abs(total - previous.total) <= 1 &&
+        element.clientHeight === previous.height &&
+        element.scrollHeight === previous.scrollHeight;
+      previous = {
+        total,
+        height: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+      };
+      // Rows still carrying the estimate: the re-measurement has not finished, so the
+      // positions and the total are still about to move.
+      const sizes = new Map(
+        virtualizer.getVirtualItems().map((item) => [item.index, item.size]),
+      );
+      let measuring = false;
+      for (const slot of element.querySelectorAll<HTMLElement>(
+        ".transcript-slot",
+      )) {
+        const recorded = sizes.get(Number(slot.dataset.index));
+        if (recorded === undefined) continue;
+        if (Math.abs(recorded - slot.offsetHeight) > 1) {
+          measuring = true;
+          break;
+        }
+      }
+      const settled = transcriptRestoreSettled(
+        {
+          landed: Math.abs(element.scrollTop - wanted) <= 0.5,
+          remaining,
+          measuring,
+          unchangedGeometry,
+        },
+        follow,
+      );
+      stableFrames = settled && !waiting ? stableFrames + 1 : 0;
+      if (
+        stableFrames >= RESTORE_STABLE_FRAMES ||
+        attempts >= RESTORE_MAX_FRAMES
+      ) {
+        releaseResizeRestore();
+        return;
+      }
+      restoreFrameRef.current = requestAnimationFrame(step);
+    };
+    restoreFrameRef.current = requestAnimationFrame(step);
+  }
+
   useEffect(() => {
     const transcript = transcriptRef.current;
     if (!transcript) return;
-    // A width change re-wraps text, so every height measured at the old width is wrong.
-    // Without discarding them the cached totals drift and the view drops thousands of
-    // pixels away from where it was -- opening the detail panel or resizing the window
-    // both do this.
-    let lastWidth = transcript.clientWidth;
-    let remeasure = 0;
+    // Observe the reading column, not just its scroller: opening the inspector can
+    // change the centered column width independently. Mounted rows remeasure while
+    // the restoration preserves the reading anchor; offscreen estimates stay intact.
+    const column = transcript.querySelector<HTMLElement>(".transcript-column") ?? transcript;
+    let lastWidth = column.clientWidth;
     const observer = new ResizeObserver(() => {
       const element = transcriptRef.current;
-      const width = element?.clientWidth ?? lastWidth;
+      const width = column.clientWidth;
       if (!element || width === lastWidth) return;
       lastWidth = width;
-      // A resize is not the user scrolling away, so following must survive it. Discarding
-      // the heights below makes the scroll position briefly look far from the bottom, and
-      // the scroll events that causes had been switching following off -- which then
-      // cancelled the restore and left the view 1284px short at narrow widths.
-      selfScrollingRef.current = true;
-      virtualizer.measure();
-      // Re-measuring is handled by the layout effect above; this only restores the scroll
-      // position. It takes several frames: `measure()` drops every height, so rows are
-      // re-measured one render at a time and the bottom keeps moving. A single restore
-      // landed 1284px short at narrow widths, so it retries until the bottom holds.
-      cancelAnimationFrame(remeasure);
-      let attempts = 0;
-      const restore = (): void => {
-        const scroller = transcriptRef.current;
-        if (!scroller || !followingRef.current) {
-          selfScrollingRef.current = false;
-          return;
-        }
-        selfScrollingRef.current = true;
-        scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
-        attempts += 1;
-        const settled =
-          scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
-        if ((settled && attempts > 3) || attempts > 30) {
-          selfScrollingRef.current = false;
-          return;
-        }
-        remeasure = requestAnimationFrame(restore);
-      };
-      remeasure = requestAnimationFrame(restore);
+      // A resize is not the user scrolling away, so following must survive it: the reset
+      // below briefly puts the scroll position far from the bottom, and the scroll events
+      // that causes had been switching following off -- which then cancelled the restore
+      // and left the view 1284px short at narrow widths. The restoration owns that
+      // suppression itself and hands it back once it is done or the user takes over.
+      startResizeRestore();
     });
-    observer.observe(transcript);
+    observer.observe(column);
     return () => {
-      cancelAnimationFrame(remeasure);
+      cancelResizeRestore();
       observer.disconnect();
     };
   }, [blocks.length, virtualizer]);
@@ -306,7 +619,8 @@ export function Transcript({
     const index = transcriptBlockIndexForItem(blocks, revealItemId);
     if (index < 0) return;
     // A search hit is usually not mounted, so it has to be scrolled to by index before
-    // its element exists to highlight.
+    // its element exists to highlight. Navigation wins over a pending restoration.
+    cancelResizeRestore();
     followingRef.current = false;
     setFollowing(false);
     virtualizer.scrollToIndex(index, { align: "center" });
@@ -338,6 +652,8 @@ export function Transcript({
     const transcript = transcriptRef.current;
     if (!transcript) return;
     if (selfScrollingRef.current) return;
+    const columnWidth = transcript.querySelector<HTMLElement>(".transcript-column")?.clientWidth ?? transcript.clientWidth;
+    if (stableViewportRef.current && stableViewportRef.current.width !== columnWidth) return;
     const nearBottom = shouldFollowTranscript(
       transcript.scrollHeight,
       transcript.scrollTop,
@@ -351,6 +667,7 @@ export function Transcript({
       scrolledAwayRef.current = false;
     followingRef.current = nearBottom;
     setFollowing(nearBottom);
+    rememberViewport();
 
     // Only close a gap the user did not ask for. Scrolling up must stay put: an earlier
     // version force-enabled following whenever the last block was mounted, but overscan
@@ -373,6 +690,7 @@ export function Transcript({
   }
 
   function scrollToLatest(): void {
+    cancelResizeRestore();
     followingRef.current = true;
     setFollowing(true);
     if (blocks.length === 0) return;
@@ -406,6 +724,8 @@ export function Transcript({
       // downward reverses it; the resulting position is indistinguishable from the
       // measurement slack that unmounted rows need.
       onWheel={(event) => {
+        // Real input takes the view back from a resize restoration in flight.
+        cancelResizeRestore();
         scrolledAwayRef.current = transcriptScrollIntent(
           scrolledAwayRef.current,
           event.deltaY,
@@ -414,9 +734,11 @@ export function Transcript({
         else if (event.deltaY > 0) gestureAtRef.current = 0;
       }}
       onTouchStart={(event) => {
+        cancelResizeRestore();
         touchYRef.current = event.touches[0]?.clientY;
       }}
       onTouchMove={(event) => {
+        cancelResizeRestore();
         const currentY = event.touches[0]?.clientY;
         const previousY = touchYRef.current;
         touchYRef.current = currentY;
@@ -581,12 +903,27 @@ export function BranchSummaryCard({
   );
 }
 
+/**
+ * A runtime notice, with the provenance the controller lane adds to injected activity.
+ * Declared as an optional extension so this file renders both before and after that
+ * contract change lands, and never reads as an assistant answer.
+ */
+type RuntimeNoticeActivity = Extract<TranscriptItem, { kind: "system" }> & {
+  sourceType?: string;
+  runtimeHidden?: boolean;
+};
+
 export function SystemNoticeCard({
   item,
 }: {
   item: Extract<TranscriptItem, { kind: "system" }>;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // The controller lane marks the notices it injects with a source type and a hidden flag.
+  // Optional on purpose: a transcript that carries neither renders exactly as before, and
+  // one that does stops reading like an assistant answer.
+  const runtime: RuntimeNoticeActivity = item;
+  const sourceType = runtime.sourceType?.trim();
   const preview = item.content.split("\n").slice(0, 4).join("\n");
   const truncated = item.content !== preview;
   return (
@@ -594,6 +931,10 @@ export function SystemNoticeCard({
       <header>
         <TerminalSquare size={15} />
         <strong>{item.title}</strong>
+        <span className="system-card-provenance">
+          런타임 활동{sourceType ? ` · ${sourceType}` : ""}
+          {runtime.runtimeHidden ? " · 답변 아님(숨김)" : ""}
+        </span>
       </header>
       <div className="system-card-body markdown-body">
         <ReactMarkdown remarkPlugins={[remarkGfm]}>
@@ -859,6 +1200,22 @@ export function ToolCard({
             {toolStatusLabel(tool.status)}
           </span>
         </header>
+        {tool.subagents && tool.subagents.length > 0 && (
+          <div className="tool-full-details">
+            <section>
+              <strong>요청된 서브에이전트</strong>
+              {/* What the call asked for, not what those agents are doing now: their
+                  status is inferred from the parent and is not authoritative here. */}
+              {tool.subagents.map((subagent) => (
+                <p key={subagent.id}>
+                  {subagent.label}
+                  {subagent.role ? ` · ${subagent.role}` : ""}
+                  {subagent.objective ? ` — ${subagent.objective}` : ""}
+                </p>
+              ))}
+            </section>
+          </div>
+        )}
         {command?.preview && <code>{command.preview}</code>}
         {tool.diff && <DiffView diff={tool.diff} path={tool.targetPath} />}
         {tool.images?.map((image, index) => (

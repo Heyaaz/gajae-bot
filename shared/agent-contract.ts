@@ -395,6 +395,22 @@ export interface SystemNoticeActivity {
   title: string;
   content: string;
   createdAt: string;
+  /**
+   * Where the row's content came from: a recorded custom message's `customType`,
+   * or the runtime query an app-owned snapshot row was read through.
+   *
+   * An unrecognized value stays exactly as recorded rather than being classified
+   * into a known kind of activity.
+   */
+  sourceType?: string;
+  /**
+   * The runtime recorded this activity as `display: false`.
+   *
+   * The app's visibility policy keeps recorded activity readable, so such a row is
+   * still shown as system material; this flag is retained so the card can say the
+   * runtime marked it hidden instead of presenting it as something it meant to show.
+   */
+  runtimeHidden?: boolean;
 }
 
 export type TranscriptItem =

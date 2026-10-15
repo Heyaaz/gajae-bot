@@ -4,6 +4,12 @@ import {
   isNearTranscriptBottom,
   transcriptBlockIndexForItem,
 } from "../transcript-utils";
+import {
+  transcriptAnchorScrollTop,
+  transcriptRestoreSettled,
+  transcriptViewportAnchor,
+  type TranscriptAnchorRow,
+} from "./transcript";
 import type { TranscriptItem } from "../backend/types";
 
 const message = (id: string, content: string): TranscriptItem =>
@@ -136,5 +142,110 @@ describe("locating a search hit that is not mounted", () => {
     ]);
     expect(second[0].id).toBe(first[0].id);
     expect(second[1].id).toBe(first[1].id);
+  });
+});
+
+describe("holding the reading position across a width change", () => {
+  // Opening or closing the detail panel changes the transcript's width, which re-wraps
+  // every block: `measure()` discards each measured height and the rows are re-measured
+  // one frame at a time, so the scroll position cannot be restored as a raw scrollTop.
+  // These two helpers are the whole decision -- which row the viewport top sits on, and
+  // the offset that puts it back -- and they work in layout pixels because the rect is
+  // scaled by the window's zoom while scrollTop is not.
+  const row = (
+    key: string,
+    top: number,
+    height: number,
+  ): TranscriptAnchorRow => ({ key, top, height });
+
+  it("anchors on the row under the viewport top, not an overscan row above it", () => {
+    // Overscan keeps a screenful of rows above the viewport mounted. Anchoring on the
+    // first of those names a different place in the conversation -- the jump this fix is
+    // about. The first row whose painted bottom passes the edge is the one being read.
+    const rows = [
+      row("block-a", -900, 400),
+      row("block-b", -500, 620),
+      row("block-c", 120, 300),
+    ];
+    expect(transcriptViewportAnchor(rows, 0)).toEqual({
+      key: "block-b",
+      offset: -500,
+    });
+  });
+
+  it("keeps the anchored block and its offset when the rows above are re-measured", () => {
+    const windowTop = 44;
+    const anchor = transcriptViewportAnchor(
+      [
+        row("block-a", windowTop + 700, 300),
+        row("block-b", windowTop + 1000, 500),
+        row("block-c", windowTop + 1500, 260),
+      ],
+      1200,
+    );
+    // Partially clipped: the viewport top is 156px into the block, so its offset is
+    // negative and has to survive as one.
+    expect(anchor).toEqual({ key: "block-b", offset: -156 });
+
+    // A taller block-a below.. above pushes everything down, which is exactly what a
+    // re-measure does. The scroll position has to move (1200 -> 1320) so that the same
+    // block stays at the same offset; keeping the raw scrollTop is what jumped the view.
+    const movedStart = 1120;
+    const restored = transcriptAnchorScrollTop(windowTop, movedStart, anchor!.offset);
+    expect(restored).toBe(1320);
+    expect(windowTop + movedStart - restored).toBe(anchor!.offset);
+  });
+
+  it("skips rows that end above the edge and reports the gap's next row", () => {
+    const rows = [row("a", 0, 100), row("b", 118, 90)];
+    // A row whose bottom is exactly at the edge is above it, not on it.
+    expect(transcriptViewportAnchor(rows, 100)).toEqual({
+      key: "b",
+      offset: 18,
+    });
+    expect(transcriptViewportAnchor(rows, 0)).toEqual({ key: "a", offset: 0 });
+    // Nothing mounted at the edge: there is no position to hold, so nothing is written.
+    expect(transcriptViewportAnchor([row("a", 0, 100)], 140)).toBeNull();
+  });
+
+  it("keeps correcting while mounted rows are still on the size estimate", () => {
+    // The failure this encodes, measured live in the panel smoke: the loop wrote the
+    // bottom, the position matched it, and the total had held still -- so it stopped. The
+    // next measurement pass grew the total by 953px, and the view was left 902px short of
+    // the bottom with the 최신 내용으로 button back on screen. Landing on the target is not
+    // the same statement as the reflow having finished.
+    const frame = {
+      landed: true,
+      remaining: 0,
+      measuring: false,
+      unchangedGeometry: true,
+    };
+    expect(transcriptRestoreSettled(frame, true)).toBe(true);
+    expect(transcriptRestoreSettled({ ...frame, measuring: true }, true)).toBe(false);
+    // An anchor is no different: the rows above it are being re-measured, so its own
+    // start is still about to move.
+    expect(transcriptRestoreSettled({ ...frame, measuring: true }, false)).toBe(false);
+  });
+
+  it("requires the write to land and the geometry to hold still", () => {
+    const settled = {
+      landed: true,
+      remaining: 0,
+      measuring: false,
+      unchangedGeometry: true,
+    };
+    // A clamped write is not a restored position.
+    expect(transcriptRestoreSettled({ ...settled, landed: false }, true)).toBe(false);
+    // Nor is one whose total or viewport height moved since the previous frame.
+    expect(
+      transcriptRestoreSettled({ ...settled, unchangedGeometry: false }, true),
+    ).toBe(false);
+    // Following is only done once the bottom is actually reached...
+    expect(transcriptRestoreSettled({ ...settled, remaining: 902 }, true)).toBe(false);
+    expect(transcriptRestoreSettled({ ...settled, remaining: 1 }, true)).toBe(true);
+    // ...while an anchor only has to sit on its offset, however far off the bottom it is.
+    expect(transcriptRestoreSettled({ ...settled, remaining: 109_274 }, false)).toBe(
+      true,
+    );
   });
 });
