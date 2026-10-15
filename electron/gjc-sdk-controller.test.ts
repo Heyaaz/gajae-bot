@@ -17,6 +17,7 @@ import {
   parentSessionOf,
 } from "./gjc-sdk-controller.js";
 import { SdkCliError } from "./gjc-sdk-cli.js";
+import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
 const execFile = promisify(execFileCallback);
 
 const session = (id = "s1", workspace = "/repo") => ({
@@ -166,6 +167,17 @@ describe("protocol-neutral helpers", () => {
 });
 
 describe("GjcSdkController CLI seam", () => {
+  it("reports the preset new sessions start from on the connection", async () => {
+    // The composer and the settings dialog label themselves from this field, so a
+    // connection that drops it silently shows the default preset instead.
+    const { controller } = harness({ modelPreset: "codex-pro" });
+    expect((await controller.getConnection()).modelPreset).toBe("codex-pro");
+    const { controller: unconfigured } = harness();
+    expect((await unconfigured.getConnection()).modelPreset).toBe(
+      DEFAULT_MODEL_PRESET,
+    );
+  });
+
   it("creates through session.create and applies always-allow", async () => {
     const { controller, cli } = harness({ permissionHandling: "always-allow" });
     (cli.rawGlobal as any).mockImplementation(async (op: string) => op === "session.create" ? { sessionId: "new" } : { items: [] });

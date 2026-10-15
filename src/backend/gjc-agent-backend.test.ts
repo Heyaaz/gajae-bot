@@ -43,8 +43,9 @@ class FakeGjcBridge implements GjcDesktopBridge {
       state: "connected",
       backend: "gjc",
       label: "Gajae Code",
-      detail: "ACP connected",
+      detail: "SDK session CLI · codex-medium",
       workspace: "/tmp/project",
+      modelPreset: "codex-medium",
       version: "0.15.0",
     };
   }
@@ -261,8 +262,9 @@ describe("GjcAgentBackend", () => {
         state: "connected",
         backend: "gjc",
         label: "GJC",
-        detail: "ACP connected",
+        detail: "SDK session CLI · codex-medium",
         workspace: "/tmp/project",
+        modelPreset: "codex-medium",
       },
     };
 

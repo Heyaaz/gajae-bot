@@ -47,6 +47,7 @@ import type {
   SubagentSnapshot,
   ToolImage,
 } from "../shared/agent-contract.js";
+import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 import {
@@ -2000,7 +2001,7 @@ export class GjcSdkController {
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
     this.configuredExecutable = options.executable;
-    this.modelPreset = options.modelPreset ?? "codex-medium";
+    this.modelPreset = options.modelPreset ?? DEFAULT_MODEL_PRESET;
     this.permissionHandling = options.permissionHandling ?? "prompt";
     this.sessionMetadata = options.sessionMetadata;
     this.emitEvent = options.emit;
@@ -2014,6 +2015,7 @@ export class GjcSdkController {
       label: "GJC",
       detail: "Not connected",
       workspace: this.workspace,
+      modelPreset: this.modelPreset,
     };
   }
 
@@ -2027,6 +2029,7 @@ export class GjcSdkController {
         label: "GJC unavailable",
         detail: error instanceof Error ? error.message : String(error),
         workspace: this.workspace,
+        modelPreset: this.modelPreset,
       });
     }
     return { ...this.connectionState };
@@ -5200,6 +5203,7 @@ export class GjcSdkController {
       label: "GJC",
       detail: "Reaching the GJC broker",
       workspace: this.workspace,
+      modelPreset: this.modelPreset,
     });
     const executable = await this.resolveExecutable();
     let profileThinking: string | undefined;
@@ -5237,6 +5241,7 @@ export class GjcSdkController {
       label: "GJC",
       detail: `SDK session CLI · ${this.modelPreset}`,
       workspace: this.workspace,
+      modelPreset: this.modelPreset,
       generation,
     });
     this.reconnectAttempt = 0;

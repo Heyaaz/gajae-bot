@@ -40,7 +40,6 @@ import {
   EMPTY_TRANSCRIPT,
   directoryName,
   humanErrorMessage,
-  profileFromDetail,
   statusLabel,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
@@ -49,6 +48,7 @@ import { SettingsDialog } from "./settings";
 import { Sidebar } from "./sidebar";
 import { sessionListModel } from "./sidebar-model";
 import { RecentRequestStrip, Transcript } from "./transcript";
+import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
 export default function App() {
@@ -663,11 +663,15 @@ export default function App() {
           category: "model",
           type: "select" as const,
           currentValue:
-            selectedSession?.model ?? profileFromDetail(connection.detail),
+            selectedSession?.model ??
+            connection.modelPreset ??
+            DEFAULT_MODEL_PRESET,
           options: [
             {
               value:
-                selectedSession?.model ?? profileFromDetail(connection.detail),
+                selectedSession?.model ??
+                connection.modelPreset ??
+                DEFAULT_MODEL_PRESET,
               name: selectedSession?.modelDisplay ?? "모델 확인 중…",
             },
           ],

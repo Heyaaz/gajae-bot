@@ -16,12 +16,21 @@ export interface AgentControlPreferences {
   gjcExecutable: string;
 }
 
+/**
+ * The preset new sessions start from when nothing narrower is known.
+ *
+ * It travels on the connection as a field of its own rather than being scraped
+ * out of `detail`, which is copy the sidebar and the offline strip print.
+ */
+export const DEFAULT_MODEL_PRESET = "codex-medium";
+
 export interface BackendConnection {
   state: ConnectionState;
   backend: RuntimeKind | "mock";
   label: string;
   detail: string;
   workspace: string;
+  modelPreset?: string;
   version?: string;
   generation?: number;
 }

@@ -11,9 +11,9 @@ import {
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { AgentControlPreferences, GjcPermissionHandling } from '../shared/agent-contract.js'
+import { DEFAULT_MODEL_PRESET } from '../shared/agent-contract.js'
 
 const PERMISSION_MODES = new Set<GjcPermissionHandling>(['prompt', 'auto', 'always-allow'])
-export const DEFAULT_MODEL_PRESET = 'codex-medium'
 
 function validModelPreset(value: unknown): value is string {
   return typeof value === 'string'

@@ -366,6 +366,7 @@ export class MockAgentBackend implements AgentBackend {
       label: "샘해데이턼 (Mock)",
       detail: "UI 미리보기욨 가짜 데이턼입니다. 실제 GJC에 연결되지 않았습니다.",
       workspace: "agent-control",
+      modelPreset: "codex-medium",
     };
   }
 

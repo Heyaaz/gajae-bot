@@ -85,10 +85,6 @@ export function directoryName(value: string): string {
   return value.split("/").filter(Boolean).at(-1) ?? (value || "Workspace");
 }
 
-export function profileFromDetail(detail: string): string {
-  return detail.match(/ACP connected · (.+)$/u)?.[1]?.trim() || "codex-medium";
-}
-
 export function toolDisplayName(name: string): string {
   const labels: Record<string, string> = {
     bash: "Bash",

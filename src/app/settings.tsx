@@ -1,9 +1,10 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
+import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
 import type { GjcUpdateStatus, ManagementSnapshot } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
 import { CalendarClock, Check, Command, FolderOpen, ShieldCheck, Smartphone, X } from "lucide-react";
 import { useEffect, useState } from "react";
-import { connectionStateLabel, profileFromDetail } from "./format";
+import { connectionStateLabel } from "./format";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
 import { RemoteAccessPanel } from "./remote-access-panel";
@@ -29,7 +30,7 @@ export function SettingsDialog({
   onCheckUpdate,
   onInstallUpdate,
 }: SettingsDialogProps) {
-  const detectedPreset = profileFromDetail(connection.detail);
+  const detectedPreset = connection.modelPreset ?? DEFAULT_MODEL_PRESET;
   const fallbackPreferences: AgentControlPreferences = {
     workspace: connection.workspace,
     workspaceLabel: "개인 Workspace",
