@@ -294,16 +294,21 @@ the same session), and the turn keeps running. The same payload over a live
 terminal aborts are available only through the Broker control route"). Stop
 therefore reports that it could not confirm the abort instead of claiming the run
 stopped; the transcript stays the source of truth for whether work continued.
+Reported upstream as https://github.com/Yeachan-Heo/gajae-code/issues/6772 with the
+exact reproduction and the `no_active_turn` gate it stops at.
 
-**Known limitation on 0.18.11:** `session.delete` answers `operation_failed`
-("The operation failed. Its outcome could not be established.", `outcomeCertainty:
-unknown`, retryability `unknown`, and the guidance "do not blindly retry") for any
-session whose durable state includes tool execution. A session that only replied
-deletes cleanly; one that ran a single `printf` bash turn does not, in the default
-agent directory and in a fresh one, and the broker row stays
-`live:false, deleted:false`. Gajae treats that as an unknown lifecycle outcome:
-it preserves the transcript, metadata, and worktree and marks the session as
-recovering rather than reporting a deletion it cannot prove.
+**Known limitation on 0.18.11:** `session.delete` requires the durable transcript
+path, and a call that omits it is refused with `invalid_input`
+("session.delete requires sessionPath and its configured cwd."). 0.18.11 renders
+that refusal as `operation_failed` ("The operation failed. Its outcome could not be
+established.", `outcomeCertainty: unknown`, retryability `unknown`, guidance "do not
+blindly retry"), so a refused delete is indistinguishable from a delete that may
+have half-applied. Gajae passes the path it located and, when the call still fails,
+treats it as an unknown lifecycle outcome: it preserves the transcript, metadata,
+and worktree and marks the session as recovering rather than reporting a deletion
+it cannot prove. Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6771
+(the disabled-outcome code stays conservative; the refusal class becomes a
+`lifecycle_input_refused` diagnostic).
 
 Older GJC versions are unsupported. After updating GJC, restart running `gjc` /
 `gjc --resume` session hosts because they do not hot-reload runtime code.
