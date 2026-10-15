@@ -28,11 +28,11 @@ function familySummaryLabel(
   summary: SessionFamilySummary | null,
 ): string {
   const counts = [
-    summary?.failed ? `실패 ${summary.failed}` : "",
-    summary?.unread ? `안읽음 ${summary.unread}` : "",
-    summary?.working ? `작업 중 ${summary.working}` : "",
+    summary?.failed ? `Failed ${summary.failed}` : "",
+    summary?.unread ? `Unread ${summary.unread}` : "",
+    summary?.working ? `Working ${summary.working}` : "",
   ].filter(Boolean);
-  return [`포크 ${hidden}개 숨김`, ...counts].join(" · ");
+  return [`Fork ${hidden} hidden`, ...counts].join(" · ");
 }
 
 /**

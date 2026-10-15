@@ -388,6 +388,25 @@ export interface BranchSummaryActivity {
   createdAt: string;
 }
 
+/**
+ * One item of a todo snapshot, as the runtime's `todo.list` returned it.
+ *
+ * The status stays a plain string. The runtime's vocabulary is wider than this window
+ * knows, so an unrecognized value has to reach the card as the runtime wrote it rather
+ * than being folded into one of the statuses the app renders.
+ */
+export interface TodoSnapshotTask {
+  content: string;
+  status?: string;
+  notes?: string[];
+}
+
+/** A named group of items in a todo snapshot. */
+export interface TodoSnapshotPhase {
+  name?: string;
+  tasks: TodoSnapshotTask[];
+}
+
 export interface SystemNoticeActivity {
   id: string;
   kind: "system";
@@ -411,6 +430,22 @@ export interface SystemNoticeActivity {
    * runtime marked it hidden instead of presenting it as something it meant to show.
    */
   runtimeHidden?: boolean;
+  /**
+   * The phases behind an app-owned todo snapshot (`sourceType: "todo.list"`), kept in
+   * the shape the runtime returned them so the card can render the list itself instead
+   * of the snapshot's raw JSON.
+   *
+   * Presence means the store answered, which is why a read that failed has to leave this
+   * out: the card renders a row with no phases as prose, and an empty list as a store that
+   * answered with nothing. Reporting an unreadable store as `todoPhases: []` would claim
+   * the work was finished or never registered.
+   */
+  todoPhases?: TodoSnapshotPhase[];
+  /**
+   * When that snapshot was read, as the runtime's own ISO timestamp. The card shows it
+   * as a clock time; a value that does not parse is left out rather than guessed at.
+   */
+  observedAt?: string;
 }
 
 export type TranscriptItem =

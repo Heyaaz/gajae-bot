@@ -23,7 +23,6 @@ function render(status: string): string {
       item: tool(status),
       onResolveTool: noop,
       onReadArtifact: noop,
-      onPreviewFile: noop,
     } as never),
   );
 }

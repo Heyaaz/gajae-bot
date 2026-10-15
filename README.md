@@ -153,14 +153,25 @@ Delete is close-then-delete, not hide-from-list. A live session is closed with `
 
 ### Resume a session
 
-A session the window lost control of is readable but cannot be sent to. It shows
-`terminal-only` when a terminal holds the lease and `recovering` when runtime
-re-hosting could not be verified. `세션 이어서 진행` resumes it again, from the inspector or the sidebar
-right-click menu, on any session that is not already attached.
+Eligible interactive GJC root sessions publish an SDK endpoint automatically
+(unless `GJC_SDK_DISABLE=1`). The app and CLI can use that same live host through
+public broker query/control routes. Attaching does not resume, replace, or change
+the permission policy of an externally owned live session.
 
-Resuming is a user action, not a retry timer. The lease may still be held, so a
-scheduled retry would only fail repeatedly. When another terminal holds it, the
-app says so instead of leaking the broker error; quit that `gjc` and try again.
+If a shared route is unavailable, the transcript remains readable. The internal
+`terminal-only` state means an unavailable control route, not proof of exclusive
+terminal ownership. Fresh positive endpoint evidence is checked with a public
+metadata query so a recovered route is not permanently stuck read-only.
+`세션 이어서 진행` also retries attachment on user action; only a non-live session
+is re-hosted. Creating a different session or exiting a reachable terminal is not
+required for ordinary shared interaction.
+
+Operator-owned Stop has a separate GJC authority requirement: a directly launched
+TUI can answer queries and steering while lacking the indexed lifecycle identity
+required for terminal/owned-work abort. Such a refusal does not disable ordinary
+controls, and the app does not claim the turn or background work stopped. Full
+operator-owned Stop on those hosts requires upstream support; no weaker abort or
+process signal is substituted.
 
 ### Permission handling
 

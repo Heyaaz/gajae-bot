@@ -14,9 +14,9 @@ export const SESSION_GROUP_ORDER: readonly SessionGroupId[] = [
 ];
 
 export const SESSION_GROUP_LABELS: Record<SessionGroupId, string> = {
-  "needs-input": "확인 필요",
-  working: "작업 중",
-  completed: "완료",
+  "needs-input": "Needs input",
+  working: "Working",
+  completed: "Done",
 };
 
 /** Rows a group shows before the rest move behind 더 보기. */
@@ -37,7 +37,7 @@ export function sessionGroupOf(
   session: Pick<AgentSession, "status" | "phase">,
 ): SessionGroupId {
   // Compaction outlives the turn that started it, so a session reported idle
-  // while its context is still being compacted is doing work. Ranking it 완료 put
+  // while its context is still being compacted is doing work. Ranking it done put
   // the row in a finished group a moment before it moved back out.
   if (session.phase === "compacting") return "working";
   // There is no "it failed" group: a failure is something the user has to look

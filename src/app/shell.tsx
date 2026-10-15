@@ -678,14 +678,6 @@ export default function App() {
     },
     [backend, selectedId],
   );
-  const previewFile = useCallback(
-    (filePath: string) => {
-      if (!selectedId)
-        return Promise.reject(new Error("선택된 세션이 없습니다."));
-      return backend.previewFile(selectedId, filePath);
-    },
-    [backend, selectedId],
-  );
   const completeReveal = useCallback((itemId: string) => {
     setRevealTarget((current) => (current?.itemId === itemId ? null : current));
   }, []);
@@ -1242,7 +1234,7 @@ export default function App() {
                   />
                   {statusLabel(selectedSession.status, selectedSession.phase)}
                   {selectedSession.attachment === "terminal-only" && (
-                    <span className="chat-sync">터미널 읽기 전용 동기화</span>
+                    <span className="chat-sync">제어 연결 없음 · 기록 동기화 중</span>
                   )}
                   {(selectedGit?.branch ||
                     selectedSession.worktree?.branch) && (
@@ -1302,7 +1294,6 @@ export default function App() {
                 onRevealComplete={completeReveal}
                 onResolveTool={resolveToolCall}
                 onReadArtifact={readArtifact}
-                onPreviewFile={previewFile}
               />
               <div className="composer-wrap">
                 <GoalProgressRow

@@ -16,6 +16,7 @@ import {
   readableModelLabel,
   historySessionSummary,
   parentSessionOf,
+  todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
 import { SdkCliError } from "./gjc-sdk-cli.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
@@ -920,10 +921,10 @@ describe("runtime activity visibility", () => {
       const row = systemRow(internals);
       expect(row).toMatchObject({
         id: "app-todo-s1",
-        title: "할 일 목록",
+        title: "Todos",
         sourceType: "todo.list",
       });
-      expect(row.content).toContain("- 반환된 작업 기록: 1개");
+      expect(row.content).toContain("- records: 1");
       // The record itself is shown, not a task schema this window invented.
       expect(row.content).toContain('"title": "Ship it"');
       expect(
@@ -965,10 +966,10 @@ describe("runtime activity visibility", () => {
     await internals.readTodoRecords("s1");
     const unavailable = systemRow(internals);
     expect(unavailable.content).toContain(
-      "- 조회 실패: no Router attachment",
+      "- read failed: no Router attachment",
     );
-    expect(unavailable.content).toContain("빈 목록이 아닙니다");
-    expect(unavailable.content).not.toContain("반환된 작업 기록");
+    expect(unavailable.content).toContain("not an empty list");
+    expect(unavailable.content).not.toContain("- records:");
     // Nothing successful was observed, so nothing is retained to show as stale.
     expect(internals.sessionTodoSnapshots.get("s1")?.rows).toBeUndefined();
 
@@ -976,8 +977,8 @@ describe("runtime activity visibility", () => {
     (cli.queryItems as any).mockResolvedValue([]);
     await internals.readTodoRecords("s1");
     const empty = systemRow(internals);
-    expect(empty.content).toContain("- 반환된 작업 기록: 0개");
-    expect(empty.content).not.toContain("조회 실패");
+    expect(empty.content).toContain("- records: 0");
+    expect(empty.content).not.toContain("read failed");
 
     (cli.queryItems as any).mockResolvedValue([
       { id: "task-1", title: "Ship it", status: "completed" },
@@ -990,7 +991,7 @@ describe("runtime activity visibility", () => {
     (cli.queryItems as any).mockRejectedValue(new Error("provider unreachable"));
     await internals.readTodoRecords("s1");
     const stale = systemRow(internals);
-    expect(stale.content).toContain("조회 실패: provider unreachable");
+    expect(stale.content).toContain("read failed: provider unreachable");
     expect(stale.content).toContain("stale");
     expect(stale.content).toContain('"title": "Ship it"');
     expect(stale.content).not.toContain("빈 목록이 아닙니다");
@@ -1036,5 +1037,443 @@ describe("runtime activity visibility", () => {
       internals.readTodoRecords("s1"),
     ]);
     expect(reads).toBe(1);
+  });
+});
+
+describe("shared terminal session control", () => {
+  it("clears a stale route failure after positive broker evidence and a successful probe", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", { ...session(), attachment: "terminal-only", ownership: "external" });
+    internals.terminalOnlySessions.add("s1");
+    internals.brokerSessions = vi.fn(async () => [{ sessionId: "s1", live: true, endpointGeneration: 1, repo: "/repo" }]);
+    await internals.discoverSessions();
+    expect(internals.terminalOnlySessions.has("s1")).toBe(false);
+    controller.dispose();
+  });
+
+  it("attaches to a reachable live generation-zero host without resuming or changing permissions", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external" });
+    internals.terminalOnlySessions.add("s1");
+    cli.inspectSession.mockResolvedValue({ live: true, endpointGeneration: 0, repo: "/repo" } as never);
+    internals.startTailFollower = vi.fn();
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    await internals.ensureAttached("s1", false);
+    expect(cli.queryItems).toHaveBeenCalledWith("s1", "session.metadata", {}, { repo: "/repo" });
+    expect(internals.terminalOnlySessions.has("s1")).toBe(false);
+    expect(internals.sessions.get("s1").attachment).toBe("attached");
+    expect(internals.sessions.get("s1").ownership).toBe("external");
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    expect(cli.rawControl).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("does not turn an operator Stop refusal into loss of ordinary shared control", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
+    internals.attachedSessions.add("s1");
+    cli.rawControl.mockRejectedValue(new SdkCliError("session_unavailable", "no lifecycle authority"));
+    await expect(controller.cancelRun("s1")).rejects.toThrow("소유자 중지");
+    expect(internals.terminalOnlySessions.has("s1")).toBe(false);
+    expect(internals.attachedSessions.has("s1")).toBe(true);
+    expect(internals.sessions.get("s1").status).toBe("running");
+    expect(cli.rawControl).toHaveBeenCalledTimes(1);
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("keeps a genuinely unreachable host read-only without rehosting it", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.attachedSessions.add("s1");
+    cli.rawControl.mockRejectedValue(new SdkCliError("session_unavailable", "no route"));
+    cli.queryItems.mockRejectedValue(new SdkCliError("session_unavailable", "no route"));
+    await expect(controller.cancelRun("s1")).rejects.toThrow("공유 제어 경로");
+    expect(internals.terminalOnlySessions.has("s1")).toBe(true);
+    expect(internals.attachedSessions.has("s1")).toBe(false);
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+});
+
+/**
+ * A session whose last word is a terminal assistant row reads running for as long as
+ * a detached `task` launch marker is still in the transcript, because the job that
+ * marker names may still be alive. A job the user pauses or cancels, or one taken
+ * down with its process, writes no release row -- `custom_message/async-result` -- so
+ * nothing in the file can ever settle it. `runtime.jobs.list` can, and these tests
+ * cover that reconciliation, its throttle, and the release rows that must keep
+ * working exactly as before.
+ */
+describe("detached task launch markers", () => {
+  const taskLaunch = (jobId: string) => ({
+    type: "message",
+    id: `launch-${jobId}`,
+    timestamp: "2026-01-01T00:00:01.000Z",
+    message: {
+      role: "toolResult",
+      toolCallId: `call-${jobId}`,
+      toolName: "task",
+      content: [{ type: "text", text: "started in the background" }],
+      details: { async: { state: "running", jobId, type: "task" } },
+    },
+  });
+  const asyncResult = (jobId: string) => ({
+    type: "custom_message",
+    id: `async-${jobId}`,
+    timestamp: "2026-01-01T00:00:01.500Z",
+    customType: "async-result",
+    content: "background task finished",
+    details: { jobs: [{ jobId, status: "completed" }] },
+  });
+  const subagentAwait = (jobId: string) => ({
+    type: "message",
+    id: `await-${jobId}`,
+    timestamp: "2026-01-01T00:00:01.500Z",
+    message: {
+      role: "toolResult",
+      toolCallId: `call-await-${jobId}`,
+      toolName: "subagent",
+      content: [{ type: "text", text: "awaited" }],
+      details: { awaitOutcome: "completed", terminalIds: [jobId] },
+    },
+  });
+  const jobInspector = (jobId: string) => ({
+    type: "message",
+    id: `jobs-${jobId}`,
+    timestamp: "2026-01-01T00:00:01.500Z",
+    message: {
+      role: "toolResult",
+      toolCallId: `call-jobs-${jobId}`,
+      toolName: "job",
+      content: [{ type: "text", text: "job snapshot" }],
+      details: { jobs: [{ id: jobId, type: "task", status: "completed" }] },
+    },
+  });
+  const terminalStop = () => ({
+    type: "message",
+    id: "assistant-final",
+    timestamp: "2026-01-01T00:00:02.000Z",
+    message: {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "the task keeps running" }],
+    },
+  });
+  const userRequest = () => ({
+    type: "message",
+    id: "user-next",
+    timestamp: "2026-01-01T00:00:03.000Z",
+    message: { role: "user", content: [{ type: "text", text: "status?" }] },
+  });
+  /** `runtime.jobs.list` answers one wrapper row, the way gjc/0.18.11 does. */
+  const jobList = (...running: unknown[]) => [
+    { running, recent: [], delivery: { queued: 0, delivering: false } },
+  ];
+  const runningJob = (id: string, status = "running") => ({
+    id,
+    type: "task",
+    status,
+    label: id,
+  });
+
+  /** One session whose transcript lives in a private agent directory. */
+  async function markerHarness(rows: unknown[]) {
+    const root = await mkdtemp(path.join(tmpdir(), "async-marker-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    await transcriptFile(root, "s1", rows);
+    return {
+      cli,
+      emit,
+      internals,
+      /** Answers `runtime.jobs.list` and nothing else, like the real runtime. */
+      jobs: (...running: unknown[]) => {
+        (cli.queryItems as any).mockImplementation(
+          async (_id: string, query: string) =>
+            query === "runtime.jobs.list" ? jobList(...running) : [],
+        );
+      },
+      cleanup: async () => {
+        controller.dispose();
+        if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+        else process.env.GJC_CODING_AGENT_DIR = previous;
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("settles a session whose only running reason is a marker the runtime no longer runs", async () => {
+    const { cli, emit, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    jobs();
+    try {
+      // The transcript on its own still reads running: the task was launched and its
+      // release row never came.
+      expect(
+        persistedTranscriptRunning([taskLaunch("job-1"), terminalStop()]),
+      ).toBe(true);
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(cli.queryItems).toHaveBeenCalledWith("s1", "runtime.jobs.list", {}, {
+        repo: "/repo",
+      });
+      // The retired marker is remembered: an unchanged transcript is answered
+      // without asking the runtime again.
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+      // A durable rebuild meets the same rows and must not re-arm the latch.
+      internals.pendingAsyncWorkSessions.add("s1");
+      await internals.refreshTranscriptFromFile("s1");
+      expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+      // The row that was stuck at 작업 중 leaves it through the path the transcript
+      // watcher uses.
+      internals.sessions.get("s1").status = "running";
+      await internals.republishRunState("s1");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      expect(
+        emit.mock.calls.some(
+          ([event]: any[]) =>
+            event.type === "session.updated" && event.session.status === "idle",
+        ),
+      ).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps a session running while the runtime still reports its task", async () => {
+    const { cli, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    jobs(runningJob("job-1"));
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+      // Polling the same transcript answers from the recorded live set instead of
+      // issuing the query again.
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("releases markers the runtime no longer runs, whatever it settles with", async () => {
+    // An entry the runtime still carries but does not call running is not live work.
+    const statuses = ["completed", "failed", "cancelled", "paused"];
+    for (const status of statuses) {
+      const { internals, jobs, cleanup } = await markerHarness([
+        taskLaunch("job-1"),
+        terminalStop(),
+      ]);
+      jobs(runningJob("job-1", status));
+      try {
+        expect(await internals.discoveredRunState("s1")).toBe("idle");
+      } finally {
+        await cleanup();
+      }
+    }
+    // A job that left the live list entirely (finished and reaped, or a process that
+    // is gone) is not work in progress either.
+    const { internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      taskLaunch("job-2"),
+      terminalStop(),
+    ]);
+    jobs(runningJob("job-2"));
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(internals.asyncJobReconciliations.get("s1")?.deadJobIds.has("job-1")).toBe(
+        true,
+      );
+      expect(internals.asyncJobReconciliations.get("s1")?.deadJobIds.has("job-2")).toBe(
+        false,
+      );
+    } finally {
+      await cleanup();
+    }
+    // An entry the runtime does not label at all is not evidence that the work ended.
+    const unlabelled = await markerHarness([taskLaunch("job-1"), terminalStop()]);
+    unlabelled.jobs({ id: "job-1", type: "task" });
+    try {
+      expect(await unlabelled.internals.discoveredRunState("s1")).toBe("running");
+    } finally {
+      await unlabelled.cleanup();
+    }
+  });
+
+  it("keeps today's answer when the runtime cannot be asked", async () => {
+    const { cli, internals, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    (cli.queryItems as any).mockRejectedValue(
+      new SdkCliError("endpoint_stale", "The SDK endpoint is stale or unavailable."),
+    );
+    try {
+      // An unanswered query is not evidence the work ended.
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      // A failed attempt is throttled too, so a broken runtime is not re-queried on
+      // every read.
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("re-checks a live task past the throttle instead of trusting it forever", async () => {
+    const { cli, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    jobs(runningJob("job-1"));
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      // The user cancels the job from outside. The transcript never changes, so the
+      // next check on the runtime is the only thing that can settle the row.
+      jobs();
+      const record = internals.asyncJobReconciliations.get("s1");
+      internals.asyncJobReconciliations.set("s1", {
+        ...record,
+        checkedAt: record.checkedAt - 60_000,
+      });
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(cli.queryItems).toHaveBeenCalledTimes(2);
+      expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("does not ask the runtime while another reason keeps the session running", async () => {
+    // The user asked a question the transcript has not answered yet: the newest
+    // terminal assistant row is not the newest row, so the markers are not the only
+    // reason this reads running.
+    const { cli, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+      userRequest(),
+    ]);
+    jobs();
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(cli.queryItems).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps the release rows the transcript writes for itself", () => {
+    // A completed detached task, an awaited subagent, and a polled job inspector all
+    // release the launch marker without any query: this is the state machine the
+    // reconciliation must leave alone.
+    for (const release of [
+      asyncResult("job-1"),
+      subagentAwait("job-1"),
+      jobInspector("job-1"),
+    ]) {
+      expect(
+        persistedTranscriptRunning([
+          taskLaunch("job-1"),
+          release,
+          terminalStop(),
+        ]),
+      ).toBe(false);
+    }
+    // An unreleased marker still holds the session open, and a trailing user request
+    // reopens it whatever the markers say.
+    expect(
+      persistedTranscriptRunning([taskLaunch("job-1"), terminalStop()]),
+    ).toBe(true);
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        terminalStop(),
+        userRequest(),
+      ]),
+    ).toBe(true);
+  });
+});
+
+describe("todo snapshot phases", () => {
+  const systemRow = (internals: any): any =>
+    (internals.transcripts.get("s1") as Array<{ kind: string }>).find(
+      (item: any) => item.kind === "system",
+    );
+
+  it("maps the runtime's rows without inventing fields or statuses", () => {
+    expect(
+      todoSnapshotPhases([
+        {
+          name: "정리",
+          tasks: [
+            { content: "끝난 일", status: "completed" },
+            { content: "하는 일", status: "in_progress", notes: ["메모", 7] },
+            { title: "제목만 있는 행" },
+          ],
+        },
+        { content: "phase 없이 돌아온 행", status: "pending" },
+        { nonsense: true },
+        "junk",
+      ]),
+    ).toEqual([
+      {
+        name: "정리",
+        tasks: [
+          { content: "끝난 일", status: "completed" },
+          { content: "하는 일", status: "in_progress", notes: ["메모"] },
+          { content: "제목만 있는 행" },
+        ],
+      },
+      { tasks: [{ content: "phase 없이 돌아온 행", status: "pending" }] },
+    ]);
+  });
+
+  it("attaches phases only to a snapshot the store actually answered", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "activity-todo-phases-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    const records = [
+      { name: "남은 일", tasks: [{ content: "카드 그리기", status: "in_progress" }] },
+    ];
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => (query === "todo.list" ? records : []),
+    );
+    try {
+      await internals.readTodoRecords("s1");
+      const answered = systemRow(internals);
+      expect(answered.todoPhases).toEqual([
+        { name: "남은 일", tasks: [{ content: "카드 그리기", status: "in_progress" }] },
+      ]);
+      expect(typeof answered.observedAt).toBe("string");
+
+      // A read that fails keeps the last success in `content` but must not leave a
+      // checklist behind: rendered as current it would claim stale rows are live.
+      (cli.queryItems as any).mockRejectedValue(new SdkCliError("todo_unavailable", "no route"));
+      await internals.readTodoRecords("s1");
+      const stale = systemRow(internals);
+      expect(stale.todoPhases).toBeUndefined();
+      expect(stale.content).toContain("stale");
+      expect(stale.content).toContain("카드 그리기");
+    } finally {
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

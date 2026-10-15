@@ -46,6 +46,8 @@ import type {
   QueuedMessage,
   SubagentSnapshot,
   SystemNoticeActivity,
+  TodoSnapshotPhase,
+  TodoSnapshotTask,
   ToolImage,
 } from "../shared/agent-contract.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
@@ -692,9 +694,26 @@ const TERMINAL_STOP_REASONS = new Set([
   "max_tokens",
 ]);
 
+/**
+ * How long a reconciliation of detached-task launch markers is trusted.
+ *
+ * A marker the runtime still reports as running has to be re-checked eventually:
+ * a pause or cancel writes no release row, so only a later look at the job list
+ * can notice that the work ended. The delay keeps that look off the poll loop.
+ */
+const PENDING_ASYNC_RECONCILE_INTERVAL_MS = 15_000;
+
 interface PersistedTurnState {
   running: boolean;
-  pendingAsyncWork: boolean;
+  /** Launch markers of detached work no later row has released. */
+  pendingAsyncJobIds: string[];
+  /**
+   * The markers are the only reason this reads running: the newest terminal
+   * assistant row closed the cycle after they were written, and no tool row or
+   * user request came later. Only the runtime can settle that verdict, because a
+   * job paused or cancelled from outside writes no release row.
+   */
+  pendingAsyncWorkOnly: boolean;
   hasUserBoundary: boolean;
 }
 
@@ -706,6 +725,10 @@ interface PersistedTurnState {
  * appends `custom_message/async-result` and automatically resumes the model without a
  * new user row. Treating that first response as the turn boundary is the exact
  * running -> idle -> running flicker this state machine must prevent.
+ *
+ * A job the user paused or cancelled delivers no such row, so its launch marker
+ * outlives the work it described. `pendingAsyncWorkOnly` names the one verdict the
+ * transcript cannot settle alone.
  */
 function persistedTurnState(rows: unknown[]): PersistedTurnState {
   let lastUser = -1;
@@ -827,12 +850,17 @@ function persistedTurnState(rows: unknown[]): PersistedTurnState {
       if (!abandoned) lastActivity = index;
     }
   }
+  const workAfterTerminal = lastActivity > lastTerminalAssistant;
+  const userAfterTerminal = lastUser >= 0 && lastUser > lastTerminalAssistant;
+  const pendingAsyncJobIds = abandoned ? [] : [...pendingAsyncJobs];
+  const pendingAsyncWork = pendingAsyncJobIds.length > 0;
   return {
-    running:
-      (!abandoned && pendingAsyncJobs.size > 0) ||
-      lastActivity > lastTerminalAssistant ||
-      (lastUser >= 0 && lastUser > lastTerminalAssistant),
-    pendingAsyncWork: !abandoned && pendingAsyncJobs.size > 0,
+    running: pendingAsyncWork || workAfterTerminal || userAfterTerminal,
+    pendingAsyncJobIds,
+    // A launch marker is itself a tool result row, so `!workAfterTerminal` already
+    // proves the newest terminal assistant row is newer than the newest marker.
+    pendingAsyncWorkOnly:
+      pendingAsyncWork && !workAfterTerminal && !userAfterTerminal,
     hasUserBoundary: lastUser >= 0,
   };
 }
@@ -981,6 +1009,58 @@ function todoSnapshotRowId(sessionId: string): string {
   return `app-todo-${sessionId}`;
 }
 
+/** One runtime task row, as data. Unknown fields are dropped, never guessed. */
+function todoSnapshotTask(value: unknown): TodoSnapshotTask | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const content =
+    typeof record.content === "string"
+      ? record.content
+      : typeof record.title === "string"
+        ? record.title
+        : typeof record.task === "string"
+          ? record.task
+          : undefined;
+  if (!content) return undefined;
+  const notes = Array.isArray(record.notes)
+    ? record.notes.filter((note): note is string => typeof note === "string")
+    : [];
+  return {
+    content,
+    ...(typeof record.status === "string" ? { status: record.status } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
+  };
+}
+
+/**
+ * The runtime's todo rows as phases, without inventing a shape.
+ *
+ * GJC stores `TodoPhase { name, tasks: TodoItem[] }`, and the renderer draws this
+ * checklist from the real status strings. A row that carries no `tasks` array is
+ * kept as a single unnamed task when it has a text field, and a row that matches
+ * neither is left out -- its raw JSON is still on screen in `content`, so dropping
+ * it here cannot hide data.
+ */
+export function todoSnapshotPhases(rows: readonly unknown[]): TodoSnapshotPhase[] {
+  const phases: TodoSnapshotPhase[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+    const record = row as Record<string, unknown>;
+    if (Array.isArray(record.tasks)) {
+      phases.push({
+        ...(typeof record.name === "string" ? { name: record.name } : {}),
+        tasks: record.tasks
+          .map(todoSnapshotTask)
+          .filter((task): task is TodoSnapshotTask => task !== undefined),
+      });
+      continue;
+    }
+    const task = todoSnapshotTask(record);
+    if (task) phases.push({ tasks: [task] });
+  }
+  return phases;
+}
+
 /**
  * The runtime's todo store as this window last observed it.
  *
@@ -1001,7 +1081,7 @@ interface TodoSnapshotState {
 /** One redacted line describing why a todo read could not answer. */
 function todoQueryErrorText(error: string | undefined): string {
   const line = error?.split("\n")[0]?.trim();
-  return redactSensitiveText(line || "런타임이 응답하지 않았습니다");
+  return redactSensitiveText(line || "the runtime did not answer");
 }
 
 function customMessageTitle(customType: unknown): string {
@@ -1840,10 +1920,23 @@ export function brokerFailureMessage(error: unknown): string {
     : String(error);
 }
 
-// Shown when a session cannot be controlled because it never published an SDK
-// endpoint. It names the fix rather than the internal reason.
-export const TERMINAL_ONLY_CONTROL_MESSAGE =
-  "터미널에서 실행 중인 세션이라 앱에서 제어할 수 없습니다. Gajae에서 새 세션을 만들어 주세요.";
+// Shown when a live session has no shared control route this window can use. It
+// names the route and the retry rather than the process that might hold the
+// session: a live row the broker cannot route to is not proof that a terminal owns
+// it, and the session itself is never closed, resumed, or replaced by this message.
+export const SHARED_ROUTE_UNAVAILABLE_MESSAGE =
+  "이 세션의 공유 제어 경로를 확인할 수 없습니다. 세션과 기록은 그대로 유지됩니다. GJC에서 세션을 다시 열거나 잠시 뒤 다시 시도하면 이어서 제어할 수 있습니다.";
+
+// Shown when the session answers this window but GJC refuses the operator-owned
+// Stop. The broker control route requires the session's indexed
+// `lifecycleRequestId` (`Broker.#sessionControlAuthority`) and the host compares it
+// against `GJC_LIFECYCLE_REQUEST_ID` (`hasBrokerRuntimeAbortCapability`); a directly
+// launched TUI host need not carry that identity, so metadata, prompts, and
+// steering keep working while Stop is refused. There is no ordinary `turn.abort`
+// fallback: it has a different contract and cannot substantiate that owned work
+// stopped, so this reports the refusal instead of claiming the work is gone.
+export const OWNED_STOP_UNAVAILABLE_MESSAGE =
+  "이 세션은 앱에서 계속 제어할 수 있지만, GJC가 이 호스트의 소유자 중지(Stop) 권한을 확인할 수 없습니다. 작업과 백그라운드 작업이 멈췄다면 그 결과는 확정되지 않았습니다. 세션이 중지를 허용하면 다시 시도해 주세요.";
 
 /**
  * Canonical identity for a workspace directory.
@@ -2089,12 +2182,31 @@ export class GjcSdkController {
   private readonly runtimeIdleSessions = new Set<string>();
   /** Sessions with a detached task that has not delivered its async-result yet. */
   private readonly pendingAsyncWorkSessions = new Set<string>();
+  /**
+   * Launch markers a session's transcript carried when the runtime was last asked
+   * which jobs it still has running.
+   *
+   * `runtime.jobs.list` is the only authority that can retire a marker whose job was
+   * paused, cancelled, or taken down with its process -- none of those deliver the
+   * `async-result` release a completed detached task writes. A retired marker is
+   * remembered because the transcript rows that wrote it never change: without that,
+   * every later read of the same file would re-arm the latch it belongs to.
+   */
+  private readonly asyncJobReconciliations = new Map<
+    string,
+    { checkedAt: number; deadJobIds: Set<string> }
+  >();
   /** Monotonic per-session lifecycle generation for async status reads and IPC merges. */
   private readonly runRevisions = new Map<string, number>();
-  /** Transcript-derived run state per session, keyed by the file size it was read at. */
+  /**
+   * Transcript-derived run state per session, keyed by the file size it was read at.
+   *
+   * `runningJobIds` records the launch markers the verdict at that size rests on,
+   * so a size-unchanged read can still notice that the job behind them ended.
+   */
   private readonly discoveredRunStates = new Map<
     string,
-    { size: number; status: AgentSession["status"] }
+    { size: number; status: AgentSession["status"]; runningJobIds?: string[] }
   >();
   /** Delay between broker polls while recovering a fork's session id. */
   private forkRecoveryIntervalMs = 250;
@@ -2270,6 +2382,7 @@ export class GjcSdkController {
     this.workingPhaseSessions.clear();
     this.runtimeIdleSessions.clear();
     this.pendingAsyncWorkSessions.clear();
+    this.asyncJobReconciliations.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -2340,7 +2453,18 @@ export class GjcSdkController {
       }
       const attachable = (session.endpointGeneration ?? 0) > 0;
       liveRanks.set(session.sessionId, attachable ? 2 : 1);
-      if (!attachable) this.terminalOnlySessions.add(session.sessionId);
+      if (attachable && this.terminalOnlySessions.has(session.sessionId)) {
+        try {
+          const cli = await this.requireCli();
+          await cli.queryItems(session.sessionId, "session.metadata", {}, { repo: session.repo ?? this.workspace });
+          this.terminalOnlySessions.delete(session.sessionId);
+          const cached = this.sessions.get(session.sessionId);
+          if (cached) cached.attachment = "attachable";
+          this.lastLiveFingerprint = undefined;
+        } catch {
+          // Index liveness alone cannot establish a usable shared route.
+        }
+      }
       if (session.repo) liveWorkspaces.add(session.repo);
     }
     const workspaces = [
@@ -2736,8 +2860,27 @@ export class GjcSdkController {
       const info = await stat(filePath);
       if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
       const cached = this.discoveredRunStates.get(sessionId);
-      if (cached && cached.size === info.size)
-        return this.effectiveTranscriptRunState(sessionId, cached.status);
+      if (cached && cached.size === info.size) {
+        if (!cached.runningJobIds || cached.runningJobIds.length === 0)
+          return this.effectiveTranscriptRunState(sessionId, cached.status);
+        // The transcript cannot move while its size is unchanged, so the only part
+        // of this verdict that still can is the detached work it rested on: a job
+        // paused or cancelled from outside writes no release row, and nothing else
+        // in the read path asks the runtime about it again.
+        const surviving = await this.reconciledAsyncJobIds(
+          sessionId,
+          cached.runningJobIds,
+        );
+        const status = surviving.length > 0 ? cached.status : ("idle" as const);
+        this.discoveredRunStates.set(sessionId, {
+          size: info.size,
+          status,
+          ...(surviving.length > 0 ? { runningJobIds: surviving } : {}),
+        });
+        if (surviving.length === 0)
+          this.pendingAsyncWorkSessions.delete(sessionId);
+        return this.effectiveTranscriptRunState(sessionId, status);
+      }
       // Never parse whole transcripts here. Measured across 399 local sessions
       // (640MB), a full parse of each costs ~23s, which would stall every list
       // refresh. Run state only depends on how the newest rows end, so a bounded
@@ -2752,12 +2895,30 @@ export class GjcSdkController {
           this.liveRunningSessions.has(sessionId),
       );
       if (!envelopes) return undefined;
-      const status = persistedTranscriptRunning(envelopes)
-        ? ("running" as const)
-        : ("idle" as const);
+      const turn = persistedTurnState(envelopes);
+      let runningJobIds: string[] | undefined;
+      let running = this.transcriptRunning(sessionId, turn);
+      if (turn.pendingAsyncWorkOnly) {
+        // The one verdict a transcript cannot settle alone. A detached task that is
+        // paused, cancelled, or lost with its process writes no release row, so its
+        // launch marker stays in the file long after the work ended. The runtime's
+        // own job list decides -- and it is asked only when nothing else in the
+        // transcript keeps the session running.
+        runningJobIds = await this.reconciledAsyncJobIds(
+          sessionId,
+          turn.pendingAsyncJobIds,
+        );
+        running = runningJobIds.length > 0;
+        if (!running) this.pendingAsyncWorkSessions.delete(sessionId);
+      }
+      const status = running ? ("running" as const) : ("idle" as const);
       if (status === "running") this.transcriptRunningSessions.add(sessionId);
       else this.transcriptRunningSessions.delete(sessionId);
-      this.discoveredRunStates.set(sessionId, { size: info.size, status });
+      this.discoveredRunStates.set(sessionId, {
+        size: info.size,
+        status,
+        ...(runningJobIds ? { runningJobIds } : {}),
+      });
       return this.effectiveTranscriptRunState(sessionId, status);
     } catch {
       return undefined;
@@ -2776,6 +2937,105 @@ export class GjcSdkController {
     )
       return "running";
     return status;
+  }
+
+  /**
+   * A transcript's verdict, minus the launch markers a reconciliation has retired.
+   *
+   * A marker the reconciliation record does not name has not been put to the
+   * runtime yet, and a marker awaiting that answer is still work in progress. The
+   * transcript read path uses this rather than the raw verdict so a rebuild cannot
+   * re-arm a latch from rows it has already retired.
+   */
+  private transcriptRunning(
+    sessionId: string,
+    turn: PersistedTurnState,
+  ): boolean {
+    if (!turn.pendingAsyncWorkOnly) return turn.running;
+    return this.unreconciledAsyncJobIds(sessionId, turn.pendingAsyncJobIds)
+      .length > 0;
+  }
+
+  /** The launch markers a reconciliation has not retired. */
+  private unreconciledAsyncJobIds(
+    sessionId: string,
+    jobIds: readonly string[],
+  ): string[] {
+    const dead = this.asyncJobReconciliations.get(sessionId)?.deadJobIds;
+    if (!dead || dead.size === 0) return [...jobIds];
+    return jobIds.filter((jobId) => !dead.has(jobId));
+  }
+
+  /**
+   * The launch markers among `jobIds` the runtime still reports as running.
+   *
+   * A marker the runtime no longer lists was finished, paused, cancelled, or taken
+   * down with its process, and none of those are work in progress. A query that
+   * cannot be answered is not evidence the work ended, so every marker survives it --
+   * but the time of the attempt is remembered either way, so the run-state read path
+   * never turns into a query loop over a runtime that cannot answer.
+   */
+  private async reconciledAsyncJobIds(
+    sessionId: string,
+    jobIds: readonly string[],
+  ): Promise<string[]> {
+    const pending = this.unreconciledAsyncJobIds(sessionId, jobIds);
+    if (pending.length === 0) return pending;
+    const record = this.asyncJobReconciliations.get(sessionId);
+    const now = Date.now();
+    if (record && now - record.checkedAt < PENDING_ASYNC_RECONCILE_INTERVAL_MS)
+      return pending;
+    const dead = record?.deadJobIds ?? new Set<string>();
+    const live = await this.runningAsyncJobIds(sessionId);
+    this.asyncJobReconciliations.set(sessionId, {
+      checkedAt: now,
+      deadJobIds: dead,
+    });
+    if (!live) return pending;
+    for (const jobId of pending) if (!live.has(jobId)) dead.add(jobId);
+    return pending.filter((jobId) => live.has(jobId));
+  }
+
+  /**
+   * The jobs a session's runtime currently reports as running, or undefined when it
+   * did not answer.
+   *
+   * `runtime.jobs.list` answers one wrapper row holding `running`, the entries the
+   * runtime still considers alive, next to `recent` and `delivery` bookkeeping. Only
+   * that list can retire a launch marker, and an empty answer is never fabricated:
+   * it resolves every marker as dead, so a runtime that could not be reached must
+   * not be reported as one that answered nothing.
+   */
+  private async runningAsyncJobIds(
+    sessionId: string,
+  ): Promise<Set<string> | undefined> {
+    let rows: unknown[];
+    try {
+      rows = await this.querySessionItems(sessionId, "runtime.jobs.list", {}, {
+        strict: true,
+      });
+    } catch {
+      return undefined;
+    }
+    let answered = false;
+    const running = new Set<string>();
+    for (const row of rows) {
+      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+      const entries = (row as Record<string, unknown>).running;
+      if (!Array.isArray(entries)) continue;
+      answered = true;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const job = entry as Record<string, unknown>;
+        // An entry the runtime still carries with a status of its own -- paused, or
+        // cancelled and not yet reaped -- is not work in progress. A missing status
+        // is not evidence of an end either: the live list itself is the authority.
+        if (typeof job.id !== "string") continue;
+        if (job.status === undefined || job.status === "running")
+          running.add(job.id);
+      }
+    }
+    return answered ? running : undefined;
   }
 
   /**
@@ -3306,7 +3566,10 @@ export class GjcSdkController {
               this.compactionStartedAt.get(sessionId)!)) &&
         !persistedTurn.running;
 
-      const transcriptRunning = persistedTurn.running;
+      // The launch markers a reconciliation already retired are not work again just
+      // because this read met the same rows: a job that was paused or cancelled
+      // leaves its marker in the file for good.
+      const transcriptRunning = this.transcriptRunning(sessionId, persistedTurn);
       const turnRunning =
         transcriptRunning ||
         this.activePromptSessions.has(sessionId) ||
@@ -3340,7 +3603,10 @@ export class GjcSdkController {
           this.runtimeIdleSessions.delete(sessionId);
           this.patchSessionRuntime(sessionId, { phase: undefined });
         }
-        if (persistedTurn.pendingAsyncWork)
+        if (
+          this.unreconciledAsyncJobIds(sessionId, persistedTurn.pendingAsyncJobIds)
+            .length > 0
+        )
           this.pendingAsyncWorkSessions.add(sessionId);
         else this.pendingAsyncWorkSessions.delete(sessionId);
       }
@@ -3659,6 +3925,8 @@ export class GjcSdkController {
   // control surface it does not have, instead of failing again on the next action.
   private markTerminalOnly(sessionId: string): void {
     this.terminalOnlySessions.add(sessionId);
+    this.attachedSessions.delete(sessionId);
+    this.stopTailFollower(sessionId);
     // The reuse fingerprint only covers broker liveness, which this discovery does
     // not change. Without invalidating it the next scan replays the snapshot taken
     // before the failure and the row goes back to advertising controls.
@@ -3908,8 +4176,18 @@ export class GjcSdkController {
       // A session with no SDK endpoint is reported once, in terms the user can act
       // on, instead of each caller surfacing the broker's routing language.
       if (isSessionUnreachable(error)) {
+        if (operation === "turn.abort" && input.operator === true) {
+          try {
+            await cli.queryItems(sessionId, "session.metadata", {}, { repo: this.repoFor(sessionId) });
+          } catch {
+            this.markTerminalOnly(sessionId);
+            throw new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
+          }
+          this.terminalOnlySessions.delete(sessionId);
+          throw new Error(OWNED_STOP_UNAVAILABLE_MESSAGE);
+        }
         this.markTerminalOnly(sessionId);
-        throw new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
+        throw new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
       }
       throw new Error(brokerFailureMessage(error));
     }
@@ -4468,7 +4746,7 @@ export class GjcSdkController {
       }
       if (isSessionUnreachable(error)) {
         this.markTerminalOnly(sessionId);
-        error = new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
+        error = new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
       }
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
@@ -5469,6 +5747,7 @@ export class GjcSdkController {
     this.workingPhaseSessions.delete(sessionId);
     this.runtimeIdleSessions.delete(sessionId);
     this.pendingAsyncWorkSessions.delete(sessionId);
+    this.asyncJobReconciliations.delete(sessionId);
     this.runRevisions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
     this.compactingSessions.delete(sessionId);
@@ -5550,6 +5829,7 @@ export class GjcSdkController {
     this.workingPhaseSessions.clear();
     this.runtimeIdleSessions.clear();
     this.pendingAsyncWorkSessions.clear();
+    this.asyncJobReconciliations.clear();
     this.runRevisions.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
@@ -5996,20 +6276,12 @@ export class GjcSdkController {
         "session_deleted",
         `Session ${sessionId} was deleted.`,
       );
-    // A live generation-0 row with broker activity is a TUI-held session. It is
-    // readable from the shared transcript but has no Router attachment, and the
-    // lease belongs to the terminal until the user exits it. Resume is deliberately
-    // user-driven; no timer retries this condition.
-    if (
-      row?.live === true &&
-      (row.endpointGeneration ?? 0) === 0
-    )
-      throw new SdkCliError(
-        "provider_lease_conflict",
-        "The session is held by another terminal and has no Router attachment.",
-      );
+    // A live terminal host can serve several clients. Probe its public route;
+    // generation zero is not proof of an exclusive terminal lease.
+    if (row?.live === true)
+      await cli.queryItems(sessionId, "session.metadata", {}, { repo: cwd });
     let rehosted = false;
-    if (!row?.live || row.terminalUncertain === true) {
+    if (!row?.live) {
       // Resume re-hosts a session whose endpoint is gone. `sessionPath` is passed
       // when known so the host adopts this exact transcript rather than resolving a
       // same-id file elsewhere.
@@ -6046,6 +6318,7 @@ export class GjcSdkController {
       this.finalizeAllMessages(sessionId);
     }
     this.attachedSessions.add(sessionId);
+    this.terminalOnlySessions.delete(sessionId);
     this.startTailFollower(sessionId);
     // Command discovery must not wait for GJC to publish a bootstrap update: a
     // session opened in an already-running process never re-sends one, and the tail
@@ -6464,7 +6737,7 @@ export class GjcSdkController {
       | { error: string | undefined; observedAt: string },
   ): void {
     const previous = this.sessionTodoSnapshots.get(sessionId);
-    const header = ["- 소스: todo.list (strict 조회)"];
+    const header = ["- source: todo.list (strict read)"];
     let rows = previous?.rows;
     let json = previous?.json;
     let observedAt = previous?.observedAt;
@@ -6473,33 +6746,42 @@ export class GjcSdkController {
       observedAt = observed.observedAt;
       json = boundedJson(observed.rows) ?? "[]";
       header.push(
-        `- 관측 시각: ${observed.observedAt}`,
-        `- 반환된 작업 기록: ${observed.rows.length}개`,
+        `- observed: ${observed.observedAt}`,
+        `- records: ${observed.rows.length}`,
       );
     } else if (json !== undefined) {
       header.push(
-        `- 마지막 성공 관측: ${observedAt ?? "알 수 없음"}`,
-        `- 조회 실패: ${todoQueryErrorText(observed.error)}`,
-        "- 상태: 이전 성공 스냅샷 표시 중 (stale)",
+        `- last success: ${observedAt ?? "unknown"}`,
+        `- read failed: ${todoQueryErrorText(observed.error)}`,
+        "- state: showing the last successful snapshot (stale)",
       );
     } else {
       header.push(
-        `- 관측 시각: ${observed.observedAt}`,
-        `- 조회 실패: ${todoQueryErrorText(observed.error)}`,
-        "- 상태: 할 일 목록을 확인할 수 없습니다 (빈 목록이 아닙니다)",
+        `- observed: ${observed.observedAt}`,
+        `- read failed: ${todoQueryErrorText(observed.error)}`,
+        "- state: the todo store could not be read (this is not an empty list)",
       );
     }
     const row: SystemNoticeActivity = {
       id: todoSnapshotRowId(sessionId),
       kind: "system",
       sessionId,
-      title: "할 일 목록",
+      title: "Todos",
       content: [
         ...header,
         ...(json === undefined ? [] : ["```json", json, "```"]),
       ].join("\n"),
       createdAt: previous?.row.createdAt ?? nowLabel(),
       sourceType: "todo.list",
+      // Phases are attached only when the store answered: a row without them falls
+      // back to the text card that already says the snapshot is stale or unreadable,
+      // because a checklist drawn from an older read would claim it is current.
+      ...("rows" in observed
+        ? {
+            todoPhases: todoSnapshotPhases(observed.rows),
+            observedAt: observed.observedAt,
+          }
+        : {}),
     };
     this.sessionTodoSnapshots.set(sessionId, {
       row,

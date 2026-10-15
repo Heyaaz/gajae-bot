@@ -135,7 +135,7 @@ describe("Sidebar session groups", () => {
     );
     // Pin first, then attention order: a status heading list that reads like the
     // list model instead of like the order the backend happened to send.
-    expect(headings(markup)).toEqual(["고정됨", "확인 필요", "작업 중", "완료"]);
+    expect(headings(markup)).toEqual(["고정됨", "Needs input", "Working", "Done"]);
     expect(markup).not.toContain("최근 세션");
   });
 
@@ -182,7 +182,7 @@ describe("Sidebar families", () => {
     expect(markup).toContain("session-row--nested");
     // The head carries the control, and a fork is open until the user closes it.
     expect(markup).toContain('aria-expanded="true"');
-    expect(markup).toContain("포크 0개 숨김");
+    expect(markup).toContain("Fork 0 hidden");
   });
 
   it("places a family where its fork needs an answer", () => {
@@ -200,7 +200,7 @@ describe("Sidebar families", () => {
         ]),
       ),
     );
-    expect(headings(markup)).toEqual(["확인 필요"]);
+    expect(headings(markup)).toEqual(["Needs input"]);
     expect(markup).toContain("Session 0");
     expect(markup).toContain("Session 1");
   });
@@ -245,8 +245,8 @@ describe("Sidebar row state", () => {
     expect(markup).toContain('class="session-state-dot session-state-dot--waiting"');
     expect(markup).toContain('class="session-state-dot session-state-dot--running"');
     expect(markup).toContain('class="session-state-dot session-state-dot--compacting"');
-    expect(markup).toContain('aria-label="확인 필요"');
-    expect(markup).toContain('title="압축 중"');
+    expect(markup).toContain('aria-label="Needs input"');
+    expect(markup).toContain('title="Compacting"');
   });
 });
 

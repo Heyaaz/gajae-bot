@@ -66,12 +66,12 @@ export function httpUrls(value: string, limit = 3): string[] {
 }
 
 export function statusLabel(status: AgentSession["status"], phase?: string): string {
-  if (phase === "compacting") return "압축 중";
-  if (status === "starting") return "시작 중";
-  if (status === "running") return "작업 중";
-  if (status === "waiting") return "확인 필요";
-  if (status === "failed") return "실패";
-  return "대기 중";
+  if (phase === "compacting") return "Compacting";
+  if (status === "starting") return "Starting";
+  if (status === "running") return "Working";
+  if (status === "waiting") return "Needs input";
+  if (status === "failed") return "Failed";
+  return "Idle";
 }
 
 export function connectionStateLabel(state: BackendConnection["state"]): string {
