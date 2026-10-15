@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -14,6 +14,7 @@ import {
   toolStatus,
   readableModelLabel,
   historySessionSummary,
+  parentSessionOf,
 } from "./gjc-sdk-controller.js";
 import { SdkCliError } from "./gjc-sdk-cli.js";
 const execFile = promisify(execFileCallback);
@@ -37,6 +38,114 @@ function harness(options: Record<string, unknown> = {}) {
   internals.cli = cli; internals.startup = Promise.resolve(); internals.generation = 1;
   return { controller, cli, internals };
 }
+
+/**
+ * Writes a session transcript into the agent directory the transcript locator and
+ * `listHistorySessions` both scan.
+ */
+async function transcriptFile(
+  root: string,
+  id: string,
+  rows: unknown[],
+): Promise<void> {
+  const directory = path.join(root, "sessions", "v2-bucket");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    path.join(directory, `2026-01-01T00-00-00-000Z_${id}.jsonl`),
+    rows.map((row) => JSON.stringify(row)).join("\n"),
+    "utf8",
+  );
+}
+
+describe("parentSessionOf", () => {
+  const envelope = (row: unknown): string => JSON.stringify(row);
+
+  it("reads the source session id a fork recorded in its envelope", () => {
+    expect(
+      parentSessionOf(
+        envelope({
+          type: "session",
+          id: "child",
+          parentSession: "01a13de2-ebf4-70a3-a72a-73e9cb2ce5dd",
+        }),
+        "child",
+      ),
+    ).toBe("01a13de2-ebf4-70a3-a72a-73e9cb2ce5dd");
+  });
+
+  it("reduces a source recorded as a session file path", () => {
+    // GJC has paths that put the *file* here rather than the id, and its own parser
+    // calls the field parentSessionPath for that reason.
+    expect(
+      parentSessionOf(
+        envelope({
+          type: "session",
+          id: "child",
+          parentSession:
+            "/home/me/.gjc/agent/sessions/v2-scope/2026-10-15T04-47-24-148Z_01a13de2-ebf4-70a3-a72a-73e9cb2ce5dd.jsonl",
+        }),
+        "child",
+      ),
+    ).toBe("01a13de2-ebf4-70a3-a72a-73e9cb2ce5dd");
+  });
+
+  it("treats a self-reference, a blank value, and other records as no parent", () => {
+    expect(
+      parentSessionOf(
+        envelope({ type: "session", id: "s1", parentSession: "s1" }),
+        "s1",
+      ),
+    ).toBeUndefined();
+    expect(
+      parentSessionOf(
+        envelope({ type: "session", id: "s1", parentSession: "   " }),
+        "s1",
+      ),
+    ).toBeUndefined();
+    expect(
+      parentSessionOf(envelope({ type: "message", role: "user" }), "s1"),
+    ).toBeUndefined();
+    expect(parentSessionOf(undefined, "s1")).toBeUndefined();
+    expect(parentSessionOf("{ torn line", "s1")).toBeUndefined();
+  });
+});
+
+describe("listHistorySessions lineage", () => {
+  it("marks a past session that was forked from another", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "history-fork-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const { controller } = harness();
+    try {
+      await transcriptFile(root, "fork", [
+        { type: "session", cwd: "/repo", parentSession: "source-session" },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "포크된 세션" }] },
+        },
+      ]);
+      await transcriptFile(root, "root", [
+        { type: "session", cwd: "/repo" },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "그냥 세션" }] },
+        },
+      ]);
+
+      const sessions = await controller.listHistorySessions();
+      expect(
+        sessions
+          .map((session) => `${session.id}=${session.parentId ?? "none"}`)
+          .sort(),
+      ).toEqual(["fork=source-session", "root=none"]);
+    } finally {
+      controller.dispose();
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("protocol-neutral helpers", () => {
   it("classifies git headers and tools", () => {
@@ -283,6 +392,45 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.refreshTranscriptFromFile).toHaveBeenCalledWith("s1");
     expect((cli.tail as any).mock.calls[1]?.[1]).not.toHaveProperty("cursor");
     controller.dispose();
+  });
+
+  it("nests a listed session under the row its envelope names", async () => {
+    // Lineage is not on the broker row this list reads, so the session's own
+    // envelope supplies it -- this is the wiring that proves a fork arrives nested.
+    const root = await mkdtemp(path.join(tmpdir(), "session-lineage-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const { controller, cli } = harness();
+    try {
+      await transcriptFile(root, "child", [
+        { type: "session", cwd: "/repo", parentSession: "parent" },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "포크된 세션" }] },
+        },
+      ]);
+      await transcriptFile(root, "parent", [
+        { type: "session", cwd: "/repo" },
+        {
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "그냥 세션" }] },
+        },
+      ]);
+      (cli.listSessions as any).mockResolvedValue([
+        { sessionId: "parent", repo: "/repo", live: true, deleted: false, endpointGeneration: 1, runtime: "gjc" },
+        { sessionId: "child", repo: "/repo", live: true, deleted: false, endpointGeneration: 1, runtime: "gjc" },
+      ]);
+
+      const listed = await controller.listSessions();
+      expect(listed.find((row) => row.id === "child")?.parentId).toBe("parent");
+      // A session with no recorded source stays a root rather than inventing one.
+      expect(listed.find((row) => row.id === "parent")?.parentId).toBeUndefined();
+    } finally {
+      controller.dispose();
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("creates a managed worktree and submits its cwd", async () => {
