@@ -1,0 +1,142 @@
+import type {
+  AgentSession,
+  BackendConnection,
+  HistorySession,
+  MessageDelivery,
+  ToolDecision,
+  TranscriptItem,
+} from "../../shared/agent-contract.js";
+import type { RemoteOperationName } from "../../shared/remote-protocol.js";
+import type { ResolvedMessageInput } from "../gjc-acp-controller.js";
+import { messageInput, requiredId, toolDecision } from "../gjc-input-validation.js";
+
+/**
+ * The operations a remote device may run, expressed once for every transport.
+ *
+ * The host passes the same `GjcAcpController` the Electron IPC layer uses, so a
+ * phone and the desktop drive one runtime instead of two views of it. What is
+ * deliberately *not* here is as important as what is: session creation, deletion,
+ * compaction, git commits and pushes keep their native confirmation dialog and
+ * stay desktop-only.
+ */
+
+export interface RemoteOperationsHost {
+  getConnection(): Promise<BackendConnection>;
+  listSessions(): Promise<AgentSession[]>;
+  listHistorySessions(): Promise<HistorySession[]>;
+  getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  listQueuedMessages(sessionId: string): Promise<{ id: string; text: string; mode: string; label: string }[]>;
+  getGoal(sessionId: string): Promise<unknown>;
+  listSubagents(sessionId: string): Promise<unknown[]>;
+  getGitStatus(sessionId: string): Promise<unknown>;
+  getDiff(sessionId: string): Promise<unknown>;
+  readArtifact(sessionId: string, artifactId: string): Promise<unknown>;
+  sendMessage(sessionId: string, input: ResolvedMessageInput): Promise<MessageDelivery>;
+  steerSession(sessionId: string, input: ResolvedMessageInput): Promise<void>;
+  queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<void>;
+  flushQueuedNow(sessionId: string): Promise<boolean>;
+  cancelRun(sessionId: string): Promise<void>;
+  resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;
+  markSessionRead(sessionId: string): Promise<void>;
+}
+
+export interface RemoteOperationParams {
+  sessionId?: string;
+  toolId?: string;
+  artifactId?: string;
+}
+
+/**
+ * A remote device can attach images inline but cannot hand over native file
+ * paths: those are resolved through desktop leases tied to a renderer process
+ * that a phone does not have. Rejecting them here keeps a path string from ever
+ * reaching the workspace.
+ */
+export function remoteMessageInput(value: unknown): ResolvedMessageInput {
+  const input = messageInput(value);
+  if (input.files.length > 0)
+    throw new Error("Remote devices cannot attach native files; send images inline instead");
+  if (input.images.some((image) => image.token))
+    throw new Error("Remote devices cannot reference prepared attachments");
+  return {
+    text: input.text,
+    images: input.images.map((image) => ({
+      id: image.id,
+      name: image.name,
+      mimeType: image.mimeType,
+      data: image.data,
+    })),
+    files: [],
+  };
+}
+
+export function remoteSessionId(value: unknown): string {
+  return requiredId(value, "Session ID");
+}
+
+export async function runRemoteOperation(
+  host: RemoteOperationsHost,
+  operation: RemoteOperationName,
+  params: RemoteOperationParams,
+  body: unknown,
+): Promise<unknown> {
+  const sessionId =
+    params.sessionId === undefined ? undefined : remoteSessionId(params.sessionId);
+  switch (operation) {
+    case "state":
+      return { connection: await host.getConnection(), sessions: await host.listSessions() };
+    case "history-sessions":
+      return host.listHistorySessions();
+    case "transcript":
+      return host.getTranscript(sessionId!);
+    case "queued":
+      return host.listQueuedMessages(sessionId!);
+    case "goal":
+      return host.getGoal(sessionId!);
+    case "subagents":
+      return host.listSubagents(sessionId!);
+    case "git-status":
+      return host.getGitStatus(sessionId!);
+    case "diff":
+      return host.getDiff(sessionId!);
+    case "artifact":
+      return host.readArtifact(sessionId!, requiredId(params.artifactId, "Artifact ID"));
+    case "send-message":
+      return host.sendMessage(sessionId!, remoteMessageInput(messageBody(body)));
+    case "steer":
+      return host.steerSession(sessionId!, remoteMessageInput(messageBody(body)));
+    case "queue-follow-up":
+      return host.queueFollowUp(sessionId!, remoteMessageInput(messageBody(body)));
+    case "flush-follow-ups":
+      return host.flushQueuedNow(sessionId!);
+    case "cancel-run":
+      return host.cancelRun(sessionId!);
+    case "resolve-tool-call":
+      return host.resolveToolCall(
+        requiredId(params.toolId, "Tool call ID"),
+        toolDecision(decisionBody(body)),
+      );
+    case "mark-read":
+      return host.markSessionRead(sessionId!);
+    default: {
+      const exhaustive: never = operation;
+      throw new Error(`Unsupported remote operation: ${String(exhaustive)}`);
+    }
+  }
+}
+
+function messageBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw new Error("Message input is required");
+  const input = (body as { input?: unknown }).input;
+  if (input === undefined) throw new Error("Message input is required");
+  return input;
+}
+
+function decisionBody(body: unknown): unknown {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw new Error("Tool decision is required");
+  const decision = (body as { decision?: unknown }).decision;
+  if (decision === undefined) throw new Error("Tool decision is required");
+  return decision;
+}
