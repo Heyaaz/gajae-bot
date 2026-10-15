@@ -12,7 +12,10 @@ const connection: BackendConnection = {
   workspace: "/tmp/project",
 };
 
-function session(index: number): AgentSession {
+function session(
+  index: number,
+  overrides: Partial<AgentSession> = {},
+): AgentSession {
   return {
     id: `session-${index}`,
     title: `Session ${index}`,
@@ -20,18 +23,22 @@ function session(index: number): AgentSession {
     workspace: "/tmp/project",
     runtime: "gjc",
     status: index % 3 === 0 ? "running" : "idle",
-    updatedAt: new Date().toISOString(),
+    updatedAt: "now",
     pinned: false,
     unread: false,
     accent: "#ffffff",
     ownership: "gajae",
     attachment: "attached",
+    ...overrides,
   } as AgentSession;
 }
 
 const noop = () => undefined;
 
-function props(sessions: AgentSession[]) {
+function props(
+  sessions: AgentSession[],
+  overrides: Partial<Parameters<typeof Sidebar>[0]> = {},
+) {
   return {
     sessions,
     connection,
@@ -52,6 +59,7 @@ function props(sessions: AgentSession[]) {
     updateStatus: undefined,
     updateBusy: false,
     onUpdate: noop,
+    ...overrides,
   } as unknown as Parameters<typeof Sidebar>[0];
 }
 
@@ -102,5 +110,89 @@ describe("Sidebar memoization", () => {
     const sessions = [session(0), session(1), session(2)];
     const markup = renderToStaticMarkup(createElement(Sidebar, props(sessions)));
     for (const item of sessions) expect(markup).toContain(item.title);
+  });
+});
+
+function headings(markup: string): string[] {
+  return [...markup.matchAll(/<header><span>([^<]*)<\/span>/gu)].map(
+    (match) => match[1],
+  );
+}
+
+describe("Sidebar session groups", () => {
+  it("leads with the rows that are waiting on the user", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([
+          session(0, { status: "idle" }),
+          session(1, { status: "running" }),
+          session(2, { status: "waiting" }),
+          session(3, { pinned: true, status: "idle" }),
+        ]),
+      ),
+    );
+    // Pin first, then attention order: a status heading list that reads like the
+    // list model instead of like the order the backend happened to send.
+    expect(headings(markup)).toEqual(["고정됨", "확인 필요", "작업 중", "완료"]);
+    expect(markup).not.toContain("최근 세션");
+  });
+
+  it("hides the rows past the cap behind a count", () => {
+    const sessions = Array.from({ length: 7 }, (_, index) =>
+      session(index, { status: "idle", updatedAtMs: 7_000 - index }),
+    );
+    const markup = renderToStaticMarkup(createElement(Sidebar, props(sessions)));
+    expect(markup).toContain("더 보기 (2)");
+    expect(markup).toContain("Session 4");
+    // Rows past the cap are behind the button, not gone: the model still holds
+    // them and still numbers them for ⌘-digits.
+    expect(markup).not.toContain("Session 5");
+    expect(markup).not.toContain("Session 6");
+  });
+
+  it("shows five rows per group before the button appears", () => {
+    const sessions = Array.from({ length: 5 }, (_, index) =>
+      session(index, { status: "idle" }),
+    );
+    const markup = renderToStaticMarkup(createElement(Sidebar, props(sessions)));
+    expect(markup).not.toContain("더 보기");
+    expect(markup).not.toContain("접기");
+  });
+});
+
+describe("Sidebar row state", () => {
+  it("does not flag the row the user is already reading", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props(
+          [
+            session(0, { unread: true }),
+            session(1, { unread: true, status: "idle" }),
+          ],
+          { selectedId: "session-0" },
+        ),
+      ),
+    );
+    expect(markup.split("새 활동").length - 1).toBe(1);
+  });
+
+  it("names the trailing state dot instead of printing the state", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([
+          session(0, { status: "waiting" }),
+          session(1, { status: "running" }),
+          session(2, { status: "idle", phase: "compacting" }),
+        ]),
+      ),
+    );
+    expect(markup).toContain('class="session-state-dot session-state-dot--waiting"');
+    expect(markup).toContain('class="session-state-dot session-state-dot--running"');
+    expect(markup).toContain('class="session-state-dot session-state-dot--compacting"');
+    expect(markup).toContain('aria-label="확인 필요"');
+    expect(markup).toContain('title="압축 중"');
   });
 });

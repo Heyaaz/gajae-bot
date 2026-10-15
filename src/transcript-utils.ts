@@ -46,15 +46,6 @@ export function recentUserRequests(
     .reverse();
 }
 
-export function orderedSessionsForShortcuts<T extends { pinned: boolean }>(
-  sessions: readonly T[],
-): T[] {
-  return [
-    ...sessions.filter((session) => session.pinned),
-    ...sessions.filter((session) => !session.pinned),
-  ];
-}
-
 export function initialSessionId(
   sessions: ReadonlyArray<{ id: string; unread: boolean; title?: string }>,
   current: string | null,

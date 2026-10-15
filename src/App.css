@@ -461,6 +461,21 @@
   text-transform: uppercase;
 }
 
+.session-more {
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.session-more:hover {
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.035);
+}
 .session-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -527,43 +542,6 @@
   color: var(--text-tertiary);
   font-size: 10px;
 }
-.session-state-badge {
-  flex: 0 0 auto;
-  padding: 2px 5px;
-  color: #818187;
-  font-size: 8px;
-  font-weight: 650;
-  line-height: 1;
-  background: rgba(255, 255, 255, 0.045);
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 999px;
-}
-.session-state-badge--running {
-  color: #72dba4;
-  background: rgba(103, 214, 165, 0.08);
-  border-color: rgba(103, 214, 165, 0.18);
-}
-.session-state-badge--compacting {
-  color: #ffad6f;
-  background: rgba(255, 138, 52, 0.1);
-  border-color: rgba(255, 138, 52, 0.22);
-}
-.session-state-badge--cancelling {
-  color: #ffad6f;
-  background: rgba(255, 138, 52, 0.1);
-  border-color: rgba(255, 138, 52, 0.22);
-}
-.session-state-badge--waiting,
-.session-state-badge--starting {
-  color: var(--warning);
-  background: rgba(227, 179, 106, 0.08);
-  border-color: rgba(227, 179, 106, 0.18);
-}
-.session-state-badge--failed {
-  color: var(--danger);
-  background: rgba(224, 108, 95, 0.08);
-  border-color: rgba(224, 108, 95, 0.18);
-}
 .session-context-usage {
   flex: 0 0 auto;
   color: #e58b4c;
@@ -602,6 +580,25 @@
 .session-row__subtitle svg {
   flex: 0 0 auto;
   color: var(--success);
+}
+.session-state-dot {
+  width: 6px;
+  height: 6px;
+  background: var(--text-tertiary);
+  border-radius: 50%;
+}
+.session-state-dot--running {
+  background: var(--success);
+}
+.session-state-dot--compacting {
+  background: #ff8a34;
+}
+.session-state-dot--waiting,
+.session-state-dot--starting {
+  background: var(--warning);
+}
+.session-state-dot--failed {
+  background: var(--danger);
 }
 .session-row__meta {
   display: grid;

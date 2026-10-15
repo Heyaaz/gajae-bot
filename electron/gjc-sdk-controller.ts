@@ -377,6 +377,28 @@ function recentLabel(timestamp: string | null | undefined): string {
   return `${Math.floor(elapsed / 86_400_000)}d`;
 }
 
+/**
+ * The sortable twin of `recentLabel`, and undefined when the backend never said
+ * when the row changed.
+ */
+function timestampMs(timestamp: string | null | undefined): number | undefined {
+  if (!timestamp) return undefined;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Stamps a row as changed.
+ *
+ * The rail prints `updatedAt` and orders by `updatedAtMs`, so the two have to
+ * move together: a label without its timestamp left the list sorted by whichever
+ * change last carried one.
+ */
+function markUpdated(session: AgentSession, timestamp?: string): void {
+  session.updatedAt = recentLabel(timestamp);
+  session.updatedAtMs = timestampMs(timestamp) ?? Date.now();
+}
+
 function textFromContent(content: ContentBlock): string {
   if (content.type === "text") return content.text;
   if (content.type === "audio") return "[Audio attachment]";
@@ -1655,6 +1677,7 @@ export function sessionInfoToAgentSession(info: SessionInfo): AgentSession {
     runtime: "gjc",
     status: "idle",
     updatedAt: recentLabel(info.updatedAt),
+    updatedAtMs: timestampMs(info.updatedAt),
     pinned: false,
     unread: false,
     accent: GJC_ACCENT,
@@ -2640,6 +2663,7 @@ export class GjcSdkController {
       runtime: "gjc",
       status: "idle",
       updatedAt: "now",
+      updatedAtMs: Date.now(),
       pinned: false,
       unread: false,
       accent: GJC_ACCENT,
@@ -2690,7 +2714,7 @@ export class GjcSdkController {
       await this.controlSession(sessionId, "session.rename", { name: value });
     this.sessionMetadata?.setAlias(sessionId, value);
     session.title = value;
-    session.updatedAt = "now";
+    markUpdated(session);
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }
 
@@ -3919,7 +3943,7 @@ export class GjcSdkController {
             this.sessionMetadata?.setWorkspace(sessionId, cwd);
             session.workspace = cwd;
             session.subtitle = path.basename(cwd) || cwd;
-            session.updatedAt = "now";
+            markUpdated(session);
             this.emitEvent({ type: "session.updated", session: { ...session } });
           }
           return output(this.sdkCommandJson(result ?? { moved: true, cwd }));
@@ -5360,6 +5384,7 @@ export class GjcSdkController {
       runtime: "gjc",
       status: "idle",
       updatedAt: "now",
+      updatedAtMs: Date.now(),
       pinned: false,
       unread: false,
       accent: GJC_ACCENT,
@@ -6535,7 +6560,7 @@ export class GjcSdkController {
     if (update.title?.trim() && !this.sessionMetadata?.getAlias(sessionId)) {
       session.title = readableSessionTitle(sessionId, update.title);
     }
-    if (update.updatedAt) session.updatedAt = recentLabel(update.updatedAt);
+    if (update.updatedAt) markUpdated(session, update.updatedAt);
     const phase =
       typeof update._meta?.gjcPhase === "string"
         ? update._meta.gjcPhase
@@ -6760,6 +6785,7 @@ export class GjcSdkController {
       runtime: "gjc",
       status: "idle",
       updatedAt: "now",
+      updatedAtMs: Date.now(),
       pinned: false,
       unread: false,
       accent: GJC_ACCENT,
@@ -7059,7 +7085,7 @@ export class GjcSdkController {
     if (session) {
       if (session.status !== status) this.advanceRunRevision(sessionId);
       session.status = status;
-      session.updatedAt = "now";
+      markUpdated(session);
       this.emitEvent({ type: "session.updated", session: { ...session } });
     }
     if (finishedTurn) this.emitActivity(sessionId, "completed");

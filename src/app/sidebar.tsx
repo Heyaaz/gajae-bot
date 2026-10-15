@@ -3,7 +3,6 @@ import type { GjcUpdateStatus } from "../../shared/agent-contract";
 import type { AgentSession, BackendConnection } from "../backend/types";
 import {
   ArrowDown,
-  Clock3,
   GitFork,
   MoreHorizontal,
   Pencil,
@@ -13,9 +12,11 @@ import {
   Settings,
   Trash2,
 } from "lucide-react";
-import { memo, useEffect, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { connectionStateLabel } from "./format";
+import { connectionStateLabel, statusLabel } from "./format";
+import { sessionListModel } from "./sidebar-model";
+import type { SessionGroupId } from "./sidebar-model";
 
 export interface SessionRowProps {
   session: AgentSession;
@@ -42,6 +43,7 @@ export function SessionRow({
   onRenameCommit,
   onRenameCancel,
 }: SessionRowProps) {
+  const stateLabel = statusLabel(session.status, session.phase);
   return (
     <div
       className={`session-row ${selected ? "is-selected" : ""}`}
@@ -76,23 +78,6 @@ export function SessionRow({
           ) : (
             <strong>{session.title}</strong>
           )}
-          <span
-            className={`session-state-badge session-state-badge--${session.phase === "compacting" ? "compacting" : session.status}`}
-            aria-label={session.phase === "compacting" ? "압축 중" : undefined}
-            title={session.phase === "compacting" ? "압축 중" : undefined}
-          >
-            {session.phase === "compacting"
-              ? "압축 중"
-              : session.status === "running"
-                ? "진행 중"
-                : session.status === "waiting"
-                  ? "확인 대기"
-                  : session.status === "failed"
-                    ? "실패"
-                    : session.status === "starting"
-                      ? "시작 중"
-                      : "완료"}
-          </span>
           {session.usagePending ? (
             <span
               className="session-context-usage session-context-usage--pending"
@@ -110,16 +95,24 @@ export function SessionRow({
           )}
           <time>{session.updatedAt}</time>
         </span>
-        <span className="session-row__subtitle">
-          <span
-            className={`presence-inline presence-inline--${session.status}`}
-          />
-          {session.subtitle}
-        </span>
+        <span className="session-row__subtitle">{session.subtitle}</span>
       </span>
       <span className="session-row__meta">
+        {/* The state used to sit between the title and the clock as a word, which
+            pushed the title aside for something the group header already says. */}
+        <span
+          className={`session-state-dot session-state-dot--${session.phase === "compacting" ? "compacting" : session.status}`}
+          role="img"
+          aria-label={stateLabel}
+          title={stateLabel}
+        />
         {shortcutNumber !== undefined && <kbd>⌘{shortcutNumber}</kbd>}
-        {session.unread && <span className="unread-dot" aria-label="새 활동" />}
+        {/* The row being read is not news, and the main process clears the flag on
+            selection anyway: without this the dot stayed up until that round trip
+            landed and then vanished under the cursor. */}
+        {session.unread && !selected && (
+          <span className="unread-dot" aria-label="새 활동" />
+        )}
       </span>
     </div>
   );
@@ -185,13 +178,28 @@ function SidebarView({
   const [renameValue, setRenameValue] = useState("");
   const [editingWorkspace, setEditingWorkspace] = useState(false);
   const [workspaceValue, setWorkspaceValue] = useState(workspaceLabel);
-  const pinned = sessions.filter((session) => session.pinned);
-  const recent = sessions.filter((session) => !session.pinned);
-  const shortcutNumbers = new Map(
-    [...pinned, ...recent]
-      .slice(0, 9)
-      .map((session, index) => [session.id, index + 1]),
+  const [expandedGroups, setExpandedGroups] = useState<
+    ReadonlySet<SessionGroupId>
+  >(() => new Set());
+  const model = useMemo(
+    () => sessionListModel(sessions, { expanded: expandedGroups }),
+    [sessions, expandedGroups],
   );
+  // The digits the main process sends for ⌘1-⌘9 index the same list, so the numbers on
+  // the rows have to come from the model rather than from a second reading of the
+  // sessions array that could disagree with the rail.
+  const shortcutNumbers = new Map(
+    model.shortcuts.map((session, index) => [session.id, index + 1]),
+  );
+
+  function toggleGroup(id: SessionGroupId): void {
+    setExpandedGroups((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   useEffect(() => {
     if (!contextMenu) return;
@@ -274,25 +282,35 @@ function SidebarView({
       </div>
 
       <div className="sidebar-scroll">
-        {pinned.length > 0 && (
+        {model.pinned.length > 0 && (
           <section className="session-section">
             <header>
               <span>고정됨</span>
               <MoreHorizontal size={15} />
             </header>
-            {pinned.map(renderSession)}
+            {model.pinned.map(renderSession)}
           </section>
         )}
 
-        {recent.length > 0 && (
-          <section className="session-section">
+        {model.groups.map((group) => (
+          <section className="session-section" key={group.id}>
             <header>
-              <span>최근 세션</span>
-              <Clock3 size={14} />
+              <span>{group.label}</span>
             </header>
-            {recent.map(renderSession)}
+            {group.sessions.map(renderSession)}
+            {group.overflow > 0 && (
+              <button
+                type="button"
+                className="session-more"
+                onClick={() => toggleGroup(group.id)}
+              >
+                {expandedGroups.has(group.id)
+                  ? "접기"
+                  : `더 보기 (${group.overflow})`}
+              </button>
+            )}
           </section>
-        )}
+        ))}
 
         {sessions.length === 0 && (
           <div className="sidebar-empty">

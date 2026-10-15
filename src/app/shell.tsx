@@ -24,7 +24,6 @@ import {
   initialSessionId,
   mergeDiscoveredSessions,
   mergeTranscriptItem,
-  orderedSessionsForShortcuts,
   updateTranscriptItem,
 } from "../transcript-utils";
 import { FolderGit2, GitBranch, Menu, PanelRight, Plus, X } from "lucide-react";
@@ -48,6 +47,7 @@ import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import { SettingsDialog } from "./settings";
 import { Sidebar } from "./sidebar";
+import { sessionListModel } from "./sidebar-model";
 import { RecentRequestStrip, Transcript } from "./transcript";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
@@ -574,8 +574,10 @@ export default function App() {
   }
 
   const filteredSessions = sessions;
+  // The digits the main process sends for ⌘1-⌘9 index this list, so it has to be the
+  // rail's own order: pinned first, then the state groups, newest first inside each.
   const shortcutSessions = useMemo(
-    () => orderedSessionsForShortcuts(filteredSessions),
+    () => sessionListModel(filteredSessions).shortcuts,
     [filteredSessions],
   );
 
@@ -705,6 +707,7 @@ export default function App() {
         runtime: "gjc",
         status: "starting",
         updatedAt: "now",
+        updatedAtMs: Date.now(),
         pinned: false,
         unread: false,
         accent: "#ff8a34",

@@ -61,6 +61,15 @@ export interface AgentSession {
   /** Monotonic lifecycle revision used to reject stale status snapshots. */
   runRevision?: number;
   updatedAt: string;
+  /**
+   * When the row last changed, with the resolution the label above throws away.
+   *
+   * `updatedAt` is what the rail prints ("now", "8m", "2h"), so the renderer
+   * cannot compare it; this is the sortable twin. Rows the backend never
+   * timestamped -- mock rows and drafts -- leave it unset and keep their list
+   * order instead.
+   */
+  updatedAtMs?: number;
   pinned: boolean;
   unread: boolean;
   accent: string;

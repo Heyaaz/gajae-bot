@@ -11,7 +11,6 @@ import {
   mergeDiscoveredSessions,
   attachmentSummaryText,
   mergeTranscriptItem,
-  orderedSessionsForShortcuts,
   recentUserRequests,
   updateTranscriptItem,
 } from "./transcript-utils";
@@ -700,19 +699,6 @@ describe("initialSessionId", () => {
         "empty",
       ),
     ).toBe("populated");
-  });
-});
-
-describe("orderedSessionsForShortcuts", () => {
-  it("matches the pinned-then-recent sidebar order", () => {
-    expect(
-      orderedSessionsForShortcuts([
-        { id: "recent-1", pinned: false },
-        { id: "pinned-1", pinned: true },
-        { id: "recent-2", pinned: false },
-        { id: "pinned-2", pinned: true },
-      ]).map((session) => session.id),
-    ).toEqual(["pinned-1", "pinned-2", "recent-1", "recent-2"]);
   });
 });
 
