@@ -295,12 +295,12 @@ describe("mergeTranscriptItem", () => {
   });
 
   it("retires the streamed copy when the persisted rebuild of the same reply arrives", () => {
-    // The live ACP stream names a reply `acp-message-<messageId>`; the persisted
+    // The live stream names a reply `gjc-message-<messageId>`; the persisted
     // rebuild names the same reply `shared-message-<rowId>`. An id-only match
     // appended the rebuild as a new row, so one reply rendered twice -- once
     // above and once below the tool card it wrapped.
     const items = [
-      message("acp-message-m1", "답이 나왔습니다."),
+      message("gjc-message-m1", "답이 나왔습니다."),
       message("call-1", "tool"),
     ];
     const merged = mergeTranscriptItem(
@@ -311,13 +311,13 @@ describe("mergeTranscriptItem", () => {
   });
 
   it("does not retire a streamed message whose body differs", () => {
-    const items = [message("acp-message-m1", "first reply")];
+    const items = [message("gjc-message-m1", "first reply")];
     const merged = mergeTranscriptItem(
       items,
       message("shared-message-r1", "second reply"),
     );
     expect(merged.map((i) => i.id)).toEqual([
-      "acp-message-m1",
+      "gjc-message-m1",
       "shared-message-r1",
     ]);
   });
@@ -412,7 +412,7 @@ describe("cacheTranscript", () => {
   it("keeps an optimistic user message until polling confirms it", () => {
     const optimistic = {
       ...message,
-      id: "local-user-1",
+      id: "local-prompt-1",
       role: "user" as const,
       content: "steer now",
     };
@@ -448,7 +448,7 @@ describe("cacheTranscript", () => {
       { ...message },
       {
         ...message,
-        id: "acp-message-9",
+        id: "gjc-message-9",
         role: "user" as const,
         content: "지금 바로 확인해",
       },
@@ -520,7 +520,7 @@ describe("cacheTranscript", () => {
   it("keeps an unmatched image or steer request at the end until it is confirmed", () => {
     const optimistic = {
       ...message,
-      id: "local-user-1",
+      id: "local-prompt-1",
       role: "user" as const,
       content: "이런 컴팩트 한건 왜 앱에 안뜨는거지 ?",
       images: [
@@ -538,7 +538,7 @@ describe("cacheTranscript", () => {
     expect(pending["session-1"].map((item) => item.id)).toEqual([
       "assistant-1",
       "search-1",
-      "local-user-1",
+      "local-prompt-1",
     ]);
 
     const confirmed = cacheTranscript(pending, "session-1", [

@@ -49,4 +49,19 @@ describe("SDK session CLI architecture", () => {
     expect(main).toContain('path.join(app.getPath("appData"), "Agent Control")');
     expect(ipc).toContain('"agent-control:gjc:');
   });
+
+  it("retires every id the live stream puts on a message row", async () => {
+    const [controller, utils] = await Promise.all([
+      source("electron/gjc-sdk-controller.ts"),
+      source("src/transcript-utils.ts"),
+    ]);
+    // A persisted rebuild retires the local row by prefix, so an id the stream
+    // invents has to appear in the list that match reads. When the stream moved
+    // off the ACP-era prefix, the list kept the old one and every reply rendered
+    // twice: once streamed, once rebuilt.
+    for (const prefix of ["gjc-message-", "local-prompt-"]) {
+      expect(controller).toContain(prefix);
+      expect(utils).toContain(`"${prefix}"`);
+    }
+  });
 });

@@ -243,11 +243,11 @@ function requestText(content: string): string {
 }
 
 // A user bubble the app rendered itself, before GJC confirmed the request. The
-// controller echoes prompts and steers as `local-prompt-`; the renderer used to
-// add its own `local-user-` bubbles. Both must survive a transcript sync until a
-// matching remote message arrives, or a just-sent message disappears mid-turn.
+// controller echoes prompts and steers as `local-prompt-`, and such a row has to
+// survive a transcript sync until a matching remote message arrives, or a
+// just-sent message disappears mid-turn.
 function isLocalEcho(id: string): boolean {
-  return id.startsWith("local-user-") || id.startsWith("local-prompt-");
+  return id.startsWith("local-prompt-");
 }
 
 export function cacheTranscript(
@@ -385,12 +385,11 @@ function withLocalImages(
 
 // Local ids and the persisted ids that replace them. The renderer draws whatever
 // the transcript holds, so a rebuilt row must retire the local copy of itself
-// rather than sit next to it.
-const LOCAL_MESSAGE_PREFIXES = [
-  "acp-message-",
-  "local-prompt-",
-  "local-user-",
-];
+// rather than sit next to it. `gjc-message-` is what the controller names a
+// streamed reply, so it is the prefix a persisted rebuild has to match: an entry
+// for an id nothing writes leaves the streamed copy behind and the reply draws
+// twice.
+const LOCAL_MESSAGE_PREFIXES = ["gjc-message-", "local-prompt-"];
 const LOCAL_NOTICE_PREFIXES = ["gjc-cancelled-"];
 
 function hasLocalPrefix(id: string, prefixes: readonly string[]): boolean {
