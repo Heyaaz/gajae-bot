@@ -1,0 +1,388 @@
+import { describe, expect, it, vi } from "vitest";
+import type { AgentEvent } from "../../shared/agent-contract";
+import { REMOTE_API } from "../../shared/remote-protocol";
+import {
+  RemoteClient,
+  RemoteRequestError,
+  SseParser,
+  TOKEN_STORAGE_KEY,
+  nextReconnectDelay,
+  readPairingCodeFromHash,
+  type TokenStorage,
+} from "./client";
+
+const TOKEN = "t".repeat(43);
+
+function memoryStorage(initial: string | null = null): TokenStorage & { value: string | null } {
+  return {
+    value: initial,
+    read() {
+      return this.value;
+    },
+    write(token: string) {
+      this.value = token;
+    },
+    clear() {
+      this.value = null;
+    },
+  };
+}
+
+interface Call {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: unknown;
+}
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** A fetch double that records every request and routes by path. */
+function recorder(routes: (call: Call) => Response | Promise<Response> | undefined) {
+  const calls: Call[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+    const headers = Object.fromEntries(
+      Object.entries((init?.headers ?? {}) as Record<string, string>).map(([key, value]) => [
+        key.toLowerCase(),
+        value,
+      ]),
+    );
+    const call: Call = {
+      url,
+      method: init?.method ?? "GET",
+      headers,
+      ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) as unknown } : {}),
+    };
+    calls.push(call);
+    const response = await routes(call);
+    if (response) return response;
+    throw new Error(`unexpected request: ${call.method} ${call.url}`);
+  }) as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+function streamResponse(chunks: string[], options: { keepOpen?: boolean } = {}): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+      if (!options.keepOpen) controller.close();
+    },
+  });
+  return new Response(body, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+const snapshotBody = {
+  connection: { state: "connected", backend: "gjc", label: "GJC", detail: "", workspace: "/tmp/ws" },
+  sessions: [],
+  device: { id: "d-1", name: "iPhone", permission: "control" },
+  server: { version: "0.1.0", time: new Date(0).toISOString(), workspace: "/tmp/ws", protocol: 1 },
+};
+
+describe("pairing code fragments", () => {
+  it("accepts a scanned code and rejects anything else", () => {
+    expect(readPairingCodeFromHash("#pair=abcd2345")).toBe("ABCD2345");
+    expect(readPairingCodeFromHash("#pair=ABCD-2345")).toBe("ABCD2345");
+    expect(readPairingCodeFromHash("#pair=oops")).toBeNull();
+    expect(readPairingCodeFromHash("#other=ABCD2345")).toBeNull();
+    expect(readPairingCodeFromHash("")).toBeNull();
+  });
+});
+
+describe("event stream parsing", () => {
+  it("reassembles frames that a chunk boundary split", () => {
+    const parser = new SseParser();
+    expect(parser.push("event: agent\ndata: {\"seq\":1,")).toHaveLength(0);
+    const frames = parser.push('"event":{"type":"session.deleted"}}\n\n');
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toMatchObject({
+      event: "agent",
+      data: { seq: 1, event: { type: "session.deleted" } },
+    });
+  });
+
+  it("reads several frames from one chunk and ignores comments", () => {
+    const parser = new SseParser();
+    const frames = parser.push(
+      ": ping\n\nretry: 3000\n\nevent: hello\ndata: {\"seq\":0}\n\nevent: agent\ndata: {\"seq\":1}\n\n",
+    );
+    expect(frames.map((frame) => frame.event)).toEqual(["hello", "agent"]);
+  });
+
+  it("skips a frame whose data is not JSON", () => {
+    const parser = new SseParser();
+    expect(parser.push("event: agent\ndata: not-json\n\n")).toEqual([]);
+  });
+});
+
+describe("reconnect backoff", () => {
+  it("grows to a ceiling and stays within jitter bounds", () => {
+    const options = { minDelayMs: 1000, maxDelayMs: 8000, jitter: () => 0.5 };
+    expect(nextReconnectDelay(1, options)).toBe(1000);
+    expect(nextReconnectDelay(2, options)).toBe(2000);
+    expect(nextReconnectDelay(3, options)).toBe(4000);
+    expect(nextReconnectDelay(4, options)).toBe(8000);
+    expect(nextReconnectDelay(20, options)).toBe(8000);
+    const low = nextReconnectDelay(4, { ...options, jitter: () => 0 });
+    const high = nextReconnectDelay(4, { ...options, jitter: () => 1 });
+    expect(low).toBe(6000);
+    expect(high).toBe(10_000);
+  });
+});
+
+describe("pairing", () => {
+  it("stores the token and reports permission", async () => {
+    const storage = memoryStorage();
+    const { fetchImpl, calls } = recorder(() =>
+      jsonResponse(200, {
+        deviceId: "d-1",
+        token: TOKEN,
+        device: { id: "d-1", name: "iPhone", permission: "control" },
+        server: { version: "0.1.0", workspace: "/tmp/ws", protocol: 1 },
+      }),
+    );
+    const client = new RemoteClient({ baseUrl: "https://mac.tailnet.ts.net", storage, fetchImpl });
+    await client.pair("abcd-2345");
+    expect(storage.value).toBe(TOKEN);
+    expect(client.getStatus()).toMatchObject({ state: "connected", permission: "control" });
+    expect(calls[0].url).toBe(`https://mac.tailnet.ts.net${REMOTE_API.pair}`);
+    expect(calls[0].body).toMatchObject({ code: "ABCD2345" });
+    // The code never travels in a URL.
+    expect(calls[0].url).not.toContain("ABCD2345");
+    client.dispose();
+  });
+
+  it("surfaces a rejected code without keeping a token", async () => {
+    const storage = memoryStorage();
+    const { fetchImpl } = recorder(() =>
+      jsonResponse(401, { error: { code: "unauthorized", message: "The pairing code is not valid or has expired" } }),
+    );
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    await expect(client.pair("ABCD2345")).rejects.toThrow(/not valid or has expired/u);
+    expect(storage.value).toBeNull();
+    client.dispose();
+  });
+});
+
+describe("authenticated requests", () => {
+  it("sends the stored token as a bearer header", async () => {
+    const { fetchImpl, calls } = recorder(() => jsonResponse(200, snapshotBody));
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+    });
+    const snapshot = await client.snapshot();
+    expect(snapshot.device.name).toBe("iPhone");
+    expect(calls[0].headers.authorization).toBe(`Bearer ${TOKEN}`);
+    // The token is never part of the URL, so it cannot land in an access log.
+    expect(calls[0].url).not.toContain(TOKEN);
+    client.dispose();
+  });
+
+  it("treats a 401 as revocation and forgets the token", async () => {
+    const storage = memoryStorage(TOKEN);
+    const { fetchImpl } = recorder(() => jsonResponse(401, { error: { code: "revoked", message: "no" } }));
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    const seen: string[] = [];
+    client.subscribe((status) => seen.push(status.state));
+    await expect(client.snapshot()).rejects.toThrow(/접근이 해제/u);
+    expect(client.getStatus().state).toBe("revoked");
+    expect(storage.value).toBeNull();
+    expect(seen).toContain("revoked");
+    client.dispose();
+  });
+});
+
+describe("control operations", () => {
+  const message = { text: "안녕", images: [], files: [] };
+
+  it("sends an operation ID and returns the recorded result", async () => {
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.method === "POST")
+        return jsonResponse(200, {
+          operationId: (call.body as { operationId: string }).operationId,
+          state: "completed",
+          result: "prompt",
+          at: new Date(0).toISOString(),
+        });
+      return undefined;
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage: memoryStorage(TOKEN), fetchImpl });
+    await expect(client.sendMessage("s-1", message)).resolves.toBe("prompt");
+    const body = calls[0].body as { operationId: string };
+    expect(body.operationId).toMatch(/^op-[A-Za-z0-9._:-]{8,}$/u);
+    client.dispose();
+  });
+
+  it("reports a recorded failure as the answer, not as a transport problem", async () => {
+    const { fetchImpl } = recorder(() =>
+      jsonResponse(200, {
+        operationId: "op-failed00001",
+        state: "failed",
+        message: "세션을 찾을 수 없습니다",
+        at: new Date(0).toISOString(),
+      }),
+    );
+    const client = new RemoteClient({ baseUrl: "https://host", storage: memoryStorage(TOKEN), fetchImpl });
+    await expect(client.sendMessage("s-1", message)).rejects.toThrow("세션을 찾을 수 없습니다");
+    client.dispose();
+  });
+
+  it("looks the outcome up instead of resending after the connection dropped", async () => {
+    // First attempt: the connection dies with no answer. The host *did* run it,
+    // so the recorded outcome is what the client must report.
+    const storage = memoryStorage(TOKEN);
+    let attempts = 0;
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.method === "POST") {
+        attempts += 1;
+        throw new Error("socket hang up");
+      }
+      if (call.url.includes(REMOTE_API.operations)) {
+        return jsonResponse(200, {
+          operationId: "op-unknown0001",
+          state: "completed",
+          result: "prompt",
+          at: new Date(0).toISOString(),
+        });
+      }
+      return undefined;
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    await expect(client.sendMessage("s-1", message)).resolves.toBe("prompt");
+    expect(attempts).toBe(1);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    expect(calls.some((call) => call.url.includes(REMOTE_API.operations))).toBe(true);
+    client.dispose();
+  });
+
+  it("never resends an instruction whose outcome is unknown", async () => {
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.method === "POST") throw new Error("socket hang up");
+      return jsonResponse(404, { error: { code: "not-found", message: "No outcome recorded" } });
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage: memoryStorage(TOKEN), fetchImpl });
+    const failure = await client.sendMessage("s-1", message).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(RemoteRequestError);
+    expect((failure as RemoteRequestError).code).toBe("unknown-outcome");
+    expect((failure as RemoteRequestError).uncertain).toBe(true);
+    expect((failure as RemoteRequestError).operationId).toMatch(/^op-/u);
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    client.dispose();
+  });
+});
+
+describe("event stream", () => {
+  it("delivers events, tracks sequence, and asks for a resync when told to", async () => {
+    const events: AgentEvent[] = [];
+    let resyncs = 0;
+    const hello = `event: hello\ndata: ${JSON.stringify({ seq: 5, device: { id: "d-1", name: "iPhone", permission: "view" } })}\n\n`;
+    const event = `event: agent\ndata: ${JSON.stringify({
+      seq: 6,
+      event: { type: "session.deleted", sessionId: "s-1" },
+    })}\n\n`;
+    const resync = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events))
+        return streamResponse([hello, event, resync], { keepOpen: true });
+      if (call.url.includes(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+      onEvent: (payload) => events.push(payload),
+      onResync: () => {
+        resyncs += 1;
+      },
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(events).toHaveLength(1));
+    expect(events[0]).toMatchObject({ type: "session.deleted" });
+    expect(client.getStatus()).toMatchObject({ state: "connected", permission: "view" });
+    await vi.waitFor(() => expect(resyncs).toBe(1));
+    const streamCall = calls.find((call) => call.url.includes(REMOTE_API.events));
+    expect(streamCall?.url).not.toContain("?since=");
+    client.dispose();
+  });
+
+  it("resumes from the last sequence it actually saw", async () => {
+    const urls: string[] = [];
+    const { fetchImpl } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        urls.push(call.url);
+        const frame = `event: agent\ndata: ${JSON.stringify({ seq: 4, event: { type: "session.deleted", sessionId: "s-1" } })}\n\n`;
+        // The host closes the first stream (laptop slept, network switched); the
+        // client must come back asking for what it missed.
+        return urls.length === 1
+          ? streamResponse([frame])
+          : streamResponse([frame], { keepOpen: true });
+      }
+      if (call.url.includes(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+      reconnect: { minDelayMs: 1, maxDelayMs: 2, jitter: () => 0 },
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(urls).toHaveLength(1));
+    // The first stream ends, the client reconnects with the sequence it reached.
+    await vi.waitFor(() => expect(urls).toHaveLength(2), { timeout: 2000 });
+    expect(urls[1]).toContain("since=4");
+    client.dispose();
+  });
+
+  it("stops reconnecting after the host says the device was revoked", async () => {
+    let streamCalls = 0;
+    const { fetchImpl } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        streamCalls += 1;
+        return streamResponse(
+          [`event: revoked\ndata: ${JSON.stringify({ seq: 2, revoked: true })}\n\n`],
+          { keepOpen: true },
+        );
+      }
+      if (call.url.includes(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const storage = memoryStorage(TOKEN);
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage,
+      fetchImpl,
+      reconnect: { minDelayMs: 1, maxDelayMs: 2, jitter: () => 0 },
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(client.getStatus().state).toBe("revoked"));
+    expect(storage.value).toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(streamCalls).toBe(1);
+    client.dispose();
+  });
+});
+
+describe("token storage", () => {
+  it("keeps the token out of any request URL", async () => {
+    const { fetchImpl, calls } = recorder(() => jsonResponse(200, snapshotBody));
+    const storage = memoryStorage(TOKEN);
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    await client.snapshot();
+    for (const call of calls) expect(call.url).not.toContain(TOKEN);
+    expect(TOKEN_STORAGE_KEY).toBe("gajae.remote.token");
+    client.dispose();
+  });
+});

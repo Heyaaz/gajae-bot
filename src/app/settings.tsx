@@ -1,11 +1,12 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type { GjcUpdateStatus, ManagementSnapshot } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { CalendarClock, Check, Command, FolderOpen, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, Command, FolderOpen, ShieldCheck, Smartphone, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { connectionStateLabel, profileFromDetail } from "./format";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
+import { RemoteAccessPanel } from "./remote-access-panel";
 
 export interface SettingsDialogProps {
   connection: BackendConnection;
@@ -37,7 +38,7 @@ export function SettingsDialog({
     gjcExecutable: "",
   };
   const [tab, setTab] = useState<
-    "gjc" | "workspace" | "mcp" | "skills" | "usage" | "automations"
+    "gjc" | "workspace" | "remote" | "mcp" | "skills" | "usage" | "automations"
   >("gjc");
   const [management, setManagement] = useState<ManagementSnapshot | null>(null);
   const [managementError, setManagementError] = useState("");
@@ -57,6 +58,7 @@ export function SettingsDialog({
   const tabTitle = {
     gjc: "GJC",
     workspace: "Workspace 범위",
+    remote: "원격 접속",
     mcp: "MCP 서버",
     skills: "Skills & Plugins",
     usage: "Usage",
@@ -65,6 +67,7 @@ export function SettingsDialog({
   const tabDescription = {
     gjc: "새 세션에서 사용할 로컬 ACP runtime을 설정합니다.",
     workspace: "GJC가 확인하고 수정할 폴더를 선택합니다.",
+    remote: "휴대폰과 다른 개인 기기에서 이 컴퓨터의 세션을 조회·조작합니다.",
     mcp: "GJC가 자동으로 로드할 MCP 서버를 관리합니다.",
     skills: "발견된 스킬과 설치된 플러그인을 확인합니다.",
     usage: "모델별 토큰, 캐시율, 비용을 확인합니다.",
@@ -166,6 +169,13 @@ export function SettingsDialog({
             onClick={() => setTab("workspace")}
           >
             <FolderOpen size={17} /> Workspace
+          </button>
+          <button
+            type="button"
+            className={tab === "remote" ? "is-active" : ""}
+            onClick={() => setTab("remote")}
+          >
+            <Smartphone size={17} /> 원격 접속
           </button>
           <button
             type="button"
@@ -353,6 +363,8 @@ export function SettingsDialog({
               defaultModel={preferences.modelPreset}
             />
           )}
+
+          {tab === "remote" && <RemoteAccessPanel />}
 
           {tab === "workspace" && (
             <div className="settings-stack">

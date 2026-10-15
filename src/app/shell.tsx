@@ -27,7 +27,7 @@ import {
   orderedSessionsForShortcuts,
   updateTranscriptItem,
 } from "../transcript-utils";
-import { FolderGit2, GitBranch, PanelRight, Plus, X } from "lucide-react";
+import { FolderGit2, GitBranch, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Composer } from "./composer";
 import {
@@ -45,9 +45,11 @@ import {
   statusLabel,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
+import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import { SettingsDialog } from "./settings";
 import { Sidebar } from "./sidebar";
 import { RecentRequestStrip, Transcript } from "./transcript";
+import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
 export default function App() {
   const backend = useAgentBackend();
@@ -105,6 +107,9 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [appError, setAppError] = useState("");
+  // On a phone the session list is a drawer, not a column: 76px of permanent rail
+  // is a fifth of the screen. Wide windows never see this control.
+  const [navOpen, setNavOpen] = useState(false);
   const [workspaceLabel, setWorkspaceLabel] = useState("개인 Workspace");
   const pendingSessions = useRef(new Map<string, Promise<AgentSession>>());
   const selectedIdRef = useRef<string | null>(null);
@@ -116,6 +121,27 @@ export default function App() {
   }, [appError]);
   const updateCheckedRef = useRef(false);
   const settingsBridge = window.agentControlDesktop?.settings;
+  // A browser is the remote client of a host: the shell keeps its status so an
+  // unpaired device sees the pairing screen and a view-only device cannot type
+  // into a composer the host would refuse anyway.
+  const remoteBridge = backend.remoteAccess;
+  const [remoteStatus, setRemoteStatus] = useState<RemoteClientStatus | null>(
+    remoteBridge ? null : { state: "connected" },
+  );
+
+  useEffect(() => {
+    const bridge = backend.remoteAccess;
+    if (!bridge) return;
+    let active = true;
+    void bridge.getStatus().then((status) => {
+      if (active) setRemoteStatus(status);
+    });
+    const unsubscribe = bridge.subscribe((status) => setRemoteStatus(status));
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [backend]);
 
   const checkForUpdate = useCallback(async (): Promise<void> => {
     if (!settingsBridge) return;
@@ -655,6 +681,7 @@ export default function App() {
 
   const selectSession = useCallback((sessionId: string): void => {
     setSelectedId(sessionId);
+    setNavOpen(false);
     setTranscripts((current) =>
       current[sessionId]
         ? cacheTranscript(current, sessionId, current[sessionId])
@@ -993,7 +1020,15 @@ export default function App() {
 
   const openSearch = useCallback(() => setSearchOpen(true), []);
   const openNewSession = useCallback(() => setNewSessionOpen(true), []);
-  const openSettings = useCallback(() => setSettingsOpen(true), []);
+  const openSettings = useCallback(() => {
+    // Remote clients do not edit host preferences; the panel that does lives in
+    // the desktop app, where the runtime and workspace it changes also live.
+    if (backend.remoteAccess) {
+      setAppError("설정은 Gajae 데스크톱 앱에서 열 수 있습니다.");
+      return;
+    }
+    setSettingsOpen(true);
+  }, [backend]);
   const startFork = useCallback((session: AgentSession) => {
     void handlersRef.current.forkSession(session);
   }, []);
@@ -1023,8 +1058,40 @@ export default function App() {
   }, []);
   const updateBusyFlag = Boolean(updateBusy);
 
+  const remoteViewOnly = remoteStatus?.permission === "view";
+
+  if (remoteBridge && remoteGateNeeded(remoteStatus)) {
+    return (
+      <div className="app-shell app-shell--remote">
+        <RemoteGate bridge={remoteBridge} status={remoteStatus} />
+      </div>
+    );
+  }
+
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${navOpen ? "is-nav-open" : ""}`}>
+      <button
+        className="nav-toggle"
+        type="button"
+        aria-label="세션 목록"
+        aria-expanded={navOpen}
+        onClick={() => setNavOpen((open) => !open)}
+      >
+        <Menu size={18} />
+      </button>
+      {navOpen && (
+        <div
+          className="nav-backdrop"
+          role="presentation"
+          onClick={() => setNavOpen(false)}
+        />
+      )}
+      {remoteBridge && remoteStatus && (
+        <RemoteStrip
+          status={remoteStatus}
+          onReconnect={() => void reconnect()}
+        />
+      )}
       <Sidebar
         sessions={filteredSessions}
         connection={connection}
@@ -1193,6 +1260,7 @@ export default function App() {
                     void setSessionConfig(selectedSession.id, configId, value)
                   }
                   onCycleThinking={() => void cycleThinking(selectedSession.id)}
+                  readOnly={remoteViewOnly}
                 />
               </div>
             </section>

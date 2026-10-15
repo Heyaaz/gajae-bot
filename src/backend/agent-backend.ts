@@ -21,8 +21,15 @@ import type {
   SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
+import type { RemoteAccessBridge } from "../../shared/remote-protocol";
 
 export interface AgentBackend {
+  /**
+   * Present only on a backend reached through the remote access server. The shell
+   * uses it to show remote connection state and to withhold control affordances a
+   * view-only device may not use.
+   */
+  readonly remoteAccess?: RemoteAccessBridge;
   getConnection(): Promise<BackendConnection>;
   listSessions(): Promise<AgentSession[]>;
   createSession(input: CreateSessionInput): Promise<AgentSession>;
