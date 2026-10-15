@@ -173,7 +173,9 @@ describe("remote operation surface", () => {
 });
 
 describe("remote access service", () => {
-  async function service(options: { port?: number } = {}) {
+  async function service(
+    options: { port?: number; ownerLogin?: string; calls?: string[] } = {},
+  ) {
     const directory = mkdtempSync(path.join(tmpdir(), "gajae-remote-service-"));
     directories.push(directory);
     const webRoot = path.join(directory, "web");
@@ -187,13 +189,59 @@ describe("remote access service", () => {
       workspace: () => "/tmp/ws",
       host: fakeHost(),
       tailscale: new TailscaleClient({
-        runner: async () => ({ stdout: "", stderr: "not found", code: 1 }),
+        runner: async (_file, args) => {
+          options.calls?.push(args.join(" "));
+          if (args[0] === "status" && options.ownerLogin) {
+            return {
+              stdout: JSON.stringify({
+                BackendState: "Running",
+                Self: { UserID: 1 },
+                User: { "1": { LoginName: options.ownerLogin } },
+              }),
+              stderr: "",
+              code: 0,
+            };
+          }
+          return { stdout: "", stderr: "not found", code: 1 };
+        },
       }),
       log: (message) => logs.push(message),
     });
     services.push(instance);
     return { instance, directory, logs };
   }
+
+  /** The headers Serve puts on a request from the owner's own device. */
+  const identityHeaders = (login: string) => ({
+    "tailscale-user-login": login,
+    "x-forwarded-for": "100.64.0.9",
+  });
+
+  it("admits the owner's own device through Serve without a token", async () => {
+    const { instance } = await service({ ownerLogin: "owner@example.com" });
+    const enabled = await instance.setEnabled(true);
+    const response = await fetch(`http://127.0.0.1:${enabled.port}${REMOTE_API.state}`, {
+      headers: identityHeaders("owner@example.com"),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { device: Record<string, unknown> };
+    expect(body.device).toMatchObject({ via: "tailscale", permission: "control" });
+  });
+
+  it("reads the owner login once for a burst of identity requests", async () => {
+    const calls: string[] = [];
+    const { instance } = await service({ ownerLogin: "owner@example.com", calls });
+    const enabled = await instance.setEnabled(true);
+    const countStatus = () => calls.filter((call) => call === "status --json").length;
+    const before = countStatus();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const response = await fetch(`http://127.0.0.1:${enabled.port}${REMOTE_API.state}`, {
+        headers: identityHeaders("owner@example.com"),
+      });
+      expect(response.status).toBe(200);
+    }
+    expect(countStatus() - before).toBe(1);
+  });
 
   it("stays off until it is enabled and then serves the tailnet", async () => {
     const { instance } = await service();

@@ -229,7 +229,9 @@ Security shape:
 - A pairing code is carried in the URL fragment (`#pair=…`), which browsers never
   send to a server, and is removed from the address bar before it is used.
 - `접근 해제` deletes the device record immediately: later requests answer `401`
-  and the device's open event stream is closed.
+  and the device's open event stream is closed. A device admitted by identity never
+  paired and is not in that list: to cut one off, turn remote access off or remove
+  the device from the tailnet.
 
 Reconnection and duplicate safety:
 
