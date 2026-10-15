@@ -110,6 +110,14 @@ export interface HistorySession {
   updatedAt: string;
   messageCount: number;
   live: boolean;
+  /**
+   * The session this one was forked from, when its transcript recorded one.
+   *
+   * Same envelope field the rail reads. The picker is a recency list, so a fork is
+   * marked in place rather than reordered under its source; a source older than the
+   * picker's window still names where the fork came from.
+   */
+  parentId?: string;
 }
 
 export interface AgentCommand {

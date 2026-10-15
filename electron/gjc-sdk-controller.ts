@@ -5415,9 +5415,11 @@ export class GjcSdkController {
     files.sort((left, right) => right.modified - left.modified);
     const sessions: HistorySession[] = [];
     for (const file of files.slice(0, HISTORY_SESSION_LIMIT)) {
+      let headLines: string[];
       let summary: ReturnType<typeof historySessionSummary>;
       try {
-        summary = historySessionSummary(await transcriptHeadLines(file.path));
+        headLines = await transcriptHeadLines(file.path);
+        summary = historySessionSummary(headLines);
       } catch {
         continue;
       }
@@ -5430,6 +5432,9 @@ export class GjcSdkController {
         updatedAt: recentLabel(new Date(file.modified).toISOString()),
         messageCount: summary.messageCount,
         live: liveIds.has(file.id),
+        // The same envelope line the summary already reads, so a fork is marked by
+        // having been read rather than by a second pass over the file.
+        parentId: parentSessionOf(headLines[0], file.id),
       });
     }
     return sessions;

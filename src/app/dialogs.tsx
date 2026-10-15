@@ -239,6 +239,10 @@ export function ResumeSessionDialog({
           session.workspace.toLowerCase().includes(value),
       )
     : sessions;
+  // A fork is named where it sits: the list is ordered by recency, so moving a fork
+  // under a source that may be hundreds of rows down would hide it instead of
+  // showing what it is. The source is named when the same window lists it.
+  const titlesById = new Map(visible.map((session) => [session.id, session.title]));
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
@@ -286,6 +290,18 @@ export function ResumeSessionDialog({
               <span className="resume-session-head">
                 <strong>{sessionSummaryLine(session.title)}</strong>
                 {session.live && <em className="resume-live">진행 중</em>}
+                {session.parentId && (
+                  <em
+                    className="resume-fork"
+                    title={
+                      titlesById.get(session.parentId)
+                        ? `${titlesById.get(session.parentId)}에서 포크`
+                        : `포크: ${session.parentId}`
+                    }
+                  >
+                    포크
+                  </em>
+                )}
               </span>
               <small>
                 {workspaceLabelFor(session.workspace) || "폴더 정보 없음"}
