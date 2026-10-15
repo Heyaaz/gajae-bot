@@ -66,7 +66,7 @@ export function SettingsDialog({
     automations: "Automations",
   }[tab];
   const tabDescription = {
-    gjc: "새 세션에서 사용할 로컬 ACP runtime을 설정합니다.",
+    gjc: "GJC 실행 파일과 새 세션이 시작될 모델 프로필·도구 승인 방식을 설정합니다.",
     workspace: "GJC가 확인하고 수정할 폴더를 선택합니다.",
     remote: "휴대폰과 다른 개인 기기에서 이 컴퓨터의 세션을 조회·조작합니다.",
     mcp: "GJC가 자동으로 로드할 MCP 서버를 관리합니다.",
