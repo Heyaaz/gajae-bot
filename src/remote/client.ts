@@ -4,6 +4,7 @@ import {
   createRemoteOperationId,
   isRemotePermission,
   type RemoteClientStatus,
+  type RemoteDeviceIdentity,
   type RemoteEventFrame,
   type RemoteOperationOutcome,
   type RemotePairingBody,
@@ -178,6 +179,11 @@ export class RemoteClient {
   private readonly listeners = new Set<(status: RemoteClientStatus) => void>();
   private readonly deviceName: () => string;
   private token: string | null;
+  /**
+   * How the host admitted this client. `tailscale` means Serve proved the request
+   * came from the owner's own device, so there is no token to present.
+   */
+  private via?: RemoteDeviceIdentity["via"];
   private status: RemoteClientStatus;
   private lastSeq = 0;
   private attempt = 0;
@@ -247,6 +253,7 @@ export class RemoteClient {
       throw new RemoteRequestError("호스트가 올바른 기기 정보를 보내지 않았습니다.");
     }
     this.token = body.token;
+    this.via = body.device.via ?? "device";
     this.storage.write(body.token);
     this.setStatus({
       state: "connected",
@@ -258,12 +265,14 @@ export class RemoteClient {
   /** Forgets this device's token locally. The host keeps its record until revoked there. */
   forget(): void {
     this.token = null;
+    this.via = undefined;
     this.storage.clear();
     this.setStatus({ state: "pairing" });
   }
 
   async snapshot(): Promise<RemoteSnapshot> {
     const body = await this.request<RemoteSnapshot>(REMOTE_API.state);
+    this.via = body.device?.via;
     if (isRemotePermission(body.device?.permission))
       this.setStatus({
         state: "connected",
@@ -286,14 +295,26 @@ export class RemoteClient {
       throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
     }
     if (response.status === 401) {
-      // The host no longer recognizes this device. That is terminal until the
-      // owner pairs it again, so the token is dropped rather than retried.
+      // A token the host no longer recognizes is terminal until the owner pairs
+      // again, so it is dropped rather than retried. With no token to drop the
+      // device was never paired: that is where pairing starts, not a revocation.
+      const presented = this.token !== null;
       this.forget();
+      if (presented) {
+        this.setStatus({
+          state: "revoked",
+          detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+        });
+        throw new RemoteRequestError("이 기기의 접근이 해제되었습니다.", { status: 401, code: "revoked" });
+      }
       this.setStatus({
-        state: "revoked",
-        detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+        state: "pairing",
+        detail: "데스크톱에서 페어링 코드를 발급해 연결해 주세요.",
       });
-      throw new RemoteRequestError("이 기기의 접근이 해제되었습니다.", { status: 401, code: "revoked" });
+      throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
+        status: 401,
+        code: "unauthorized",
+      });
     }
     if (!response.ok) {
       const body = await readErrorBody(response);
@@ -420,9 +441,14 @@ export class RemoteClient {
     return this.control<void>(REMOTE_API.toolCallDecision(toolId), { decision: { optionId } });
   }
 
+  /** Can this client reach the host at all: a device token, or an identity grant. */
+  private hasAccess(): boolean {
+    return this.token !== null || this.via === "tailscale";
+  }
+
   /** Opens the event stream and keeps it open until `closeRealtime`. */
   startRealtime(): void {
-    if (!this.token || this.closed || this.stream) return;
+    if (!this.hasAccess() || this.closed || this.stream) return;
     void this.openStream();
   }
 
@@ -512,13 +538,13 @@ export class RemoteClient {
   }
 
   private scheduleReconnect(): void {
-    if (this.closed || !this.token || this.reconnectTimer) return;
+    if (this.closed || !this.hasAccess() || this.reconnectTimer) return;
     if (this.status.state === "revoked") return;
     this.attempt += 1;
     const delay = nextReconnectDelay(this.attempt, this.options.reconnect);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      if (!this.closed && this.token) void this.openStream();
+      if (!this.closed && this.hasAccess()) void this.openStream();
     }, delay);
     if (typeof this.reconnectTimer.unref === "function") this.reconnectTimer.unref();
   }
@@ -538,7 +564,7 @@ export class RemoteClient {
 
   /** Reconnects immediately: used when the app returns to the foreground. */
   async resume(): Promise<void> {
-    if (!this.token || this.closed) return;
+    if (!this.hasAccess() || this.closed) return;
     this.closeRealtime();
     await this.snapshot().catch(() => undefined);
     this.startRealtime();

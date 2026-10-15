@@ -386,3 +386,55 @@ describe("token storage", () => {
     client.dispose();
   });
 });
+
+describe("tailnet identity access", () => {
+  const snapshotBody = (via: "device" | "tailscale") => ({
+    connection: { state: "connected", backend: "gjc", label: "GJC", workspace: "/tmp/ws" },
+    sessions: [],
+    device: {
+      id: via === "tailscale" ? "tailscale:owner@example.com" : "d-1",
+      name: via === "tailscale" ? "owner@example.com · Tailscale" : "iPhone",
+      permission: "control",
+      via,
+    },
+    server: { version: "0.1.0", time: new Date(0).toISOString(), workspace: "/tmp/ws", protocol: 1 },
+  });
+
+  it("connects with no token when Serve vouches for this device", async () => {
+    const storage = memoryStorage(null);
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events))
+        return new Response("event: hello\ndata: {}\n\n", {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      if (call.url.endsWith(REMOTE_API.state)) return jsonResponse(200, snapshotBody("tailscale"));
+      return undefined;
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    await client.snapshot();
+    expect(client.getStatus()).toMatchObject({
+      state: "connected",
+      permission: "control",
+      deviceName: "owner@example.com · Tailscale",
+    });
+    client.startRealtime();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const stream = calls.find((call) => call.url.includes(REMOTE_API.events));
+    expect(stream).toBeDefined();
+    expect(stream?.headers.authorization).toBeUndefined();
+    expect(storage.value).toBeNull();
+    client.dispose();
+  });
+
+  it("asks for pairing when a tokenless device is refused", async () => {
+    const storage = memoryStorage(null);
+    const { fetchImpl } = recorder(() =>
+      jsonResponse(401, { error: { code: "unauthorized", message: "A device token is required" } }),
+    );
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    await expect(client.snapshot()).rejects.toThrow(/연결되어 있지 않/u);
+    expect(client.getStatus()).toMatchObject({ state: "pairing" });
+    client.dispose();
+  });
+});

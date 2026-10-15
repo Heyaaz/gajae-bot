@@ -20,7 +20,7 @@ import {
   type RemotePermission,
   type RemoteResyncFrame,
 } from "../../shared/remote-protocol.js";
-import type { DeviceRecord, DeviceStore } from "./devices.js";
+import type { DeviceStore } from "./devices.js";
 import { requiredId } from "../gjc-input-validation.js";
 import {
   runRemoteOperation,
@@ -62,12 +62,32 @@ export interface RemoteServerOptions {
   allowedHosts: () => string[];
   /** Exact `scheme://host` origins the web client is served from. */
   allowedOrigins: () => string[];
+  /**
+   * The login that owns this machine's Tailscale node, or undefined when Tailscale
+   * cannot name one. Read per request so a daemon that stops answering closes
+   * identity access instead of leaving it open.
+   */
+  identity?: () => Promise<{ login: string } | undefined>;
   now?: () => number;
   log?: (message: string) => void;
 }
 
 export interface RemoteServerAddress {
   port: number;
+}
+
+/**
+ * What one request is allowed to do.
+ *
+ * A paired device carries the permission the owner granted it. The owner's own
+ * tailnet device is admitted by identity and is never view-only: the owner is the
+ * one who decides what other devices may do.
+ */
+interface RemoteAccess {
+  id: string;
+  name: string;
+  permission: RemotePermission;
+  identity: boolean;
 }
 
 interface StreamClient {
@@ -286,19 +306,19 @@ export class RemoteServer {
       await this.handlePair(request, response, method);
       return;
     }
-    const device = this.authenticate(request, response);
-    if (!device) return;
+    const access = await this.authorize(request, response);
+    if (!access) return;
     if (url.pathname === REMOTE_API.state && (method === "GET" || method === "HEAD")) {
-      await this.handleState(response, device);
+      await this.handleState(response, access);
       return;
     }
     if (url.pathname === REMOTE_API.events && (method === "GET" || method === "HEAD")) {
-      this.handleEvents(request, response, url, device);
+      this.handleEvents(request, response, url, access);
       return;
     }
     const operationLookup = /^\/api\/operations\/([^/]+)$/u.exec(url.pathname);
     if (operationLookup && method === "GET") {
-      this.handleOperationLookup(response, device, decodeURIComponent(operationLookup[1]));
+      this.handleOperationLookup(response, access, decodeURIComponent(operationLookup[1]));
       return;
     }
     const route = matchOperationRoute(url.pathname);
@@ -306,7 +326,7 @@ export class RemoteServer {
       this.sendError(response, 404, "not-found", "Unknown endpoint");
       return;
     }
-    if (!permissionAllows(device.permission, route.operation)) {
+    if (!permissionAllows(access.permission, route.operation)) {
       this.sendError(response, 403, "forbidden", "This device is view-only");
       return;
     }
@@ -316,10 +336,10 @@ export class RemoteServer {
       return;
     }
     if (readOnly) {
-      await this.runRead(response, device, route.operation, route.params);
+      await this.runRead(response, access, route.operation, route.params);
       return;
     }
-    await this.runControl(request, response, device, route.operation, route.params);
+    await this.runControl(request, response, access, route.operation, route.params);
   }
 
   private applySecurityHeaders(response: ServerResponse): void {
@@ -352,26 +372,69 @@ export class RemoteServer {
     return this.options.allowedHosts().some((allowed) => allowed === parsed.hostname.toLowerCase());
   }
 
-  private authenticate(
+  /**
+   * Who is asking, and what they may do.
+   *
+   * A device token is the ordinary answer. Without one, the request may still be the
+   * owner arriving from their own tailnet device: `tailscale serve` reaches this
+   * loopback server on the peer's behalf and stamps what it knows about that peer on
+   * the request. Everything else is refused.
+   */
+  private async authorize(
     request: IncomingMessage,
     response: ServerResponse,
-  ): DeviceRecord | undefined {
+  ): Promise<RemoteAccess | undefined> {
     const header = request.headers.authorization;
-    if (typeof header !== "string" || !header.startsWith("Bearer ")) {
-      this.sendError(response, 401, "unauthorized", "A device token is required");
-      return undefined;
+    if (typeof header === "string" && header.startsWith("Bearer ")) {
+      const token = header.slice("Bearer ".length).trim();
+      const result = this.options.devices.authenticate(token, {
+        address: reportedAddress(request),
+      });
+      if ("failure" in result) {
+        // One message for every rejection: a wrong token and a revoked one are the
+        // same answer, so a caller cannot probe which device IDs exist.
+        this.sendError(response, 401, "revoked", "This device is not authorized; pair it again");
+        return undefined;
+      }
+      return {
+        id: result.device.id,
+        name: result.device.name,
+        permission: result.device.permission,
+        identity: false,
+      };
     }
-    const token = header.slice("Bearer ".length).trim();
-    const result = this.options.devices.authenticate(token, {
-      address: clientAddress(request),
-    });
-    if ("failure" in result) {
-      // One message for every rejection: a wrong token and a revoked one are the
-      // same answer, so a caller cannot probe which device IDs exist.
-      this.sendError(response, 401, "revoked", "This device is not authorized; pair it again");
-      return undefined;
-    }
-    return result.device;
+    const owner = await this.ownerAccess(request);
+    if (owner) return owner;
+    this.sendError(response, 401, "unauthorized", "A device token is required");
+    return undefined;
+  }
+
+  /**
+   * The owner's own device, or undefined when the request does not prove it.
+   *
+   * Every condition is Serve's fingerprint rather than the caller's word: the
+   * connection comes from the local tailscaled, Funnel is not in play, Serve's own
+   * identity header names a login, the one address it replaced X-Forwarded-For with
+   * is on the tailnet, and that login is this machine's own. A local process that
+   * forges all four is already the owner.
+   */
+  private async ownerAccess(request: IncomingMessage): Promise<RemoteAccess | undefined> {
+    // Cheap checks first: a stranger's request must not spawn `tailscale status`.
+    if (!isLoopbackAddress(clientAddress(request))) return undefined;
+    if (request.headers["tailscale-funnel-request"] !== undefined) return undefined;
+    const login = headerText(request.headers["tailscale-user-login"]);
+    if (!login) return undefined;
+    const forwarded = singleForwardedAddress(request.headers["x-forwarded-for"]);
+    if (!forwarded || !isTailnetAddress(forwarded)) return undefined;
+    const identity = await this.options.identity?.().catch(() => undefined);
+    if (!identity) return undefined;
+    if (login.toLowerCase() !== identity.login.toLowerCase()) return undefined;
+    return {
+      id: `tailscale:${login.toLowerCase()}`,
+      name: `${login} · Tailscale`,
+      permission: "control",
+      identity: true,
+    };
   }
 
   private async handlePair(
@@ -385,7 +448,7 @@ export class RemoteServer {
     }
     const body = await this.readJsonBody(request, response);
     if (body === undefined) return;
-    const address = clientAddress(request);
+    const address = reportedAddress(request);
     const code = typeof body === "object" && body !== null ? (body as { code?: unknown }).code : undefined;
     const name = typeof body === "object" && body !== null ? (body as { deviceName?: unknown }).deviceName : undefined;
     const consumed = this.options.devices.consumePairingCode(
@@ -418,6 +481,7 @@ export class RemoteServer {
           id: created.device.id,
           name: created.device.name,
           permission: created.device.permission,
+          via: "device",
         } satisfies RemoteDeviceIdentity,
         server: {
           version: this.options.version,
@@ -430,7 +494,7 @@ export class RemoteServer {
     }
   }
 
-  private async handleState(response: ServerResponse, device: DeviceRecord): Promise<void> {
+  private async handleState(response: ServerResponse, access: RemoteAccess): Promise<void> {
     const snapshot = (await runRemoteOperation(this.options.host, "state", {}, undefined)) as {
       connection: unknown;
       sessions: unknown;
@@ -438,7 +502,7 @@ export class RemoteServer {
     this.sendJson(response, 200, {
       connection: snapshot.connection,
       sessions: snapshot.sessions,
-      device: identityOf(device),
+      device: identityOf(access),
       server: {
         version: this.options.version,
         time: new Date(this.now()).toISOString(),
@@ -452,7 +516,7 @@ export class RemoteServer {
     request: IncomingMessage,
     response: ServerResponse,
     url: URL,
-    device: DeviceRecord,
+    access: RemoteAccess,
   ): void {
     const since = Number.parseInt(url.searchParams.get("since") ?? "", 10);
     const wantsReplay = Number.isFinite(since) && since >= 0;
@@ -465,7 +529,7 @@ export class RemoteServer {
     response.write(`retry: ${STREAM_RETRY_MS}\n\n`);
     const client: StreamClient = {
       id: this.nextStreamId++,
-      deviceId: device.id,
+      deviceId: access.id,
       response,
     };
     this.streams.set(client.id, client);
@@ -491,13 +555,13 @@ export class RemoteServer {
         }
       }
     }
-    this.sendHello(response, device);
+    this.sendHello(response, access);
   }
 
-  private sendHello(response: ServerResponse, device: DeviceRecord): void {
+  private sendHello(response: ServerResponse, access: RemoteAccess): void {
     const body = JSON.stringify({
       seq: this.sequence,
-      device: identityOf(device),
+      device: identityOf(access),
       server: {
         version: this.options.version,
         workspace: this.options.workspace,
@@ -510,14 +574,14 @@ export class RemoteServer {
 
   private handleOperationLookup(
     response: ServerResponse,
-    device: DeviceRecord,
+    access: RemoteAccess,
     operationId: string,
   ): void {
     if (!isRemoteOperationId(operationId)) {
       this.sendError(response, 400, "invalid", "Operation ID is invalid");
       return;
     }
-    const outcome = this.operationLog.get(`${device.id}:${operationId}`);
+    const outcome = this.operationLog.get(`${access.id}:${operationId}`);
     if (!outcome) {
       this.sendError(response, 404, "not-found", "No outcome recorded for that operation");
       return;
@@ -527,7 +591,7 @@ export class RemoteServer {
 
   private async runRead(
     response: ServerResponse,
-    device: DeviceRecord,
+    access: RemoteAccess,
     operation: RemoteOperationName,
     params: RemoteOperationParams,
   ): Promise<void> {
@@ -544,7 +608,7 @@ export class RemoteServer {
       // The request was well-formed; the host could not answer. Reporting that as
       // a success with an error field would let a client render stale state as if
       // it were live.
-      this.log(`remote read failed (${device.name}): ${describeError(error)}`);
+      this.log(`remote read failed (${access.name}): ${describeError(error)}`);
       this.sendError(response, 502, "unavailable", describeError(error));
     }
   }
@@ -552,7 +616,7 @@ export class RemoteServer {
   private async runControl(
     request: IncomingMessage,
     response: ServerResponse,
-    device: DeviceRecord,
+    access: RemoteAccess,
     operation: RemoteOperationName,
     params: RemoteOperationParams,
   ): Promise<void> {
@@ -564,7 +628,7 @@ export class RemoteServer {
       this.sendError(response, 400, "invalid", "A control request must carry an operation ID");
       return;
     }
-    const key = `${device.id}:${operationId}`;
+    const key = `${access.id}:${operationId}`;
     const previous = this.operationLog.get(key);
     if (previous) {
       this.sendJson(response, 200, previous);
@@ -780,8 +844,13 @@ function matchOperationRoute(pathname: string): MatchedRoute | undefined {
   return undefined;
 }
 
-function identityOf(device: DeviceRecord): RemoteDeviceIdentity {
-  return { id: device.id, name: device.name, permission: device.permission };
+function identityOf(access: RemoteAccess): RemoteDeviceIdentity {
+  return {
+    id: access.id,
+    name: access.name,
+    permission: access.permission,
+    via: access.identity ? "tailscale" : "device",
+  };
 }
 
 function validateRouteParams(params: RemoteOperationParams): void {
@@ -802,6 +871,48 @@ function hostnameOf(host: string): string {
 function clientAddress(request: IncomingMessage): string {
   const address = request.socket.remoteAddress ?? "unknown";
   return address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+}
+
+/**
+ * The address to report for a request.
+ *
+ * Everything a peer sends arrives from the local tailscaled, so the socket address
+ * of a phone is loopback and says nothing. Serve replaces X-Forwarded-For with the
+ * single address the peer really came from, which is the one worth recording.
+ */
+function reportedAddress(request: IncomingMessage): string {
+  const forwarded = singleForwardedAddress(request.headers["x-forwarded-for"]);
+  return forwarded && isTailnetAddress(forwarded) ? forwarded : clientAddress(request);
+}
+
+/** One address, with no proxy chain behind it, as Serve rewrites the header. */
+function singleForwardedAddress(value: string | string[] | undefined): string | undefined {
+  const text = headerText(value);
+  if (!text || text.includes(",")) return undefined;
+  return text;
+}
+
+function headerText(value: string | string[] | undefined): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value;
+  if (typeof text !== "string") return undefined;
+  const trimmed = text.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+function isLoopbackAddress(address: string): boolean {
+  return address === "::1" || address.startsWith("127.") || address.startsWith("::ffff:127.");
+}
+
+/** Tailscale hands out 100.64.0.0/10 and fd7a:115c:a1e0::/48, and nothing else. */
+function isTailnetAddress(address: string): boolean {
+  const [first, second] = address.split(".");
+  if (first !== undefined && second !== undefined) {
+    const a = Number(first);
+    const b = Number(second);
+    if (Number.isInteger(a) && Number.isInteger(b)) return a === 100 && b >= 64 && b <= 127;
+  }
+  const lowered = address.toLowerCase();
+  return lowered === "fd7a:115c:a1e0::" || lowered.startsWith("fd7a:115c:a1e0:");
 }
 
 function hasFileExtension(filePath: string): boolean {

@@ -39,6 +39,9 @@ const UNKNOWN_TAILSCALE: TailscaleSummary = {
   serveEnabled: false,
 };
 
+/** How long a read owner login stays good enough to admit a request. */
+const IDENTITY_TTL_MS = 30_000;
+
 export class RemoteAccessService {
   private readonly settings: RemoteSettingsStore;
   private readonly devices: DeviceStore;
@@ -49,6 +52,7 @@ export class RemoteAccessService {
   private serveManagedByApp = false;
   private lastError = "";
   private lastTailscale = UNKNOWN_TAILSCALE;
+  private identityCache?: { at: number; login?: string };
   private starting?: Promise<void>;
 
   constructor(private readonly options: RemoteAccessServiceOptions) {
@@ -191,6 +195,23 @@ export class RemoteAccessService {
     if (!this.lastError) await this.ensureServe(settings.port);
   }
 
+  /**
+   * The owner login Serve stamps on a request from one of the owner's devices.
+   *
+   * Re-read at most every 30s: `tailscale status` spawns a process, and a phone
+   * reconnecting must not pay for one per request. An answer that cannot be read
+   * closes identity access rather than leaving the last one open.
+   */
+  private async ownerIdentity(): Promise<{ login: string } | undefined> {
+    const now = Date.now();
+    if (this.identityCache && now - this.identityCache.at < IDENTITY_TTL_MS) {
+      return this.identityCache.login ? { login: this.identityCache.login } : undefined;
+    }
+    const identity = await this.tailscale.identity().catch(() => undefined);
+    this.identityCache = { at: now, ...(identity ? { login: identity.login } : {}) };
+    return identity;
+  }
+
   private async ensureServer(port: number): Promise<void> {
     if (this.server?.running && this.server.address.port === port) return;
     await this.server?.stop();
@@ -203,6 +224,7 @@ export class RemoteAccessService {
       port,
       allowedHosts: () => this.allowedHosts(),
       allowedOrigins: () => this.allowedOrigins(port),
+      identity: () => this.ownerIdentity(),
       log: this.log,
     });
     try {

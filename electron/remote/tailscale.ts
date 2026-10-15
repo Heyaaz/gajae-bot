@@ -110,6 +110,30 @@ export function parseTailscaleStatus(value: unknown): TailscaleStatusFields {
   };
 }
 
+/**
+ * The login that owns this node, when Tailscale names one.
+ *
+ * `tailscale serve` stamps a request from a person's device with this same login,
+ * so a request that came from the local tailscaled and carries it is the owner's
+ * own device rather than a stranger. A tagged node names no person and a stopped
+ * daemon proves nothing, so both answer undefined.
+ */
+export function ownerLoginFromStatus(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const root = value as {
+    BackendState?: unknown;
+    Self?: { UserID?: unknown };
+    User?: Record<string, unknown>;
+  };
+  if (root.BackendState !== "Running") return undefined;
+  const userId = root.Self?.UserID;
+  if (typeof userId !== "number" && typeof userId !== "string") return undefined;
+  const user = root.User?.[String(userId)];
+  if (!user || typeof user !== "object") return undefined;
+  const login = (user as { LoginName?: unknown }).LoginName;
+  return typeof login === "string" && login.trim() ? login.trim() : undefined;
+}
+
 export function serveTargetFor(port: number): string {
   return `http://127.0.0.1:${port}`;
 }
@@ -141,6 +165,12 @@ export class TailscaleClient {
     } catch {
       return undefined;
     }
+  }
+
+  /** The owner login, or undefined when Tailscale cannot name one for this node. */
+  async identity(): Promise<{ login: string } | undefined> {
+    const login = ownerLoginFromStatus(await this.runJson(["status", "--json"]));
+    return login ? { login } : undefined;
   }
 
   async summary(port: number): Promise<TailscaleSummary> {

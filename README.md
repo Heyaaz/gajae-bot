@@ -194,6 +194,13 @@ Setup, on the desktop, in Settings → 원격 접속:
 3. Scan the QR code, or open `https://<machine>.<tailnet>.ts.net/` and type the
    code.
 
+A device signed in to the same tailnet account as this machine skips the code.
+`tailscale serve` stamps each request with the login that owns the node it came
+from, so a request that arrived through the local tailscaled, from a tailnet
+address, not through Funnel, and naming this machine's own login is the owner and
+is admitted directly. Everything else — another person's device, a tagged node, a
+forged header — still needs a code.
+
 What a paired device may do:
 
 | Permission        | Allowed                                                                                            | Refused (stays desktop-only)                                                    |
@@ -210,6 +217,10 @@ Security shape:
 
 - `Host` and `Origin` are checked against this machine's loopback and tailnet
   names, and a cross-origin write is refused before authentication.
+- Tailnet identity is only believed when `tailscale serve` produced it: the request
+  must arrive from the local tailscaled, carry a single `X-Forwarded-For` address
+  on the tailnet, name this machine's own login, and show no `Tailscale-Funnel-Request`.
+  If `tailscale status` stops answering, identity access closes with it.
 - Static app assets are public; session data never is. The device token travels
   in an `Authorization` header, never in a URL.
 - A device token is 32 random bytes. The host stores only `HMAC(secret, token)`

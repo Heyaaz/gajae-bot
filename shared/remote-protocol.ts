@@ -103,6 +103,12 @@ export interface RemoteDeviceIdentity {
   id: string;
   name: string;
   permission: RemotePermission;
+  /**
+   * How the host admits this client: a paired device token, or the owner's own
+   * tailnet device, which `tailscale serve` proves by the login it stamps on the
+   * request. Identity clients never paired and hold no token.
+   */
+  via?: "device" | "tailscale";
 }
 
 export type RemoteErrorCode =

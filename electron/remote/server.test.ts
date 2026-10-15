@@ -122,7 +122,9 @@ interface Harness {
   origin: string;
 }
 
-async function harness(): Promise<Harness> {
+async function harness(
+  options: { identity?: () => Promise<{ login: string } | undefined> } = {},
+): Promise<Harness> {
   const directory = mkdtempSync(path.join(tmpdir(), "gajae-remote-server-"));
   directories.push(directory);
   const webRoot = path.join(directory, "web");
@@ -143,6 +145,7 @@ async function harness(): Promise<Harness> {
     port: 0,
     allowedHosts: () => ["127.0.0.1", "localhost", "mac.tailnet-abcd.ts.net"],
     allowedOrigins: () => [`http://127.0.0.1:${port}`, "https://mac.tailnet-abcd.ts.net"],
+    ...(options.identity ? { identity: options.identity } : {}),
     log: (message) => logs.push(message),
   });
   await server.start();
@@ -633,5 +636,106 @@ describe("remote server event stream", () => {
     await expect(
       SseReader.open(base.url(REMOTE_API.events), "z".repeat(43), base.origin),
     ).rejects.toThrow("401");
+  });
+});
+
+describe("tailnet identity access", () => {
+  const OWNER = "owner@example.com";
+  const TAILNET = "100.101.102.103";
+
+  /** The headers Serve puts on a request from the owner's own device. */
+  const serveHeaders = (login = OWNER, forwarded: string | null = TAILNET) => ({
+    "tailscale-user-login": login,
+    ...(forwarded === null ? {} : { "x-forwarded-for": forwarded }),
+  });
+
+  it("admits the owner's own device without a token", async () => {
+    const base = await harness({ identity: async () => ({ login: OWNER }) });
+    const response = await rawRequest(base, REMOTE_API.state, { headers: serveHeaders() });
+    expect(response.status).toBe(200);
+    const body = JSON.parse(response.body);
+    expect(body.device).toMatchObject({
+      id: `tailscale:${OWNER}`,
+      permission: "control",
+      via: "tailscale",
+    });
+    expect(body.sessions).toHaveLength(1);
+  });
+
+  it("admits control from an identity client", async () => {
+    const base = await harness({ identity: async () => ({ login: OWNER }) });
+    const response = await fetch(base.url(REMOTE_API.cancel("s-1")), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base.origin, ...serveHeaders() },
+      body: JSON.stringify({ operationId: "op-66666666" }),
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it("refuses a login that is not this machine's owner", async () => {
+    const base = await harness({ identity: async () => ({ login: OWNER }) });
+    const response = await rawRequest(base, REMOTE_API.state, {
+      headers: serveHeaders("guest@example.com"),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("refuses an identity claim that Serve did not forward", async () => {
+    // Without X-Forwarded-For there is no proof the request came through Serve at
+    // all: any local process can send a login header.
+    const base = await harness({ identity: async () => ({ login: OWNER }) });
+    const missing = await rawRequest(base, REMOTE_API.state, {
+      headers: serveHeaders(OWNER, null),
+    });
+    expect(missing.status).toBe(401);
+    const publicAddress = await rawRequest(base, REMOTE_API.state, {
+      headers: serveHeaders(OWNER, "203.0.113.9"),
+    });
+    expect(publicAddress.status).toBe(401);
+    const chained = await rawRequest(base, REMOTE_API.state, {
+      headers: serveHeaders(OWNER, `${TAILNET}, 203.0.113.9`),
+    });
+    expect(chained.status).toBe(401);
+  });
+
+  it("refuses a request Funnel carried in from the internet", async () => {
+    const base = await harness({ identity: async () => ({ login: OWNER }) });
+    const response = await rawRequest(base, REMOTE_API.state, {
+      headers: { ...serveHeaders(), "tailscale-funnel-request": "?1" },
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("stays closed when Tailscale cannot name the owner", async () => {
+    const base = await harness({ identity: async () => undefined });
+    const response = await rawRequest(base, REMOTE_API.state, { headers: serveHeaders() });
+    expect(response.status).toBe(401);
+  });
+
+  it("does not consult Tailscale for a request that claims nothing", async () => {
+    let lookups = 0;
+    const base = await harness({
+      identity: async () => {
+        lookups += 1;
+        return { login: OWNER };
+      },
+    });
+    const response = await rawRequest(base, REMOTE_API.state);
+    expect(response.status).toBe(401);
+    expect(lookups).toBe(0);
+  });
+
+  it("records the tailnet address Serve forwarded instead of loopback", async () => {
+    // Every peer reaches the server through the local tailscaled, so the socket
+    // address is 127.0.0.1; the device list is only useful with the real one.
+    const base = await harness();
+    const pairing = base.devices.issuePairingCode("view");
+    const paired = await fetch(base.url(REMOTE_API.pair), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: base.origin, ...serveHeaders(OWNER) },
+      body: JSON.stringify({ code: pairing.code, deviceName: "iPhone" }),
+    });
+    expect(paired.status).toBe(200);
+    expect(base.devices.list()[0]?.clientAddress).toBe(TAILNET);
   });
 });

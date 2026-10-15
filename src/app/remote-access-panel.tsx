@@ -101,9 +101,10 @@ export function RemoteAccessPanel() {
             <strong>원격 접속</strong>
             <small>
               Tailscale 네트워크에서 이 컴퓨터의 GJC 세션을 휴대폰·다른 기기에서
-              조회합니다. 켜면 테일넷 기기가 이 컴퓨터의 HTTPS 주소에 닿을 수 있지만
-              세션 데이터는 페어링한 기기만 받고, 서버 자체는 loopback에만 열려 공개
-              인터넷에는 노출되지 않습니다.
+              조회합니다. 켜면 테일넷 기기가 이 컴퓨터의 HTTPS 주소에 닿을 수 있고,
+              세션 데이터는 페어링한 기기와 Tailscale이 이 계정의 소유자로 확인한
+              기기만 받습니다. 서버 자체는 loopback에만 열려 공개 인터넷에는 노출되지
+              않습니다.
             </small>
           </span>
           <button
@@ -169,8 +170,8 @@ export function RemoteAccessPanel() {
         </div>
         {state?.baseUrl && state.running && (
           <p className="settings-note">
-            휴대폰에서 {state.baseUrl} 을 열고 연결 코드를 입력하거나, 아래 QR을
-            스캔하세요.
+            휴대폰에서 {state.baseUrl} 을 열면 같은 Tailscale 계정의 기기는 바로
+            연결됩니다. 다른 계정·기기는 아래 코드를 입력하거나 QR을 스캔하세요.
           </p>
         )}
         {state && state.enabled && !state.running && (

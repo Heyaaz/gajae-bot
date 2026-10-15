@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   SERVING_PORT,
   TailscaleClient,
+  ownerLoginFromStatus,
   parseServeStatus,
   parseTailscaleStatus,
   serveTargetFor,
@@ -164,5 +165,45 @@ describe("tailscale serve wiring", () => {
     const legacy = runner({ "serve reset": ok("") });
     expect((await new TailscaleClient({ runner: legacy.run }).disableServe(8791, entries)).code).toBe(0);
     expect(legacy.calls).toEqual(["serve --https=443 off", "serve reset"]);
+  });
+});
+
+describe("tailscale identity", () => {
+  it("reads the login that owns this node", async () => {
+    const { run } = runner({
+      "status --json": ok(
+        JSON.stringify({
+          BackendState: "Running",
+          Self: { UserID: 5195504229101364 },
+          User: { "5195504229101364": { LoginName: "owner@example.com" } },
+        }),
+      ),
+    });
+    await expect(new TailscaleClient({ runner: run }).identity()).resolves.toEqual({
+      login: "owner@example.com",
+    });
+  });
+
+  it("answers nothing a request could be trusted with otherwise", async () => {
+    // A tagged node names no person, a stopped daemon proves nothing about who is
+    // asking, and a login the status does not carry is not a login.
+    expect(
+      ownerLoginFromStatus({ BackendState: "Running", Self: { UserID: 4 }, User: {} }),
+    ).toBeUndefined();
+    expect(
+      ownerLoginFromStatus({
+        BackendState: "Stopped",
+        Self: { UserID: 4 },
+        User: { "4": { LoginName: "owner@example.com" } },
+      }),
+    ).toBeUndefined();
+    expect(ownerLoginFromStatus({ BackendState: "Running", User: {} })).toBeUndefined();
+    expect(ownerLoginFromStatus("{ torn")).toBeUndefined();
+    expect(ownerLoginFromStatus(null)).toBeUndefined();
+  });
+
+  it("answers nothing when the status command fails", async () => {
+    const { run } = runner({ "status --json": fail("tailscale: not running") });
+    await expect(new TailscaleClient({ runner: run }).identity()).resolves.toBeUndefined();
   });
 });
