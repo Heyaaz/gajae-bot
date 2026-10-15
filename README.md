@@ -180,7 +180,7 @@ The full session id sits under the title in the inspector and copies on click.
 
 A phone or a second personal machine runs the same app as a *remote client* of
 the host, over an HTTPS address the host publishes with Tailscale Serve. It is not
-a second runtime: both clients drive the one `GjcAcpController` in the host
+a second runtime: both clients drive the one `GjcSdkController` in the host
 process, so a session started here shows up there and the result of an action is
 the same on both screens.
 
