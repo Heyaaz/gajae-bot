@@ -730,6 +730,21 @@ export default function App() {
     [backend],
   );
 
+  const resolveSessionId = useCallback(async (sessionId: string): Promise<string> => {
+    return (await pendingSessions.current.get(sessionId))?.id ?? sessionId;
+  }, []);
+
+  const cancelRun = useCallback(
+    async (sessionId: string): Promise<void> => {
+      try {
+        await backend.cancelRun(await resolveSessionId(sessionId));
+      } catch (error) {
+        setAppError(humanErrorMessage(error));
+      }
+    },
+    [backend, resolveSessionId],
+  );
+
   useEffect(() => {
     const unsubscribe = window.agentControlDesktop?.onSessionShortcut(
       (shortcut) => {
@@ -782,16 +797,13 @@ export default function App() {
     selectedSession?.workspace,
     settingsOpen,
     shortcutSessions,
+    cancelRun,
   ]);
-
-  async function resolveSessionId(sessionId: string): Promise<string> {
-    return (await pendingSessions.current.get(sessionId))?.id ?? sessionId;
-  }
 
   async function sendMessage(
     sessionId: string,
     input: MessageInput,
-  ): Promise<MessageDelivery | undefined> {
+  ): Promise<MessageDelivery> {
     try {
       return await backend.sendMessage(
         await resolveSessionId(sessionId),
@@ -799,7 +811,7 @@ export default function App() {
       );
     } catch (error) {
       setAppError(humanErrorMessage(error));
-      return undefined;
+      throw error;
     }
   }
 
@@ -854,14 +866,6 @@ export default function App() {
   async function compactSession(sessionId: string): Promise<void> {
     try {
       await backend.compactSession(await resolveSessionId(sessionId));
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-    }
-  }
-
-  async function cancelRun(sessionId: string): Promise<void> {
-    try {
-      await backend.cancelRun(await resolveSessionId(sessionId));
     } catch (error) {
       setAppError(humanErrorMessage(error));
     }

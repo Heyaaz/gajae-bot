@@ -1,20 +1,4 @@
 import {
-  ClientSideConnection,
-  PROTOCOL_VERSION,
-  ndJsonStream,
-  type Agent,
-  type AvailableCommand,
-  type Client,
-  type ContentBlock,
-  type RequestPermissionRequest,
-  type RequestPermissionResponse,
-  type SessionInfo,
-  type SessionNotification,
-  type SessionConfigOption,
-  type SessionUpdate,
-  type ToolCallStatus,
-} from "@agentclientprotocol/sdk";
-import {
   access,
   mkdir,
   open,
@@ -28,12 +12,10 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { Readable, Writable } from "node:stream";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { execFile as execFileCb } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { constants, watch, type FSWatcher, type Stats } from "node:fs";
+import { constants, realpathSync, watch, type FSWatcher, type Stats } from "node:fs";
 import type {
   AgentEvent,
   AgentSession,
@@ -47,6 +29,7 @@ import type {
   ImageAttachment,
   MessageDelivery,
   NoticeActivity,
+  PermissionOption,
   PlanActivity,
   ToolActivity,
   ToolDecision,
@@ -66,6 +49,132 @@ import type {
 } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
+import {
+  GjcSdkCli,
+  SdkCliError,
+  brokerExec,
+  freshOperationRef,
+  isLifecycleUncertain,
+  isSessionMissing,
+  isSessionUnreachable,
+  type SdkSessionRow,
+} from "./gjc-sdk-cli.js";
+
+export { brokerExec };
+
+/**
+ * Transcript and event shapes.
+ *
+ * Gajae reads these updates from the session's own file under
+ * `~/.gjc/agent/sessions/` and from `gjc sdk session tail` frames, so the shapes
+ * are declared here instead of imported from a protocol package. The field names
+ * match what GJC persists, which is what both sources carry.
+ */
+export type ContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string; uri?: string }
+  | { type: "audio"; data?: string; mimeType?: string }
+  | { type: "resource_link"; uri: string; name?: string }
+  | { type: "resource"; resource?: unknown }
+  | { type: "unknown" };
+
+/** GJC's tool lifecycle states. `pending` is queued work, not running work. */
+export type ToolCallStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | string;
+
+export interface AvailableCommand {
+  name: string;
+  description?: string | null;
+  input?: { hint?: string } | null;
+}
+
+/** One model/thinking/mode selector exposed by a session. */
+export type SessionConfigOption =
+  | {
+      type: "select";
+      id: string;
+      name: string;
+      category?: string | null;
+      currentValue?: string | boolean | null;
+      options: Array<Record<string, unknown>>;
+    }
+  | {
+      type: "boolean";
+      id: string;
+      name: string;
+      category?: string | null;
+      currentValue?: string | boolean | null;
+    };
+
+/** A session summary row as the picker and session list consume it. */
+export interface SessionInfo {
+  sessionId: string;
+  title?: string | null;
+  cwd?: string | null;
+  updatedAt?: string | null;
+}
+
+export interface PlanEntry {
+  content: string;
+  status?: "pending" | "in_progress" | "completed" | string;
+  priority?: string;
+}
+
+/** The tool fields a projected tool row carries. */
+interface ToolCallFields {
+  toolCallId: string;
+  title?: string;
+  kind?: string;
+  status?: ToolCallStatus;
+  content?: unknown[];
+  rawInput?: unknown;
+  rawOutput?: unknown;
+  locations?: Array<{ path?: string }>;
+  _meta?: Record<string, unknown>;
+}
+
+/**
+ * One projected session update.
+ *
+ * The variants are exactly the ones the transcript projection handles. Tail frames
+ * and session-file rows are both normalised into these before projection, so there
+ * is one place that decides what a row means.
+ */
+export type SessionUpdate =
+  | { sessionUpdate: "user_message_chunk"; content: ContentBlock; messageId?: string }
+  | {
+      sessionUpdate: "agent_message_chunk";
+      content: ContentBlock;
+      messageId?: string;
+    }
+  | {
+      sessionUpdate: "agent_thought_chunk";
+      content: ContentBlock;
+      messageId?: string;
+    }
+  | ({ sessionUpdate: "tool_call" } & ToolCallFields)
+  | ({ sessionUpdate: "tool_call_update" } & ToolCallFields)
+  | {
+      sessionUpdate: "session_info_update";
+      title?: string | null;
+      updatedAt?: string | null;
+      phase?: string | null;
+      _meta?: Record<string, unknown>;
+    }
+  | { sessionUpdate: "plan"; entries: PlanEntry[] }
+  | { sessionUpdate: "available_commands_update"; availableCommands: AvailableCommand[] }
+  | { sessionUpdate: "config_option_update"; configOptions: SessionConfigOption[] }
+  | { sessionUpdate: "current_mode_update"; currentModeId?: string }
+  | { sessionUpdate: "usage_update"; used: number; size: number };
+
+export interface SessionNotification {
+  sessionId: string;
+  update: SessionUpdate;
+}
 
 export interface ResolvedMessageInput {
   text: string;
@@ -96,8 +205,13 @@ const TRANSCRIPT_RESCAN_WINDOW = 32;
 // index, which only lists the new session once it settles.
 const FORK_RECOVERY_ATTEMPTS = 20;
 const MAX_TOOL_TEXT = 12_000;
+// How long a prompt is followed through its own record before the transcript is
+// left as the only account. A turn can legitimately run for many minutes, so this
+// is a ceiling on polling, not a deadline on the work: reaching it leaves the run
+// alone rather than reporting it stopped.
+const PROMPT_SETTLE_ATTEMPTS = 900;
+const PROMPT_SETTLE_INTERVAL_MS = 400;
 const ATTACH_RETRY_INTERVAL_MS = 15_000;
-const MODEL_CATALOG_PAGE_LIMIT = 16;
 const EFFORT_LEVELS = new Set([
   "off",
   "minimal",
@@ -113,15 +227,13 @@ const execFile = promisify(execFileCb);
  * Runs a GJC CLI control command and resolves as soon as its response is complete,
  * without waiting for the process to exit.
  *
- * The CLI writes one JSON object and is done, but the process then lingers before
- * exiting. Measured against the installed 0.15.3: the full response arrives at
- * 728ms and the process exits at 5735ms, so waiting for exit charged every steer,
- * follow-up, and abort an extra 5 seconds during which the window looked frozen.
- * The fix landed upstream in gajae-code#5025, but only reaches users on the next
- * release, and the delay is not the app's to pass on in the meantime.
+ * The CLI writes one JSON object and is done, but older builds then lingered before
+ * exiting (0.15.3: response at 728ms, exit at 5735ms), so waiting for exit charged
+ * every steer, follow-up, and abort an extra 5 seconds during which the window
+ * looked frozen. gjc/0.18.11 no longer lingers (response 425ms, exit 434ms), and
+ * resolving on the response keeps the window off that path either way.
  *
- * The child is left to exit on its own once its response has been read. Measured:
- * such a process ends by itself within its linger window, so nothing accumulates.
+ * The child is left to exit on its own once its response has been read.
  */
 /** Initial window for finding the current persisted cycle's user boundary. */
 const RUN_STATE_TAIL_BYTES = 256 * 1024;
@@ -208,78 +320,27 @@ export async function readTranscriptTail(
   }
 }
 
-export async function brokerExec(
-  executable: string,
-  args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; timeoutMs: number },
-): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const child = spawn(executable, args, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let stdout = "";
-    let stderr = "";
-    let settled = false;
-    const finish = (error?: Error, value?: string): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.stdout.removeAllListeners();
-      child.stderr.removeAllListeners();
-      // The response is in hand, so the process is free to take its time exiting.
-      if (error) {
-        child.kill("SIGTERM");
-        reject(error);
-        return;
-      }
-      resolve(value ?? "");
-    };
-    const timer = setTimeout(() => {
-      finish(new Error(`GJC control timed out after ${options.timeoutMs}ms`));
-    }, options.timeoutMs);
-    const settleIfComplete = (): void => {
-      const text = stdout.trim();
-      if (!text) return;
-      try {
-        JSON.parse(text);
-      } catch {
-        // Still mid-object; wait for the rest.
-        return;
-      }
-      finish(undefined, stdout);
-    };
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-      settleIfComplete();
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    child.once("error", (error) => finish(error));
-    // A process that exits without a parsable response failed; report what it said.
-    child.once("close", (code) => {
-      if (settled) return;
-      const text = stdout.trim();
-      if (text) {
-        finish(undefined, stdout);
-        return;
-      }
-      finish(
-        new Error(
-          stderr.trim() || `GJC control exited with code ${code ?? "unknown"}`,
-        ),
-      );
-    });
-  });
-}
-
+/**
+ * A tool call awaiting the user's approval decision.
+ *
+ * Broker-hosted session hosts have no reverse channel to an external controller:
+ * `permission.request` is a host-to-client operation the CLI cannot carry, so a
+ * session left in `prompt` mode fails its tool calls with "no permission provider
+ * is connected" instead of asking. Gajae therefore sets the session's permission
+ * mode explicitly (see `applyPermissionMode`) and only tracks a pending decision
+ * for the approvals GJC records in the transcript itself.
+ */
 interface PendingPermission {
-  request: RequestPermissionRequest;
-  resolve: (response: RequestPermissionResponse) => void;
+  request: {
+    sessionId: string;
+    toolCall: { toolCallId: string; title?: string };
+    options: Array<{
+      optionId: string;
+      name: string;
+      kind: PermissionOption["kind"];
+    }>;
+  };
+  resolve: (response: { outcome: { outcome: string; optionId?: string } }) => void;
 }
 
 interface GjcControllerOptions {
@@ -450,7 +511,7 @@ export function toolDiffText(...candidates: unknown[]): string | undefined {
   return undefined;
 }
 
-/** Image parts of a tool result: inline base64 from ACP, or a content-addressed blob id. */
+/** Image parts of a tool result: inline base64, or a content-addressed blob id. */
 export function toolImageRefs(content: unknown): ToolImage[] {
   if (!Array.isArray(content)) return [];
   return content
@@ -1093,7 +1154,7 @@ export function sharedTranscriptItems(
 function agentCommands(commands: AvailableCommand[]): AgentCommand[] {
   return commands.map((command) => ({
     name: command.name,
-    description: command.description,
+    description: command.description ?? "",
     ...(command.input?.hint ? { hint: command.input.hint } : {}),
   }));
 }
@@ -1252,13 +1313,29 @@ export function sdkSlashCommandsForOperations(
 function configOptionValues(
   option: Extract<SessionConfigOption, { type: "select" }>,
 ): AgentConfigOption["options"] {
+  // A select carries either flat items or groups of items; both shapes reach here.
   return option.options
-    .flatMap((item) => ("group" in item ? item.options : [item]))
-    .map((item) => ({
-      value: item.value,
-      name: item.name,
-      ...(item.description ? { description: item.description } : {}),
-    }));
+    .flatMap((item) =>
+      "group" in item && Array.isArray(item.options)
+        ? (item.options as Array<Record<string, unknown>>)
+        : [item],
+    )
+    .flatMap((item) => {
+      const value = item.id ?? item.value;
+      if (typeof value !== "string") return [];
+      const name = typeof item.name === "string" ? item.name : value;
+      const description =
+        typeof item.description === "string" ? item.description : undefined;
+      const group = typeof item.group === "string" ? item.group : undefined;
+      return [
+        {
+          value,
+          name,
+          ...(description ? { description } : {}),
+          ...(group ? { group } : {}),
+        },
+      ];
+    });
 }
 
 function agentConfigOptions(
@@ -1271,7 +1348,7 @@ function agentConfigOptions(
           name: option.name,
           category: option.category ?? undefined,
           type: "select",
-          currentValue: option.currentValue,
+          currentValue: option.currentValue ?? "",
           options: configOptionValues(option),
         }
       : {
@@ -1279,7 +1356,7 @@ function agentConfigOptions(
           name: option.name,
           category: option.category ?? undefined,
           type: "boolean",
-          currentValue: option.currentValue,
+          currentValue: option.currentValue ?? false,
         },
   );
 }
@@ -1357,9 +1434,9 @@ function safeGitPath(value: string): boolean {
 }
 
 /**
- * ACP tool state as this app displays it.
+ * GJC tool state as this app displays it.
  *
- * `pending` and `in_progress` are separate states in ACP and GJC sends both: a call
+ * `pending` and `in_progress` are separate states and GJC sends both: a call
  * arrives pending and can sit there for seconds before it starts. Mapping both to
  * running spun a spinner and said 작업 중 for work that had not begun.
  *
@@ -1449,14 +1526,36 @@ function readableSessionTitle(
 }
 
 function missingSessionError(error: unknown): boolean {
+  if (isSessionMissing(error)) return true;
   const text = error instanceof Error ? error.message : String(error);
-  return /saved ACP session does not exist/iu.test(text);
+  return /saved session does not exist|session is not indexed|unknown GJC session/iu.test(
+    text,
+  );
 }
 
 function lifecycleUncertainError(error: unknown): boolean {
   const text = error instanceof Error ? error.message : String(error);
   return /terminal_uncertain|lifecycle terminal evidence could not be verified|retained artifacts require reconciliation|cleanup authority is uncertain|cannot be deleted safely|requires durable locator authority|ownership is uncertain|authority is ambiguous|authority is pending/iu.test(
     text,
+  );
+}
+
+/**
+ * A lifecycle mutation whose outcome GJC could not establish.
+ *
+ * gjc/0.18.11 answers `session.delete` with `operation_failed` and "The operation
+ * failed. Its outcome could not be established." (`outcomeCertainty: unknown`,
+ * retryability `unknown`, next step "do not blindly retry") on the installed build,
+ * reproducibly and in a fresh agent directory, while the broker row stays
+ * `deleted: false`. It is not proof that the delete landed or failed, so it must be
+ * handled the way this file handles every other unknown lifecycle outcome: re-read
+ * the broker row and let only that evidence decide.
+ */
+function uncertainLifecycleOutcomeError(error: unknown): boolean {
+  if (!(error instanceof SdkCliError)) return false;
+  return (
+    error.code === "operation_failed" &&
+    /outcome could not be established/iu.test(error.message)
   );
 }
 
@@ -1471,8 +1570,17 @@ function missingLifecycleSessionError(error: unknown): boolean {
 }
 
 export function busyPromptError(error: unknown): boolean {
+  // gjc/0.18.11 answers a second prompt with the typed code `busy` and the text
+  // "The session is running a turn and refused the request." (verified). The
+  // message patterns below are the older ones and no longer match that text, so
+  // without the code check a follow-up typed during a run surfaced as a raw error
+  // instead of being delivered as a steer.
+  if (error instanceof SdkCliError) {
+    if (error.code === "busy" || error.code === "prompt_busy" || error.code === "agent_busy")
+      return true;
+  }
   const text = error instanceof Error ? error.message : String(error);
-  return /ACP session already has an active prompt|turn\.prompt is unavailable while the agent is busy|agent is busy.*turn\.steer/iu.test(
+  return /already has an active prompt|is running a turn and refused|turn\.prompt is unavailable while the agent is busy|agent is busy.*turn\.steer|prompt_busy|agent_busy/iu.test(
     text,
   );
 }
@@ -1485,6 +1593,8 @@ export function cancelledOperationError(error: unknown): boolean {
   );
 }
 export function uncertainAfterSendError(error: unknown): boolean {
+  if (error instanceof SdkCliError && error.code === "uncertain_after_send")
+    return true;
   const text = error instanceof Error ? error.message : String(error);
   return /uncertain_after_send|SDK request outcome is uncertain after the frame was sent/iu.test(
     text,
@@ -1516,59 +1626,32 @@ export function brokerFailureMessage(error: unknown): string {
 export const TERMINAL_ONLY_CONTROL_MESSAGE =
   "터미널에서 실행 중인 세션이라 앱에서 제어할 수 없습니다. Gajae에서 새 세션을 만들어 주세요.";
 
-// A session that never published an SDK endpoint cannot be controlled at all: the
-// Router attaches through that endpoint record, so there is nothing to attach to.
-// A plain `gjc --resume` in a terminal is the usual case -- it is alive and
-// heartbeating, which is why it appears in the session list, but it exposes no
-// control surface. The broker reports this as session_unavailable.
-export function sessionUnreachableError(error: unknown): boolean {
-  const text = error instanceof Error ? error.message : String(error);
-  return /session_unavailable|unavailable through the session Router|no current Router attachment|provider_lease_conflict/iu.test(
-    text,
-  );
-}
-
 /**
- * Whether a failed SDK control response should be retried through the broker CLI.
+ * Canonical identity for a workspace directory.
  *
- * Everything except a busy agent should. The CLI is slower but it is a real second
- * chance at delivering what the user asked for, and dropping the request instead only
- * surfaces a raw IPC error. A busy agent is excluded because the live connection is
- * already the right target and a CLI spawn costs seconds that steering cannot afford.
+ * The same directory reaches this controller in two forms: the path a caller hands
+ * in, and the resolved `cwd` GJC reports in its broker locator. On macOS those are
+ * `/var/folders/...` and `/private/var/folders/...`, which name one directory but
+ * compare as two strings. Creating a session in the first form and then re-hosting
+ * it left the sidebar and this controller holding both, so a fork of the re-hosted
+ * session was reported in a different workspace than the session it came from. One
+ * canonical form per directory keeps every comparison in this file meaningful.
  */
-export function sdkControlNeedsBrokerFallback(
-  response: Record<string, unknown>,
-): boolean {
-  const error =
-    response.error &&
-    typeof response.error === "object" &&
-    !Array.isArray(response.error)
-      ? (response.error as Record<string, unknown>)
-      : undefined;
-  const text = `${typeof error?.code === "string" ? error.code : ""} ${typeof error?.message === "string" ? error.message : ""}`;
-  // A busy agent is the right target on a live connection. Spawning the broker
-  // CLI for it costs seconds before the message reaches the queue, which is the
-  // opposite of what steering needs.
-  if (busyPromptError(text)) return false;
-  // An operation the user asked for cannot be dropped because the failure was
-  // worded in a way this list did not predict. GJC answers some control failures
-  // with nothing more than "Internal error: Control operation failed", and
-  // enumerating known conditions rethrew those straight at the renderer, losing
-  // the message behind a raw IPC error while the broker CLI could still have
-  // delivered it.
-  //
-  // So the default is to try the CLI. Refusing is reserved for the one case where
-  // it is the wrong tool -- a busy agent, handled above -- because a slower
-  // delivery beats a silently dropped prompt.
-  return true;
+export function canonicalWorkspace(directory: string): string {
+  try {
+    return realpathSync.native(directory);
+  } catch {
+    return path.resolve(directory);
+  }
 }
 
 export function sessionInfoToAgentSession(info: SessionInfo): AgentSession {
+  const cwd = info.cwd ?? "";
   return {
     id: info.sessionId,
     title: readableSessionTitle(info.sessionId, info.title),
-    subtitle: path.basename(info.cwd) || info.cwd,
-    workspace: info.cwd,
+    subtitle: path.basename(cwd) || cwd,
+    workspace: cwd,
     runtime: "gjc",
     status: "idle",
     updatedAt: recentLabel(info.updatedAt),
@@ -1646,29 +1729,6 @@ export function historySessionSummary(
   };
 }
 
-export function isControllerSession(
-  session: {
-    repo?: string;
-    endpointGeneration?: number;
-    pid?: number;
-    activity?: { state?: unknown };
-  },
-  childPid: number | undefined,
-): boolean {
-  if (childPid !== undefined && session.pid === childPid) return true;
-  // A generation-0 endpoint is usually a control placeholder with no attachable
-  // turn and no transcript, so it is filtered rather than listed as a row.
-  //
-  // It is not always that. A TUI-hosted session drops to generation 0 while it
-  // holds no ACP endpoint, and the broker still reports it live and active with a
-  // multi-megabyte transcript on disk. Treating generation alone as the test threw
-  // those away, so a session the user was watching vanished from the sidebar on the
-  // next refresh. Reported activity is the evidence that separates a real session
-  // from a placeholder: a placeholder has none.
-  if ((session.endpointGeneration ?? 0) > 0) return false;
-  return session.activity?.state !== "active";
-}
-
 export function thinkingOptionsForModelCatalog(
   items: unknown[],
   selectedModel: string,
@@ -1731,7 +1791,7 @@ export function profileDefaultModelLabel(
       : undefined;
 }
 
-export class GjcAcpController {
+export class GjcSdkController {
   private workspace: string;
   private configuredExecutable?: string;
   private modelPreset: AgentControlPreferences["modelPreset"];
@@ -1749,6 +1809,7 @@ export class GjcAcpController {
   private readonly activeThoughts = new Map<string, string>();
   private readonly activePromptSessions = new Set<string>();
   private readonly cancellingSessions = new Set<string>();
+  private readonly cancellationPromises = new Map<string, Promise<void>>();
   private readonly flushingSessions = new Set<string>();
   private readonly pendingSteers = new Map<string, Promise<void>>();
   private readonly suppressedUserMessageKeys = new Map<string, Set<string>>();
@@ -1770,7 +1831,7 @@ export class GjcAcpController {
   // Timestamped compacting phases start a distinct cycle. A durable record older
   // than this boundary belongs to the preceding cycle and cannot finish this one.
   private readonly compactionStartedAt = new Map<string, number>();
-  // Sessions the live ACP signal currently reports as working. The persisted
+  // Sessions live SDK evidence currently reports as working. The persisted
   // transcript lags behind that signal, so it is not allowed to report one of
   // these idle until GJC itself says the turn ended.
   private readonly liveRunningSessions = new Set<string>();
@@ -1815,12 +1876,8 @@ export class GjcAcpController {
     string,
     { size: number; status: AgentSession["status"] }
   >();
-  /** How long an ACP cancel gets to settle the turn before escalating. */
-  private cancelSettleMs = 4000;
   /** Delay between broker polls while recovering a fork's session id. */
   private forkRecoveryIntervalMs = 250;
-  /** How long the escalated session abort gets to settle the turn. */
-  private cancelEscalationMs = 6000;
   private readonly sessionCommands = new Map<string, AgentCommand[]>();
   private readonly sessionSdkOperations = new Map<string, Set<string>>();
   private readonly sessionConfig = new Map<string, AgentConfigOption[]>();
@@ -1829,6 +1886,9 @@ export class GjcAcpController {
   private readonly explicitSessionThinking = new Map<string, string>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
   private readonly artifactWrites = new Map<string, Promise<void>>();
+  private readonly artifactSessionIds = new Map<string, Set<string>>();
+  private readonly deletingSessions = new Set<string>();
+  private readonly deletionPromises = new Map<string, Promise<void>>();
   private readonly sharedSessionFiles = new Map<string, string>();
   // A transcript is append-only, so a rescan only has to parse the bytes added
   // since the last one. Device/inode identify the file so a compaction that
@@ -1859,17 +1919,32 @@ export class GjcAcpController {
   private readonly contextUsageQueries = new Map<string, Promise<void>>();
 
   private connectionState: BackendConnection;
-  private child?: ChildProcessWithoutNullStreams;
-  private connection?: ClientSideConnection;
+  /**
+   * The `gjc sdk session` client.
+   *
+   * There is no resident agent process and no connection object: each call is its
+   * own short-lived CLI invocation. `readiness` only memoises resolving the
+   * executable and reading the broker index once per start, so the window can
+   * report a real state instead of pretending to be connected.
+   */
+  private cli?: GjcSdkCli;
   private startup?: Promise<void>;
   private disposed = false;
   private nextLocalId = 1;
   private generation = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempt = 0;
+  /** Sessions whose permission mode has been applied for this runtime generation. */
+  private readonly permissionModeApplied = new Set<string>();
+  /** Live tail catch-up reads in flight, keyed by session. */
+  private readonly tailReads = new Map<string, Promise<void>>();
+  /** Abort handles for the short-lived tail CLI child currently reading a session. */
+  private readonly tailControllers = new Map<string, AbortController>();
+  /** Latest tail checkpoint claim per session, so a re-read resumes rather than rewinds. */
+  private readonly tailCheckpoints = new Map<string, string>();
 
   constructor(options: GjcControllerOptions) {
-    this.workspace = path.resolve(options.workspace);
+    this.workspace = canonicalWorkspace(options.workspace);
     this.configuredExecutable = options.executable;
     this.modelPreset = options.modelPreset ?? "codex-medium";
     this.permissionHandling = options.permissionHandling ?? "prompt";
@@ -1904,7 +1979,7 @@ export class GjcAcpController {
   }
 
   async reconfigure(preferences: AgentControlPreferences): Promise<boolean> {
-    const workspace = path.resolve(preferences.workspace);
+    const workspace = canonicalWorkspace(preferences.workspace);
     const executable = preferences.gjcExecutable || undefined;
     const runtimeChanged =
       this.configuredExecutable !== executable ||
@@ -1922,10 +1997,13 @@ export class GjcAcpController {
     for (const pending of this.pendingPermissions.values())
       pending.resolve({ outcome: { outcome: "cancelled" } });
     this.pendingPermissions.clear();
-    const child = this.child;
-    this.child = undefined;
-    this.connection = undefined;
+    // No resident process to stop: dropping the client is the whole teardown, and
+    // the next call rebuilds it against the new runtime.
+    this.cli = undefined;
     this.startup = undefined;
+    this.permissionModeApplied.clear();
+    for (const sessionId of this.tailControllers.keys())
+      this.stopTailFollower(sessionId);
     this.attachedSessions.clear();
     // The new runtime re-attaches from scratch, so last run's throttle stamps must
     // not delay the first attempt against it.
@@ -1947,16 +2025,14 @@ export class GjcAcpController {
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionSdkOperations.clear();
-    child?.kill("SIGTERM");
     await this.ensureStarted();
     return true;
   }
 
   async listSessions(): Promise<AgentSession[]> {
-    // Discovery is a background refresh that shares one ACP channel with the
-    // user's own requests. Running it while a prompt, steer, or abort is in
-    // flight puts those behind a full session scan, so it yields and the caller
-    // keeps the list it already has.
+    // Discovery is a background refresh that spawns broker CLI requests. Running
+    // it while a prompt, steer, or abort is in flight adds avoidable process and
+    // broker work, so it yields and the caller keeps the list it already has.
     if (
       this.lastDiscovered.length > 0 &&
       (this.activePromptSessions.size > 0 || this.pendingSteers.size > 0)
@@ -1978,9 +2054,7 @@ export class GjcAcpController {
   private lastLiveFingerprint: string | undefined;
 
   private async discoverSessions(): Promise<AgentSession[]> {
-    const connection = await this.requireConnection();
     const liveRanks = new Map<string, number>();
-    const controlSessionIds = new Set<string>();
     // Every live GJC session is worth controlling from this window, so discovery
     // follows the broker's own repositories instead of only folders this app has
     // opened. Without it a session started by the CLI elsewhere stayed invisible.
@@ -1991,7 +2065,7 @@ export class GjcAcpController {
     // uncontrollable by evidence the index does not carry -- discarding that made
     // the row advertise controls that fail again on the next click. Entries are
     // dropped when the session row itself goes away (removeLocalSession).
-    const brokerRows = await this.brokerSessions(connection);
+    const brokerRows = await this.brokerSessions();
     // Without the index there is no liveness or placeholder evidence, so the
     // previous result stands rather than republishing every historical session.
     if (!brokerRows)
@@ -2003,13 +2077,6 @@ export class GjcAcpController {
       new Set(brokerRows.map((session) => session.sessionId)),
     );
     for (const session of brokerRows) {
-      if (
-        isControllerSession(session, this.child?.pid) &&
-        this.sessionMetadata?.getOwnership(session.sessionId) !== "gajae"
-      ) {
-        controlSessionIds.add(session.sessionId);
-        continue;
-      }
       if (!session.live) {
         // The broker keeps every historical session id. Only live ones can be
         // controlled or replayed from here, so a dead id must not become a row.
@@ -2044,6 +2111,17 @@ export class GjcAcpController {
         !this.activePromptSessions.has(sessionId) &&
         !this.liveRunningSessions.has(sessionId),
     );
+    // Polling/fingerprint eligibility intentionally excludes a live signal: its
+    // transcript may still be the pre-start snapshot. Watcher eligibility is
+    // broader, though. A live signal without a matching idle report still needs
+    // the transcript watcher to notice the eventual terminal row.
+    const watchedSessionIds = [...liveRanks.keys()].filter(
+      (sessionId) => !this.activePromptSessions.has(sessionId),
+    );
+    // Reconcile watchers before the fingerprint fast path. A session can become
+    // watchable after an earlier scan failed to locate its transcript, even when
+    // all polling inputs remain unchanged.
+    await this.syncRunStateWatchers(watchedSessionIds);
     const runStates = await Promise.all(
       observedSessionIds
         .slice()
@@ -2055,8 +2133,8 @@ export class GjcAcpController {
     );
     // `failed` and `starting` are written by this window rather than derived from
     // the transcript, so neither changes an id, a repository, or a transcript size.
-    // Without them here the ACP child exiting left the fingerprint untouched and the
-    // previous rows were replayed, hiding the disconnect the exit had just recorded.
+    // Without them here a runtime failure could leave the fingerprint untouched and
+    // replay previous rows, hiding the disconnect already recorded by the window.
     const ownStatuses = observedSessionIds
       .slice()
       .sort()
@@ -2083,16 +2161,38 @@ export class GjcAcpController {
     const pages = await Promise.all(
       workspaces.map(async (cwd) => {
         try {
+          // Sessions for this workspace come from the broker index, which already
+          // carries every session id and repository; the session file supplies the
+          // title and last activity.
           const sessions: SessionInfo[] = [];
-          let cursor: string | null | undefined;
-          do {
-            const response = await connection.listSessions({
-              cwd,
-              ...(cursor ? { cursor } : {}),
+          for (const row of brokerRows) {
+            if (!row.repo || path.resolve(row.repo) !== path.resolve(cwd))
+              continue;
+            if (row.deleted) continue;
+            const filePath = await this.locateSharedTranscriptFile(
+              row.sessionId,
+            );
+            let title: string | undefined;
+            let updatedAt: string | undefined;
+            if (filePath) {
+              try {
+                const summary = historySessionSummary(
+                  await transcriptHeadLines(filePath),
+                );
+                title = summary?.title;
+                const info = await stat(filePath);
+                updatedAt = new Date(info.mtimeMs).toISOString();
+              } catch {
+                /* an unreadable file still lists as a session */
+              }
+            }
+            sessions.push({
+              sessionId: row.sessionId,
+              cwd: row.repo,
+              ...(title ? { title } : {}),
+              ...(updatedAt ? { updatedAt } : {}),
             });
-            sessions.push(...response.sessions);
-            cursor = response.nextCursor;
-          } while (cursor);
+          }
           return sessions;
         } catch (error) {
           if (cwd === this.workspace) throw error;
@@ -2106,7 +2206,6 @@ export class GjcAcpController {
       ).values(),
     ]
       .filter((session) => !this.sessionMetadata?.isHidden(session.sessionId))
-      .filter((session) => !controlSessionIds.has(session.sessionId))
       .filter((session) => !deadSessionIds.has(session.sessionId))
       .sort(
         (left, right) =>
@@ -2172,9 +2271,9 @@ export class GjcAcpController {
         // driving is attached, silent, and described solely by its transcript.
         //
         // `failed` and `starting` outrank the transcript. Both describe this window's
-        // own connection rather than the turn: `failed` is written for every session
-        // when the ACP child exits, and `starting` covers a session whose first round
-        // trip has not landed. A transcript that ended cleanly long ago would
+        // runtime rather than the turn: `failed` is written after a runtime error,
+        // and `starting` covers a session whose first round trip has not landed. A
+        // transcript that ended cleanly long ago would
         // otherwise report `idle` and erase a disconnect the user has not seen yet.
         status: discoveredStatus,
         runRevision: this.currentRunRevision(info.sessionId),
@@ -2196,17 +2295,12 @@ export class GjcAcpController {
       session.title =
         this.sessionMetadata?.getAlias(session.id) ?? session.title;
       this.sessions.set(session.id, session);
-      this.sessionCwds.set(session.id, info.cwd);
+      if (info.cwd) this.sessionCwds.set(session.id, info.cwd);
     }
 
     this.lastDiscovered = listed.map((info) => ({
       ...this.sessions.get(info.sessionId)!,
     }));
-    // Polling alone leaves a row wrong for up to a refresh interval, which is what a
-    // user watching an agent work actually sees. The sessions worth watching are the
-    // live ones, so each keeps a watcher that re-reads its run state when its
-    // transcript changes and publishes the row immediately.
-    this.syncRunStateWatchers(observedSessionIds);
     return this.lastDiscovered.map((session) => ({ ...session }));
   }
 
@@ -2220,7 +2314,7 @@ export class GjcAcpController {
    * is still one file descriptor per session, so the set is bounded to the live rows
    * and pruned as soon as a session leaves them.
    */
-  private syncRunStateWatchers(sessionIds: readonly string[]): void {
+  private async syncRunStateWatchers(sessionIds: readonly string[]): Promise<void> {
     if (this.disposed) return;
     const wanted = new Set(sessionIds);
     for (const [sessionId, watcher] of this.runStateWatchers) {
@@ -2236,7 +2330,10 @@ export class GjcAcpController {
       // An already-open transcript has its own watcher doing strictly more work, so a
       // second one here would read the same file twice for the same change.
       if (this.sharedSessionWatchers.has(sessionId)) continue;
-      const filePath = this.sharedSessionFiles.get(sessionId);
+      // The first scan may have had no transcript yet. Retry resolution on every
+      // reconciliation so an unchanged discovery fingerprint does not strand a
+      // live session without a watcher.
+      const filePath = await this.locateSharedTranscriptFile(sessionId);
       if (!filePath) continue;
       try {
         const fileName = path.basename(filePath);
@@ -2382,132 +2479,26 @@ export class GjcAcpController {
     return status;
   }
 
-  /** Undefined when the broker index could not be read in full. */
-  private async brokerSessions(connection: ClientSideConnection): Promise<
-    | Array<{
-        sessionId: string;
-        repo?: string;
-        live: boolean;
-        endpointGeneration?: number;
-        pid?: number;
-        activity?: { state?: string };
-      }>
-    | undefined
-  > {
-    const sessions: Array<{
-      sessionId: string;
-      repo?: string;
-      live: boolean;
-      endpointGeneration?: number;
-      pid?: number;
-      activity?: { state?: string };
-    }> = [];
-    let cursor: string | undefined;
-    // This broker answers session.list in one page and ignores `limit`: measured
-    // against gjc/0.15.3 with 482 repo-scope sessions, limits of 100, 600, and 2000
-    // all returned all 482 with no continuationCursor. The cursor walk below is kept
-    // because the field is part of the operation and a paginating broker must not
-    // silently give us one page.
-    //
-    // When a walk does start it is always finished. The broker keeps only 32 cursors
-    // for 15 minutes each, so a walk that stops early (page cap, error, throw)
-    // strands one and a few polls exhaust the pool, taking session.list down for
-    // everyone. The pool is the shared resource.
-    const drain = async (token: string): Promise<void> => {
-      let next: string | undefined = token;
-      for (let page = 0; page < 4096 && next; page += 1) {
-        try {
-          const response = await connection.extMethod("_gjc/sdk/global", {
-            operation: "session.list",
-            input: { cursor: next, limit: 100 },
-          });
-          if (response.ok === false) return;
-          const result =
-            response.result &&
-            typeof response.result === "object" &&
-            !Array.isArray(response.result)
-              ? (response.result as Record<string, unknown>)
-              : response;
-          next =
-            typeof result.continuationCursor === "string"
-              ? result.continuationCursor
-              : undefined;
-        } catch {
-          return;
-        }
-      }
-    };
+  /**
+   * The broker's session index, or undefined when it could not be read in full.
+   *
+   * Liveness classification comes only from this index. An empty result on failure
+   * would read as "nothing is dead", which republishes every historical session as
+   * a live row, so an incomplete scan is reported as unusable instead.
+   *
+   * Continuation cursors are drained inside the CLI client: the broker keeps only a
+   * small pool of cursors for a limited window, and a walk that stops early strands
+   * one for every other caller.
+   */
+  private async brokerSessions(options?: {
+    scope?: "repo" | "cwd" | "worktree" | "all";
+  }): Promise<SdkSessionRow[] | undefined> {
     try {
-      for (let page = 0; page < 4096; page += 1) {
-        const response = await connection.extMethod("_gjc/sdk/global", {
-          operation: "session.list",
-          // A page size the broker is free to ignore, and this one does. Every
-          // unfinished walk strands a continuation cursor for 15 minutes and the
-          // broker only holds 32, so a scan that does page must be drained.
-          input: { ...(cursor ? { cursor } : {}), limit: 100 },
-        });
-        // Liveness classification comes only from this index. An empty result on
-        // failure reads as "nothing is dead", which republishes every historical
-        // session as a row, so an incomplete scan is reported as unusable instead.
-        if (response.ok === false) {
-          if (cursor) await drain(cursor);
-          return undefined;
-        }
-        const result =
-          response.result &&
-          typeof response.result === "object" &&
-          !Array.isArray(response.result)
-            ? (response.result as Record<string, unknown>)
-            : response;
-        for (const value of Array.isArray(result.sessions)
-          ? result.sessions
-          : []) {
-          if (!value || typeof value !== "object" || Array.isArray(value))
-            continue;
-          const candidate = value as {
-            sessionId?: unknown;
-            live?: unknown;
-            endpointGeneration?: unknown;
-            pid?: unknown;
-            locator?: { repo?: unknown };
-            activity?: { state?: unknown };
-          };
-          if (typeof candidate.sessionId !== "string") continue;
-          // A TUI-hosted session reports generation 0 while holding no ACP endpoint,
-          // so the placeholder filter needs the broker's own activity report to tell
-          // it apart from a real session.
-          const activityState =
-            candidate.activity &&
-            typeof candidate.activity === "object" &&
-            !Array.isArray(candidate.activity) &&
-            typeof candidate.activity.state === "string"
-              ? candidate.activity.state
-              : undefined;
-          sessions.push({
-            sessionId: candidate.sessionId,
-            repo:
-              typeof candidate.locator?.repo === "string"
-                ? candidate.locator.repo
-                : undefined,
-            live: candidate.live === true,
-            endpointGeneration:
-              typeof candidate.endpointGeneration === "number"
-                ? candidate.endpointGeneration
-                : undefined,
-            pid: typeof candidate.pid === "number" ? candidate.pid : undefined,
-            ...(activityState ? { activity: { state: activityState } } : {}),
-          });
-        }
-        cursor =
-          typeof result.continuationCursor === "string"
-            ? result.continuationCursor
-            : undefined;
-        if (!cursor) break;
-      }
-      if (cursor) await drain(cursor);
-      return sessions;
+      const cli = await this.requireCli();
+      return await cli.listSessions({
+        scope: options?.scope ?? "all",
+      });
     } catch {
-      if (cursor) await drain(cursor);
       return undefined;
     }
   }
@@ -2515,8 +2506,8 @@ export class GjcAcpController {
   async createSession(input: CreateSessionInput): Promise<AgentSession> {
     if (input.runtime !== "gjc")
       throw new Error("The GJC controller only creates GJC sessions");
-    const connection = await this.requireConnection();
-    let sessionWorkspace = path.resolve(input.workspace);
+    const cli = await this.requireCli();
+    let sessionWorkspace = canonicalWorkspace(input.workspace);
     let worktree:
       | { sourceWorkspace: string; path: string; branch: string; managed: true }
       | undefined;
@@ -2556,50 +2547,53 @@ export class GjcAcpController {
     }
     const knownSessionIds = new Set([
       ...this.sessions.keys(),
-      ...((await this.brokerSessions(connection)) ?? []).map(
-        (session) => session.sessionId,
-      ),
+      ...(await this.brokerSessions())?.map((session) => session.sessionId) ??
+        [],
     ]);
-    let response;
+    let response: { sessionId: string } | undefined;
+    const createRequestId = `gajae-session-create-${randomUUID()}`;
     try {
-      response = await connection.newSession({
-        cwd: sessionWorkspace,
-        mcpServers: [],
-      });
+      const created = await cli.rawGlobal(
+        "session.create",
+        {
+          cwd: sessionWorkspace,
+          modelPreset: this.modelPreset,
+        },
+        { repo: sessionWorkspace, idempotencyKey: createRequestId },
+      );
+      const sessionId =
+        typeof created?.sessionId === "string" ? created.sessionId : undefined;
+      if (sessionId) response = { sessionId };
     } catch (error) {
-      if (lifecycleUncertainError(error)) {
+      // A create whose receipt could not be verified may still have produced a live
+      // session. Verified against gjc/0.15.6: `session.create` answers
+      // `terminal_uncertain` while `list` shows the new session live with a pid, so
+      // the index is what settles it. Adopting it is not optimism -- it is reading
+      // the authoritative account instead of the unverifiable receipt.
+      if (isLifecycleUncertain(error)) {
         for (let attempt = 0; attempt < 20 && !response; attempt += 1) {
-          const retained = (await this.brokerSessions(connection))?.find(
+          const retained = (await this.brokerSessions())?.find(
             (session) =>
               !knownSessionIds.has(session.sessionId) &&
               session.live &&
+              !session.deleted &&
               (session.endpointGeneration ?? 0) > 0 &&
               session.repo !== undefined &&
-              path.resolve(session.repo) === sessionWorkspace,
+              path.resolve(session.repo) === sessionWorkspace &&
+              (session.lifecycleRequestId === undefined ||
+                session.lifecycleRequestId === createRequestId),
           );
           if (retained) {
-            try {
-              this.sessionCwds.set(retained.sessionId, sessionWorkspace);
-              this.transcripts.set(retained.sessionId, []);
-              this.messageKeys.set(retained.sessionId, new Map());
-              const loaded = await connection.loadSession({
-                sessionId: retained.sessionId,
-                cwd: sessionWorkspace,
-                mcpServers: [],
-              });
-              this.attachedSessions.add(retained.sessionId);
-              response = { sessionId: retained.sessionId, ...loaded };
-              break;
-            } catch {
-              this.sessionCwds.delete(retained.sessionId);
-              this.transcripts.delete(retained.sessionId);
-              this.messageKeys.delete(retained.sessionId);
-            }
+            this.sessionCwds.set(retained.sessionId, sessionWorkspace);
+            this.transcripts.set(retained.sessionId, []);
+            this.messageKeys.set(retained.sessionId, new Map());
+            response = { sessionId: retained.sessionId };
+            break;
           }
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
       }
-      if (!response && worktree) {
+      if (!response && worktree && !isLifecycleUncertain(error)) {
         try {
           const status = (
             await execFile("git", [
@@ -2629,15 +2623,17 @@ export class GjcAcpController {
           /* Preserve a dirty or otherwise uncertain worktree for manual recovery. */
         }
       }
-      if (!response && lifecycleUncertainError(error)) {
+      if (!response && isLifecycleUncertain(error)) {
         throw new Error(
           "GJC가 세션을 생성했지만 lifecycle 영수증을 검증하지 못했습니다. 보존된 세션 자동 복구에도 실패했습니다. GJC lifecycle ledger reconciliation이 필요합니다.",
         );
       }
       if (!response) throw error;
     }
+    if (!response) throw new Error("GJC did not report a new session id");
+    const createdSessionId = response.sessionId;
     const session: AgentSession = {
-      id: response.sessionId,
+      id: createdSessionId,
       title: input.title?.trim() || "New Gajae session",
       subtitle: path.basename(sessionWorkspace) || sessionWorkspace,
       workspace: sessionWorkspace,
@@ -2648,25 +2644,37 @@ export class GjcAcpController {
       unread: false,
       accent: GJC_ACCENT,
       ownership: "gajae",
-      attachment: "attached",
+      attachment: "recovering",
       ...(worktree ? { worktree } : {}),
     };
     this.sessions.set(session.id, session);
     this.sessionCwds.set(session.id, sessionWorkspace);
-    this.attachedSessions.add(session.id);
     this.transcripts.set(session.id, []);
     this.messageKeys.set(session.id, new Map());
-    this.captureSessionState(
-      session.id,
-      response.configOptions ?? [],
-      response.modes?.currentModeId,
-    );
-    await this.refreshModelProfiles(session.id);
-    void this.refreshContextUsage(session.id);
     this.sessionMetadata?.setAlias(session.id, session.title);
     this.sessionMetadata?.setWorkspace(session.id, sessionWorkspace);
     this.sessionMetadata?.setOwnership(session.id, "gajae");
     if (worktree) this.sessionMetadata?.setWorktree(session.id, worktree);
+    try {
+      await this.applyPermissionMode(session.id);
+    } catch (error) {
+      // A session whose safety mode was not confirmed must remain readable but is
+      // never advertised as sendable. Preserve its worktree and metadata so the
+      // user can retry resume after fixing the broker/runtime failure.
+      session.status = "failed";
+      session.attachment = "recovering";
+      this.emitEvent({ type: "session.created", session: { ...session } });
+      throw error;
+    }
+    session.attachment = "attached";
+    this.attachedSessions.add(session.id);
+    this.startTailFollower(session.id);
+    await this.refreshModelProfiles(session.id);
+    await this.refreshSessionConfigOptions(session.id);
+    void this.refreshContextUsage(session.id);
+    // The new session's file is the live account for everything it does next.
+    const createdFile = await this.locateSharedTranscriptFile(session.id);
+    if (createdFile) this.watchSharedTranscript(session.id, createdFile);
     this.emitEvent({ type: "session.created", session: { ...session } });
     return { ...session };
   }
@@ -2691,6 +2699,7 @@ export class GjcAcpController {
     // level, and mode. Waiting for the first prompt to attach is what left a restarted
     // app showing the app-wide default preset instead of the session's own.
     if (
+      this.sessions.get(sessionId)?.attachment === "attachable" &&
       !this.terminalOnlySessions.has(sessionId) &&
       !this.attachedSessions.has(sessionId)
     ) {
@@ -2708,8 +2717,8 @@ export class GjcAcpController {
         }
       }
     }
-    // The controller survives renderer reloads, while available_commands_update is a
-    // one-shot ACP event. Re-opening the transcript is the renderer's session bootstrap,
+    // The controller survives renderer reloads, while command discovery is a
+    // one-shot session event. Re-opening the transcript is the renderer's bootstrap,
     // so replay the cached snapshot even when the session was already attached and GJC
     // has no reason to publish its bootstrap updates again.
     const commands = this.sessionCommands.get(sessionId);
@@ -2772,33 +2781,14 @@ export class GjcAcpController {
   ): Promise<TranscriptItem[]> {
     const persisted = await this.readPersistedTranscript(sessionId);
     if (persisted) return persisted;
-    const connection = await this.requireConnection();
-    const rows: unknown[] = [];
-    let cursor: string | undefined;
-    for (let pageIndex = 0; pageIndex < 128; pageIndex += 1) {
-      const response = await connection.extMethod("_gjc/sdk/query", {
-        sessionId,
-        query: "transcript.list",
-        input: {},
-        ...(cursor ? { cursor } : {}),
-      });
-      if (response.ok === false)
-        throw new Error("Shared transcript is unavailable");
-      const page =
-        response.page &&
-        typeof response.page === "object" &&
-        !Array.isArray(response.page)
-          ? (response.page as Record<string, unknown>)
-          : response;
-      if (Array.isArray(page.items)) rows.push(...page.items);
-      cursor =
-        typeof page.continuationCursor === "string"
-          ? page.continuationCursor
-          : typeof page.cursor === "string"
-            ? page.cursor
-            : undefined;
-      if (page.complete === true || !cursor) break;
-    }
+    // No session file yet: ask the session for its retained transcript instead. The
+    // file is the durable account and wins whenever it exists.
+    const rows = await this.querySessionItems(
+      sessionId,
+      "transcript.list",
+      {},
+      { strict: true },
+    );
     return sharedTranscriptItems(sessionId, rows);
   }
 
@@ -2905,7 +2895,7 @@ export class GjcAcpController {
     this.sharedTranscriptReads.set(filePath, entry);
     while (
       this.sharedTranscriptReads.size >
-      GjcAcpController.SHARED_TRANSCRIPT_CACHE_LIMIT
+      GjcSdkController.SHARED_TRANSCRIPT_CACHE_LIMIT
     ) {
       const oldest = this.sharedTranscriptReads.keys().next();
       if (oldest.done) break;
@@ -2981,7 +2971,7 @@ export class GjcAcpController {
       ) {
         // This is a monotonic fact from the durable transcript, not a verdict about
         // the active run revision. Record it before any await so an older live phase
-        // arriving on the ACP channel cannot overtake the file completion receipt.
+        // arriving from live events cannot overtake the file completion receipt.
         const previous = this.compactionRecordWatermark.get(sessionId);
         if (
           previous === undefined ||
@@ -3131,8 +3121,8 @@ export class GjcAcpController {
                 if (!items || this.disposed) return;
                 this.transcripts.set(sessionId, items);
                 this.publishTranscriptSync(sessionId, previousItems, items);
-                // External terminal sessions do not publish ACP usage_update events to
-                // this renderer. Re-query after transcript changes so the first response
+                // External terminal sessions do not publish usage events to this
+                // renderer. Re-query after transcript changes so the first response
                 // following compaction replaces the pending usage indicator immediately.
                 void this.refreshContextUsage(sessionId);
               });
@@ -3262,7 +3252,7 @@ export class GjcAcpController {
       sessionId,
       title: "Terminal session is active",
       content:
-        "This direct terminal session is visible here but does not expose an attachable ACP endpoint. Continue it in the terminal.",
+        "This direct terminal session is visible here but does not expose an attachable SDK endpoint. Continue it in the terminal.",
       tone: "neutral",
       createdAt: nowLabel(),
     };
@@ -3329,22 +3319,13 @@ export class GjcAcpController {
       await this.refreshModelProfiles(sessionId);
       return;
     }
-    const connection = await this.requireConnection();
-    try {
-      await this.ensureAttached(sessionId, false);
-      const response = await connection.setSessionConfigOption({
-        sessionId,
-        configId,
-        value,
-      });
-      this.captureSessionState(sessionId, response.configOptions);
-    } catch (error) {
-      if (sessionUnreachableError(error)) {
-        this.markTerminalOnly(sessionId);
-        throw new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
-      }
-      throw error;
-    }
+    // Any other selector is a session config value; `config.patch` is the control
+    // operation that sets one, and the session's own config is re-read after.
+    await this.ensureAttached(sessionId, false);
+    await this.controlSession(sessionId, "config.patch", {
+      patch: { [configId]: value },
+    });
+    await this.refreshSessionConfigOptions(sessionId);
   }
 
   async cycleThinking(sessionId: string): Promise<string | undefined> {
@@ -3423,9 +3404,8 @@ export class GjcAcpController {
   }
 
   async compactSession(sessionId: string): Promise<void> {
-    // Compaction is a session control operation, not an ACP provider attachment.
-    // Terminal-owned sessions must route through the persistent control plane (or
-    // broker fallback) instead of being rejected for lacking a second attachment.
+    // Compaction is a session control operation. Terminal-owned sessions route
+    // through the broker instead of requiring a second runtime attachment.
     const statusBefore = this.sessions.get(sessionId)?.status;
     const baseline = await this.persistedCompactionCount(sessionId);
     this.compactingSessions.add(sessionId);
@@ -3557,53 +3537,37 @@ export class GjcAcpController {
   async queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<void> {
     const text = messageTextWithFiles(input);
     if (!text) throw new Error("Follow-up text is required");
-    const connection = await this.requireConnection();
     try {
       await this.ensureAttached(sessionId, false);
     } catch {
       /* terminal owns the attachment */
     }
-    const response = await connection.extMethod("_gjc/sdk/control", {
-      sessionId,
-      operation: "turn.follow_up",
-      input: { text },
-    });
-    if (response.ok === false || response.accepted === false) {
-      if (response.ok === false && sdkControlNeedsBrokerFallback(response)) {
-        await this.brokerControl(sessionId, "turn.follow_up", { text });
-        return;
-      }
-      const error =
-        response.error &&
-        typeof response.error === "object" &&
-        !Array.isArray(response.error)
-          ? (response.error as { message?: unknown })
-          : undefined;
-      throw new Error(
-        typeof error?.message === "string"
-          ? error.message
-          : "GJC follow-up queue rejected the message",
-      );
-    }
+    await this.controlSession(sessionId, "turn.follow_up", { text });
   }
 
-  /** Seam over the module-level runner so tests can drive it without a real CLI. */
-  private brokerExec = brokerExec;
-
-  private async brokerControl(
+  /**
+   * One control operation over `gjc sdk session raw control`.
+   *
+   * There used to be a private in-process extension path with this CLI as fallback,
+   * and the two could disagree about whether an operation was accepted. The CLI is
+   * now the only path, so there is one answer per operation and no fallback to
+   * reconcile.
+   */
+  private async controlSession(
     sessionId: string,
     operation:
       | "turn.prompt"
       | "turn.steer"
       | "turn.follow_up"
       | "turn.abort"
-      | "turn.abort_and_prompt"
       | "queue.message.remove"
       | "compaction.run"
       | "mode.goal.operate"
       | "thinking.set"
       | "thinking.cycle"
       | "model.profile.set"
+      | "permission_mode.set"
+      | "config.patch"
       | "service_tier.set"
       | "session.export_html"
       | "context.clear"
@@ -3613,249 +3577,65 @@ export class GjcAcpController {
       | "bash.background"
       | "auth.login",
     input: Record<string, unknown>,
-    idempotencyKeyOverride?: string,
-    confirm = false,
+    options?: { confirm?: boolean; idempotencyKey?: string },
   ): Promise<Record<string, unknown> | undefined> {
-    const executable = await this.resolveExecutable();
-    const repo = this.sessionCwds.get(sessionId) ?? this.workspace;
+    const cli = await this.requireCli();
+    // A terminal abort is the only operation that needs a key of its own, and the
+    // key must be stable across a retry of the same user action.
     const idempotencyKey =
-      idempotencyKeyOverride ??
+      options?.idempotencyKey ??
       (operation === "turn.abort" && input.mode === "terminal"
         ? `gajae-abort-${randomUUID()}`
         : undefined);
-    let stdout: string;
     try {
-      stdout = await this.brokerExec(
-        executable,
-        [
-          "sdk",
-          "session",
-          "raw",
-          "control",
-          sessionId,
-          "--op",
-          operation,
-          "--json-input",
-          JSON.stringify(input),
-          ...(idempotencyKey ? ["--idempotency-key", idempotencyKey] : []),
-          ...(operation === "turn.abort" && input.operator === true
-            ? ["--confirm"]
-            : []),
-          ...(confirm ? ["--confirm"] : []),
-          "--repo",
-          repo,
-          "--timeout-ms",
-          "8000",
-        ],
-        { cwd: repo, env: runtimeEnvironment(), timeoutMs: 12_000 },
-      );
+      return await cli.rawControl(sessionId, operation, input, {
+        repo: this.repoFor(sessionId),
+        ...(idempotencyKey ? { idempotencyKey } : {}),
+        // An operator terminal abort is destructive and the host requires the flag.
+        confirm: options?.confirm === true || input.operator === true,
+      });
     } catch (error) {
-      throw new Error(brokerFailureMessage(error));
-    }
-    let response: Record<string, unknown>;
-    try {
-      response = JSON.parse(stdout) as Record<string, unknown>;
-    } catch {
-      throw new Error(`GJC ${operation} broker response was not valid JSON`);
-    }
-    if (response.ok === false) {
-      const error =
-        response.error &&
-        typeof response.error === "object" &&
-        !Array.isArray(response.error)
-          ? (response.error as { message?: unknown })
-          : undefined;
-      throw new Error(
-        typeof error?.message === "string"
-          ? error.message
-          : `GJC ${operation} broker control failed`,
-      );
-    }
-    return (response.result ?? undefined) as
-      Record<string, unknown> | undefined;
-  }
-
-  private async controlSession(
-    sessionId: string,
-    operation:
-      | "turn.prompt"
-      | "turn.steer"
-      | "turn.abort"
-      | "turn.abort_and_prompt"
-      | "queue.message.remove"
-      | "compaction.run"
-      | "mode.goal.operate"
-      | "thinking.set"
-      | "thinking.cycle"
-      | "model.profile.set"
-      | "service_tier.set"
-      | "session.export_html"
-      | "context.clear"
-      | "session.rename"
-      | "session.cwd.move"
-      | "retry.last"
-      | "bash.background"
-      | "auth.login",
-    input: Record<string, unknown>,
-    options?: { confirm?: boolean },
-  ): Promise<Record<string, unknown> | undefined> {
-    const connection = this.connection;
-    if (connection && !connection.signal.aborted) {
-      try {
-        const response = await connection.extMethod("_gjc/sdk/control", {
-          sessionId,
-          operation,
-          input,
-          ...(options?.confirm ? { confirm: true } : {}),
-        });
-        if (response.ok !== false && response.accepted !== false) {
-          return response.result &&
-            typeof response.result === "object" &&
-            !Array.isArray(response.result)
-            ? (response.result as Record<string, unknown>)
-            : response;
-        }
-        if (response.ok === false && !sdkControlNeedsBrokerFallback(response)) {
-          const error =
-            response.error &&
-            typeof response.error === "object" &&
-            !Array.isArray(response.error)
-              ? (response.error as { message?: unknown })
-              : undefined;
-          throw new Error(
-            typeof error?.message === "string"
-              ? error.message
-              : `GJC ${operation} failed`,
-          );
-        }
-      } catch (error) {
-        if (busyPromptError(error)) throw error;
-        if (
-          error instanceof Error &&
-          error.message.startsWith(`GJC ${operation}`)
-        )
-          throw error;
-        if (uncertainAfterSendError(error)) return undefined;
-      }
-    }
-    try {
-      return options?.confirm
-        ? await this.brokerControl(
-            sessionId,
-            operation,
-            input,
-            undefined,
-            true,
-          )
-        : await this.brokerControl(sessionId, operation, input);
-    } catch (error) {
-      // Every control operation ends here, so a session with no SDK endpoint is
-      // reported once, in terms the user can act on, instead of each caller
-      // surfacing the broker's "unavailable through the session Router".
-      if (sessionUnreachableError(error)) {
+      if (busyPromptError(error)) throw error;
+      // A session with no SDK endpoint is reported once, in terms the user can act
+      // on, instead of each caller surfacing the broker's routing language.
+      if (isSessionUnreachable(error)) {
         this.markTerminalOnly(sessionId);
         throw new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
       }
-      throw error;
+      throw new Error(brokerFailureMessage(error));
     }
   }
 
   async listQueuedMessages(sessionId: string): Promise<QueuedMessage[]> {
     try {
-      const connection = await this.requireConnection();
       const queued: QueuedMessage[] = [];
-      let cursor: string | undefined;
-      for (let pageIndex = 0; pageIndex < 16; pageIndex += 1) {
-        const response = await connection.extMethod("_gjc/sdk/query", {
-          sessionId,
-          query: "queue.messages.list",
-          input: {},
-          ...(cursor ? { cursor } : {}),
-        });
-        if (response.ok === false)
-          return await this.brokerQueuedMessages(sessionId);
-        const page =
-          response.page &&
-          typeof response.page === "object" &&
-          !Array.isArray(response.page)
-            ? (response.page as Record<string, unknown>)
-            : response;
-        for (const row of Array.isArray(page.items) ? page.items : []) {
-          if (!row || typeof row !== "object" || Array.isArray(row)) continue;
-          const value = row as Record<string, unknown>;
-          if (typeof value.id !== "string" || typeof value.text !== "string")
-            continue;
-          const mode = value.mode === "steer" ? "steer" : "followUp";
-          queued.push({
-            id: value.id,
-            text: value.text,
-            mode,
-            label:
-              typeof value.label === "string" && value.label
-                ? value.label
-                : mode === "steer"
-                  ? "Steer"
-                  : "Queued",
-          });
-        }
-        cursor =
-          typeof page.continuationCursor === "string"
-            ? page.continuationCursor
-            : undefined;
-        if (page.complete === true || !cursor) break;
-      }
-      return queued;
-    } catch {
-      try {
-        return await this.brokerQueuedMessages(sessionId);
-      } catch {
-        return [];
-      }
-    }
-  }
-
-  private async brokerQueuedMessages(
-    sessionId: string,
-  ): Promise<QueuedMessage[]> {
-    const executable = await this.resolveExecutable();
-    const repo = this.sessionCwds.get(sessionId) ?? this.workspace;
-    const result = await execFile(
-      executable,
-      [
-        "sdk",
-        "session",
-        "raw",
-        "query",
+      for (const row of await this.querySessionItems(
         sessionId,
-        "--query",
         "queue.messages.list",
-        "--json-input",
-        "{}",
-        "--repo",
-        repo,
-        "--timeout-ms",
-        "8000",
-      ],
-      { cwd: repo, env: runtimeEnvironment(), maxBuffer: 1024 * 1024 },
-    );
-    const response = JSON.parse(result.stdout) as {
-      page?: { items?: unknown[] };
-    };
-    return (response.page?.items ?? []).flatMap((row): QueuedMessage[] => {
-      if (!row || typeof row !== "object" || Array.isArray(row)) return [];
-      const value = row as Record<string, unknown>;
-      if (typeof value.id !== "string" || typeof value.text !== "string")
-        return [];
-      const mode = value.mode === "steer" ? "steer" : "followUp";
-      return [
-        {
+        {},
+        { strict: true },
+      )) {
+        if (!row || typeof row !== "object" || Array.isArray(row)) continue;
+        const value = row as Record<string, unknown>;
+        if (typeof value.id !== "string" || typeof value.text !== "string")
+          continue;
+        const mode = value.mode === "steer" ? "steer" : "followUp";
+        queued.push({
           id: value.id,
           text: value.text,
           mode,
-          label: mode === "steer" ? "Steer" : "Queued",
-        },
-      ];
-    });
+          label:
+            typeof value.label === "string" && value.label
+              ? value.label
+              : mode === "steer"
+                ? "Steer"
+                : "Queued",
+        });
+      }
+      return queued;
+    } catch {
+      return [];
+    }
   }
 
   /**
@@ -3871,7 +3651,7 @@ export class GjcAcpController {
       // The window owns its pending queue, so it already knows there is work to
       // release. GJC reports no waiting steer of its own -- turn.steer is consumed
       // by the open turn -- so there is nothing here to confirm against.
-      await this.controlSession(sessionId, "turn.abort", {});
+      await this.abortOwnedThroughControl(sessionId);
       this.updateSessionStatus(sessionId, "running");
       return true;
     } catch (error) {
@@ -4167,27 +3947,6 @@ export class GjcAcpController {
     const promptText = bare + attachedPathsText(input);
     if (!promptText) return "prompt";
     const session = this.sessions.get(sessionId);
-    if (this.sessionMetadata && session?.ownership !== "gajae") {
-      // Spawning the broker CLI costs seconds, so the bubble and the running
-      // status are published first. The prompt text is echoed once here and the
-      // steer fallback below reuses it instead of echoing a second time.
-      this.appendLocalUserMessage(sessionId, promptText, input);
-      this.updateSessionStatus(sessionId, "running");
-      try {
-        await this.brokerControl(sessionId, "turn.prompt", {
-          text: promptText,
-          clientRef: `gajae-prompt-${randomUUID()}`,
-        });
-      } catch (error) {
-        if (!busyPromptError(error)) throw error;
-        await this.brokerControl(sessionId, "turn.steer", {
-          text: promptText,
-          clientRef: `gajae-steer-${randomUUID()}`,
-        });
-        return "steer";
-      }
-      return "prompt";
-    }
     if (
       this.activePromptSessions.has(sessionId) ||
       session?.status === "running"
@@ -4206,21 +3965,53 @@ export class GjcAcpController {
     this.updateSessionStatus(sessionId, "running");
 
     try {
-      const connection = await this.requireConnection();
+      const cli = await this.requireCli();
       await this.ensureAttached(sessionId, false);
-      await connection.prompt({
-        sessionId,
-        prompt: [{ type: "text" as const, text: promptText }],
-      });
+      // One fresh operation reference per logical prompt. A reused reference is
+      // rejected as a conflict while its record is retained, and after eviction it
+      // could be admitted again with the first outcome unknown, so a retry must
+      // never recycle one.
+      const operationRef = freshOperationRef();
+      let accepted: Awaited<ReturnType<GjcSdkCli["send"]>> | undefined;
+      let alreadySettled = false;
+      try {
+        accepted = await cli.send(sessionId, promptText, {
+          repo: this.repoFor(sessionId),
+          opRef: operationRef,
+        });
+      } catch (error) {
+        if (!uncertainAfterSendError(error)) throw error;
+        // The frame may already have reached the host. Never retry the logical
+        // prompt or reuse its reference; reconcile that exact reference instead.
+        const outcome = await this.awaitPromptSettlement(
+          sessionId,
+          operationRef,
+        );
+        if (outcome === "unknown") {
+          this.updateSessionStatus(sessionId, "running");
+          return "prompt";
+        }
+        alreadySettled = true;
+      }
+      if (accepted?.status === "failed")
+        throw new Error("GJC rejected the prompt");
+      // `send` returning means the prompt was *accepted*, not that the agent
+      // stopped. A follow-up turn, a released steer, or background work keeps running
+      // and keeps appending to the transcript, so closing the row here reported 완료
+      // over live work. The prompt record and the session's own transcript are the
+      // accounts that cover what a single CLI call cannot see, so they decide.
+      const settlement = alreadySettled
+        ? "terminal"
+        : await this.awaitPromptSettlement(sessionId, operationRef);
+      if (settlement === "unknown") {
+        // Poll exhaustion or unavailable evidence is not a terminal event. The
+        // file watcher and tail follower remain responsible for the later state.
+        this.updateSessionStatus(sessionId, "running");
+        return "prompt";
+      }
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
       await this.refreshContextUsage(sessionId);
-      // `prompt` resolving means this window's round trip is done, not that the agent
-      // stopped. A follow-up turn, a released steer, or background work keeps running
-      // and keeps appending to the transcript, so closing the row here reported 완료
-      // over live work. The session's own transcript is the account that covers what
-      // this connection cannot see, so it decides.
-      //
       // updateSessionStatus announces the running -> idle transition itself.
       //
       // The prompt is released before the read because the run-state cache is keyed on
@@ -4239,7 +4030,8 @@ export class GjcAcpController {
           sessionId,
           stillRunning === "running" ? "running" : "idle",
         );
-    } catch (error) {
+    } catch (caught) {
+      let error: unknown = caught;
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
         await this.steerSession(
@@ -4248,6 +4040,10 @@ export class GjcAcpController {
           { echo: false },
         );
         return "steer";
+      }
+      if (isSessionUnreachable(error)) {
+        this.markTerminalOnly(sessionId);
+        error = new Error(TERMINAL_ONLY_CONTROL_MESSAGE);
       }
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
@@ -4279,80 +4075,114 @@ export class GjcAcpController {
     return "prompt";
   }
 
+  /**
+   * Waits for an accepted prompt to reach a terminal record.
+   *
+   * The semantic `send` call returns at acceptance rather than holding open for the
+   * whole turn, so the window's spinner and final status need reconciliation. The
+   * turn is followed here instead: `status` is the lossless record, and the
+   * transcript is watched in parallel by the session-file watcher.
+   *
+   * A prompt that is still running when the poll budget ends is left running. This
+   * never forces the row idle and never reports a cancel, because `unknown` and
+   * "still going" are both uncertainty, not proof the work stopped.
+   */
+  private async awaitPromptSettlement(
+    sessionId: string,
+    operationRef: string,
+  ): Promise<"terminal" | "unknown"> {
+    const generation = this.generation;
+    for (let attempt = 0; attempt < PROMPT_SETTLE_ATTEMPTS; attempt += 1) {
+      // A cancel or a newer turn owns the row now; stop following this one.
+      if (
+        this.disposed ||
+        generation !== this.generation ||
+        this.locallyAbortedSessions.has(sessionId)
+      )
+        return "unknown";
+      await new Promise((resolve) =>
+        setTimeout(resolve, PROMPT_SETTLE_INTERVAL_MS),
+      );
+      let record: Awaited<ReturnType<GjcSdkCli["promptStatus"]>> | undefined;
+      try {
+        const cli = await this.requireCli();
+        record = await cli.promptStatus(sessionId, operationRef, {
+          repo: this.repoFor(sessionId),
+        });
+      } catch (error) {
+        // A session that cannot answer its own prompt record is not proof the prompt
+        // failed; the transcript still accounts for it.
+        if (isSessionMissing(error)) return "unknown";
+        continue;
+      }
+      if (!record.completed) continue;
+      if (record.status === "failed") {
+        const message = record.error?.message ?? "GJC run failed";
+        // A cancel is the user's own action and settles quietly upstream.
+        if (
+          record.error?.code === "aborted" ||
+          /abort|cancel/iu.test(message)
+        )
+          return "terminal";
+        throw new Error(message);
+      }
+      return "terminal";
+    }
+    return "unknown";
+  }
+
   async cancelRun(sessionId: string): Promise<void> {
-    if (this.cancellingSessions.has(sessionId)) return;
+    const previous = this.cancellationPromises.get(sessionId);
+    if (previous) return previous;
+    let resolveCancellation!: () => void;
+    let rejectCancellation!: (error: unknown) => void;
+    const completion = new Promise<void>((resolve, reject) => {
+      resolveCancellation = resolve;
+      rejectCancellation = reject;
+    });
+    // The initiating caller receives the original error below; keep the shared
+    // promise from becoming an unhandled rejection when no concurrent caller
+    // is waiting on it.
+    void completion.catch(() => undefined);
+    this.cancellationPromises.set(sessionId, completion);
     this.cancellingSessions.add(sessionId);
-    this.finalizeThought(sessionId);
-    this.finalizeAssistantMessage(sessionId);
-    this.finalizeAllMessages(sessionId);
-    this.cancelOpenTools(sessionId);
-    this.cancelPermissionsForSession(sessionId);
-    this.appendCancelledNotice(sessionId);
-    this.locallyAbortedSessions.add(sessionId);
-    // The user ended this turn, so clearing the live flags stops a late report
-    // about it from putting the row back to running.
-    this.liveRunningSessions.delete(sessionId);
-    this.liveRunningDigests.delete(sessionId);
-    this.transcriptRunningSessions.delete(sessionId);
-    this.workingPhaseSessions.delete(sessionId);
-    this.runtimeIdleSessions.delete(sessionId);
-    this.pendingAsyncWorkSessions.delete(sessionId);
-    this.discoveredRunStates.delete(sessionId);
-    this.compactingSessions.delete(sessionId);
-    this.compactionRecordBaseline.delete(sessionId);
-    this.compactionStartedAt.delete(sessionId);
-    this.updateSessionStatus(sessionId, "idle");
-    await this.fireAbort(sessionId);
-    this.cancellingSessions.delete(sessionId);
+    try {
+      await this.fireAbort(sessionId);
+      this.finalizeThought(sessionId);
+      this.finalizeAssistantMessage(sessionId);
+      this.finalizeAllMessages(sessionId);
+      this.cancelOpenTools(sessionId);
+      this.cancelPermissionsForSession(sessionId);
+      this.appendCancelledNotice(sessionId);
+      this.locallyAbortedSessions.add(sessionId);
+      // Only confirmed aborts may clear run authority and publish idle.
+      this.liveRunningSessions.delete(sessionId);
+      this.liveRunningDigests.delete(sessionId);
+      this.transcriptRunningSessions.delete(sessionId);
+      this.workingPhaseSessions.delete(sessionId);
+      this.runtimeIdleSessions.delete(sessionId);
+      this.pendingAsyncWorkSessions.delete(sessionId);
+      this.discoveredRunStates.delete(sessionId);
+      this.compactingSessions.delete(sessionId);
+      this.compactionRecordBaseline.delete(sessionId);
+      this.compactionStartedAt.delete(sessionId);
+      this.updateSessionStatus(sessionId, "idle");
+      resolveCancellation();
+    } catch (error) {
+      // No state was cleared before confirmation, so keep whatever the runtime
+      // currently reports instead of inventing running work for an idle session.
+      rejectCancellation(error);
+      throw error;
+    } finally {
+      this.cancellingSessions.delete(sessionId);
+      if (this.cancellationPromises.get(sessionId) === completion)
+        this.cancellationPromises.delete(sessionId);
+    }
+    return completion;
   }
 
   private async fireAbort(sessionId: string): Promise<void> {
-    const connection = this.connection;
-    const idempotencyKey = `gajae-abort-${randomUUID()}`;
-    const terminal = {
-      mode: "terminal" as const,
-      scope: "owned" as const,
-      operator: true as const,
-    };
-    if (connection && !connection.signal.aborted) {
-      if (this.activePromptSessions.has(sessionId)) {
-        void connection
-          .cancel({
-            sessionId,
-            _meta: { gjc: { abortScope: "owned" } },
-          })
-          .catch(() => undefined);
-      }
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let response: unknown;
-      try {
-        response = await Promise.race([
-          connection.extMethod("_gjc/sdk/control", {
-            sessionId,
-            operation: "turn.abort",
-            input: { ...terminal, confirm: true, idempotencyKey },
-          }),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => resolve(undefined), 750);
-          }),
-        ]);
-      } catch {
-        response = undefined;
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-      if (this.abortControlResult(response)?.turn === "stopped") return;
-    }
-    this.fireBrokerAbort(sessionId, terminal, idempotencyKey);
-  }
-
-  private fireBrokerAbort(
-    sessionId: string,
-    terminal: { mode: "terminal"; scope: "owned"; operator: true },
-    idempotencyKey: string,
-  ): void {
-    void this.brokerControl(sessionId, "turn.abort", terminal, idempotencyKey);
-    void this.brokerControl(sessionId, "turn.abort", {});
+    await this.abortOwnedThroughControl(sessionId);
   }
 
   private appendCancelledNotice(sessionId: string): void {
@@ -4377,135 +4207,46 @@ export class GjcAcpController {
     });
   }
 
+  /**
+   * Stops the current turn and this window's own background work.
+   *
+   * Terminal abort is session-scoped: it cancels the current turn and exactly the
+   * owned background work without signalling or closing the GJC session process.
+   * A signal is never sent -- SIGINT would take down a session the user may be
+   * sharing with a terminal.
+   *
+   * The payload carries only `mode`/`scope`/`operator`: the host validates terminal
+   * abort input strictly and rejects any other key (including `confirm` and
+   * `idempotencyKey`, which travel as CLI flags) with `usage`. Verified against
+   * gjc/0.18.11: adding a `clientRef` or `turnId` field to the terminal payload is
+   * rejected before dispatch.
+   *
+   * Only `turn: "stopped"` is a confirmation. gjc/0.18.11 answers the typed
+   * disposition `{turn:"no_active_turn", terminal:"terminal_no_effect"}` when the
+   * broker route cannot see the host's active prompt -- reproducible while a turn is
+   * verifiably running (`status` in_flight and `turn.steer` accepted on the same
+   * session) -- and the turn keeps running. Reporting that as a cancellation would
+   * tell the user work stopped while it is still going, so the failure is surfaced
+   * instead and the local run state is left untouched.
+   */
   private async abortOwnedThroughControl(
     sessionId: string,
   ): Promise<Record<string, unknown>> {
     const idempotencyKey = `gajae-abort-${randomUUID()}`;
-    const connection = this.connection;
-    if (connection && !connection.signal.aborted) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let directResponse: unknown;
-      try {
-        directResponse = await Promise.race([
-          connection.extMethod("_gjc/sdk/control", {
-            sessionId,
-            operation: "turn.abort",
-            input: {
-              mode: "terminal",
-              scope: "owned",
-              operator: true,
-              confirm: true,
-              idempotencyKey,
-            },
-          }),
-          new Promise<undefined>((resolve) => {
-            timer = setTimeout(() => resolve(undefined), 750);
-          }),
-        ]);
-      } catch {
-        directResponse = undefined;
-      } finally {
-        if (timer) clearTimeout(timer);
-      }
-      const directResult = this.abortControlResult(directResponse);
-      if (directResult?.turn === "stopped") return directResult;
-    }
-    // Terminal abort is session-scoped: it cancels the current turn and exact owned
-    // background work without signalling or closing the GJC session process.
-    let result: Record<string, unknown> | undefined;
-    try {
-      result = await this.brokerControl(
-        sessionId,
-        "turn.abort",
-        {
-          mode: "terminal",
-          scope: "owned",
-          operator: true,
-        },
-        idempotencyKey,
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      // Every way this release can refuse a broker-CLI terminal abort. Probed against
-      // gjc/0.15.3: `--idempotency-key` is not forwarded for terminal aborts, so it
-      // answers "terminal abort requires a nonempty idempotency key", and moving the key
-      // into the request body answers "Unknown turn.abort terminal field:
-      // idempotencyKey". Matching only the `operator` wording let both escape as a
-      // thrown cancel, leaving the turn running with nothing to show the user why.
-      // The plain abort below is what actually stops the turn.
-      if (
-        !/Unknown turn\.abort terminal field|operator terminal abort|terminal abort requires a nonempty idempotency key/iu.test(
-          message,
-        )
-      )
-        throw error;
-      result = undefined;
-    }
+    const result = await this.controlSession(
+      sessionId,
+      "turn.abort",
+      {
+        mode: "terminal",
+        scope: "owned",
+        operator: true,
+      },
+      { idempotencyKey, confirm: true },
+    );
     if (result?.turn === "stopped") return result;
-    // A TUI-hosted session (`gjc`, `gjc --resume`) never exposes an active-prompt
-    // handle to the SDK terminal-abort seam, so terminal mode is structurally a
-    // no-op there and answers `no_active_turn` even mid-turn. Its plain abort is
-    // the same `session.abort()` the TUI's own Esc runs, so fall back to it.
-    return await this.abortThroughSessionAbort(sessionId);
-  }
-
-  /** Resolves once the app-owned prompt leaves the active set, i.e. the turn ended. */
-  private async promptSettled(
-    sessionId: string,
-    timeoutMs: number,
-  ): Promise<boolean> {
-    const deadline = Date.now() + timeoutMs;
-    while (this.activePromptSessions.has(sessionId)) {
-      if (Date.now() >= deadline) return false;
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-    return true;
-  }
-
-  private async abortThroughSessionAbort(
-    sessionId: string,
-  ): Promise<Record<string, unknown>> {
-    const result = await this.brokerControl(sessionId, "turn.abort", {});
-    if (result?.aborted === true) return result;
     throw new Error(
       `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(result ?? null)}`,
     );
-  }
-
-  private abortControlResult(
-    value: unknown,
-  ): Record<string, unknown> | undefined {
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      return undefined;
-    const record = value as Record<string, unknown>;
-    if (
-      record.result &&
-      typeof record.result === "object" &&
-      !Array.isArray(record.result)
-    ) {
-      return record.result as Record<string, unknown>;
-    }
-    return record;
-  }
-
-  private async bestEffortCancel(
-    operation: Promise<unknown>,
-    timeoutMs = 750,
-  ): Promise<boolean> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      return await Promise.race([
-        operation.then(
-          () => true,
-          () => false,
-        ),
-        new Promise<false>((resolve) => {
-          timer = setTimeout(() => resolve(false), timeoutMs);
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
   }
 
   toolDecisionInfo(
@@ -4558,7 +4299,11 @@ export class GjcAcpController {
   ): Promise<ArtifactContent> {
     if (!/^[A-Za-z0-9._-]+$/.test(artifactId))
       throw new Error("Invalid artifact id");
-    const file = path.join(this.artifactDirectory, `${artifactId}.json`);
+    const file = path.join(
+      this.artifactDirectory,
+      this.artifactNamespace(sessionId),
+      `${artifactId}.json`,
+    );
     try {
       const raw = JSON.parse(await readFile(file, "utf8")) as { text?: string };
       const text = raw.text ?? "";
@@ -4569,31 +4314,24 @@ export class GjcAcpController {
         totalBytes: Buffer.byteLength(text),
       };
     } catch {
-      const connection = await this.requireConnection();
+      const cli = await this.requireCli();
       await this.ensureAttached(sessionId, false);
       const chunks: Buffer[] = [];
       let offset = 0;
       let complete = false;
       while (!complete) {
-        const response = await connection.extMethod("_gjc/sdk/query", {
+        const envelope = await cli.rawQuery(
           sessionId,
-          query: "artifact.read",
-          input: { artifactId, offset, length: 256 * 1024 },
-        });
-        if (response.ok === false) {
-          const error = response.error as { message?: unknown } | undefined;
-          throw new Error(
-            typeof error?.message === "string"
-              ? error.message
-              : `Artifact ${artifactId} is unavailable`,
-          );
-        }
+          "artifact.read",
+          { artifactId, offset, length: 256 * 1024 },
+          { repo: this.repoFor(sessionId) },
+        );
         const result =
-          response.result &&
-          typeof response.result === "object" &&
-          !Array.isArray(response.result)
-            ? (response.result as Record<string, unknown>)
-            : response;
+          envelope.result &&
+          typeof envelope.result === "object" &&
+          !Array.isArray(envelope.result)
+            ? (envelope.result as Record<string, unknown>)
+            : envelope;
         if (typeof result.bytes !== "string")
           throw new Error(`Artifact ${artifactId} returned invalid data`);
         const chunk = Buffer.from(result.bytes, "base64");
@@ -4728,44 +4466,15 @@ export class GjcAcpController {
     input: Record<string, unknown> = {},
     options?: { strict?: boolean },
   ): Promise<unknown[]> {
-    const connection = await this.requireConnection();
-    const items: unknown[] = [];
-    let cursor: string | undefined;
-    for (let pageIndex = 0; pageIndex < 32; pageIndex += 1) {
-      const response = await connection.extMethod("_gjc/sdk/query", {
-        sessionId,
-        query,
-        input,
-        ...(cursor ? { cursor } : {}),
+    try {
+      const cli = await this.requireCli();
+      return await cli.queryItems(sessionId, query, input, {
+        repo: this.repoFor(sessionId),
       });
-      if (response.ok === false) {
-        if (!options?.strict) return [];
-        const error =
-          response.error &&
-          typeof response.error === "object" &&
-          !Array.isArray(response.error)
-            ? (response.error as { message?: unknown })
-            : undefined;
-        throw new Error(
-          typeof error?.message === "string"
-            ? error.message
-            : `GJC ${query} query failed`,
-        );
-      }
-      const page =
-        response.page &&
-        typeof response.page === "object" &&
-        !Array.isArray(response.page)
-          ? (response.page as Record<string, unknown>)
-          : response;
-      if (Array.isArray(page.items)) items.push(...page.items);
-      cursor =
-        typeof page.continuationCursor === "string"
-          ? page.continuationCursor
-          : undefined;
-      if (!cursor || page.complete === true) break;
+    } catch (error) {
+      if (!options?.strict) return [];
+      throw error;
     }
-    return items;
   }
 
   private async refreshSdkCommands(
@@ -4788,8 +4497,8 @@ export class GjcAcpController {
       this.sessionCommands.set(sessionId, commands);
       this.emitEvent({ type: "session.commands", sessionId, commands });
     } catch {
-      // The ACP command update is still useful against an older host that does not
-      // expose runtime.capabilities. Never replace it with an empty palette.
+      // A cached command update is still useful when a host cannot answer
+      // runtime.capabilities. Never replace it with an empty palette.
     }
   }
 
@@ -4881,11 +4590,11 @@ export class GjcAcpController {
    * The subagents a session launched, read from the task tool's own arguments.
    *
    * This used to also query `runtime.jobs.list` and merge anything whose kind matched
-   * /subagent|task/. Verified against gjc/0.15.3, that query answers a single wrapper
+   * /subagent|task/. Verified against gjc/0.18.11, that query answers a single wrapper
    * row shaped `{running, recent, delivery}` whose entries are background *tool* runs
    * with `type` set to the tool name ("bash"). No entry is ever a subagent and no
    * top-level row has a `kind`, so the filter matched nothing: the merge was dead code
-   * whose only live effect was making this method require an ACP connection, so a
+   * whose only live effect was making this method require a live runtime, so a
    * session whose subagents were already in the transcript failed to list them
    * whenever the runtime was unreachable.
    */
@@ -4901,38 +4610,21 @@ export class GjcAcpController {
   async getDiff(sessionId: string): Promise<DiffSnapshot> {
     const workspace = this.sessionCwds.get(sessionId) ?? this.workspace;
     try {
-      const connection = await this.requireConnection();
       await this.ensureAttached(sessionId, false);
       const files: DiffSnapshot["files"] = [];
-      let cursor: string | undefined;
-      for (let i = 0; i < 32; i += 1) {
-        const response = await connection.extMethod("_gjc/sdk/query", {
-          sessionId,
-          query: "diff.list_files",
-          input: {},
-          ...(cursor ? { cursor } : {}),
-        });
-        const page =
-          response.page && typeof response.page === "object"
-            ? (response.page as Record<string, unknown>)
-            : response;
-        const rows = Array.isArray(page.items) ? page.items : [];
-        for (const row of rows)
-          if (row && typeof row === "object") {
-            const value = row as Record<string, unknown>;
-            if (typeof value.path === "string")
-              files.push({
-                id: typeof value.id === "string" ? value.id : value.path,
-                path: value.path,
-                patch: typeof value.body === "string" ? value.body : "",
-              });
-          }
-        cursor =
-          typeof page.continuationCursor === "string"
-            ? page.continuationCursor
-            : undefined;
-        if (!cursor || page.complete === true) break;
-      }
+      for (const row of await this.querySessionItems(
+        sessionId,
+        "diff.list_files",
+      ))
+        if (row && typeof row === "object") {
+          const value = row as Record<string, unknown>;
+          if (typeof value.path === "string")
+            files.push({
+              id: typeof value.id === "string" ? value.id : value.path,
+              path: value.path,
+              patch: typeof value.body === "string" ? value.body : "",
+            });
+        }
       return {
         sessionId,
         workspace,
@@ -4951,39 +4643,9 @@ export class GjcAcpController {
   }
 
   async refreshRuntimeState(sessionId: string): Promise<EffectiveRuntimeState> {
-    const connection = await this.requireConnection();
     await this.ensureAttached(sessionId, false);
-    const query = async (name: string): Promise<unknown[]> => {
-      const items: unknown[] = [];
-      let cursor: string | undefined;
-      for (let pageIndex = 0; pageIndex < 32; pageIndex += 1) {
-        const response = await connection.extMethod("_gjc/sdk/query", {
-          sessionId,
-          query: name,
-          input: {},
-          ...(cursor ? { cursor } : {}),
-        });
-        if (response.ok === false) return items;
-        if (response.result !== undefined) items.push(response.result);
-        const page =
-          response.page &&
-          typeof response.page === "object" &&
-          !Array.isArray(response.page)
-            ? (response.page as {
-                items?: unknown;
-                continuationCursor?: unknown;
-                complete?: unknown;
-              })
-            : undefined;
-        if (Array.isArray(page?.items)) items.push(...page.items);
-        cursor =
-          typeof page?.continuationCursor === "string"
-            ? page.continuationCursor
-            : undefined;
-        if (page?.complete === true || !cursor) break;
-      }
-      return items;
-    };
+    const query = async (name: string): Promise<unknown[]> =>
+      await this.querySessionItems(sessionId, name);
     const [metadata, skills, config, capabilities, tools] = await Promise.all([
       query("session.metadata"),
       query("skill.list/state"),
@@ -5057,35 +4719,57 @@ export class GjcAcpController {
     if (this.disposed) throw new Error("GJC controller is disposed");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
-    const child = this.child;
-    this.child = undefined;
-    this.connection = undefined;
+    // Reconnect is a re-resolve, not a restart: there is no process to signal, so
+    // nothing owned by another window can be disturbed by it.
+    this.cli = undefined;
     this.startup = undefined;
+    this.permissionModeApplied.clear();
+    for (const sessionId of this.tailControllers.keys())
+      this.stopTailFollower(sessionId);
     this.attachedSessions.clear();
     this.sessionSdkOperations.clear();
     this.generation += 1;
-    child?.kill("SIGTERM");
     await this.ensureStarted();
     await this.recoverOwnedSessions();
     return { ...this.connectionState };
   }
 
-  async deleteSession(sessionId: string): Promise<void> {
+  deleteSession(sessionId: string): Promise<void> {
+    const previous = this.deletionPromises.get(sessionId);
+    if (previous) return previous;
+    const operation = this.performDeleteSession(sessionId);
+    this.deletionPromises.set(sessionId, operation);
+    void operation
+      .finally(() => {
+        if (this.deletionPromises.get(sessionId) === operation)
+          this.deletionPromises.delete(sessionId);
+      })
+      .catch(() => undefined);
+    return operation;
+  }
+
+  private async performDeleteSession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
+    this.deletingSessions.add(sessionId);
     try {
-      if (!session || session.ownership === "gajae") {
-        const connection = await this.requireConnection();
-        try {
-          await connection.deleteSession({ sessionId });
-        } catch (error) {
-          if (!missingSessionError(error))
-            await this.brokerLifecycleDelete(sessionId);
+      // Close, then delete. Both are lifecycle globals over the session CLI; there
+      // is no separate owned-session path any more because this window never hosts
+      // a session runtime.
+      const outcome = await this.brokerLifecycleDelete(sessionId);
+      if (outcome === "recovering") {
+        if (session) {
+          session.attachment = "recovering";
+          this.attachedSessions.delete(sessionId);
+          this.stopTailFollower(sessionId);
+          this.emitEvent({ type: "session.updated", session: { ...session } });
         }
-      } else {
-        await this.brokerLifecycleDelete(sessionId);
+        return;
       }
+      await this.removeSessionArtifacts(sessionId);
+      this.removeLocalSession(sessionId, false);
     } catch (error) {
       if (missingSessionError(error) || missingLifecycleSessionError(error)) {
+        await this.removeSessionArtifacts(sessionId);
         this.removeLocalSession(sessionId, false);
         return;
       }
@@ -5094,85 +4778,103 @@ export class GjcAcpController {
           "실행 중인 세션은 삭제할 수 없습니다. 해당 GJC 프로세스를 종료한 뒤 다시 시도하세요.",
         );
       }
-      if (lifecycleUncertainError(error)) {
-        throw new Error(
-          "GJC가 세션을 종료·삭제하지 못했습니다. 세션이 아직 실행 중이거나 삭제 권한이 불확실합니다.",
-        );
+      if (lifecycleUncertainError(error) || uncertainLifecycleOutcomeError(error)) {
+        if (session) {
+          session.attachment = "recovering";
+          this.attachedSessions.delete(sessionId);
+          this.stopTailFollower(sessionId);
+          this.emitEvent({ type: "session.updated", session: { ...session } });
+        }
+        return;
       }
       throw error;
+    } finally {
+      this.deletingSessions.delete(sessionId);
     }
-    this.removeLocalSession(sessionId, false);
   }
 
-  private async brokerLifecycleDelete(sessionId: string): Promise<void> {
+  private async brokerLifecycleDelete(
+    sessionId: string,
+  ): Promise<"deleted" | "recovering"> {
+    let closeUncertain = false;
     try {
       await this.brokerLifecycle("session.close", { sessionId });
     } catch (error) {
-      if (
-        !missingLifecycleSessionError(error) &&
-        !lifecycleUncertainError(error) &&
-        !liveSessionDeleteError(error)
+      if (missingLifecycleSessionError(error) || missingSessionError(error)) {
+        // Still issue delete: a saved transcript can exist without a live endpoint.
+      } else if (
+        lifecycleUncertainError(error) ||
+        uncertainLifecycleOutcomeError(error)
       )
-        throw error;
+        closeUncertain = true;
+      else throw error;
     }
-    if (await this.sessionIsLive(sessionId)) {
+    const afterClose = await this.sessionBrokerRow(sessionId);
+    if (afterClose === undefined) return "recovering";
+    if (afterClose?.live === true) {
+      if (closeUncertain) return "recovering";
       throw new Error(
         "실행 중인 세션은 삭제할 수 없습니다. 해당 GJC 프로세스를 종료한 뒤 다시 시도하세요.",
       );
     }
-    const cwd = this.sessionCwds.get(sessionId) ?? this.workspace;
+    const cwd =
+      afterClose?.repo ?? this.sessionCwds.get(sessionId) ?? this.workspace;
     const sessionPath = await this.locateSharedTranscriptFile(sessionId);
-    if (!sessionPath) return;
     try {
       await this.brokerLifecycle("session.delete", {
         sessionId,
         cwd,
-        stateRoot: path.join(cwd, ".gjc", "state"),
-        sessionPath,
+        ...(afterClose?.stateRoot ? { stateRoot: afterClose.stateRoot } : {}),
+        ...(sessionPath ? { sessionPath } : {}),
       });
+      return "deleted";
     } catch (error) {
       if (missingLifecycleSessionError(error) || missingSessionError(error))
-        return;
-      if (await this.sessionIsLive(sessionId)) throw error;
-      if (lifecycleUncertainError(error) || liveSessionDeleteError(error)) {
-        await this.removeSessionFiles(sessionId, sessionPath);
-        return;
+        return "deleted";
+      if (
+        lifecycleUncertainError(error) ||
+        liveSessionDeleteError(error) ||
+        uncertainLifecycleOutcomeError(error)
+      ) {
+        // The receipt is not proof of either success or failure. Only an absent or
+        // tombstoned broker row proves deletion; every other outcome preserves the
+        // transcript, artifacts, metadata, and worktree for reconciliation.
+        const afterDelete = await this.sessionBrokerRow(sessionId);
+        if (afterDelete === null || afterDelete?.deleted === true) return "deleted";
+        return "recovering";
       }
       throw error;
     }
   }
 
-  private async sessionIsLive(sessionId: string): Promise<boolean> {
-    const connection = this.connection;
-    if (!connection || connection.signal.aborted) return false;
-    try {
-      const listed = await this.brokerSessions(connection);
-      return (
-        listed?.some(
-          (session) => session.sessionId === sessionId && session.live,
-        ) ?? false
-      );
-    } catch {
-      return false;
-    }
+  /** `null` means proven absent; `undefined` means the broker index was unavailable. */
+  private async sessionBrokerRow(
+    sessionId: string,
+  ): Promise<SdkSessionRow | null | undefined> {
+    const listed = await this.brokerSessions();
+    if (!listed) return undefined;
+    return listed.find((session) => session.sessionId === sessionId) ?? null;
   }
 
-  private async removeSessionFiles(
-    sessionId: string,
-    sessionPath: string,
-  ): Promise<void> {
-    if (!sessionPath.endsWith(`_${sessionId}.jsonl`)) {
-      throw new Error("세션 파일 경로가 세션 ID와 일치하지 않습니다.");
-    }
-    await rm(sessionPath, { force: true });
-    if (sessionPath.endsWith(".jsonl")) {
-      await rm(sessionPath.slice(0, -".jsonl".length), {
-        recursive: true,
-        force: true,
-      });
-    }
-    this.sharedSessionFiles.delete(sessionId);
-    this.sharedTranscriptReads.delete(sessionPath);
+  private async removeSessionArtifacts(sessionId: string): Promise<void> {
+    const ids = this.artifactSessionIds.get(sessionId) ?? new Set<string>();
+    const writes = [...ids]
+      .map((id) => this.artifactWrites.get(this.artifactWriteKey(sessionId, id)))
+      .filter((write): write is Promise<void> => Boolean(write));
+    if (writes.length > 0) await Promise.all(writes);
+    await rm(
+      path.join(this.artifactDirectory, this.artifactNamespace(sessionId)),
+      { recursive: true, force: true },
+    );
+    this.artifactSessionIds.delete(sessionId);
+  }
+
+  private artifactNamespace(sessionId: string): string {
+    return Buffer.from(sessionId, "utf8").toString("base64url");
+  }
+
+  private artifactWriteKey(sessionId: string, artifactId: string): string {
+    return `${this.artifactNamespace(sessionId)}\0${artifactId}`;
   }
 
   private async locateSharedTranscriptFile(
@@ -5198,11 +4900,22 @@ export class GjcAcpController {
       })) {
         if (!bucket.isDirectory()) continue;
         const directory = path.join(sessionsDirectory, bucket.name);
-        const match = (await readdir(directory, { withFileTypes: true })).find(
-          (entry) => entry.isFile() && entry.name.endsWith(suffix),
+        const candidates = (await readdir(directory, { withFileTypes: true }))
+          .filter((entry) => entry.isFile() && entry.name.endsWith(suffix))
+          .map((entry) => path.join(directory, entry.name));
+        if (candidates.length === 0) continue;
+        // A re-host writes a new timestamped session file and leaves the older ones
+        // in place, so the current generation is the newest match rather than
+        // whichever the directory listing happens to return first. Handing GJC a
+        // stale file made `session.delete` refuse with an unknown outcome.
+        const stamped = await Promise.all(
+          candidates.map(async (candidate) => ({
+            candidate,
+            mtimeMs: (await stat(candidate)).mtimeMs,
+          })),
         );
-        if (!match) continue;
-        filePath = path.join(directory, match.name);
+        stamped.sort((left, right) => right.mtimeMs - left.mtimeMs);
+        filePath = stamped[0].candidate;
         this.sharedSessionFiles.set(sessionId, filePath);
         return filePath;
       }
@@ -5216,56 +4929,20 @@ export class GjcAcpController {
     operation: "session.close" | "session.delete",
     input: Record<string, unknown>,
   ): Promise<void> {
-    const executable = await this.resolveExecutable();
     const sessionId =
       typeof input.sessionId === "string" ? input.sessionId : undefined;
     const repo =
       (sessionId ? this.sessionCwds.get(sessionId) : undefined) ??
       this.workspace;
-    let result: { stdout: string };
-    try {
-      result = await execFile(
-        executable,
-        [
-          "sdk",
-          "session",
-          "raw",
-          "global",
-          "--op",
-          operation,
-          "--json-input",
-          JSON.stringify(input),
-          "--idempotency-key",
-          `gajae-${operation}-${randomUUID()}`,
-          "--repo",
-          repo,
-          "--confirm",
-        ],
-        { cwd: repo, env: runtimeEnvironment(), maxBuffer: 1024 * 1024 },
-      );
-    } catch (error) {
-      throw new Error(brokerFailureMessage(error));
-    }
-    try {
-      const response = JSON.parse(result.stdout) as {
-        ok?: unknown;
-        error?: { message?: unknown };
-      };
-      if (response.ok === false) {
-        throw new Error(
-          typeof response.error?.message === "string"
-            ? response.error.message
-            : `GJC ${operation} failed`,
-        );
-      }
-    } catch (error) {
-      if (error instanceof SyntaxError)
-        throw new Error(`GJC ${operation} response was not valid JSON`);
-      throw error;
-    }
+    const cli = await this.requireCli();
+    await cli.rawGlobal(operation, input, {
+      repo,
+      idempotencyKey: `gajae-${operation.replace(".", "-")}-${randomUUID()}`,
+    });
   }
 
   private removeLocalSession(sessionId: string, hide: boolean): void {
+    this.stopTailFollower(sessionId);
     this.sessions.delete(sessionId);
     this.sessionCwds.delete(sessionId);
     this.attachedSessions.delete(sessionId);
@@ -5297,6 +4974,11 @@ export class GjcAcpController {
     this.explicitSessionThinking.delete(sessionId);
     this.sharedSessionWatchers.get(sessionId)?.close();
     this.sharedSessionWatchers.delete(sessionId);
+    this.runStateWatchers.get(sessionId)?.close();
+    this.runStateWatchers.delete(sessionId);
+    const runStateTimer = this.runStateTimers.get(sessionId);
+    if (runStateTimer) clearTimeout(runStateTimer);
+    this.runStateTimers.delete(sessionId);
     const refreshTimer = this.sharedSessionRefreshTimers.get(sessionId);
     if (refreshTimer) clearTimeout(refreshTimer);
     this.sharedSessionRefreshTimers.delete(sessionId);
@@ -5319,12 +5001,16 @@ export class GjcAcpController {
       pending.resolve({ outcome: { outcome: "cancelled" } });
     }
     this.pendingPermissions.clear();
-    this.child?.kill("SIGTERM");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
-    this.child = undefined;
-    this.connection = undefined;
+    // No agent process is owned here, so disposal never kills a running session.
+    for (const controller of this.tailControllers.values()) controller.abort();
+    this.tailControllers.clear();
+    this.cli = undefined;
     this.startup = undefined;
+    this.permissionModeApplied.clear();
+    this.tailReads.clear();
+    this.tailCheckpoints.clear();
     this.sessions.clear();
     this.sessionCwds.clear();
     this.attachedSessions.clear();
@@ -5361,10 +5047,14 @@ export class GjcAcpController {
     this.modelProfiles.clear();
     this.explicitSessionThinking.clear();
     this.artifactWrites.clear();
+    this.artifactSessionIds.clear();
+    this.deletingSessions.clear();
+    this.deletionPromises.clear();
     // In-flight bookkeeping. Each entry is normally removed in a `finally`, so what
     // is left here is whatever a rejected or abandoned call did not reach. Teardown
     // claims to release everything, so it has to include these too.
     this.cancellingSessions.clear();
+    this.cancellationPromises.clear();
     this.flushingSessions.clear();
     this.pendingSteers.clear();
     this.locallyAbortedSessions.clear();
@@ -5382,7 +5072,7 @@ export class GjcAcpController {
   }
 
   private async ensureStarted(): Promise<void> {
-    if (this.connection && !this.connection.signal.aborted) return;
+    if (this.cli) return;
     if (this.startup) return this.startup;
     if (this.disposed) throw new Error("GJC controller is disposed");
 
@@ -5392,13 +5082,23 @@ export class GjcAcpController {
     return this.startup;
   }
 
+  /**
+   * Prepares the CLI client.
+   *
+   * There is nothing to connect to: the broker is started on demand by the CLI
+   * itself, and every operation is its own process. "Ready" therefore means the
+   * executable resolves and the broker answers a session list -- proof the app can
+   * actually reach the runtime, without holding anything open. A runtime crash or
+   * upgrade can no longer take the window's connection down with it, because there
+   * is no connection to lose.
+   */
   private async start(): Promise<void> {
     const generation = ++this.generation;
     this.setConnection({
       state: "connecting",
       backend: "gjc",
       label: "GJC",
-      detail: "Starting ACP runtime",
+      detail: "Reaching the GJC broker",
       workspace: this.workspace,
     });
     const executable = await this.resolveExecutable();
@@ -5419,118 +5119,82 @@ export class GjcAcpController {
       /* built-in profiles resolve their own defaults */
     }
     this.modelPresetThinking = profileThinking;
-    const child = spawn(
+    const cli = new GjcSdkCli({
       executable,
-      [
-        "--mode=acp",
-        "--mpreset",
-        this.modelPreset,
-        ...(profileThinking ? ["--thinking", profileThinking] : []),
-      ],
-      {
-        cwd: this.workspace,
-        env: runtimeEnvironment({
-          GJC_ACP_PERMISSION_MODE: this.permissionHandling,
-        }),
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
-    this.child = child;
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      const text = chunk.trim();
-      if (text) console.error(`[gjc] ${redactSensitiveText(text)}`);
+      repo: this.workspace,
+      env: runtimeEnvironment(),
+      timeoutMs: STARTUP_TIMEOUT_MS,
     });
-    child.once("exit", (code, signal) => {
-      if (this.child !== child || generation !== this.generation) return;
-      this.child = undefined;
-      this.connection = undefined;
-      this.attachedSessions.clear();
-      this.activePromptSessions.clear();
-      this.liveRunningSessions.clear();
-      this.liveRunningDigests.clear();
-    this.transcriptRunningSessions.clear();
-    this.workingPhaseSessions.clear();
-      this.runtimeIdleSessions.clear();
-      this.pendingAsyncWorkSessions.clear();
-      this.sessionSdkOperations.clear();
-      this.discoveredRunStates.clear();
-      this.compactingSessions.clear();
-      this.compactionRecordBaseline.clear();
-      this.compactionRecordWatermark.clear();
-      this.compactionStartedAt.clear();
-      this.activeAssistantMessages.clear();
-      this.activeThoughts.clear();
-        this.suppressedUserMessageKeys.clear();
-      this.echoedPromptTexts.clear();
-      for (const session of this.sessions.values()) {
-        this.advanceRunRevision(session.id);
-        session.attachment = "recovering";
-        session.status = "failed";
-        this.emitEvent({ type: "session.updated", session: { ...session } });
-      }
-      this.cancelAllPermissions();
-      if (!this.disposed) {
-        this.setConnection({
-          state: "disconnected",
-          backend: "gjc",
-          label: "GJC disconnected",
-          detail: signal
-            ? `Exited with ${signal}`
-            : `Exited with code ${code ?? "unknown"}`,
-          workspace: this.workspace,
-        });
-        this.scheduleReconnect();
-      }
-    });
-
-    const stream = ndJsonStream(
-      Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-      Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
-    );
-    const connection = new ClientSideConnection(
-      (_agent: Agent): Client => ({
-        requestPermission: (request) => this.requestPermission(request),
-        sessionUpdate: (notification) => this.handleSessionUpdate(notification),
-      }),
-      stream,
-    );
-    this.connection = connection;
-
-    const initialization = connection.initialize({
-      protocolVersion: PROTOCOL_VERSION,
-      clientInfo: { name: "Gajae", version: "0.1.0" },
-      clientCapabilities: {
-        terminal: false,
-        fs: { readTextFile: false, writeTextFile: false },
-        _meta: { gjc: { permissionHandling: this.permissionHandling } },
-      },
-    });
-    const response = await Promise.race([
-      initialization,
-      new Promise<never>((_resolve, reject) => {
-        const timer = setTimeout(
-          () => reject(new Error("GJC ACP initialization timed out")),
-          STARTUP_TIMEOUT_MS,
-        );
-        initialization
-          .finally(() => clearTimeout(timer))
-          .catch(() => undefined);
-      }),
-    ]);
+    // The broker index doubles as the reachability check: it fails closed with a
+    // typed operational error when the broker cannot be started at all.
+    await cli.listSessions();
+    if (generation !== this.generation || this.disposed) return;
+    this.cli = cli;
+    this.permissionModeApplied.clear();
     this.setConnection({
       state: "connected",
       backend: "gjc",
-      label: response.agentInfo?.name || "GJC",
-      detail: `ACP connected · ${this.modelPreset}`,
+      label: "GJC",
+      detail: `SDK session CLI · ${this.modelPreset}`,
       workspace: this.workspace,
-      version: response.agentInfo?.version,
       generation,
     });
     this.reconnectAttempt = 0;
     queueMicrotask(() => {
       void this.recoverOwnedSessions();
     });
+  }
+
+  /**
+   * The CLI client, starting it if this is the first use.
+   *
+   * Replaces the old `requireConnection`: there is no liveness to check because no
+   * process is held between calls.
+   */
+  private async requireCli(): Promise<GjcSdkCli> {
+    await this.ensureStarted();
+    if (!this.cli) throw new Error("GJC SDK session CLI is unavailable");
+    return this.cli;
+  }
+
+  /** The workspace a session's CLI calls must resolve against. */
+  private repoFor(sessionId: string): string {
+    return this.sessionCwds.get(sessionId) ?? this.workspace;
+  }
+
+  /**
+   * Applies the configured permission handling to a session.
+   *
+   * The old permission environment variable applied only to the removed child
+   * protocol process. A broker-hosted session host instead keeps a per-session SDK
+   * permission mode, set through the `permission_mode.set` control operation and
+   * defaulting to `allow`.
+   *
+   * Fail-closed note: the host has no reverse channel to ask an external
+   * controller for a decision (`permission.request` is a host-to-client operation
+   * the session CLI cannot carry). A session left in `prompt` mode therefore
+   * *rejects* tool calls with "no permission provider is connected" rather than
+   * prompting anyone. So `prompt` and `deny` are both mapped to the host's `deny`,
+   * which refuses the tool call with a decision the transcript records, instead of
+   * silently granting what the user did not approve. `always-allow` maps to
+   * `allow`. If GJC ever gains a way to answer a permission request from an
+   * external controller, `prompt` should move to it rather than to `deny`.
+   */
+  private async applyPermissionMode(sessionId: string): Promise<void> {
+    if (this.permissionModeApplied.has(sessionId)) return;
+    const mode =
+      this.permissionHandling === "always-allow" ||
+      this.permissionHandling === "auto"
+        ? "always-allow"
+        : "deny";
+    const cli = await this.requireCli();
+    await cli.rawControl(
+      sessionId,
+      "permission_mode.set",
+      { mode },
+      { repo: this.repoFor(sessionId) },
+    );
+    this.permissionModeApplied.add(sessionId);
   }
 
   private scheduleReconnect(): void {
@@ -5549,8 +5213,7 @@ export class GjcAcpController {
   }
 
   private async recoverOwnedSessions(): Promise<void> {
-    const connection = this.connection;
-    if (!connection || connection.signal.aborted) return;
+    if (!this.cli) return;
     for (const session of this.sessions.values()) {
       if (
         session.ownership !== "gajae" ||
@@ -5560,18 +5223,7 @@ export class GjcAcpController {
       const cwd = this.sessionCwds.get(session.id);
       if (!cwd) continue;
       try {
-        const response = await connection.resumeSession({
-          sessionId: session.id,
-          cwd,
-          mcpServers: [],
-        });
-        this.captureSessionState(
-          session.id,
-          response.configOptions ?? [],
-          response.modes?.currentModeId,
-        );
-        await this.refreshModelProfiles(session.id);
-        this.attachedSessions.add(session.id);
+        await this.ensureAttached(session.id, false);
         session.attachment = "attached";
         // Re-attaching says this window can talk to the session again, not that its
         // turn ended. Another process may have kept working through the disconnect,
@@ -5593,13 +5245,6 @@ export class GjcAcpController {
         this.emitEvent({ type: "session.updated", session: { ...session } });
       }
     }
-  }
-
-  private async requireConnection(): Promise<ClientSideConnection> {
-    await this.ensureStarted();
-    if (!this.connection || this.connection.signal.aborted)
-      throw new Error("GJC ACP connection is unavailable");
-    return this.connection;
   }
 
   private async resolveExecutable(): Promise<string> {
@@ -5636,14 +5281,9 @@ export class GjcAcpController {
       process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
     );
     const sessionsDirectory = path.join(agentDirectory, "sessions");
-    let connection: ClientSideConnection | undefined;
-    try {
-      connection = await this.requireConnection();
-    } catch {
-      // Liveness is decoration here; the files still list fine without it.
-    }
+    // Liveness is decoration here; the files still list fine without it.
     const liveIds = new Set(
-      ((connection ? await this.brokerSessions(connection) : undefined) ?? [])
+      ((await this.brokerSessions()) ?? [])
         .filter((session) => session.live)
         .map((session) => session.sessionId),
     );
@@ -5761,6 +5401,7 @@ export class GjcAcpController {
     // The refusal that produced terminal-only is not permanent, so the flag is
     // cleared before retrying or ensureAttached would be skipped entirely.
     this.terminalOnlySessions.delete(sessionId);
+    this.stopTailFollower(sessionId);
     this.attachedSessions.delete(sessionId);
     this.attachAttempts.delete(sessionId);
     try {
@@ -5799,42 +5440,85 @@ export class GjcAcpController {
     return { ...resumed };
   }
 
+  /**
+   * Makes a session controllable from this window.
+   *
+   * An SDK session that is already live needs no attach: the broker routes control
+   * to its host and this window is just another client. Only a session with no live
+   * endpoint is resumed, which is what re-hosts it. `replay` reloads the transcript
+   * from the session file rather than asking a connection to stream it back.
+   */
   private async ensureAttached(
     sessionId: string,
     replay: boolean,
   ): Promise<void> {
     if (this.attachedSessions.has(sessionId)) return;
-    const connection = await this.requireConnection();
-    const cwd = this.sessionCwds.get(sessionId) ?? this.workspace;
+    const cli = await this.requireCli();
+    const cwd = this.repoFor(sessionId);
     if (replay) {
       this.transcripts.set(sessionId, []);
       this.messageKeys.set(sessionId, new Map());
-      const response = await connection.loadSession({
-        sessionId,
-        cwd,
-        mcpServers: [],
-      });
-      this.captureSessionState(
-        sessionId,
-        response.configOptions ?? [],
-        response.modes?.currentModeId,
+    }
+    const row = await cli.inspectSession(sessionId, { repo: cwd });
+    if (row?.deleted)
+      throw new SdkCliError(
+        "session_deleted",
+        `Session ${sessionId} was deleted.`,
       );
-      await this.refreshModelProfiles(sessionId);
+    // A live generation-0 row with broker activity is a TUI-held session. It is
+    // readable from the shared transcript but has no Router attachment, and the
+    // lease belongs to the terminal until the user exits it. Resume is deliberately
+    // user-driven; no timer retries this condition.
+    if (
+      row?.live === true &&
+      (row.endpointGeneration ?? 0) === 0
+    )
+      throw new SdkCliError(
+        "provider_lease_conflict",
+        "The session is held by another terminal and has no Router attachment.",
+      );
+    let rehosted = false;
+    if (!row?.live || row.terminalUncertain === true) {
+      // Resume re-hosts a session whose endpoint is gone. `sessionPath` is passed
+      // when known so the host adopts this exact transcript rather than resolving a
+      // same-id file elsewhere.
+      const sessionPath = await this.locateSharedTranscriptFile(sessionId);
+      await cli.rawGlobal(
+        "session.resume",
+        {
+          sessionId,
+          cwd,
+          ...(sessionPath ? { sessionPath } : {}),
+          modelPreset: this.modelPreset,
+        },
+        { repo: cwd },
+      );
+      rehosted = true;
+      // The re-host writes a new timestamped session file. Drop the path this window
+      // cached, or the next lifecycle call (delete especially) hands GJC the previous
+      // generation's file and the operation comes back with an unknown outcome.
+      this.sharedSessionFiles.delete(sessionId);
+    }
+    // Only a session this window hosts may have its permission handling applied.
+    // A session already live in another host belongs to that host, and rewriting its
+    // policy changes how *that* agent runs tools: the desktop smoke attached to a
+    // live session to read its model profiles, set the app's fail-closed `deny`, and
+    // left the session rejecting every tool call afterwards. Reading a session is not
+    // authority over it.
+    const owned = rehosted || this.sessions.get(sessionId)?.ownership === "gajae";
+    if (owned) await this.applyPermissionMode(sessionId);
+    await this.refreshSessionConfigOptions(sessionId);
+    await this.refreshModelProfiles(sessionId);
+    if (replay) {
+      const restored = await this.readSharedTranscript(sessionId).catch(() => []);
+      if (restored.length > 0) this.transcripts.set(sessionId, restored);
       this.finalizeAllMessages(sessionId);
-    } else {
-      const response = await connection.resumeSession({
-        sessionId,
-        cwd,
-        mcpServers: [],
-      });
-      this.captureSessionState(
-        sessionId,
-        response.configOptions ?? [],
-        response.modes?.currentModeId,
-      );
-      await this.refreshModelProfiles(sessionId);
     }
     this.attachedSessions.add(sessionId);
+    this.startTailFollower(sessionId);
+    // The session file is the live account now that no connection streams updates.
+    const watched = await this.locateSharedTranscriptFile(sessionId);
+    if (watched) this.watchSharedTranscript(sessionId, watched);
     const session = this.sessions.get(sessionId);
     if (session) {
       session.attachment = "attached";
@@ -5848,6 +5532,165 @@ export class GjcAcpController {
     void this.refreshContextUsage(sessionId);
   }
 
+  /**
+   * Starts the bounded `sdk session tail --all-events` catch-up loop.
+   *
+   * In gjc/0.18.11 tail is a batch command, not NDJSON: it returns one JSON envelope
+   * when an observed turn becomes idle or the wait window elapses, and an elapsed
+   * window reports `terminal:false` with the frames it had collected. The session-file
+   * watcher stays the durable transcript account; this loop is supplemental
+   * lifecycle evidence. Each invocation is short-lived, resumes from the last
+   * checkpoint claim, and is abortable so detach, close, delete, and app shutdown
+   * cannot leak a `gjc` reader process.
+   */
+  private startTailFollower(sessionId: string): void {
+    if (
+      this.disposed ||
+      this.tailReads.has(sessionId) ||
+      !this.attachedSessions.has(sessionId)
+    )
+      return;
+    const abortController = new AbortController();
+    this.tailControllers.set(sessionId, abortController);
+    const follow = this.followSessionTail(sessionId, abortController).finally(
+      () => {
+        if (this.tailReads.get(sessionId) === follow)
+          this.tailReads.delete(sessionId);
+        if (this.tailControllers.get(sessionId) === abortController)
+          this.tailControllers.delete(sessionId);
+      },
+    );
+    this.tailReads.set(sessionId, follow);
+    void follow.catch(() => undefined);
+  }
+
+  private stopTailFollower(sessionId: string): void {
+    this.tailControllers.get(sessionId)?.abort();
+    this.tailControllers.delete(sessionId);
+    // Ownership of the slot ends synchronously. The old promise's `finally`
+    // checks identity before cleanup, so it cannot remove a replacement follower.
+    this.tailReads.delete(sessionId);
+    this.tailCheckpoints.delete(sessionId);
+  }
+
+  private async followSessionTail(
+    sessionId: string,
+    controller: AbortController,
+  ): Promise<void> {
+    while (
+      !this.disposed &&
+      !controller.signal.aborted &&
+      this.attachedSessions.has(sessionId)
+    ) {
+      try {
+        const cli = await this.requireCli();
+        const tail = await cli.tail(sessionId, {
+          repo: this.repoFor(sessionId),
+          ...(this.tailCheckpoints.get(sessionId)
+            ? { cursor: this.tailCheckpoints.get(sessionId) }
+            : {}),
+          untilIdle: true,
+          timeoutMs: 8_000,
+          signal: controller.signal,
+        });
+        if (tail.gap) {
+          this.tailCheckpoints.delete(sessionId);
+          await this.refreshTranscriptFromFile(sessionId);
+          continue;
+        }
+        if (tail.checkpointToken)
+          this.tailCheckpoints.set(sessionId, tail.checkpointToken);
+        this.projectTailItems(sessionId, tail.items);
+        if (tail.source === "offline") return;
+      } catch (error) {
+        if (controller.signal.aborted || this.disposed) return;
+        if (error instanceof SdkCliError) {
+          if (error.code === "aborted") return;
+          // A timeout means only that no terminal turn event arrived inside this
+          // bounded window. It is not a failed run and never clears the spinner.
+          if (error.code === "tail_timeout") continue;
+          if (error.code === "retention_gap") {
+            this.tailCheckpoints.delete(sessionId);
+            await this.refreshTranscriptFromFile(sessionId);
+            continue;
+          }
+          if (
+            error.code === "session_deleted" ||
+            error.code === "session_unavailable"
+          )
+            return;
+        }
+        // A transient broker failure should not spin. The next user-driven attach
+        // or discovery pass restarts the follower.
+        return;
+      }
+    }
+  }
+
+  private projectTailItems(
+    sessionId: string,
+    items: Array<{ kind: string; payload: unknown }>,
+  ): void {
+    let transcriptEvidence = false;
+    for (const item of items) {
+      const payload =
+        item.payload &&
+        typeof item.payload === "object" &&
+        !Array.isArray(item.payload)
+          ? (item.payload as Record<string, unknown>)
+          : undefined;
+      const directUpdate = payload?.sessionUpdate;
+      const nested =
+        payload?.update &&
+        typeof payload.update === "object" &&
+        !Array.isArray(payload.update)
+          ? (payload.update as Record<string, unknown>)
+          : undefined;
+      if (typeof directUpdate === "string")
+        this.handleSessionUpdate({
+          sessionId,
+          update: payload as unknown as SessionUpdate,
+        });
+      else if (typeof nested?.sessionUpdate === "string")
+        this.handleSessionUpdate({
+          sessionId,
+          update: nested as unknown as SessionUpdate,
+        });
+      if (item.kind === "transcript") transcriptEvidence = true;
+      if (item.kind === "turn_start" || item.kind === "agent_start")
+        this.updateSessionStatus(sessionId, "running");
+      if (item.kind === "agent_failed")
+        this.updateSessionStatus(sessionId, "failed", { announce: false });
+      if (item.kind === "turn_end" || item.kind === "agent_end")
+        void this.reconcileTailTerminalState(sessionId);
+      if (item.kind === "session_closed" || item.kind === "session_terminated")
+        this.stopTailFollower(sessionId);
+    }
+    if (transcriptEvidence) void this.refreshTranscriptFromFile(sessionId);
+  }
+
+  private async refreshTranscriptFromFile(sessionId: string): Promise<void> {
+    const previous = this.transcripts.get(sessionId);
+    const items = await this.readPersistedTranscript(sessionId).catch(
+      () => undefined,
+    );
+    if (!items || this.disposed) return;
+    this.transcripts.set(sessionId, items);
+    this.publishTranscriptSync(sessionId, previous, items);
+  }
+
+  private async reconcileTailTerminalState(sessionId: string): Promise<void> {
+    const state = await this.discoveredRunState(sessionId);
+    if (state !== "running") this.updateSessionStatus(sessionId, "idle");
+  }
+
+  /**
+   * Projects one session update into the transcript.
+   *
+   * These come from `gjc sdk session tail` frames and from rows read
+   * out of the session file, both of which carry the same shapes. Keeping this
+   * switch as the single projection point is what lets the renderer stay unchanged.
+   */
   private handleSessionUpdate(notification: SessionNotification): void {
     const { sessionId, update } = notification;
     switch (update.sessionUpdate) {
@@ -5929,8 +5772,8 @@ export class GjcAcpController {
     }
     const thought: ThoughtActivity = {
       id: update.messageId
-        ? `acp-thought-${update.messageId}`
-        : `acp-thought-${this.nextLocalId++}`,
+        ? `gjc-thought-${update.messageId}`
+        : `gjc-thought-${this.nextLocalId++}`,
       kind: "thought",
       sessionId,
       content: text,
@@ -5970,12 +5813,15 @@ export class GjcAcpController {
       (item): item is PlanActivity => item.kind === "plan",
     );
     const plan: PlanActivity = {
-      id: existing?.id ?? `acp-plan-${this.nextLocalId++}`,
+      id: existing?.id ?? `gjc-plan-${this.nextLocalId++}`,
       kind: "plan",
       sessionId,
       entries: entries.map((entry) => ({
         content: entry.content,
-        status: entry.status,
+        status:
+          entry.status === "in_progress" || entry.status === "completed"
+            ? entry.status
+            : "pending",
       })),
       createdAt: existing?.createdAt ?? nowLabel(),
     };
@@ -6040,29 +5886,100 @@ export class GjcAcpController {
   }
 
   /**
-   * ACP resume advertises the preset the ACP agent process was launched with, not the
-   * preset the session itself runs. Only the session-scoped SDK config answers that, so
-   * a restored session reports its own model instead of the app-wide default.
+   * Builds this session's config options from the session-scoped SDK config.
+   *
+   * The model/thinking selectors behind `/model` and Shift+Tab read these values.
+   * The
+   * session's own `config.list/get` is the authoritative source, and it answers the
+   * session's real preset rather than a process-wide launch flag.
    */
-  private async refreshSessionSettings(sessionId: string): Promise<void> {
+  private async refreshSessionConfigOptions(sessionId: string): Promise<void> {
+    const row = await this.sessionConfigRow(sessionId);
+    if (!row) return;
+    const preset =
+      typeof row.modelPreset === "string" && row.modelPreset
+        ? row.modelPreset
+        : undefined;
+    const thinking =
+      typeof row.thinking === "string" && row.thinking ? row.thinking : undefined;
+    const mode = typeof row.mode === "string" && row.mode ? row.mode : undefined;
+    const options: SessionConfigOption[] = [
+      {
+        type: "select",
+        id: "model",
+        name: "Model",
+        category: "model",
+        currentValue: preset ?? this.modelPreset,
+        options: (this.modelProfiles.get(sessionId) ?? []).map((profile) => ({
+          type: "item",
+          id: profile.value,
+          name: profile.name,
+          ...(profile.group ? { group: profile.group } : {}),
+          ...(profile.description ? { description: profile.description } : {}),
+        })),
+      },
+      {
+        type: "select",
+        id: "thinking",
+        name: "Thinking",
+        category: "thought_level",
+        currentValue:
+          this.explicitSessionThinking.get(sessionId) ??
+          thinking ??
+          this.modelPresetThinking,
+        options: [...EFFORT_LEVELS].map((level) => ({
+          type: "item",
+          id: level,
+          name: level,
+        })),
+      },
+      ...(mode
+        ? [
+            {
+              type: "select" as const,
+              id: "mode",
+              name: "Mode",
+              category: "mode",
+              currentValue: mode,
+              options: [{ type: "item", id: mode, name: mode }],
+            },
+          ]
+        : []),
+    ];
+    this.captureSessionState(sessionId, options, mode);
+  }
+
+  /** One row of the session's own config, or undefined when it cannot answer. */
+  private async sessionConfigRow(
+    sessionId: string,
+  ): Promise<Record<string, unknown> | undefined> {
     try {
-      const connection = await this.requireConnection();
-      const response = await connection.extMethod("_gjc/sdk/query", {
+      const cli = await this.requireCli();
+      const items = await cli.queryItems(
         sessionId,
-        query: "config.list/get",
-        input: {},
-      });
-      if (response.ok === false) return;
-      const page =
-        response.page &&
-        typeof response.page === "object" &&
-        !Array.isArray(response.page)
-          ? (response.page as { items?: unknown })
-          : undefined;
-      const row = (Array.isArray(page?.items) ? page.items : []).find(
+        "config.list/get",
+        {},
+        { repo: this.repoFor(sessionId) },
+      );
+      return items.find(
         (item): item is Record<string, unknown> =>
           Boolean(item) && typeof item === "object" && !Array.isArray(item),
       );
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Reconciles the session's reported model/thinking/mode after a change.
+   *
+   * The session-scoped SDK config is the only thing that answers what the session
+   * itself runs, so a restored session reports its own model instead of the
+   * app-wide default.
+   */
+  private async refreshSessionSettings(sessionId: string): Promise<void> {
+    try {
+      const row = await this.sessionConfigRow(sessionId);
       if (!row) return;
       const preset =
         typeof row.modelPreset === "string" && row.modelPreset
@@ -6116,19 +6033,13 @@ export class GjcAcpController {
 
   private async refreshModelProfiles(sessionId: string): Promise<void> {
     try {
-      const connection = await this.requireConnection();
-      const response = await connection.extMethod("_gjc/sdk/query", {
+      const cli = await this.requireCli();
+      const items = await cli.queryItems(
         sessionId,
-        query: "models.profiles.list",
-        input: {},
-      });
-      const page =
-        response.page &&
-        typeof response.page === "object" &&
-        !Array.isArray(response.page)
-          ? (response.page as { items?: unknown })
-          : undefined;
-      const items = Array.isArray(page?.items) ? page.items : [];
+        "models.profiles.list",
+        {},
+        { repo: this.repoFor(sessionId) },
+      );
       const profiles = items
         .flatMap((item): AgentConfigOptionValue[] => {
           if (!item || typeof item !== "object") return [];
@@ -6199,7 +6110,7 @@ export class GjcAcpController {
         this.emitEvent({ type: "session.config", sessionId, options: updated });
       }
     } catch {
-      // The active session remains usable with ACP's initial model options when discovery is unavailable.
+      // The active session keeps its cached model options when discovery is unavailable.
     }
   }
 
@@ -6211,38 +6122,13 @@ export class GjcAcpController {
     modelDisplay?: string;
   }> {
     try {
-      const connection = await this.requireConnection();
-      const items: unknown[] = [];
-      let cursor: string | undefined;
-      for (
-        let pageIndex = 0;
-        pageIndex < MODEL_CATALOG_PAGE_LIMIT;
-        pageIndex += 1
-      ) {
-        const response = await connection.extMethod("_gjc/sdk/query", {
-          sessionId,
-          query: "models.list/current",
-          input: {},
-          ...(cursor ? { cursor } : {}),
-        });
-        const page =
-          response.page &&
-          typeof response.page === "object" &&
-          !Array.isArray(response.page)
-            ? (response.page as {
-                items?: unknown;
-                complete?: unknown;
-                continuationCursor?: unknown;
-              })
-            : undefined;
-        if (Array.isArray(page?.items)) items.push(...page.items);
-        const nextCursor =
-          typeof page?.continuationCursor === "string"
-            ? page.continuationCursor
-            : undefined;
-        if (page?.complete === true || !nextCursor) break;
-        cursor = nextCursor;
-      }
+      const cli = await this.requireCli();
+      const items = await cli.queryItems(
+        sessionId,
+        "models.list/current",
+        {},
+        { repo: this.repoFor(sessionId) },
+      );
       return {
         thinkingOptions: thinkingOptionsForModelCatalog(items, selectedModel),
         modelDisplay: profileDefaultModelLabel(items, selectedModel),
@@ -6255,10 +6141,9 @@ export class GjcAcpController {
   /**
    * Context usage for a session, at most one query in flight per session.
    *
-   * Every transcript write asked for this, and the query shares one ACP channel
-   * with the user's prompt, steer, and abort. Several subagents writing at once
-   * queued the user's own requests behind a burst of usage lookups, so a request
-   * that arrives while one is running joins it instead of adding another.
+   * Every transcript write asks for this. Several subagents writing at once can
+   * otherwise spawn a burst of redundant usage lookups, so a request that arrives
+   * while one is running joins it instead of adding another.
    */
   private refreshContextUsage(sessionId: string): Promise<void> {
     const inFlight = this.contextUsageQueries.get(sessionId);
@@ -6272,19 +6157,8 @@ export class GjcAcpController {
 
   private async queryContextUsage(sessionId: string): Promise<void> {
     try {
-      const connection = await this.requireConnection();
-      const response = await connection.extMethod("_gjc/sdk/query", {
-        sessionId,
-        query: "context.get",
-        input: {},
-      });
-      const page =
-        response.page &&
-        typeof response.page === "object" &&
-        !Array.isArray(response.page)
-          ? (response.page as { items?: unknown })
-          : undefined;
-      const first = Array.isArray(page?.items) ? page.items[0] : undefined;
+      const items = await this.querySessionItems(sessionId, "context.get");
+      const first = items[0];
       const usage =
         first && typeof first === "object" && !Array.isArray(first)
           ? (first as { usage?: unknown }).usage
@@ -6366,7 +6240,7 @@ export class GjcAcpController {
     const text = textFromContent(update.content);
     const image =
       update.content.type === "image"
-        ? imageFromContent(update.content, `acp-image-${this.nextLocalId++}`)
+        ? imageFromContent(update.content, `gjc-image-${this.nextLocalId++}`)
         : undefined;
     const userMessageKey =
       role === "user" && update.messageId
@@ -6424,8 +6298,8 @@ export class GjcAcpController {
     }
 
     const id = update.messageId
-      ? `acp-message-${update.messageId}`
-      : `acp-message-${this.nextLocalId++}`;
+      ? `gjc-message-${update.messageId}`
+      : `gjc-message-${this.nextLocalId++}`;
     keys.set(externalKey, id);
     this.messageKeys.set(sessionId, keys);
     if (role === "assistant") this.activeAssistantMessages.set(sessionId, id);
@@ -6533,7 +6407,7 @@ export class GjcAcpController {
         "_",
       );
       patch.inputArtifactId = id;
-      void this.persistArtifact(id, update.rawInput).catch((error) =>
+      void this.persistArtifact(sessionId, id, update.rawInput).catch((error) =>
         console.error(`Failed to persist tool input artifact ${id}`, error),
       );
     }
@@ -6543,9 +6417,12 @@ export class GjcAcpController {
         "_",
       );
       patch.outputArtifactId = id;
-      void this.persistArtifact(id, update.rawOutput ?? update.content).catch(
-        (error) =>
-          console.error(`Failed to persist tool output artifact ${id}`, error),
+      void this.persistArtifact(
+        sessionId,
+        id,
+        update.rawOutput ?? update.content,
+      ).catch((error) =>
+        console.error(`Failed to persist tool output artifact ${id}`, error),
       );
     }
     if (existing) {
@@ -6565,39 +6442,63 @@ export class GjcAcpController {
   }
 
   private async persistArtifact(
+    sessionId: string,
     artifactId: string,
     value: unknown,
   ): Promise<void> {
+    if (this.deletingSessions.has(sessionId)) return;
+    let sessionArtifacts = this.artifactSessionIds.get(sessionId);
+    if (!sessionArtifacts) {
+      sessionArtifacts = new Set<string>();
+      this.artifactSessionIds.set(sessionId, sessionArtifacts);
+    }
+    sessionArtifacts.add(artifactId);
     const text = redactSensitiveText(
       typeof value === "string" ? value : JSON.stringify(value, null, 2),
     );
-    const file = path.join(this.artifactDirectory, `${artifactId}.json`);
-    const previous = this.artifactWrites.get(artifactId) ?? Promise.resolve();
+    const namespace = this.artifactNamespace(sessionId);
+    const file = path.join(
+      this.artifactDirectory,
+      namespace,
+      `${artifactId}.json`,
+    );
+    const writeKey = this.artifactWriteKey(sessionId, artifactId);
+    const previous = this.artifactWrites.get(writeKey) ?? Promise.resolve();
     const operation = previous
       .catch(() => undefined)
       .then(async () => {
-        await mkdir(this.artifactDirectory, { recursive: true });
+        if (this.deletingSessions.has(sessionId)) return;
+        await mkdir(path.dirname(file), { recursive: true });
         const temporary = `${file}.${process.pid}.${this.nextLocalId++}.tmp`;
         await writeFile(temporary, JSON.stringify({ text }), { mode: 0o600 });
         await rename(temporary, file);
       });
-    this.artifactWrites.set(artifactId, operation);
+    this.artifactWrites.set(writeKey, operation);
     try {
       await operation;
     } finally {
-      if (this.artifactWrites.get(artifactId) === operation)
-        this.artifactWrites.delete(artifactId);
+      if (this.artifactWrites.get(writeKey) === operation)
+        this.artifactWrites.delete(writeKey);
     }
   }
 
+  /**
+   * Records a tool call that is waiting on an approval decision.
+   *
+   * A broker-hosted session host cannot ask an external controller for a decision,
+   * so nothing calls this over a live channel any more; the session's permission
+   * mode is set instead (see `applyPermissionMode`). It stays because a transcript
+   * row can still report a tool as awaiting approval, and the window has to show
+   * that state and be able to clear it on cancel.
+   */
   private requestPermission(
-    request: RequestPermissionRequest,
-  ): Promise<RequestPermissionResponse> {
+    request: PendingPermission["request"],
+  ): Promise<{ outcome: { outcome: string; optionId?: string } }> {
     const { toolCall } = request;
     this.upsertTool(request.sessionId, {
       sessionUpdate: "tool_call_update",
       ...toolCall,
-      status: toolCall.status ?? "pending",
+      status: "pending",
     });
     this.patchTool(toolCall.toolCallId, { status: "approval-required" });
     this.patchTool(toolCall.toolCallId, {
@@ -6808,19 +6709,7 @@ export class GjcAcpController {
     const cwd = this.sessionCwds.get(source.id);
     if (!cwd || path.resolve(cwd) !== path.resolve(source.workspace))
       throw new Error("Fork requires the canonical source workspace");
-    const connection = await this.requireConnection();
     await this.ensureAttached(source.id, false);
-    type ForkConnection = ClientSideConnection & {
-      unstable_forkSession(args: {
-        sessionId: string;
-        cwd: string;
-        mcpServers: [];
-      }): Promise<{
-        sessionId: string;
-        configOptions?: SessionConfigOption[];
-        modes?: { currentModeId?: string | null };
-      }>;
-    };
     // The fork itself is what creates the session; the lifecycle receipt is only
     // the evidence that it was recorded. A receipt that cannot be verified was
     // reported as a failed fork even though the broker had already created the
@@ -6829,31 +6718,42 @@ export class GjcAcpController {
     // surfacing an error for a fork that succeeded.
     const knownSessionIds = new Set([
       ...this.sessions.keys(),
-      ...((await this.brokerSessions(connection)) ?? []).map(
-        (listed) => listed.sessionId,
-      ),
+      ...((await this.brokerSessions()) ?? []).map((listed) => listed.sessionId),
     ]);
-    let response;
+    const cli = await this.requireCli();
+    let forkedId: string | undefined;
+    const forkRequestId = `gajae-session-fork-${randomUUID()}`;
     try {
-      response = await (connection as ForkConnection).unstable_forkSession({
-        sessionId: source.id,
-        cwd,
-        mcpServers: [],
-      });
+      const forked = await cli.rawGlobal(
+        "session.fork",
+        {
+          cwd,
+          sourceSessionId: source.id,
+          modelPreset: this.modelPreset,
+        },
+        { repo: cwd, idempotencyKey: forkRequestId },
+      );
+      if (typeof forked?.sessionId === "string") forkedId = forked.sessionId;
     } catch (error) {
-      if (!lifecycleUncertainError(error)) throw error;
-      response = await this.recoverForkedSession(
-        connection,
+      if (!isLifecycleUncertain(error)) throw error;
+    }
+    if (!forkedId)
+      forkedId = await this.recoverForkedSession(
         cwd,
         knownSessionIds,
+        forkRequestId,
       );
-      if (!response)
-        throw new Error(
-          "GJC가 세션을 포크했지만 lifecycle 영수증을 검증하지 못했습니다. 보존된 포크 자동 복구에도 실패했습니다. GJC lifecycle ledger reconciliation이 필요합니다.",
-        );
-    }
+    if (!forkedId)
+      throw new Error(
+        "GJC가 세션을 포크했지만 lifecycle 영수증을 검증하지 못했습니다. 보존된 포크 자동 복구에도 실패했습니다. GJC lifecycle ledger reconciliation이 필요합니다.",
+      );
+    const inheritedWorktree =
+      source.worktree?.managed === true &&
+      path.resolve(source.worktree.path) === path.resolve(cwd)
+        ? source.worktree
+        : undefined;
     const session: AgentSession = {
-      id: response.sessionId,
+      id: forkedId,
       title: input.title?.trim() || `${source.title} (fork)`,
       subtitle: path.basename(cwd) || cwd,
       workspace: cwd,
@@ -6864,73 +6764,61 @@ export class GjcAcpController {
       unread: false,
       accent: GJC_ACCENT,
       ownership: "gajae",
-      attachment: "attached",
+      attachment: "recovering",
+      ...(inheritedWorktree ? { worktree: inheritedWorktree } : {}),
     };
     this.sessions.set(session.id, session);
     this.sessionCwds.set(session.id, cwd);
-    this.attachedSessions.add(session.id);
-    this.captureSessionState(
-      session.id,
-      response.configOptions ?? [],
-      response.modes?.currentModeId,
-    );
     this.sessionMetadata?.setAlias(session.id, session.title);
     this.sessionMetadata?.setWorkspace(session.id, cwd);
     this.sessionMetadata?.setOwnership(session.id, "gajae");
+    if (inheritedWorktree)
+      this.sessionMetadata?.setWorktree(session.id, inheritedWorktree);
+    try {
+      await this.applyPermissionMode(session.id);
+    } catch (error) {
+      session.status = "failed";
+      this.emitEvent({ type: "session.created", session: { ...session } });
+      throw error;
+    }
+    session.attachment = "attached";
+    this.attachedSessions.add(session.id);
+    this.startTailFollower(session.id);
+    await this.refreshSessionConfigOptions(session.id);
+    const forkedFile = await this.locateSharedTranscriptFile(session.id);
+    if (forkedFile) this.watchSharedTranscript(session.id, forkedFile);
     this.emitEvent({ type: "session.created", session: { ...session } });
     return { ...session };
   }
 
   /**
-   * The session a fork created, recovered from the broker index when the fork's
-   * own lifecycle receipt could not be verified. Undefined when no new session
-   * for this workspace appears, which means the fork really did not happen.
+   * The id of the session a fork created, recovered from the broker index when the
+   * fork's own lifecycle receipt could not be verified. Undefined when no new
+   * session for this workspace appears, which means the fork really did not happen.
    */
   private async recoverForkedSession(
-    connection: ClientSideConnection,
     cwd: string,
     knownSessionIds: ReadonlySet<string>,
-  ): Promise<
-    | {
-        sessionId: string;
-        configOptions?: SessionConfigOption[];
-        modes?: { currentModeId?: string | null };
-      }
-    | undefined
-  > {
-    const workspace = path.resolve(cwd);
+    lifecycleRequestId: string,
+  ): Promise<string | undefined> {
+    const workspace = canonicalWorkspace(cwd);
     for (let attempt = 0; attempt < FORK_RECOVERY_ATTEMPTS; attempt += 1) {
-      const retained = (await this.brokerSessions(connection))?.find(
+      const retained = (await this.brokerSessions())?.find(
         (listed) =>
           !knownSessionIds.has(listed.sessionId) &&
           listed.live &&
+          !listed.deleted &&
           (listed.endpointGeneration ?? 0) > 0 &&
           listed.repo !== undefined &&
-          path.resolve(listed.repo) === workspace,
+          path.resolve(listed.repo) === workspace &&
+          (listed.lifecycleRequestId === undefined ||
+            listed.lifecycleRequestId === lifecycleRequestId),
       );
       if (retained) {
         this.sessionCwds.set(retained.sessionId, workspace);
         this.transcripts.set(retained.sessionId, []);
         this.messageKeys.set(retained.sessionId, new Map());
-        try {
-          const loaded = await connection.loadSession({
-            sessionId: retained.sessionId,
-            cwd: workspace,
-            mcpServers: [],
-          });
-          this.attachedSessions.add(retained.sessionId);
-          return {
-            sessionId: retained.sessionId,
-            ...(loaded.configOptions
-              ? { configOptions: loaded.configOptions }
-              : {}),
-            ...(loaded.modes ? { modes: loaded.modes } : {}),
-          };
-        } catch {
-          this.sessionCwds.delete(retained.sessionId);
-          this.transcripts.delete(retained.sessionId);
-          this.messageKeys.delete(retained.sessionId);
-        }
+        return retained.sessionId;
       }
       if (attempt < FORK_RECOVERY_ATTEMPTS - 1)
         await new Promise((resolve) =>

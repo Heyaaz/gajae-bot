@@ -2,19 +2,23 @@
 
 Electron desktop client for [GJC](https://github.com/Yeachan-Heo/gajae-code) sessions. Chat, live transcript sync, steer, cancel, and model switching all run on the same GJC session files as the terminal CLI.
 
-The app is a separate SDK connection from a TUI `gjc` process. They share session artifacts; they do not share a connection.
+Gajae is an external, process-isolated controller. It does not keep a resident
+agent process and does not embed the GJC runtime in Electron. Every live action
+uses the public broker-bound `gjc sdk session` CLI, while transcript history comes
+from the same session files the terminal uses. Gajae and a TUI share session
+files; they never share a TUI connection.
 
 ## User setup
 
 - Apple-silicon macOS (arm64 only)
 - Bun 1.4 or newer for the GJC runtime
-- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.15.5` or newer (the current compatibility target is `gajae-code@0.15.5`)
+- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.11` or newer (the current compatibility target is `gajae-code@0.18.11`)
 
 For a clean install, install GJC first, then copy the notarized Gajae release to
 `/Applications`:
 
 ```bash
-bun add -g gajae-code@0.15.5
+bun add -g gajae-code@0.18.11
 cd Gajae-0.1.0-darwin-arm64
 shasum -a 256 -c Gajae-0.1.0-darwin-arm64.zip.sha256
 ditto -x -k Gajae-0.1.0-darwin-arm64.zip .
@@ -90,18 +94,21 @@ Type a request and press Enter. Files and images are sent as local paths. Images
 
 ### While a turn is running
 
-| Action       | Result                                                                                     |
-| ------------ | ------------------------------------------------------------------------------------------ |
-| Text + Enter | Queue follow-up work. It waits until the current turn ends, or until you press empty Enter |
-| Empty Enter  | Abort the current turn and run the waiting work immediately                                |
-| `/steer …`   | Same as empty Enter: interrupt now                                                         |
-| `/queue …`   | Same as Text + Enter: wait                                                                 |
-| Esc or Stop  | Stop the current turn and owned background/subagent work. The session stays open           |
+| Action                | Result                                                                                                      |
+| --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Text + Enter          | Hold follow-up work visibly in the Composer. It waits until the current turn ends, unless you press empty Enter again |
+| Empty Enter (with work held) | Interrupt the current turn and immediately release the held work through steering                         |
+| `/steer …`            | Mark the held work as steering intent; it still takes the visible held-work step and does not interrupt on this Enter |
+| `/queue …`            | Mark the held work to wait until the current turn ends                                                    |
+| Esc or Stop           | Stop the current turn and owned background/subagent work. The session stays open                          |
 
 The submit slot holds one button, not two: the send arrow whenever there is
-something to send, otherwise Stop.
+something to send, otherwise Stop. The Composer owns one local held-work queue;
+`/steer` and `/queue` do not create separate remote queues.
 
-GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait queue. Waiting work uses `turn.follow_up`. Empty Enter aborts so the queued follow-up is promoted now.
+GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait
+queue. Submissions are held locally as follow-up/Steer work; empty Enter aborts
+the current turn and releases the held work through steering in order.
 
 ### Model / effort
 
@@ -125,18 +132,32 @@ Delete is close-then-delete, not hide-from-list. A live session is closed with `
 ### Resume a session
 
 A session the window lost control of is readable but cannot be sent to. It shows
-`terminal-only` when a terminal holds the lease and `recovering` when a reconnect
-failed. `세션 이어서 진행` attaches again, from the inspector or the sidebar
+`terminal-only` when a terminal holds the lease and `recovering` when runtime
+re-hosting could not be verified. `세션 이어서 진행` resumes it again, from the inspector or the sidebar
 right-click menu, on any session that is not already attached.
 
 Resuming is a user action, not a retry timer. The lease may still be held, so a
-schedule would only fail repeatedly. When another terminal holds it, the app says
-so instead of leaking the broker error; quit that `gjc` and try again.
+scheduled retry would only fail repeatedly. When another terminal holds it, the
+app says so instead of leaking the broker error; quit that `gjc` and try again.
+
+### Permission handling
+
+The Settings permission field is applied after create or resume with the public
+`permission_mode.set` session control operation. `always-allow` maps to the
+broker-hosted session's `allow` mode. There is no environment variable on a
+desktop-owned agent child because Gajae has no agent child.
+
+The session CLI has no reverse permission-request channel to the desktop. When
+interactive prompting is selected, Gajae therefore fails closed instead of
+silently granting tools: the broker-hosted session is placed in deny mode. This
+can move back to an interactive prompt only when GJC exposes a public external
+permission-answer operation.
 
 ### Open a past session
 
-`지난 세션 이어서 진행` (sidebar, next to `+`) is the app's `gjc --resume <id>`. It
-lists past sessions read straight from the session files under
+`지난 세션 이어서 진행` (sidebar, next to `+`) re-hosts the selected session with
+the `session.resume` lifecycle global. The picker lists past sessions read straight
+from the session files under
 `~/.gjc/agent/sessions/` (`GJC_CODING_AGENT_DIR` overrides the root), because
 discovery drops non-live sessions on purpose.
 
@@ -158,7 +179,34 @@ The full session id sits under the title in the inspector and copies on click.
 Bundled original project artwork is not claimed as third-party material. Asset
 redistribution must be confirmed before distributing a binary release.
 
-## GJC runtime compatibility
+## GJC SDK session CLI compatibility
+
+Gajae supports installed `gajae-code` version `0.18.11` or newer, and is verified
+against that release. It uses only the credential-free public surface:
+
+```text
+gjc sdk session list|inspect|send|status|tail
+gjc sdk session raw control|query|global
+```
+
+Two flag rules come from the 0.18.11 grammar and are load-bearing:
+
+- Every invocation passes `--json`. Failures answer a `gjc.command-error` envelope
+  there, and plain human text without it, which the app cannot classify.
+- Only `session list` passes `--repo`. Exact-session verbs resolve from the session
+  ID and warn that the flag is ignored; `raw control` and `raw global` reject it as
+  a usage error before dispatch. `session list` also states `--scope` explicitly
+  because the 0.18.11 default scope is `repo`, which fails outside a git checkout.
+
+Create, fork, resume, close, and delete use `raw global` with a fresh lifecycle
+idempotency key. Prompt submission uses semantic `send` with a fresh operation
+reference and reconciles completion with `status` plus the durable transcript.
+Model, effort, commands, context, and capabilities use `raw query`. Live lifecycle
+catch-up uses bounded `tail --all-events` reads with checkpoint cursors; the
+session-file watcher remains the transcript source of truth.
+
+The desktop never starts `sdk serve`, opens a session WebSocket, reads endpoint
+credentials, or uses discovery records as an attachment mechanism.
 
 Desktop Esc/Stop sends:
 
@@ -168,23 +216,43 @@ turn.abort {
   scope: "owned",
   operator: true,
 }
-confirm: true
-idempotencyKey: "gajae-abort-<uuid>"
+--confirm
+--idempotency-key "gajae-abort-<uuid>"
 ```
 
-Gajae requires the following SDK behavior, shipped by the supported
-`gajae-code@0.15.5` runtime:
+Gajae requires the following behavior, shipped by the supported runtime:
 
-1. Forward `idempotencyKey` on CLI `control_request` envelopes
-2. `turn.abort` `operator: true` — another connection can stop owned work. Requires `confirm: true`
-3. Plain `turn.abort {}` is session-scoped — stops the current turn even when the requester is not the owner (empty-Enter flush)
+1. Forward the CLI idempotency key on control-request envelopes
+2. `turn.abort` `operator: true` — an external controller can stop owned work. Requires `--confirm`
+
+**Known limitation on 0.18.11:** the terminal abort answers
+`{turn:"no_active_turn", terminal:"terminal_no_effect"}` through this route even
+while a turn is verifiably running (`status` in_flight and `turn.steer` accepted on
+the same session), and the turn keeps running. The same payload over a live
+`sdk serve --stdio` connection is rejected with `operation_prohibited` ("Operator
+terminal aborts are available only through the Broker control route"). Stop
+therefore reports that it could not confirm the abort instead of claiming the run
+stopped; the transcript stays the source of truth for whether work continued.
+
+**Known limitation on 0.18.11:** `session.delete` answers `operation_failed`
+("The operation failed. Its outcome could not be established.", `outcomeCertainty:
+unknown`, retryability `unknown`, and the guidance "do not blindly retry") for any
+session whose durable state includes tool execution. A session that only replied
+deletes cleanly; one that ran a single `printf` bash turn does not, in the default
+agent directory and in a fresh one, and the broker row stays
+`live:false, deleted:false`. Gajae treats that as an unknown lifecycle outcome:
+it preserves the transcript, metadata, and worktree and marks the session as
+recovering rather than reporting a deletion it cannot prove.
 
 Older GJC versions are unsupported. After updating GJC, restart running `gjc` /
 `gjc --resume` session hosts because they do not hot-reload runtime code.
 
 If the CLI rejects the `operator` field, the app reports failure instead of pretending the run stopped.
 
-Steer itself is unchanged in GJC. The desktop uses the existing `turn.steer` surface. Empty Enter only aborts so queued steer is consumed once (steer-on-interrupt). Do not dequeue and `abort_and_prompt` the same text.
+Steer itself is unchanged in GJC. The desktop uses `raw control` with the existing
+`turn.steer` operation. Empty Enter only aborts so the Composer's held work is
+consumed once through steering (steer-on-interrupt). Do not dequeue and
+`abort_and_prompt` the same text.
 
 ## Lifecycle receipts
 

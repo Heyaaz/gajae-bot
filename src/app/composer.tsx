@@ -275,23 +275,6 @@ export function Composer({
     });
   }, [sessionId]);
 
-  // Held requests exist only because a turn was open. Once that turn ends they
-  // are sent without waiting for another gesture -- otherwise the queue is
-  // unreachable (submit() keeps appending while anything is held) and every later
-  // message piles up behind it silently.
-  //
-  // This drains on the running -> idle transition only. Draining whenever
-  // `running` merely reads false would fire in the gap between a submit and the
-  // backend reporting the turn, releasing the queue into a turn that is still
-  // starting up.
-  const wasRunningRef = useRef(running);
-  useEffect(() => {
-    const turnEnded = wasRunningRef.current && !running;
-    wasRunningRef.current = running;
-    if (!turnEnded || pendingQueueRef.current.length === 0) return;
-    void releasePendingQueue();
-  }, [running]);
-
   useEffect(() => {
     function applyEffortCycle(): void {
       setConfigMenu(null);
@@ -418,7 +401,7 @@ export function Composer({
   // Interrupt the open turn, then hand the held requests over in order. Each entry
   // leaves the queue only after onSend resolves for it, so a failed release keeps
   // the request visible instead of losing the user's text.
-  async function releasePendingQueue(): Promise<void> {
+  const releasePendingQueue = useCallback(async (): Promise<void> => {
     if (releasingRef.current) return;
     releasingRef.current = true;
     try {
@@ -441,7 +424,25 @@ export function Composer({
     } finally {
       releasingRef.current = false;
     }
-  }
+  }, [onFlushQueued, onSend, running]);
+
+  // Held requests exist only because a turn was open. Once that turn ends they
+  // are sent without waiting for another gesture -- otherwise the queue is
+  // unreachable (submit() keeps appending while anything is held) and every later
+  // message piles up behind it silently.
+  //
+  // This drains on the running -> idle transition only. Draining whenever
+  // `running` merely reads false would fire in the gap between a submit and the
+  // backend reporting the turn, releasing the queue into a turn that is still
+  // starting up. It has to sit after `releasePendingQueue` because the effect
+  // closes over the callback it calls.
+  const wasRunningRef = useRef(running);
+  useEffect(() => {
+    const turnEnded = wasRunningRef.current && !running;
+    wasRunningRef.current = running;
+    if (!turnEnded || pendingQueueRef.current.length === 0) return;
+    void releasePendingQueue();
+  }, [releasePendingQueue, running]);
 
   function submit(): void {
     const content = (textareaRef.current?.value ?? value).trim();
@@ -517,7 +518,10 @@ export function Composer({
       // SDK slash commands are controls/queries, not prompts. They remain useful
       // while a turn is running and must not sit behind the composer's follow-up
       // queue, where they would execute only after the work they are inspecting.
-      void onSend({ text: content, images, files });
+      // Immediate commands are intentionally fire-and-forget. The shell has
+      // already surfaced delivery failures, so consume this promise here rather
+      // than creating an unhandled renderer rejection.
+      void onSend({ text: content, images, files }).catch(() => undefined);
     }
     // submit() reads the textarea's DOM value, so clearing React state alone left
     // the same text readable until the next render. A second Enter arriving in that
@@ -627,7 +631,12 @@ export function Composer({
       // the complete action for a command with no input to collect.
       setValue("");
       setCommandIndex(0);
-      void onSend({ text: `/${command.name}`, images: [], files: [] });
+      // Palette commands also bypass the pending queue and therefore do not have
+      // an awaiting caller. Delivery errors are surfaced by the shell; consume
+      // the rejection locally to keep it out of the renderer's unhandled queue.
+      void onSend({ text: `/${command.name}`, images: [], files: [] }).catch(
+        () => undefined,
+      );
       requestAnimationFrame(() => textareaRef.current?.focus());
       return;
     }

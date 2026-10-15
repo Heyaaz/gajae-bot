@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { GjcAcpController } from "./gjc-acp-controller.js";
+import { GjcSdkController } from "./gjc-sdk-controller.js";
 
 describe("dispose completeness", () => {
   it("releases every Map and Set the controller holds", () => {
@@ -7,7 +7,7 @@ describe("dispose completeness", () => {
     // anyone checked the list. Enumerating the instance instead of naming fields
     // means a new Map is covered the day it is introduced rather than the day
     // someone remembers it.
-    const controller = new GjcAcpController({
+    const controller = new GjcSdkController({
       workspace: "/tmp/project",
       emit: () => undefined,
     });
@@ -28,6 +28,7 @@ describe("dispose completeness", () => {
       resolve: () => undefined,
       reject: () => undefined,
       close: () => undefined,
+      abort: () => undefined,
       unref: () => undefined,
       then: undefined,
     };

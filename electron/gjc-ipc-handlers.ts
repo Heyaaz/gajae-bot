@@ -10,9 +10,9 @@ import type {
   FileAttachment,
 } from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
-import type { GjcAcpController } from "./gjc-acp-controller.js";
+import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
-import type { ResolvedMessageInput } from "./gjc-acp-controller.js";
+import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
 import type { IpcSecurity } from "./ipc-security.js";
 
 function requiredString(value: unknown, label: string): string {
@@ -324,7 +324,7 @@ function gitPaths(value: unknown): string[] {
 }
 
 export function registerGjcIpcHandlers(
-  controller: GjcAcpController,
+  controller: GjcSdkController,
   attachments: AttachmentStore,
   security: IpcSecurity,
 ): () => void {

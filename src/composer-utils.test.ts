@@ -217,16 +217,18 @@ describe("composer-owned pending queue", () => {
     let live: PendingRequest[] = [request("a", "fails"), request("b", "later")];
     const sent: string[] = [];
 
-    await releaseRequests({
-      read: () => live,
-      write: (pending) => {
-        live = pending;
-      },
-      send: async (entry) => {
-        sent.push(entry.text);
-        throw new Error("send failed");
-      },
-    });
+    await expect(
+      releaseRequests({
+        read: () => live,
+        write: (pending) => {
+          live = pending;
+        },
+        send: async (entry) => {
+          sent.push(entry.text);
+          throw new Error("send failed");
+        },
+      }),
+    ).resolves.toBeUndefined();
 
     expect(sent).toEqual(["fails"]);
     expect(live.map((entry) => entry.id)).toEqual(["a", "b"]);

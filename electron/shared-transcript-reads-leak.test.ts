@@ -2,7 +2,7 @@ import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { GjcAcpController } from "./gjc-acp-controller.js";
+import { GjcSdkController } from "./gjc-sdk-controller.js";
 
 describe("sharedTranscriptReads bounds", () => {
   it("holds the cache to the transcripts still being re-read", async () => {
@@ -10,7 +10,7 @@ describe("sharedTranscriptReads bounds", () => {
     // an unbounded map reached 372MB across 60 transcripts and would pass 2GB across
     // the 400 on this machine, so the cache is capped and evicts the oldest read.
     const directory = await mkdtemp(path.join(tmpdir(), "gjc-cache-bound-"));
-    const controller = new GjcAcpController({
+    const controller = new GjcSdkController({
       workspace: "/tmp/project",
       emit: () => undefined,
     });
@@ -51,7 +51,7 @@ describe("sharedTranscriptReads bounds", () => {
     // polled every few seconds is evicted on schedule while idle ones survive, and
     // every eviction costs a full re-parse of the file that is actually in use.
     const directory = await mkdtemp(path.join(tmpdir(), "gjc-cache-lru-"));
-    const controller = new GjcAcpController({
+    const controller = new GjcSdkController({
       workspace: "/tmp/project",
       emit: () => undefined,
     });
@@ -98,7 +98,7 @@ describe("sharedTranscriptReads bounds", () => {
     // The bound must not defeat the cache: a transcript read twice in a row has to
     // come from the cached envelopes, which is what made tail reads 0.12ms.
     const directory = await mkdtemp(path.join(tmpdir(), "gjc-cache-reuse-"));
-    const controller = new GjcAcpController({
+    const controller = new GjcSdkController({
       workspace: "/tmp/project",
       emit: () => undefined,
     });

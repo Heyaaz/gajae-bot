@@ -8,6 +8,7 @@ import {
   type MenuItemConstructorOptions,
 } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
+import { mkdirSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -18,7 +19,7 @@ import {
   sessionActivityBody,
 } from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
-import { GjcAcpController } from "./gjc-acp-controller.js";
+import { GjcSdkController } from "./gjc-sdk-controller.js";
 import { registerGjcIpcHandlers } from "./gjc-ipc-handlers.js";
 import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
@@ -53,6 +54,11 @@ const appIconPath = app.isPackaged
   ? path.join(process.resourcesPath, "electron.icns")
   : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
 const userDataDirectory = app.getPath("userData");
+// Search index, session metadata, artifacts, and automations all live under this
+// directory, and Electron only creates it lazily. A first launch on a clean
+// machine therefore opened SQLite against a path that did not exist yet and the
+// process died before any window appeared.
+mkdirSync(userDataDirectory, { recursive: true });
 // User files must never be rooted in the read-only packaged app.asar. Documents
 // is a real filesystem directory in both development and packaged launches.
 const settingsStore = new SettingsStore(userDataDirectory, app.getPath("documents"));
@@ -161,7 +167,7 @@ function installApplicationMenu(): void {
   );
 }
 
-const gjcController = new GjcAcpController({
+const gjcController = new GjcSdkController({
   workspace,
   executable: process.env.GJC_BIN || preferences.gjcExecutable || undefined,
   modelPreset,
@@ -355,11 +361,15 @@ function createWindow(): BrowserWindow {
                 if (connection?.textContent?.includes('연결됨') && sessions.length > 0 && chatIdentity && composer) {
                   let customProfiles = false;
                   let builtInProfiles = false;
+                  let modelOptionMarked = false;
                   let fastIndicator = false;
                   let fastIndicatorCleared = false;
                   let modelStatus = null;
-                  // A freshly created session is the only reliably attachable one: previously
-                  // listed sessions may be owned by a terminal with no attachable ACP endpoint.
+                  // Only the session this smoke created may be driven. Clicking an
+                  // arbitrary row attaches to work someone else owns, and the model
+                  // picker only needs one controllable session anyway: walking the
+                  // sidebar made this smoke read -- and mutate -- whatever the machine
+                  // happened to have running.
                   let probeSessionId = null;
                   try {
                     const probe = await window.agentControlDesktop.gjc.createSession({
@@ -371,25 +381,33 @@ function createWindow(): BrowserWindow {
                     probeSessionId = probe.id;
                     await wait(1500);
                   } catch {
-                    // Fall back to listed sessions when session creation is unavailable.
+                    throw new Error('Live GJC smoke could not create its own probe session');
                   }
-                  const orderedSessions = Array.from(document.querySelectorAll('.session-row')).sort((left, right) => Number(right.textContent?.includes('Gajae smoke model probe')) - Number(left.textContent?.includes('Gajae smoke model probe')));
-                  for (const sessionRow of orderedSessions) {
-                    sessionRow.click();
+                  const probeRow = Array.from(document.querySelectorAll('.session-row')).find((row) => row.textContent?.includes('Gajae smoke model probe'));
+                  if (!probeRow) throw new Error('Live GJC smoke probe session did not appear in the sidebar');
+                  {
+                    probeRow.click();
                     await wait(700);
                     modelStatus = document.querySelector('.composer-model > button');
-                    if (!modelStatus) continue;
-                    modelStatus.click();
-                    const profileDeadline = Date.now() + 3_000;
-                    while (Date.now() < profileDeadline) {
-                      const pickerText = document.querySelector('.config-option-menu--model')?.textContent ?? '';
-                      customProfiles = pickerText.includes('Custom profiles');
-                      builtInProfiles = pickerText.includes('Built-in profiles');
-                      if (customProfiles && builtInProfiles) break;
-                      await wait(100);
+                    if (modelStatus) {
+                      modelStatus.click();
+                      const profileDeadline = Date.now() + 3_000;
+                      while (Date.now() < profileDeadline) {
+                        const pickerText = document.querySelector('.config-option-menu--model')?.textContent ?? '';
+                        customProfiles = pickerText.includes('Custom profiles');
+                        builtInProfiles = pickerText.includes('Built-in profiles');
+                        modelOptionMarked = Boolean(document.querySelector('.config-option-menu--model .is-current'));
+                        // gjc/0.18.11 reports every profile row with source
+                        // "configured" (measured: 70 configured, 0 builtin), so the
+                        // built-in group is not something this smoke may require.
+                        // What must hold is that the picker classified rows into a
+                        // group and marked the session's current model inside it.
+                        if ((customProfiles || builtInProfiles) && modelOptionMarked) break;
+                        await wait(100);
+                      }
+                      modelStatus.click();
                     }
-                    modelStatus.click();
-                    if (customProfiles && builtInProfiles) {
+                    if ((customProfiles || builtInProfiles) && modelOptionMarked) {
                       const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
                       if (!valueSetter) throw new Error('Live GJC composer value setter is unavailable');
                       valueSetter.call(composer, '/fast on');
@@ -417,7 +435,6 @@ function createWindow(): BrowserWindow {
                         await wait(100);
                       }
                       if (!fastIndicatorCleared) throw new Error('Live /fast off did not clear the lightning indicator');
-                      break;
                     }
                   }
                   if (probeSessionId) {
@@ -427,7 +444,7 @@ function createWindow(): BrowserWindow {
                       // Leave cleanup to the operator when the probe session cannot be removed.
                     }
                   }
-                  if (!modelStatus || !customProfiles || !builtInProfiles) throw new Error('No attachable GJC session exposed classified model profiles');
+                  if (!modelStatus || !(customProfiles || builtInProfiles) || !modelOptionMarked) throw new Error('Live GJC probe session did not expose classified model profiles');
                   return {
                     shell: Boolean(document.querySelector('.app-shell')),
                     desktopBridge: Boolean(window.agentControlDesktop),

@@ -36,6 +36,21 @@ function selectBackendBody(text: string): string {
   throw new Error("selectBackend body was not found");
 }
 
+function sendMessageBody(text: string): string {
+  const start = text.indexOf("async function sendMessage");
+  expect(start).toBeGreaterThan(-1);
+  const open = text.indexOf("{", start);
+  let depth = 0;
+  for (let index = open; index < text.length; index += 1) {
+    if (text[index] === "{") depth += 1;
+    if (text[index] === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(open, index + 1);
+    }
+  }
+  throw new Error("sendMessage body was not found");
+}
+
 describe("backend selection when GJC is unavailable", () => {
   it("never substitutes the mock backend for a failed connection", () => {
     const body = selectBackendBody(entrySource);
@@ -109,5 +124,15 @@ describe("shell rendering while the runtime is unreachable", () => {
     expect(offline).toBeGreaterThan(-1);
     expect(selected).toBeGreaterThan(-1);
     expect(offline).toBeLessThan(selected);
+  });
+
+  it("surfaces delivery failures and rejects them for queue retention", () => {
+    const body = sendMessageBody(shellSource);
+    expect(body).toContain("return await backend.sendMessage(");
+    expect(body).toContain("setAppError(humanErrorMessage(error));");
+    expect(body).toMatch(
+      /setAppError\(humanErrorMessage\(error\)\);[\s\S]*throw error;/u,
+    );
+    expect(body).not.toContain("return undefined");
   });
 });
