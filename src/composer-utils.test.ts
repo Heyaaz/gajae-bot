@@ -50,7 +50,7 @@ describe("composer utilities", () => {
     );
   });
 
-  it("extracts text from ACP structured tool output and keeps a bounded tail preview", () => {
+  it("extracts text from structured tool output and keeps a bounded tail preview", () => {
     const lines = Array.from({ length: 15 }, (_, index) => `line-${index + 1}`);
     const raw = JSON.stringify({
       content: [{ type: "text", text: lines.join("\n") }],

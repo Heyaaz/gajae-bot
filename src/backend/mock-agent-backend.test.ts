@@ -67,7 +67,7 @@ describe("MockAgentBackend", () => {
     expect(transcript.at(-1)).toMatchObject({
       kind: "message",
       role: "assistant",
-      content: expect.stringContaining("GJC ACP"),
+      content: expect.stringContaining("GJC와 Hermes"),
       streaming: false,
     });
     expect(events.some((event) => event.type === "message.delta")).toBe(true);

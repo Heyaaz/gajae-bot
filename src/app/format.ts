@@ -113,7 +113,7 @@ export function subagentLabel(tool: ToolActivity): string {
         return String(input[key]);
     }
   } catch {
-    // Fall back to the ACP title when raw input is partial or truncated.
+    // Fall back to the title the stream sent when raw input is partial or truncated.
   }
   return tool.description || "서브 에이전트";
 }

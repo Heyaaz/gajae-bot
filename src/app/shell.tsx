@@ -462,7 +462,7 @@ export default function App() {
     };
     queueMicrotask(refresh);
     // Goal and todo state advance at tool-call pace, not at streaming pace. Two
-    // round trips every 1.5s on the shared ACP channel cost more than the
+    // round trips every 1.5s against the host's GJC connection cost more than the
     // freshness is worth while a turn is running. A hidden window has nobody to
     // show the result to, and it refreshes on the way back in.
     const timer = window.setInterval(
@@ -603,7 +603,7 @@ export default function App() {
   });
   // Queue state changes when the turn starts or ends, not on every streamed
   // chunk. Keying this on transcript length re-listed the queue over the shared
-  // ACP channel for each chunk, which is what made sending feel slow.
+  // GJC connection for each chunk, which is what made sending feel slow.
   // A permission the agent already withdrew is gone by the time a slow click
   // arrives, and the backend rejects for it. Dropping that rejection left the
   // dialog looking answered while nothing had been sent, so it surfaces like

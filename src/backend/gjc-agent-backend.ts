@@ -64,7 +64,7 @@ export class GjcAgentBackend implements AgentBackend {
       return;
     }
     if (this.flushTimer) return;
-    // ACP can deliver many tiny chunks per frame. Rendering every chunk makes the
+    // GJC can deliver many tiny chunks per frame. Rendering every chunk makes the
     // desktop fall behind the CLI, especially while a long Markdown response grows.
     this.flushTimer = setTimeout(() => this.flushPendingDeltas(), 16);
   }

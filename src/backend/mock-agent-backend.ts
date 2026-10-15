@@ -128,7 +128,7 @@ const transcripts: Record<string, TranscriptItem[]> = {
       sessionId: "agent-control",
       role: "assistant",
       content:
-        "### Runtime boundary\n\n별도 프로젝트에 런타임 중립 인터페이스를 두고 UI를 구성했습니다.\n\n| Runtime | Transport |\n| --- | --- |\n| GJC | ACP |\n| Hermes | Gateway |",
+        "### Runtime boundary\n\n별도 프로젝트에 런타임 중립 인터페이스를 두고 UI를 구성했습니다.\n\n| Runtime | Transport |\n| --- | --- |\n| GJC | SDK session CLI |\n| Hermes | Gateway |",
       createdAt: "10:43",
     },
     {
@@ -146,7 +146,7 @@ const transcripts: Record<string, TranscriptItem[]> = {
       sessionId: "agent-control",
       entries: [
         { content: "Define the backend contract", status: "completed" },
-        { content: "Connect GJC over ACP", status: "completed" },
+        { content: "Connect GJC over the SDK session CLI", status: "completed" },
         { content: "Verify the desktop shell", status: "in_progress" },
       ],
       createdAt: "10:44",
@@ -770,7 +770,7 @@ export class MockAgentBackend implements AgentBackend {
     const chunks = [
       "확인했습니다. ",
       "이 화면은 공통 backend 이벤트만 사용하므로 ",
-      "GJC ACP와 Hermes Gateway를 같은 UI에 연결할 수 있습니다.",
+      "GJC와 Hermes Gateway를 같은 UI에 연결할 수 있습니다.",
     ];
 
     chunks.forEach((delta, index) => {

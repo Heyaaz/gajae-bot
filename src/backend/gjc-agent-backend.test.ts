@@ -224,7 +224,7 @@ class FakeGjcBridge implements GjcDesktopBridge {
 }
 
 describe("GjcAgentBackend", () => {
-  it("uses the real ACP bridge connection metadata", async () => {
+  it("uses the real GJC bridge connection metadata", async () => {
     const bridge = new FakeGjcBridge();
     const backend = new GjcAgentBackend(bridge);
 
@@ -251,7 +251,7 @@ describe("GjcAgentBackend", () => {
     backend.dispose();
   });
 
-  it("forwards live ACP events and detaches on dispose", () => {
+  it("forwards live GJC events and detaches on dispose", () => {
     const bridge = new FakeGjcBridge();
     const backend = new GjcAgentBackend(bridge);
     const listener = vi.fn();
