@@ -69,6 +69,16 @@ describe("tailscale summary", () => {
     expect(summary.detail).toContain("설치");
   });
 
+  it("names a missing binary through the real runner", async () => {
+    // The shipped runner is the one that sees ENOENT, and it reports no stderr for a
+    // spawn that never started: the message has to come from the error, or every
+    // machine without Tailscale reads as one whose status cannot be read.
+    const client = new TailscaleClient({ binary: "gajae-missing-tailscale-binary" });
+    const summary = await client.summary(8791);
+    expect(summary.installed).toBe(false);
+    expect(summary.detail).toBe("Tailscale이 설치되어 있지 않습니다.");
+  });
+
   it("reports connection and the published origin", async () => {
     const { run } = runner({
       version: ok("1.74.0\n  go1.22\n"),

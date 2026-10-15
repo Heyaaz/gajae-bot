@@ -101,8 +101,9 @@ export function RemoteAccessPanel() {
             <strong>원격 접속</strong>
             <small>
               Tailscale 네트워크에서 이 컴퓨터의 GJC 세션을 휴대폰·다른 기기에서
-              조회합니다. 서버는 loopback에만 열리고 공개 인터넷에는 노출되지
-              않습니다.
+              조회합니다. 켜면 테일넷 기기가 이 컴퓨터의 HTTPS 주소에 닿을 수 있지만
+              세션 데이터는 페어링한 기기만 받고, 서버 자체는 loopback에만 열려 공개
+              인터넷에는 노출되지 않습니다.
             </small>
           </span>
           <button

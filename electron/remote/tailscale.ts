@@ -38,7 +38,14 @@ export const defaultCommandRunner: CommandRunner = (file, args) =>
             : error
               ? 1
               : 0;
-        resolve({ stdout: stdout ?? "", stderr: stderr ?? "", code });
+        // A binary that cannot be spawned reports nothing on stderr, so the caller
+        // could not tell "not installed" from "answered nothing" and a machine
+        // without Tailscale read as one whose status was merely unreadable. The spawn
+        // error names it, ENOENT included.
+        const failureText =
+          (stderr ?? "").trim() ||
+          (error instanceof Error ? error.message : "");
+        resolve({ stdout: stdout ?? "", stderr: failureText, code });
       },
     );
   });
