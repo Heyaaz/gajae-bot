@@ -182,8 +182,7 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.deleteSession, async (event, sessionId: unknown) => {
     const id = requiredId(sessionId, "Session ID");
     await security.authorizeDestructive(event, {
-      message: "Delete this session?",
-      detail: `Session ${id} and its retained artifacts will be removed.`,
+      message: "세션을 삭제할까요?",
     });
     return controller.deleteSession(id);
   });

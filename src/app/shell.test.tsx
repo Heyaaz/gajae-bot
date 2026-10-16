@@ -2,40 +2,155 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-import type { SessionStatus, TranscriptItem } from "../backend/types";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  AgentSession,
+  SessionStatus,
+  TranscriptItem,
+} from "../backend/types";
 import App, {
   composerTurnLive,
   escapeCancelsRun,
   isTextEntryTarget,
 } from "./shell";
 
-const actionProbe = vi.hoisted(() => ({
-  rename: vi.fn(),
-  stateChanges: vi.fn(),
-  onRename: null as null | ((id: string, title: string) => void),
-}));
+/**
+ * The shell is exercised without a DOM: it renders to static markup, and the state
+ * a live client keeps lives in the positional store below. Every render pass
+ * numbers the `useState` calls in order and a setter writes the slot its own hook
+ * owns, so driving the captured props and re-rendering shows the tree an
+ * interaction leaves behind -- which is how a test can watch a row leave the
+ * sidebar while the backend delete is still in flight.
+ */
+const actionProbe = vi.hoisted(() => {
+  const stateChanges = vi.fn();
+  const store = {
+    index: 0,
+    slots: new Map<number, unknown>(),
+    reset(): void {
+      this.index = 0;
+      this.slots = new Map();
+    },
+    /** Starts a render pass, so hook slots are numbered from zero again. */
+    beginPass(): void {
+      this.index = 0;
+    },
+    hook(initial: unknown): [unknown, (update: unknown) => void] {
+      const slot = this.index++;
+      if (!this.slots.has(slot))
+        this.slots.set(
+          slot,
+          typeof initial === "function"
+            ? (initial as () => unknown)()
+            : initial,
+        );
+      return [
+        this.slots.get(slot),
+        (update: unknown) => {
+          const current = this.slots.get(slot);
+          this.slots.set(
+            slot,
+            typeof update === "function"
+              ? (update as (value: unknown) => unknown)(current)
+              : update,
+          );
+          stateChanges(update);
+        },
+      ];
+    },
+  };
+  return {
+    rename: vi.fn(),
+    forkSession: vi.fn(),
+    deleteSession: vi.fn(),
+    stateChanges,
+    store,
+    onRename: null as null | ((id: string, title: string) => void),
+    sidebar: null as null | {
+      sessions: AgentSession[];
+      selectedId: string | null;
+      onRename: (id: string, title: string) => void;
+      onDelete: (session: AgentSession) => void;
+      onFork: (session: AgentSession) => void;
+    },
+    deleteDialog: null as null | {
+      session: AgentSession;
+      onConfirm: () => void;
+    },
+    reset(): void {
+      store.reset();
+      this.rename.mockReset();
+      this.forkSession.mockReset();
+      this.deleteSession.mockReset();
+      stateChanges.mockReset();
+      this.onRename = null;
+      this.sidebar = null;
+      this.deleteDialog = null;
+    },
+  };
+});
 
 vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
-    useState: (initial: unknown) => [
-      typeof initial === "function" ? initial() : initial,
-      actionProbe.stateChanges,
-    ],
+    useState: (initial: unknown) => actionProbe.store.hook(initial),
   };
 });
 
 vi.mock("../backend/use-agent-backend", () => ({
-  useAgentBackend: () => ({ renameSession: actionProbe.rename }),
+  useAgentBackend: () => ({
+    renameSession: actionProbe.rename,
+    forkSession: actionProbe.forkSession,
+    deleteSession: actionProbe.deleteSession,
+  }),
 }));
 
+// The children are shallow stand-ins so the shell's own props and the store above
+// stay the only state in the tree; the sidebar and the delete dialog hold the
+// props the delete tests drive.
 vi.mock("./sidebar", () => ({
-  Sidebar: (props: { onRename: (id: string, title: string) => void }) => {
+  Sidebar: (props: {
+    sessions: AgentSession[];
+    selectedId: string | null;
+    onRename: (id: string, title: string) => void;
+    onDelete: (session: AgentSession) => void;
+    onFork: (session: AgentSession) => void;
+  }) => {
+    actionProbe.sidebar = props;
     actionProbe.onRename = props.onRename;
     return null;
   },
+}));
+
+vi.mock("./dialogs", () => ({
+  DeleteSessionDialog: (props: {
+    session: AgentSession;
+    onConfirm: () => void;
+  }) => {
+    actionProbe.deleteDialog = props;
+    return null;
+  },
+  GlobalSearchDialog: () => null,
+  NewSessionDialog: () => null,
+  ResumeSessionDialog: () => null,
+}));
+
+vi.mock("./composer", () => ({ Composer: () => null }));
+vi.mock("./transcript", () => ({
+  RecentRequestStrip: () => null,
+  Transcript: () => null,
+}));
+vi.mock("./inspector", () => ({
+  DiffPanel: () => null,
+  GoalProgressRow: () => null,
+  Inspector: () => null,
+}));
+vi.mock("./settings", () => ({ SettingsDialog: () => null }));
+vi.mock("./remote", () => ({
+  RemoteGate: () => null,
+  RemoteStrip: () => null,
+  remoteGateNeeded: () => false,
 }));
 
 const root = path.resolve(import.meta.dirname, "../..");
@@ -267,7 +382,7 @@ describe("sidebar rename failures", () => {
     actionProbe.stateChanges.mockClear();
     actionProbe.rename.mockRejectedValueOnce(new Error("permission denied"));
     try {
-      renderToStaticMarkup(createElement(App));
+      renderApp();
       expect(actionProbe.onRename).not.toBeNull();
       actionProbe.onRename!("session-id", "New title");
       await vi.waitFor(() => {
@@ -277,5 +392,143 @@ describe("sidebar rename failures", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+/** The next state the shell would render, from the store's current slot values. */
+function renderApp(): string {
+  actionProbe.sidebar = null;
+  actionProbe.deleteDialog = null;
+  actionProbe.store.beginPass();
+  return renderToStaticMarkup(createElement(App));
+}
+
+/** Lets the handlers started by a captured prop run past their next await. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function session(
+  id: string,
+  overrides: Partial<AgentSession> = {},
+): AgentSession {
+  return {
+    id,
+    title: `세션 ${id}`,
+    subtitle: "gajae-bot",
+    workspace: "/tmp/gajae-bot",
+    runtime: "gjc",
+    status: "idle",
+    updatedAt: "10:00",
+    updatedAtMs: 1,
+    pinned: false,
+    unread: false,
+    accent: "#ff8a34",
+    ownership: "gajae",
+    attachment: "attached",
+    ...overrides,
+  };
+}
+
+describe("session delete optimism", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", {});
+    actionProbe.reset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Puts one live row in the shell through its own fork path, as listed rows are. */
+  async function seedRow(row: AgentSession): Promise<void> {
+    actionProbe.forkSession.mockResolvedValueOnce(row);
+    renderApp();
+    actionProbe.sidebar!.onFork(session("source-1"));
+    await settle();
+    renderApp();
+    expect(actionProbe.sidebar!.sessions.map((item) => item.id)).toEqual([
+      row.id,
+    ]);
+  }
+
+  /** Opens the delete dialog for the row and confirms it. */
+  function confirmDelete(row: AgentSession): void {
+    actionProbe.sidebar!.onDelete(row);
+    renderApp();
+    expect(actionProbe.deleteDialog!.session.id).toBe(row.id);
+    actionProbe.deleteDialog!.onConfirm();
+  }
+
+  it("drops the row before the backend delete settles, and keeps it gone", async () => {
+    // The reported lag: the row stayed in the sidebar until close, broker lookup and
+    // delete had each walked the CLI, because only the runtime's own event removed
+    // it. The confirm now removes it first and the event that follows is a no-op.
+    const row = session("session-1");
+    const removal = deferred<void>();
+    actionProbe.deleteSession.mockReturnValueOnce(removal.promise);
+
+    await seedRow(row);
+    confirmDelete(row);
+
+    // The render right after the click already shows the sidebar without the row,
+    // and the backend has not even been asked yet -- the delete is still behind
+    // resolveSessionId. The detail pane left with the selection.
+    const markup = renderApp();
+    expect(actionProbe.sidebar!.sessions).toEqual([]);
+    expect(actionProbe.sidebar!.selectedId).toBeNull();
+    expect(actionProbe.deleteDialog).toBeNull();
+    expect(markup).toContain("선택된 Gajae 세션이 없습니다");
+    expect(actionProbe.deleteSession).not.toHaveBeenCalled();
+
+    await settle();
+    expect(actionProbe.deleteSession).toHaveBeenCalledWith(row.id);
+
+    removal.resolve();
+    await settle();
+    const settled = renderApp();
+    expect(actionProbe.sidebar!.sessions).toEqual([]);
+    expect(settled).not.toContain("app-error");
+  });
+
+  it("puts the row and the selection back when the backend delete fails", async () => {
+    const row = session("session-1");
+    const removal = deferred<void>();
+    actionProbe.deleteSession.mockReturnValueOnce(removal.promise);
+
+    await seedRow(row);
+    confirmDelete(row);
+    renderApp();
+    expect(actionProbe.sidebar!.sessions).toEqual([]);
+
+    removal.reject(new Error("세션을 지우지 못했습니다"));
+    await settle();
+    expect(actionProbe.deleteSession).toHaveBeenCalledWith(row.id);
+    const markup = renderApp();
+
+    expect(actionProbe.sidebar!.sessions.map((item) => item.id)).toEqual([
+      row.id,
+    ]);
+    expect(actionProbe.sidebar!.selectedId).toBe(row.id);
+    expect(actionProbe.stateChanges).toHaveBeenCalledWith(
+      "세션을 지우지 못했습니다",
+    );
+    // The error is what the app-error bar renders, and the detail pane is back.
+    expect(markup).toContain("세션을 지우지 못했습니다");
+    expect(markup).toContain(row.title);
   });
 });

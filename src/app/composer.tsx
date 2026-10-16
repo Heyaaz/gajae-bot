@@ -3,16 +3,21 @@ import type { AgentCommand, AgentConfigOption, ImageAttachment, MessageInput } f
 import {
   appendPendingRequest,
   composerQueuePreview,
+  consumeQueuePullKey,
   droppedImageAttachments,
+  IME_FOLLOWUP_WINDOW_MS,
   imeCommitSubmits,
   isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
   parkDraft,
+  pullQueuedRequest,
   releaseRequests,
   resolveModelPreset,
   restoreDraft,
+  restorePulledDraft,
+  withoutReleasedRequest,
 } from "../composer-utils";
-import type { PendingRequest } from "../composer-utils";
+import type { PendingRequest, QueuePullTarget } from "../composer-utils";
 import {
   ArrowUp,
   Check,
@@ -163,6 +168,132 @@ export function FastTierControls({
  */
 export function selectedCommandDraft(name: string): string {
   return `/${name} `;
+}
+
+/**
+ * The composer state one Enter keydown is decided against, and nothing else the
+ * textarea's keydown handler deals with.
+ *
+ * The Enter paths are split out of that handler so the contract -- including the
+ * Shift+Enter newline, which has to leave the keydown to the textarea -- can be
+ * driven directly in tests the way the sidebar's Escape consumer is.
+ */
+export interface ComposerEnterEvent {
+  key: string;
+  /** Shift+Enter is always a newline, never a submit. */
+  shiftKey: boolean;
+  /** Any of the signals the Korean IME raises while its last syllable is open. */
+  composing: boolean;
+  /** When the last composition commit landed, in `performance.now()` time. */
+  compositionEndedAt: number;
+  /** `performance.now()` for this keydown. */
+  now: number;
+  /** The textarea holds nothing but whitespace. */
+  draftEmpty: boolean;
+  /** The slash-command palette is open and owns a settled Enter. */
+  paletteOpen: boolean;
+}
+
+export interface ComposerEnterEffects {
+  preventDefault: () => void;
+  /** Send the draft, or hold it behind the queue -- everything Enter means. */
+  submit: () => void;
+  /** Hold this Enter until the composition it landed in commits. */
+  arm: (at: number) => void;
+  /** Forget an armed Enter so a later commit cannot submit on its behalf. */
+  disarm: () => void;
+  /** Submit once the frame that ends the current composition has run. */
+  defer: () => void;
+}
+
+/**
+ * Apply one Enter keydown to the composer, returning whether it was consumed.
+ *
+ * Shift+Enter is the one path that is never consumed: it leaves the keydown
+ * un-prevented so the textarea inserts the newline and the autosize picks up the
+ * taller draft. That has to hold mid-composition too -- the IME delivers a plain
+ * Enter while the final syllable is still open, and treating that same signal as a
+ * submit on Shift+Enter queued the text the user was only making a line break in.
+ * An Enter armed by an earlier keypress is dropped here as well: the commit that
+ * follows this keystroke is the IME closing *this* line, not finishing that submit.
+ *
+ * A plain Enter keeps its two IME paths (arm now, submit from the commit; submit
+ * from the follow-up keydown right after a commit) and its two settled meanings
+ * (the palette's selection, or send/hold depending on the turn).
+ */
+export function handleComposerEnter(
+  event: ComposerEnterEvent,
+  effects: ComposerEnterEffects,
+): boolean {
+  if (event.key !== "Enter") return false;
+  if (event.shiftKey) {
+    effects.disarm();
+    return false;
+  }
+  // macOS Korean IME emits Enter while the final syllable is still composing.
+  // Treating that keydown as submit sends the full sentence and then the last
+  // syllable again as a second steer (for example "steer 테스트" + "트"), so the
+  // submission waits for the IME to commit. It is armed here and fired from
+  // compositionend, which is the first moment the final text is readable.
+  if (event.composing) {
+    effects.preventDefault();
+    // An empty draft has nothing left to compose, so this is a real empty
+    // submit -- the gesture that interrupts the run and releases the queue.
+    if (event.draftEmpty) {
+      effects.disarm();
+      effects.submit();
+      return true;
+    }
+    effects.arm(event.now);
+    return true;
+  }
+  // One physical Enter can reach the handler twice around a commit: once while
+  // the composition still owns it (armed above) and once after the commit has
+  // landed. Both are the same submission, so the second only defers to the frame
+  // the commit scheduled.
+  if (event.now - event.compositionEndedAt < IME_FOLLOWUP_WINDOW_MS) {
+    effects.preventDefault();
+    if (!event.draftEmpty) effects.defer();
+    return true;
+  }
+  // The palette selects its highlighted command rather than sending the query.
+  if (event.paletteOpen) return false;
+  effects.preventDefault();
+  effects.submit();
+  return true;
+}
+
+export interface QueueChipProps {
+  entry: PendingRequest;
+  onPull: () => void;
+  onDiscard: () => void;
+}
+
+/**
+ * One held request and its two gestures.
+ *
+ * The chip body pulls the request back into the draft, where the exact text can be
+ * edited or sent on its own; the × beside it discards that one entry. `type` is
+ * explicit on both: the composer is a form, so a bare button here would submit the
+ * draft the user is trying to take a request out of.
+ */
+export function QueueChip({ entry, onPull, onDiscard }: QueueChipProps) {
+  return (
+    <span className={`composer-queue-item composer-queue-item--${entry.mode}`}>
+      <button type="button" className="composer-queue-pull" onClick={onPull}>
+        <em>{entry.mode === "steer" ? "즉시" : "대기"}</em>
+        <span className="composer-queue-text">{entry.text}</span>
+      </button>
+      <button
+        type="button"
+        className="composer-queue-discard"
+        aria-label="대기 항목 버리기"
+        onClick={onDiscard}
+      >
+        <X size={10} />
+      </button>
+    </span>
+  );
 }
 
 export interface ComposerProps {
@@ -593,6 +724,52 @@ export function Composer({
     }
   }, [onFlushQueued, onSend, running]);
 
+  // A pull takes one held request back into the draft the user is editing. The
+  // queue is written through its ref first for the same reason the release loop
+  // does it: the next gesture must see what this one has already removed.
+  function pullQueuedEntry(target: QueuePullTarget): void {
+    // A release in flight is handing entries over one at a time from this same
+    // queue, so a pull beside it would race that loop for the entry it claimed.
+    if (releasingRef.current) return;
+    const pulled = pullQueuedRequest(pendingQueueRef.current, target);
+    if (!pulled) return;
+    pendingQueueRef.current = pulled.pending;
+    setPendingQueue(pulled.pending);
+    const restored = restorePulledDraft(
+      {
+        value: valueRef.current,
+        images: imagesRef.current,
+        files: filesRef.current,
+      },
+      pulled.entry,
+    );
+    setValue(restored.value);
+    setImages(restored.images);
+    setFiles(restored.files);
+    // The draft just stopped being the history entry the cursor was on, so the
+    // cursor leaves history mode the way an edit makes it.
+    setHistoryCursor(-1);
+    historyDraftRef.current = "";
+    // The gesture may have been a click on a chip, which pulled focus onto that
+    // button. The pulled text is the thing to keep editing, so the caret goes to
+    // its end after the state has flushed.
+    requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(restored.value.length, restored.value.length);
+    });
+  }
+
+  // A chip's × discards exactly that entry. Same guard as a pull: the release
+  // loop may be awaiting a send for an entry it has already claimed.
+  function discardQueuedEntry(id: string): void {
+    if (releasingRef.current) return;
+    const remaining = withoutReleasedRequest(pendingQueueRef.current, id);
+    pendingQueueRef.current = remaining;
+    setPendingQueue(remaining);
+  }
+
   // Held requests exist only because a turn was open. Once that turn ends they
   // are sent without waiting for another gesture -- otherwise the queue is
   // unreachable (submit() keeps appending while anything is held) and every later
@@ -873,48 +1050,57 @@ export function Composer({
       }
       return;
     }
-    // macOS Korean IME emits Enter while the final syllable is still composing.
-    // Treating that keydown as submit sends the full sentence and then the last
-    // syllable again as a second steer (for example "steer 테스트" + "트"), so the
-    // submission waits for the IME to commit. It is armed here and fired from
-    // compositionend, which is the first moment the final text is readable.
-    //
-    // This used to be a timer that submitted whatever the textarea held 80ms
-    // later. That sent text the user typed *after* the Enter, with no submit of
-    // their own -- an uninvited second submission on top of their real one.
-    if (
-      event.key === "Enter" &&
-      (event.nativeEvent.isComposing ||
-        event.keyCode === 229 ||
-        composingRef.current)
-    ) {
-      event.preventDefault();
-      // An empty draft has nothing left to compose, so this is a real empty
-      // submit -- the gesture that interrupts the run and releases the queue.
-      if (!(textareaRef.current?.value ?? value).trim()) {
-        submitAfterCompositionRef.current = false;
-        submit();
-        return;
-      }
-      submitAfterCompositionRef.current = true;
-      enterArmedAtRef.current = performance.now();
+    // Pulling a held request back is decided before anything else that watches the
+    // arrow keys, and only consumes the keydown when a pull can actually happen.
+    const pull = consumeQueuePullKey(event, {
+      pending: pendingQueueRef.current,
+      releasing: releasingRef.current,
+    });
+    if (pull) {
+      pullQueuedEntry(pull);
       return;
     }
+    const textarea = event.currentTarget;
+    // Every Enter path that can submit is owned by handleComposerEnter, including
+    // the Shift+Enter newline it refuses to consume. Its doc carries the IME story
+    // that used to sit inline here.
     if (
-      event.key === "Enter" &&
-      performance.now() - compositionEndedAtRef.current < 100
-    ) {
-      event.preventDefault();
-      if (!(textareaRef.current?.value ?? value).trim()) return;
-      if (!compositionSubmitScheduledRef.current) {
-        compositionSubmitScheduledRef.current = true;
-        requestAnimationFrame(() => {
-          compositionSubmitScheduledRef.current = false;
-          submit();
-        });
-      }
+      handleComposerEnter(
+        {
+          key: event.key,
+          shiftKey: event.shiftKey,
+          composing:
+            event.nativeEvent.isComposing ||
+            event.keyCode === 229 ||
+            composingRef.current,
+          compositionEndedAt: compositionEndedAtRef.current,
+          now: performance.now(),
+          draftEmpty: !textarea.value.trim(),
+          paletteOpen: matchingCommands.length > 0,
+        },
+        {
+          preventDefault: () => event.preventDefault(),
+          submit,
+          arm: (at) => {
+            submitAfterCompositionRef.current = true;
+            enterArmedAtRef.current = at;
+          },
+          disarm: () => {
+            submitAfterCompositionRef.current = false;
+            enterArmedAtRef.current = 0;
+          },
+          defer: () => {
+            if (compositionSubmitScheduledRef.current) return;
+            compositionSubmitScheduledRef.current = true;
+            requestAnimationFrame(() => {
+              compositionSubmitScheduledRef.current = false;
+              submit();
+            });
+          },
+        },
+      )
+    )
       return;
-    }
     if (matchingCommands.length > 0) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -940,7 +1126,6 @@ export function Composer({
       }
     }
     const history = promptHistoryRef.current.get(sessionId) ?? [];
-    const textarea = event.currentTarget;
     const plainArrow =
       !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey;
     if (
@@ -991,10 +1176,6 @@ export function Composer({
         );
       }
       return;
-    }
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      submit();
     }
   }
 
@@ -1062,16 +1243,17 @@ export function Composer({
           <strong>{pendingQueue.length}개 대기 중</strong>
           <span className="composer-queue-items">
             {pendingQueue.map((entry) => (
-              <span
+              <QueueChip
                 key={entry.id}
-                className={`composer-queue-item composer-queue-item--${entry.mode}`}
-              >
-                <em>{entry.mode === "steer" ? "즉시" : "대기"}</em>
-                {entry.text}
-              </span>
+                entry={entry}
+                onPull={() => pullQueuedEntry({ id: entry.id })}
+                onDiscard={() => discardQueuedEntry(entry.id)}
+              />
             ))}
           </span>
-          <small>Enter를 한 번 더 누르면 바로 실행합니다</small>
+          <small>
+            Enter 한 번 더 = 바로 실행 · ⌥↑/⌥↓ = 꺼내기 · 항목 클릭 = 꺼내기
+          </small>
         </span>
       )}
       {draftUrl && <LinkPreviewCard url={draftUrl} compact />}

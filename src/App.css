@@ -2375,12 +2375,46 @@
 .composer-queue-item {
   display: flex;
   min-width: 0;
-  gap: 6px;
+  align-items: center;
+  gap: 4px;
   overflow: hidden;
   color: var(--text-secondary);
   font-size: 10.5px;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* The chip body is the pull-back control and has to be a real button for that,
+   which keeps the × beside it a separate one rather than nested inside it. */
+.composer-queue-pull {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.composer-queue-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-queue-discard {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 0;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.composer-queue-discard:hover {
+  color: var(--text-secondary);
 }
 .composer-queue-item em {
   flex: 0 0 auto;

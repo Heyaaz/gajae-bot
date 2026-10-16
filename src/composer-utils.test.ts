@@ -13,7 +13,9 @@ import {
   IME_COMMIT_WINDOW_MS,
   imeCommitSubmits,
   nextRequestToRelease,
+  pullQueuedRequest,
   releaseRequests,
+  restorePulledDraft,
   withoutReleasedRequest,
   droppedImageAttachments,
   readableToolText,
@@ -277,6 +279,112 @@ describe("appendPendingRequest", () => {
     expect(
       appendPendingRequest(once, request("b", "같은 말")).map((e) => e.id),
     ).toEqual(["a", "b"]);
+  });
+});
+
+describe("queue pull-back", () => {
+  const held = (
+    id: string,
+    text: string,
+    overrides: Partial<PendingRequest> = {},
+  ): PendingRequest => ({
+    id,
+    text,
+    mode: "followUp",
+    label: "Queued",
+    images: [],
+    files: [],
+    ...overrides,
+  });
+
+  it("takes the requested end of the queue and keeps the rest in order", () => {
+    const pending = [held("a", "첫 지시"), held("b", "둘째 지시")];
+    expect(pullQueuedRequest(pending, "newest")?.entry.id).toBe("b");
+    expect(
+      pullQueuedRequest(pending, "newest")?.pending.map((entry) => entry.id),
+    ).toEqual(["a"]);
+    expect(pullQueuedRequest(pending, "oldest")?.entry.id).toBe("a");
+    expect(
+      pullQueuedRequest(pending, "oldest")?.pending.map((entry) => entry.id),
+    ).toEqual(["b"]);
+    expect(
+      pullQueuedRequest(pending, { id: "b" })?.pending.map((entry) => entry.id),
+    ).toEqual(["a"]);
+  });
+
+  it("reports nothing to pull for an empty queue or a stale id", () => {
+    expect(pullQueuedRequest([], "newest")).toBeUndefined();
+    expect(pullQueuedRequest([held("a", "첫 지시")], { id: "gone" })).toBeUndefined();
+  });
+
+  it("keeps the draft the user already typed above the pulled text", () => {
+    const restored = restorePulledDraft(
+      { value: "이미 치던 글", images: [], files: [] },
+      held("a", "꺼낸 지시"),
+    );
+    expect(restored.value).toBe("이미 치던 글\n꺼낸 지시");
+  });
+
+  it("spells a pulled steer out again at the head of the draft", () => {
+    // The queue stores the body with `/steer` already stripped, and the submit path
+    // only reads that prefix at the head of the draft, so this is the difference
+    // between re-submitting a steer and silently downgrading it to a follow-up.
+    const restored = restorePulledDraft(
+      { value: "이미 치던 글", images: [], files: [] },
+      held("a", "고쳐줘", { mode: "steer", label: "Steer" }),
+    );
+    expect(restored.value).toBe("/steer 이미 치던 글\n고쳐줘");
+    expect(composerQueuePreview(restored.value, [], [])).toEqual({
+      text: "이미 치던 글\n고쳐줘",
+      mode: "steer",
+    });
+
+    const empty = restorePulledDraft(
+      { value: "", images: [], files: [] },
+      held("a", "고쳐줘", { mode: "steer", label: "Steer" }),
+    );
+    expect(empty.value).toBe("/steer 고쳐줘");
+  });
+
+  it("does not stack a second steer prefix on a draft that has one", () => {
+    const restored = restorePulledDraft(
+      { value: "/steer 이미 치던 글", images: [], files: [] },
+      held("a", "고쳐줘", { mode: "steer", label: "Steer" }),
+    );
+    expect(restored.value).toBe("/steer 이미 치던 글\n고쳐줘");
+  });
+
+  it("brings the entry's attachments back with its text", () => {
+    const restored = restorePulledDraft(
+      { value: "", images: [], files: [] },
+      held("a", "첨부 확인", {
+        images: [
+          { id: "i1", name: "shot.png", mimeType: "image/png", data: "AAAA" },
+        ],
+        files: [
+          {
+            id: "f1",
+            name: "notes.md",
+            mimeType: "text/markdown",
+            size: 12,
+            token: "token-1",
+          },
+        ],
+      }),
+    );
+    expect(restored.images.map((image) => image.id)).toEqual(["i1"]);
+    expect(restored.files.map((file) => file.id)).toEqual(["f1"]);
+  });
+
+  it("discards only the entry a chip's × addresses", () => {
+    const pending = [
+      held("a", "첫 지시"),
+      held("b", "둘째 지시"),
+      held("c", "셋째 지시"),
+    ];
+    expect(withoutReleasedRequest(pending, "b").map((entry) => entry.id)).toEqual(
+      ["a", "c"],
+    );
   });
 });
 

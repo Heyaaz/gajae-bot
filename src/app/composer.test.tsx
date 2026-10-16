@@ -2,15 +2,29 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageInput } from "../backend/types";
-import { isImmediateSdkCommandSubmission } from "../composer-utils";
+import {
+  consumeQueuePullKey,
+  isImmediateSdkCommandSubmission,
+  pullQueuedRequest,
+  restorePulledDraft,
+  withoutReleasedRequest,
+} from "../composer-utils";
+import type { PendingRequest } from "../composer-utils";
 import {
   Composer,
   FastTierControls,
   fastTierBusy,
+  handleComposerEnter,
+  QueueChip,
   requestFastTier,
   selectedCommandDraft,
 } from "./composer";
-import type { ComposerProps, FastTierControlsProps } from "./composer";
+import type {
+  ComposerEnterEffects,
+  ComposerEnterEvent,
+  ComposerProps,
+  FastTierControlsProps,
+} from "./composer";
 
 const FAST = {
   name: "fast",
@@ -37,6 +51,9 @@ function render(props: Partial<FastTierControlsProps> = {}): string {
 interface TestElement {
   props: {
     children?: unknown;
+    className?: string;
+    type?: string;
+    "aria-label"?: string;
     onClick?: () => void;
   };
 }
@@ -261,5 +278,289 @@ describe("Composer turn surface", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+interface TestKeyEvent {
+  key: string;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  defaultPrevented: boolean;
+  preventDefault: () => void;
+}
+
+/**
+ * A keydown a handler can be driven with. `defaultPrevented` is the field that
+ * decides whether the textarea inserts its own newline, so the fake carries it the
+ * way the browser would.
+ */
+function keyEvent(
+  key: string,
+  overrides: Partial<
+    Omit<TestKeyEvent, "key" | "preventDefault" | "defaultPrevented">
+  > = {},
+): TestKeyEvent {
+  const event: TestKeyEvent = {
+    key,
+    shiftKey: false,
+    altKey: false,
+    metaKey: false,
+    ctrlKey: false,
+    defaultPrevented: false,
+    preventDefault: () => {
+      event.defaultPrevented = true;
+    },
+    ...overrides,
+  };
+  return event;
+}
+
+function enterEvent(
+  overrides: Partial<ComposerEnterEvent> = {},
+): ComposerEnterEvent {
+  return {
+    key: "Enter",
+    shiftKey: false,
+    composing: false,
+    compositionEndedAt: 0,
+    now: 10_000,
+    draftEmpty: false,
+    paletteOpen: false,
+    ...overrides,
+  };
+}
+
+/**
+ * One Enter press: the event, the composer state it lands on, and the effects it
+ * reaches for. `submit` is the only path from an Enter to `onSend` or to the
+ * pending queue, so a submit spy that stays empty covers both.
+ */
+function enterPress(overrides: Partial<ComposerEnterEvent> = {}) {
+  const key = keyEvent("Enter", { shiftKey: overrides.shiftKey ?? false });
+  const input = enterEvent(overrides);
+  const effects = {
+    preventDefault: () => key.preventDefault(),
+    submit: vi.fn(),
+    arm: vi.fn(),
+    disarm: vi.fn(),
+    defer: vi.fn(),
+  } satisfies ComposerEnterEffects;
+  return { key, input, effects };
+}
+
+function heldRequest(
+  id: string,
+  text: string,
+  overrides: Partial<PendingRequest> = {},
+): PendingRequest {
+  return {
+    id,
+    text,
+    mode: "followUp",
+    label: "Queued",
+    images: [],
+    files: [],
+    ...overrides,
+  };
+}
+
+describe("Composer Enter paths", () => {
+  it("leaves Shift+Enter during composition to the textarea", () => {
+    // The Korean IME reports the same composing Enter for Shift+Enter as for the
+    // submit gesture, and the commit that follows it fired the armed submit: the
+    // line break queued the draft instead of breaking the line.
+    const { key, input, effects } = enterPress({
+      shiftKey: true,
+      composing: true,
+    });
+    expect(handleComposerEnter(input, effects)).toBe(false);
+    expect(effects.submit).not.toHaveBeenCalled();
+    expect(effects.arm).not.toHaveBeenCalled();
+    // Anything an earlier Enter armed goes with it: the commit that ends this
+    // composition is the IME closing the new line, not finishing that submit.
+    expect(effects.disarm).toHaveBeenCalled();
+    // The default is what inserts the \n into the textarea, so it must survive.
+    expect(key.defaultPrevented).toBe(false);
+
+    // The same key on an empty draft is not the interrupt-and-release gesture
+    // either: that plain-Enter meaning would have released the whole queue.
+    const empty = enterPress({
+      shiftKey: true,
+      composing: true,
+      draftEmpty: true,
+    });
+    expect(handleComposerEnter(empty.input, empty.effects)).toBe(false);
+    expect(empty.effects.submit).not.toHaveBeenCalled();
+    expect(empty.key.defaultPrevented).toBe(false);
+  });
+
+  it("leaves Shift+Enter in the frame after a commit to the textarea", () => {
+    const { key, input, effects } = enterPress({
+      shiftKey: true,
+      composing: false,
+      compositionEndedAt: 9_950,
+    });
+    expect(handleComposerEnter(input, effects)).toBe(false);
+    expect(effects.submit).not.toHaveBeenCalled();
+    expect(effects.arm).not.toHaveBeenCalled();
+    expect(effects.defer).not.toHaveBeenCalled();
+    expect(key.defaultPrevented).toBe(false);
+  });
+
+  it("still submits a plain Enter and still waits on the IME commit", () => {
+    const settled = enterPress();
+    expect(handleComposerEnter(settled.input, settled.effects)).toBe(true);
+    expect(settled.effects.submit).toHaveBeenCalledTimes(1);
+    expect(settled.key.defaultPrevented).toBe(true);
+
+    const composing = enterPress({ composing: true });
+    expect(handleComposerEnter(composing.input, composing.effects)).toBe(true);
+    expect(composing.effects.arm).toHaveBeenCalledWith(10_000);
+    expect(composing.effects.submit).not.toHaveBeenCalled();
+
+    const followUp = enterPress({ compositionEndedAt: 9_950 });
+    expect(handleComposerEnter(followUp.input, followUp.effects)).toBe(true);
+    expect(followUp.effects.defer).toHaveBeenCalled();
+    expect(followUp.effects.submit).not.toHaveBeenCalled();
+  });
+
+  it("keeps the empty Enter as the interrupt-and-release gesture", () => {
+    const { input, effects } = enterPress({ composing: true, draftEmpty: true });
+    expect(handleComposerEnter(input, effects)).toBe(true);
+    expect(effects.disarm).toHaveBeenCalled();
+    expect(effects.submit).toHaveBeenCalledTimes(1);
+    expect(effects.arm).not.toHaveBeenCalled();
+  });
+
+  it("leaves a settled Enter to the command palette while it is open", () => {
+    const { key, input, effects } = enterPress({ paletteOpen: true });
+    expect(handleComposerEnter(input, effects)).toBe(false);
+    expect(effects.submit).not.toHaveBeenCalled();
+    expect(key.defaultPrevented).toBe(false);
+  });
+});
+
+describe("Composer queue pull-back", () => {
+  const draft = () => ({ value: "", images: [], files: [] });
+
+  it("takes the newest entry on Option+ArrowUp and puts its text in the draft", () => {
+    const pending = [heldRequest("a", "첫 지시"), heldRequest("b", "둘째 지시")];
+    const event = keyEvent("ArrowUp", { altKey: true });
+    const target = consumeQueuePullKey(event, { pending, releasing: false });
+    expect(target).toBe("newest");
+    expect(event.defaultPrevented).toBe(true);
+    const pulled = pullQueuedRequest(pending, target!);
+    expect(pulled?.pending.map((entry) => entry.id)).toEqual(["a"]);
+    expect(restorePulledDraft(draft(), pulled!.entry).value).toBe("둘째 지시");
+  });
+
+  it("takes the oldest entry on Option+ArrowDown", () => {
+    const pending = [heldRequest("a", "첫 지시"), heldRequest("b", "둘째 지시")];
+    const event = keyEvent("ArrowDown", { altKey: true });
+    const target = consumeQueuePullKey(event, { pending, releasing: false });
+    expect(target).toBe("oldest");
+    expect(event.defaultPrevented).toBe(true);
+    const pulled = pullQueuedRequest(pending, target!);
+    expect(pulled?.pending.map((entry) => entry.id)).toEqual(["b"]);
+    expect(restorePulledDraft(draft(), pulled!.entry).value).toBe("첫 지시");
+  });
+
+  it("re-spells a pulled steer at the head of the draft", () => {
+    const pending = [
+      heldRequest("a", "고쳐줘", { mode: "steer", label: "Steer" }),
+    ];
+    const event = keyEvent("ArrowDown", { altKey: true });
+    const target = consumeQueuePullKey(event, { pending, releasing: false });
+    const pulled = pullQueuedRequest(pending, target!);
+    expect(
+      restorePulledDraft(
+        { value: "이미 치던 글", images: [], files: [] },
+        pulled!.entry,
+      ).value,
+    ).toBe("/steer 이미 치던 글\n고쳐줘");
+  });
+
+  it("keeps the native Option+Arrow caret movement over an empty queue", () => {
+    const event = keyEvent("ArrowUp", { altKey: true });
+    expect(
+      consumeQueuePullKey(event, { pending: [], releasing: false }),
+    ).toBeUndefined();
+    expect(event.defaultPrevented).toBe(false);
+
+    // Option+Shift+Arrow selects text, so that chord stays native too.
+    const selection = keyEvent("ArrowUp", { altKey: true, shiftKey: true });
+    expect(
+      consumeQueuePullKey(selection, {
+        pending: [heldRequest("a", "첫 지시")],
+        releasing: false,
+      }),
+    ).toBeUndefined();
+    expect(selection.defaultPrevented).toBe(false);
+  });
+
+  it("pulls nothing while a release is in flight", () => {
+    const event = keyEvent("ArrowDown", { altKey: true });
+    expect(
+      consumeQueuePullKey(event, {
+        pending: [heldRequest("a", "첫 지시")],
+        releasing: true,
+      }),
+    ).toBeUndefined();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it("discards only the entry a chip's × addresses", () => {
+    const pulls: string[] = [];
+    const discards: string[] = [];
+    const chip = QueueChip({
+      entry: heldRequest("b", "둘째 지시"),
+      onPull: () => pulls.push("pull"),
+      onDiscard: () => discards.push("discard"),
+    }) as unknown as TestElement;
+    const [pullButton, discardButton] = childButtons(chip);
+    expect(pullButton?.props.type).toBe("button");
+    expect(discardButton?.props.type).toBe("button");
+    expect(discardButton?.props["aria-label"]).toBe("대기 항목 버리기");
+
+    discardButton?.props.onClick!();
+    expect(discards).toEqual(["discard"]);
+    expect(pulls).toEqual([]);
+
+    // The real component renders the affordances the smoke tests and the user
+    // actually find: the chip class it always had, its text, and the labelled ×.
+    const markup = renderToStaticMarkup(
+      createElement(QueueChip, {
+        entry: heldRequest("b", "둘째 지시"),
+        onPull: () => undefined,
+        onDiscard: () => undefined,
+      }),
+    );
+    expect(markup).toContain(
+      'class="composer-queue-item composer-queue-item--followUp"',
+    );
+    expect(markup).toContain("둘째 지시");
+    expect(markup).toContain('aria-label="대기 항목 버리기"');
+
+    // And the list op the composer runs for that button keeps everything else.
+    expect(
+      withoutReleasedRequest(
+        [heldRequest("a", "첫 지시"), heldRequest("b", "둘째 지시")],
+        "b",
+      ).map((entry) => entry.id),
+    ).toEqual(["a"]);
+  });
+
+  it("pulls the entry a chip's body stands for", () => {
+    const pulls: string[] = [];
+    const chip = QueueChip({
+      entry: heldRequest("b", "둘째 지시"),
+      onPull: () => pulls.push("pull"),
+      onDiscard: () => pulls.push("discard"),
+    }) as unknown as TestElement;
+    const [pullButton] = childButtons(chip);
+    pullButton?.props.onClick!();
+    expect(pulls).toEqual(["pull"]);
   });
 });

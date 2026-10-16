@@ -422,22 +422,7 @@ export default function App() {
           ),
         );
       } else if (event.type === "session.deleted") {
-        setSessions((current) => {
-          const remaining = current.filter(
-            (session) => session.id !== event.sessionId,
-          );
-          setSelectedId((selected) =>
-            selected === event.sessionId
-              ? (remaining[0]?.id ?? null)
-              : selected,
-          );
-          return remaining;
-        });
-        setTranscripts((current) => {
-          const next = { ...current };
-          delete next[event.sessionId];
-          return next;
-        });
+        forgetSession(event.sessionId);
       } else if (event.type === "transcript.appended") {
         setTranscripts((current) => {
           const items = current[event.item.sessionId];
@@ -1132,11 +1117,61 @@ export default function App() {
     }
   }
 
+  /**
+   * Everything the shell holds for a session that is gone: its row, its cached
+   * transcript, and a selection still pointing at it.
+   *
+   * The backend's `session.deleted` event and the optimistic delete the user
+   * confirms both go through here, so the row leaves the sidebar the same way
+   * whichever one arrives first -- and the event that follows an optimistic delete
+   * finds nothing left to move.
+   */
+  function forgetSession(sessionId: string): void {
+    setSessions((current) => {
+      const remaining = current.filter((session) => session.id !== sessionId);
+      setSelectedId((selected) =>
+        selected === sessionId ? (remaining[0]?.id ?? null) : selected,
+      );
+      return remaining;
+    });
+    setTranscripts((current) => {
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+  }
+
   async function deleteSession(sessionId: string): Promise<void> {
+    // The user is the first to know: the backend's delete walks close, broker
+    // lookup and delete one CLI call at a time, and the row used to sit in the
+    // sidebar for all of it. Drop the row now, keep the copies needed to take it
+    // back, and let the `session.deleted` event that follows be a no-op.
+    const removed = sessions.find((session) => session.id === sessionId) ?? null;
+    const selectionBefore = selectedId;
+    // What dropping the selected row will move the selection to; the delete only
+    // restores the old selection if it is still on this spot when the backend says
+    // no, so a selection the user made meanwhile stands.
+    const selectionAfter =
+      selectionBefore === sessionId
+        ? (sessions.find((session) => session.id !== sessionId)?.id ?? null)
+        : selectionBefore;
+    forgetSession(sessionId);
+    setDeleteCandidate(null);
     try {
       await backend.deleteSession(await resolveSessionId(sessionId));
-      setDeleteCandidate(null);
     } catch (error) {
+      // The row never really left. Put it back -- unless it reappeared on its own
+      // while the backend worked -- and undo the selection move this delete made.
+      if (removed) {
+        setSessions((current) =>
+          current.some((session) => session.id === removed.id)
+            ? current
+            : [removed, ...current],
+        );
+      }
+      setSelectedId((current) =>
+        current === selectionAfter ? selectionBefore : current,
+      );
       setAppError(error instanceof Error ? error.message : String(error));
     }
   }

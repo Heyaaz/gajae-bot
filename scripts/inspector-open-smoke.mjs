@@ -1095,6 +1095,337 @@ function checkModelMenu(opened, scrolled) {
   return failures
 }
 
+// The composer's Enter is owned by one handler, and one branch of it is a refusal:
+// Shift+Enter has to reach the textarea un-prevented, or the draft has no way to grow a
+// line. That refusal is what a queued request used to hide behind -- the same handler
+// submits a plain Enter by holding the request behind the open turn, and treating the
+// Shift+Enter signal as that submit queued the line break the user was only making. The
+// two halves are measured together here: the keydown that must not be claimed (plain,
+// mid-composition, and inside the follow-up window a commit leaves behind), the keydown
+// that must still be claimed, and the two ways a held request comes back out -- ⌥↑ pulls
+// it into the draft, the chip's × throws it away without touching what is being typed.
+// A handler-level test covers the decision; only a real renderer covers the keydown path
+// the decision is reached through, the queue strip it renders, and whether the composer
+// reads a live turn at the moment the gesture lands.
+//
+// The turn the queue needs is the rail's own running session. The mock's streamed replies
+// end after ~1.5s of chunks, which is shorter than this sequence, and the queue releases
+// itself the moment a turn ends -- so a turn that is only starting is no basis for it.
+const RUNNING_SESSION_TITLE = 'Codex router cleanup'
+
+const composerGesturesProbe = `(async (runningTitle) => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 80 && !document.querySelector('.session-row'); i += 1) await wait(100);
+  const row = [...document.querySelectorAll('.session-row')].find(
+    (candidate) => (candidate.textContent || '').includes(runningTitle),
+  );
+  if (!row) return { error: 'the running session (' + runningTitle + ') is not in the rail' };
+  row.click();
+  let textarea = null;
+  for (let i = 0; i < 80; i += 1) {
+    textarea = document.querySelector('.composer textarea');
+    if (textarea) break;
+    await wait(100);
+  }
+  if (!textarea) return { error: 'the composer never rendered for ' + runningTitle };
+
+  const stopButton = () => document.querySelector('.composer .send-button--stop');
+  const sendButton = () => document.querySelector('.composer .send-button');
+  // Whether a turn is open is read from the same slot the user reads it from: the stop
+  // button only exists while the draft is empty, and the arrow beside a draft only says
+  // 이어서 보내기 while a turn is open.
+  const turnLive = () => {
+    const stop = stopButton();
+    if (stop) return !stop.disabled;
+    const send = sendButton();
+    return !!send && send.title === '이어서 보내기';
+  };
+  for (let i = 0; i < 80 && !turnLive(); i += 1) await wait(100);
+  if (!turnLive()) {
+    return { error: 'the composer does not read a running turn for ' + runningTitle };
+  }
+  await wait(300);
+
+  const chips = () => [...document.querySelectorAll('.composer-queue-item')];
+  const chipTexts = () => chips().map((chip) => {
+    const label = chip.querySelector('.composer-queue-text');
+    return label ? label.textContent : '';
+  });
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+  const setDraft = (text) => {
+    textarea.focus();
+    setter.call(textarea, text);
+    textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  };
+  // Every gesture is a real keydown on the textarea, and what the handlers did with it is
+  // read from the event itself: dispatchEvent returns false only when a listener prevented
+  // the default, and the document-level bubble listener runs after React's root handler has
+  // had its say, so defaultPrevented is the composer's own answer and not the record
+  // of an unrelated listener.
+  const press = (init, key) => {
+    const event = new KeyboardEvent('keydown', Object.assign({
+      key: key || 'Enter',
+      bubbles: true,
+      cancelable: true,
+    }, init));
+    let defaultPrevented = null;
+    const record = (seen) => { defaultPrevented = seen.defaultPrevented; };
+    document.addEventListener('keydown', record);
+    const notCanceled = textarea.dispatchEvent(event);
+    document.removeEventListener('keydown', record);
+    return { notCanceled, defaultPrevented, live: turnLive() };
+  };
+  const state = () => ({
+    chips: chips().length,
+    chipTexts: chipTexts(),
+    draft: textarea.value,
+    live: turnLive(),
+  });
+
+  const texts = {
+    lineBreak: '줄바꿈은 요청이 아니다',
+    queued: '대기열에 들어갈 요청',
+    discarded: '버릴 요청',
+    kept: '버리기 전에 쓰던 초안',
+    ime: '조합 중에 누른 Enter',
+  };
+
+  setDraft('');
+  await wait(150);
+  const start = state();
+
+  // Shift+Enter, the three states the one branch has to cover. The composition one is the
+  // IME delivering a plain Enter for the newline; the last one is the window a commit
+  // leaves behind, so the commit and the keydown go out back to back -- the window is
+  // 100ms wide and anything in between would be testing a different state.
+  setDraft(texts.lineBreak);
+  await wait(150);
+  const drafted = state();
+  const shiftPlain = press({ shiftKey: true });
+  await wait(200);
+  const afterShiftPlain = state();
+  const shiftComposing = press({ shiftKey: true, isComposing: true });
+  await wait(200);
+  const afterShiftComposing = state();
+  textarea.dispatchEvent(
+    new CompositionEvent('compositionend', { bubbles: true, data: texts.lineBreak }),
+  );
+  const shiftAfterCommit = press({ shiftKey: true });
+  await wait(200);
+  const afterShiftCommit = state();
+
+  // The other side: a settled plain Enter still has to be claimed, which behind an open
+  // turn means the request is held and the draft lets go of the text.
+  setDraft(texts.queued);
+  await wait(150);
+  const plainEnter = press({});
+  await wait(300);
+  const afterPlain = state();
+
+  // ⌥↑ takes the newest held request back into the draft, so the chip has to be gone and
+  // its text has to be what is being edited again.
+  const pullKeydown = press({ altKey: true }, 'ArrowUp');
+  await wait(300);
+  const afterPull = state();
+
+  // The × beside a chip discards that chip alone, with a draft typed beside it -- so
+  // "the draft was left alone" is a fact about a non-empty composer rather than about an
+  // empty one that a discard could have emptied unnoticed.
+  setDraft(texts.discarded);
+  await wait(150);
+  press({});
+  await wait(300);
+  setDraft(texts.kept);
+  await wait(150);
+  const beforeDiscard = state();
+  const discardButton = document.querySelector('.composer-queue-discard');
+  if (discardButton) discardButton.click();
+  await wait(300);
+  const afterDiscard = state();
+
+  // An Enter pressed mid-composition submits from the commit that follows it, not from the
+  // keydown. Running that pair proves the composer's composition handlers are live in this
+  // renderer, which is what makes the follow-up-window keydown above a measurement of that
+  // window instead of of a handler that was never reached. The chip it holds is discarded
+  // again so the case leaves the queue as it found it.
+  textarea.dispatchEvent(
+    new CompositionEvent('compositionstart', { bubbles: true, data: texts.ime }),
+  );
+  setDraft(texts.ime);
+  await wait(150);
+  const imeComposingEnter = press({});
+  const imeBeforeCommit = state();
+  textarea.dispatchEvent(
+    new CompositionEvent('compositionend', { bubbles: true, data: texts.ime }),
+  );
+  await wait(300);
+  const afterImeCommit = state();
+  const imeDiscard = document.querySelector('.composer-queue-discard');
+  if (imeDiscard) imeDiscard.click();
+  await wait(250);
+
+  return {
+    sessionLabel: textarea.getAttribute('aria-label'),
+    texts,
+    start,
+    drafted,
+    shiftPlain,
+    afterShiftPlain,
+    shiftComposing,
+    afterShiftComposing,
+    shiftAfterCommit,
+    afterShiftCommit,
+    plainEnter,
+    afterPlain,
+    pullKeydown,
+    afterPull,
+    beforeDiscard,
+    afterDiscard,
+    imeComposingEnter,
+    imeBeforeCommit,
+    afterImeCommit,
+    final: state(),
+  };
+})(${JSON.stringify(RUNNING_SESSION_TITLE)})`
+
+function checkComposerGestures(result) {
+  if (result.error) return [`composer gestures: ${result.error}`]
+  const failures = []
+  const texts = result.texts
+
+  // The turn is the whole basis of the case: the queue releases itself the moment a turn
+  // ends, so a gesture landing after that would be measuring an empty composer rather than
+  // a held request. The three readings are the two renderings of the send slot -- the stop
+  // button while the draft is empty and the 이어서 보내기 arrow beside a draft -- so both
+  // are the state a gesture landed on, not a state assumed before the first one.
+  if (!result.start.live || !result.afterPull.live || !result.final.live) {
+    failures.push(
+      'composer gestures: the turn ended while the gestures ran (the queue releases itself when it does)',
+    )
+  }
+
+  // The three keydowns that must not be the composer's. `notCanceled` is the textarea's own
+  // answer; the draft is what a submit would have taken away, and a chip is what it would
+  // have left behind.
+  const shiftStates = [
+    ['plain', result.shiftPlain, result.afterShiftPlain],
+    ['mid-composition', result.shiftComposing, result.afterShiftComposing],
+    ['inside the commit follow-up window', result.shiftAfterCommit, result.afterShiftCommit],
+  ]
+  for (const [label, keydown, after] of shiftStates) {
+    if (!keydown.notCanceled || keydown.defaultPrevented === true) {
+      failures.push(
+        `composer gestures: Shift+Enter (${label}) left the keydown to the textarea ` +
+          `(dispatchEvent returned ${keydown.notCanceled}, defaultPrevented ${keydown.defaultPrevented})`,
+      )
+    }
+    if (after.chips !== result.start.chips) {
+      failures.push(
+        `composer gestures: Shift+Enter (${label}) queued ${after.chips} request(s) ` +
+          `(${JSON.stringify(after.chipTexts)}) instead of leaving the line break in the draft`,
+      )
+    }
+    if (after.draft !== texts.lineBreak) {
+      failures.push(
+        `composer gestures: Shift+Enter (${label}) changed the draft ` +
+          `(${JSON.stringify(texts.lineBreak)} -> ${JSON.stringify(after.draft)})`,
+      )
+    }
+  }
+
+  // The guard against the cheap fix, an Enter that stops being handled at all: the settled
+  // keydown has to be claimed, and behind an open turn claiming it means the request is
+  // held -- the chip with the typed text on it and the emptied draft together.
+  if (!result.plainEnter.defaultPrevented) {
+    failures.push(
+      'composer gestures: a plain Enter was left to the textarea instead of submitting the draft',
+    )
+  }
+  if (result.afterPlain.chips !== result.start.chips + 1 || result.afterPlain.chipTexts[0] !== texts.queued) {
+    failures.push(
+      `composer gestures: a plain Enter held ${JSON.stringify(result.afterPlain.chipTexts)} ` +
+        `instead of the submitted request`,
+    )
+  }
+  if (result.afterPlain.draft !== '') {
+    failures.push(
+      `composer gestures: a plain Enter left the submitted text in the draft ` +
+        `(${JSON.stringify(result.afterPlain.draft)})`,
+    )
+  }
+
+  // ⌥↑ pulls the newest held request out and into the draft. Consuming the keydown is part
+  // of it: the caret has nowhere to go while the queue is what is being reached for.
+  if (!result.pullKeydown.defaultPrevented) {
+    failures.push(
+      'composer gestures: Alt+ArrowUp was left to the textarea instead of pulling the queued request',
+    )
+  }
+  if (result.afterPull.chips !== result.start.chips) {
+    failures.push(
+      `composer gestures: Alt+ArrowUp left ${result.afterPull.chips} request(s) queued ` +
+        `(${JSON.stringify(result.afterPull.chipTexts)})`,
+    )
+  }
+  if (result.afterPull.draft !== texts.queued) {
+    failures.push(
+      `composer gestures: Alt+ArrowUp put ${JSON.stringify(result.afterPull.draft)} in the draft ` +
+        `instead of the pulled request (${JSON.stringify(texts.queued)})`,
+    )
+  }
+
+  // The chip's × removes exactly its own entry, and the draft beside it is none of its
+  // business -- the failure is either a chip that survived or a draft that did not.
+  if (result.beforeDiscard.chips !== result.start.chips + 1 || result.beforeDiscard.chipTexts[0] !== texts.discarded) {
+    failures.push(
+      `composer gestures: the chip to discard was not on the queue ` +
+        `(${JSON.stringify(result.beforeDiscard.chipTexts)})`,
+    )
+  }
+  if (result.beforeDiscard.draft !== texts.kept) {
+    failures.push(
+      `composer gestures: the second draft did not reach the composer ` +
+        `(${JSON.stringify(result.beforeDiscard.draft)})`,
+    )
+  }
+  if (result.afterDiscard.chips !== result.start.chips) {
+    failures.push(
+      `composer gestures: the × left ${result.afterDiscard.chips} request(s) queued ` +
+        `(${JSON.stringify(result.afterDiscard.chipTexts)})`,
+    )
+  }
+  if (result.afterDiscard.draft !== texts.kept) {
+    failures.push(
+      `composer gestures: the × changed the draft it was clicked beside ` +
+        `(${JSON.stringify(texts.kept)} -> ${JSON.stringify(result.afterDiscard.draft)})`,
+    )
+  }
+
+  // The composition pair. The keydown is claimed the moment it lands (the submit waits for
+  // the commit) and the chip may only exist after the commit -- so the two readings
+  // document where the submission came from, and they are what says the follow-up window
+  // above was a real window rather than a handler this renderer never reaches.
+  if (!result.imeComposingEnter.defaultPrevented) {
+    failures.push(
+      'composer gestures: an Enter pressed mid-composition was left to the textarea',
+    )
+  }
+  if (result.imeBeforeCommit.chips !== result.start.chips || result.imeBeforeCommit.draft !== texts.ime) {
+    failures.push(
+      `composer gestures: the mid-composition Enter submitted on its own ` +
+        `(${JSON.stringify(result.imeBeforeCommit.chipTexts)}, draft ${JSON.stringify(result.imeBeforeCommit.draft)})`,
+    )
+  }
+  if (result.afterImeCommit.chips !== result.start.chips + 1 || result.afterImeCommit.chipTexts[0] !== texts.ime) {
+    failures.push(
+      `composer gestures: the composition commit did not submit the armed Enter ` +
+        `(${JSON.stringify(result.afterImeCommit.chipTexts)})`,
+    )
+  }
+
+  return failures
+}
+
 app.whenReady().then(async () => {
   const win = new BrowserWindow({ width: 1400, height: 900, show: false })
   await win.loadFile(path.join(root, 'dist', 'index.html'), {
@@ -1180,16 +1511,28 @@ app.whenReady().then(async () => {
     for (const failure of checkTyping(typing)) failures.push(`${width}px: ${failure}`)
   }
 
-  // The small downward scroll, at the wide size and last. It is the only case that submits a
-  // prompt of its own, and the mock backend answers with a streamed reply, so the transcript is
-  // a few blocks longer afterwards -- which moves where the cases above measure the reader in
-  // the seeded content. That is a change to their subject, not to this one, so this case runs
-  // after all of them rather than inside the loop.
+  // The small downward scroll, at the wide size and after the passes above. It is the only
+  // case that submits a prompt of its own, and the mock backend answers with a streamed reply,
+  // so the transcript is a few blocks longer afterwards -- which moves where the cases above
+  // measure the reader in the seeded content. That is a change to their subject, not to this
+  // one, so this case runs after all of them rather than inside the loop.
   win.setSize(1400, 900)
   await new Promise((r) => setTimeout(r, 900))
   const follow = await runFollowCase(win, wheel)
   console.log(JSON.stringify(follow))
   for (const failure of checkFollowJump(follow)) failures.push(`1400px: ${failure}`)
+
+  // The composer gestures. The case selects the rail's running session, so the queue it
+  // fills belongs to a session no other case reads, and the transcript every case above
+  // measures is left as they left it. Last for the same reason: nothing below depends on
+  // which session is open.
+  win.setSize(1400, 900)
+  await new Promise((r) => setTimeout(r, 900))
+  const gestures = await win.webContents.executeJavaScript(composerGesturesProbe)
+  console.log(JSON.stringify(gestures))
+  for (const failure of checkComposerGestures(gestures)) {
+    failures.push(`1400px: ${failure}`)
+  }
 
   clearTimeout(failAfter)
   for (const failure of failures) console.error(`  ${failure}`)

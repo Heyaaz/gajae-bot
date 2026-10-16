@@ -289,6 +289,9 @@ describe("GjcSdkController CLI seam", () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    (cli.listSessions as any)
+      .mockResolvedValueOnce([{ sessionId: "s1", repo: "/repo", live: true, deleted: false }])
+      .mockResolvedValue([{ sessionId: "s1", repo: "/repo", live: false, deleted: false }]);
     await controller.deleteSession("s1");
     const calls = (cli.rawGlobal as any).mock.calls.map((c: any[]) => c[0]);
     expect(calls.indexOf("session.close")).toBeGreaterThanOrEqual(0);
@@ -299,6 +302,9 @@ describe("GjcSdkController CLI seam", () => {
   it("keeps local state when close fails with a verified operational error", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    (cli.listSessions as any).mockResolvedValue([
+      { sessionId: "s1", repo: "/repo", live: true, deleted: false },
+    ]);
     (cli.rawGlobal as any).mockRejectedValue(new SdkCliError("invalid_input", "bad close"));
     await expect(controller.deleteSession("s1")).rejects.toThrow("bad close");
     expect(internals.sessions.has("s1")).toBe(true);
@@ -320,6 +326,69 @@ describe("GjcSdkController CLI seam", () => {
     await controller.deleteSession("s1");
     expect(internals.sessions.get("s1")?.attachment).toBe("recovering");
     expect(internals.sessions.has("s1")).toBe(true);
+  });
+
+  it("skips the close when the broker row proves the session is absent", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/transcript.jsonl");
+    await controller.deleteSession("s1");
+    // A saved transcript with no indexed lifecycle identity has nothing to close.
+    expect((cli.rawGlobal as any).mock.calls.map((c: any[]) => c[0])).toEqual(["session.delete"]);
+    expect(cli.rawGlobal).toHaveBeenCalledWith(
+      "session.delete",
+      expect.objectContaining({ sessionId: "s1", cwd: "/repo", sessionPath: "/repo/transcript.jsonl" }),
+      expect.anything(),
+    );
+    expect(internals.sessions.has("s1")).toBe(false);
+  });
+
+  it("deletes a tombstoned session from that row's own locator window", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/stale");
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    (cli.listSessions as any).mockResolvedValue([
+      { sessionId: "s1", repo: "/repo", live: false, deleted: true, stateRoot: "/state" },
+    ]);
+    await controller.deleteSession("s1");
+    expect((cli.rawGlobal as any).mock.calls.map((c: any[]) => c[0])).toEqual(["session.delete"]);
+    expect(cli.rawGlobal).toHaveBeenCalledWith(
+      "session.delete",
+      expect.objectContaining({ sessionId: "s1", cwd: "/repo", stateRoot: "/state" }),
+      expect.anything(),
+    );
+    expect(internals.sessions.has("s1")).toBe(false);
+  });
+
+  it("keeps the session when the broker index cannot be read", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    (cli.listSessions as any).mockRejectedValue(new Error("index unavailable"));
+    await controller.deleteSession("s1");
+    // No row is no evidence: without the index nothing may be closed or deleted.
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    expect(internals.sessions.get("s1")?.attachment).toBe("recovering");
+  });
+
+  it("resolves the shared transcript alongside the broker index", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    const locate = vi.fn(async () => "/repo/transcript.jsonl");
+    internals.locateSharedTranscriptFile = locate;
+    let locatedWhenIndexAnswered = 0;
+    (cli.listSessions as any).mockImplementation(async () => {
+      locatedWhenIndexAnswered = locate.mock.calls.length;
+      return [{ sessionId: "s1", repo: "/repo", live: false, deleted: false }];
+    });
+    await controller.deleteSession("s1");
+    // The directory scan is already in flight when the index answers, so the two
+    // never serialize, and the delete still gets the path that scan resolved.
+    expect(locatedWhenIndexAnswered).toBe(1);
+    expect(cli.rawGlobal).toHaveBeenCalledWith(
+      "session.delete",
+      expect.objectContaining({ sessionPath: "/repo/transcript.jsonl" }),
+      expect.anything(),
+    );
   });
 
   it("resumes with cwd and transcript sessionPath", async () => {

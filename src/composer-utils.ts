@@ -252,6 +252,93 @@ export function appendPendingRequest(
   return [...pending, request];
 }
 
+/** Which held request a pull gesture takes: an end of the queue, or one clicked chip. */
+export type QueuePullTarget = "newest" | "oldest" | { id: string };
+
+/**
+ * The pull an Option+Arrow keydown asks for, if it asks for one.
+ *
+ * Option+ArrowUp reaches for the request the user queued last, Option+ArrowDown
+ * for the one that has been waiting longest, so repeated presses walk the queue
+ * from either end. The keydown is only consumed when a pull can actually happen:
+ * over an empty queue the native caret movement has to survive, and a release in
+ * flight has already claimed the entry it is sending, so pulling beside it would
+ * race that loop.
+ */
+export function consumeQueuePullKey(
+  event: {
+    key: string;
+    altKey: boolean;
+    metaKey: boolean;
+    ctrlKey: boolean;
+    shiftKey: boolean;
+    preventDefault: () => void;
+  },
+  queue: { pending: readonly PendingRequest[]; releasing: boolean },
+): QueuePullTarget | undefined {
+  if (!event.altKey || event.metaKey || event.ctrlKey || event.shiftKey)
+    return undefined;
+  const target =
+    event.key === "ArrowUp"
+      ? ("newest" as const)
+      : event.key === "ArrowDown"
+        ? ("oldest" as const)
+        : undefined;
+  if (!target || queue.releasing || queue.pending.length === 0)
+    return undefined;
+  event.preventDefault();
+  return target;
+}
+
+/**
+ * Take one held request out of the queue.
+ *
+ * The caller owns the returned list and writes it back through the queue's own
+ * channel; nothing here mutates the array it was given, so a release loop holding
+ * a live snapshot is never rewritten under itself.
+ */
+export function pullQueuedRequest(
+  pending: readonly PendingRequest[],
+  target: QueuePullTarget,
+): { entry: PendingRequest; pending: PendingRequest[] } | undefined {
+  const index =
+    target === "newest"
+      ? pending.length - 1
+      : target === "oldest"
+        ? 0
+        : pending.findIndex((entry) => entry.id === target.id);
+  const entry = pending[index];
+  if (!entry) return undefined;
+  return {
+    entry,
+    pending: pending.filter((_, position) => position !== index),
+  };
+}
+
+/**
+ * Compose the draft a pulled request restores.
+ *
+ * The queue stores the body with its `/steer` prefix already stripped, so a steer
+ * has to be spelled out again -- and at the *head* of the draft, which is the only
+ * place the submit path looks for it -- or re-submitting would quietly downgrade
+ * the request to a follow-up. Anything already typed stays where it is, with the
+ * pulled text on the line after it, and the entry's attachments come back too.
+ */
+export function restorePulledDraft(
+  draft: ComposerDraft,
+  entry: PendingRequest,
+): ComposerDraft {
+  const body = draft.value ? `${draft.value}\n${entry.text}` : entry.text;
+  return {
+    value:
+      entry.mode === "steer" && !/^\/steer(?:\s+|$)/u.test(draft.value)
+        ? `/steer ${body}`
+        : body,
+    images: [...draft.images, ...entry.images],
+    files: [...draft.files, ...entry.files],
+  };
+}
+
 // One physical Enter can reach submit() from the form handler and from an IME
 // composition callback in the same input frame. Those are the same submission, so
 // the second is dropped. A deliberate resend is always further apart than one
@@ -262,6 +349,10 @@ export const SUBMISSION_DEDUPE_MS = 120;
 // commit for that keystroke lands within a frame or two; anything later is a
 // different edit and must not be submitted on the earlier Enter's behalf.
 export const IME_COMMIT_WINDOW_MS = 400;
+
+// How long after a commit a second Enter is still read as the IME's own delivery
+// of the Enter that ended the composition, rather than as a fresh keypress.
+export const IME_FOLLOWUP_WINDOW_MS = 100;
 
 // Whether an IME commit may submit on behalf of an earlier Enter.
 //

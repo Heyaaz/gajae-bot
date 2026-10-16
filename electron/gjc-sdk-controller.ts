@@ -6178,35 +6178,49 @@ export class GjcSdkController {
   private async brokerLifecycleDelete(
     sessionId: string,
   ): Promise<"deleted" | "recovering"> {
+    // The shared transcript scan walks this host's session directory and shares no
+    // state with the broker, so it runs alongside the lifecycle round trips instead
+    // of behind them; the delete still receives the path this lookup resolves on its
+    // own.
+    const locatedSessionPath = this.locateSharedTranscriptFile(sessionId);
+    // Only a live row has an endpoint for `session.close` to stop. An absent,
+    // tombstoned, or non-live row proves there is nothing to close, and one raw
+    // lifecycle op costs the same whether or not a live session is behind it.
+    let row = await this.sessionBrokerRow(sessionId);
+    // An unreadable index is not an absent session: with no row there is no evidence
+    // that a live endpoint is gone, so the session stays for reconciliation.
+    if (row === undefined) return "recovering";
     let closeUncertain = false;
-    try {
-      await this.brokerLifecycle("session.close", { sessionId });
-    } catch (error) {
-      if (missingLifecycleSessionError(error) || missingSessionError(error)) {
-        // Still issue delete: a saved transcript can exist without a live endpoint.
-      } else if (
-        lifecycleUncertainError(error) ||
-        uncertainLifecycleOutcomeError(error)
-      )
-        closeUncertain = true;
-      else throw error;
+    if (row?.live === true) {
+      try {
+        await this.brokerLifecycle("session.close", { sessionId });
+      } catch (error) {
+        if (missingLifecycleSessionError(error) || missingSessionError(error)) {
+          // Still issue delete: a saved transcript can exist without a live endpoint.
+        } else if (
+          lifecycleUncertainError(error) ||
+          uncertainLifecycleOutcomeError(error)
+        )
+          closeUncertain = true;
+        else throw error;
+      }
+      const afterClose = await this.sessionBrokerRow(sessionId);
+      if (afterClose === undefined) return "recovering";
+      if (afterClose?.live === true) {
+        if (closeUncertain) return "recovering";
+        throw new Error(
+          "실행 중인 세션은 삭제할 수 없습니다. 해당 GJC 프로세스를 종료한 뒤 다시 시도하세요.",
+        );
+      }
+      row = afterClose;
     }
-    const afterClose = await this.sessionBrokerRow(sessionId);
-    if (afterClose === undefined) return "recovering";
-    if (afterClose?.live === true) {
-      if (closeUncertain) return "recovering";
-      throw new Error(
-        "실행 중인 세션은 삭제할 수 없습니다. 해당 GJC 프로세스를 종료한 뒤 다시 시도하세요.",
-      );
-    }
-    const cwd =
-      afterClose?.repo ?? this.sessionCwds.get(sessionId) ?? this.workspace;
-    const sessionPath = await this.locateSharedTranscriptFile(sessionId);
+    const cwd = row?.repo ?? this.sessionCwds.get(sessionId) ?? this.workspace;
+    const sessionPath = await locatedSessionPath;
     try {
       await this.brokerLifecycle("session.delete", {
         sessionId,
         cwd,
-        ...(afterClose?.stateRoot ? { stateRoot: afterClose.stateRoot } : {}),
+        ...(row?.stateRoot ? { stateRoot: row.stateRoot } : {}),
         ...(sessionPath ? { sessionPath } : {}),
       });
       return "deleted";
