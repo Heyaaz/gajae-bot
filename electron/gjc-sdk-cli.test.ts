@@ -116,6 +116,24 @@ describe("error classification", () => {
     );
   });
 
+  it("treats an uncoded create receipt as unverified rather than refused", () => {
+    // GJC answers a create it could not confirm without a code, so the envelope parser
+    // reports `operation_failed`; reading that as a refusal rejected a session the
+    // broker had already created (observed in the live smoke: the probe session was
+    // listed live while this error was thrown).
+    const uncertain = new SdkCliError(
+      "operation_failed",
+      "The operation failed. Its outcome could not be established.",
+    );
+    expect(isLifecycleUncertain(uncertain)).toBe(true);
+    // The same code with a definite refusal stays a failure.
+    expect(
+      isLifecycleUncertain(
+        new SdkCliError("operation_failed", "The operation failed."),
+      ),
+    ).toBe(false);
+  });
+
   it("recognises a session with a stale endpoint as unreachable, not missing", () => {
     const stale = new SdkCliError(
       "endpoint_stale",

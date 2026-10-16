@@ -301,12 +301,22 @@ function rowFromIndex(value: unknown): SdkSessionRow | undefined {
  * Whether a lifecycle receipt could not be verified rather than having failed.
  *
  * `terminal_uncertain` is the only code gjc/0.18.11 emits for this; the earlier
- * `lifecycle_uncertain`/`endpoint_uncertain` aliases are gone.
+ * `lifecycle_uncertain`/`endpoint_uncertain` aliases are gone. A receipt that answers
+ * without any code arrives as `operation_failed`, so the message is what separates an
+ * unverified outcome from a refusal there.
  */
 export function isLifecycleUncertain(error: unknown): boolean {
-  if (error instanceof SdkCliError) return error.code === "terminal_uncertain";
+  if (error instanceof SdkCliError) {
+    // `terminal_uncertain` is the coded form. `operation_failed` is what the envelope
+    // parser falls back to when the answer carries no code at all, and GJC uses it for
+    // a create whose receipt it could not confirm ("The operation failed. Its outcome
+    // could not be established."). Treating that as a plain failure rejected sessions
+    // the broker had already created, which is exactly what the index check below is for.
+    if (error.code === "terminal_uncertain") return true;
+    if (error.code !== "operation_failed") return false;
+  }
   const message = error instanceof Error ? error.message : String(error ?? "");
-  return /terminal_uncertain|could not be verified|requires reconciliation/iu.test(
+  return /terminal_uncertain|could not be verified|could not be established|requires reconciliation/iu.test(
     message,
   );
 }
