@@ -42,6 +42,8 @@ import {
 import { AttachmentStore } from "./attachment-store.js";
 import { RemoteAccessService } from "./remote/service.js";
 import { registerRemoteIpcHandlers } from "./remote-ipc-handlers.js";
+import { RepoService } from "./repo-service.js";
+import { registerRepoIpcHandlers } from "./repo-ipc-handlers.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode } = rendererLaunchConfig(app.isPackaged);
@@ -272,6 +274,13 @@ remoteAccess = new RemoteAccessService({
   log: (message) => console.log(`remote access: ${message}`),
 });
 const unregisterRemoteIpc = registerRemoteIpcHandlers(remoteAccess, ipcSecurity);
+// The repository screen reads Git and GitHub on demand. `gh` is resolved the way the
+// CLI itself would be, with GJC_BIN's precedent for a packaged app that has to name
+// an absolute path.
+const repoService = new RepoService({
+  ghExecutable: process.env.GAJA_GH_BIN || undefined,
+});
+const unregisterRepoIpc = registerRepoIpcHandlers(repoService, ipcSecurity);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -1105,6 +1114,7 @@ app.on("before-quit", () => {
   unregisterProductivityIpc();
   unregisterAutomationIpc();
   unregisterRemoteIpc();
+  unregisterRepoIpc();
   unregisterEventStreamIpc();
   void desktopEvents.close();
   void remoteAccess?.dispose();

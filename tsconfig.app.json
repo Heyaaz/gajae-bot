@@ -22,5 +22,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "shared/agent-contract.ts"]
+  "include": ["src", "shared/agent-contract.ts", "shared/repo-ipc.ts"]
 }

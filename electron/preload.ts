@@ -33,6 +33,8 @@ import {
 import { DESKTOP_SERVICES_IPC as SERVICES_IPC } from "../shared/desktop-services-ipc.js";
 import { PRODUCTIVITY_IPC } from "../shared/productivity-ipc.js";
 import { AUTOMATION_IPC } from "../shared/automation-ipc.js";
+import { REPO_IPC } from "../shared/repo-ipc.js";
+import type { RepoDesktopBridge } from "../shared/repo-ipc.js";
 
 /**
  * The desktop event stream.
@@ -338,6 +340,28 @@ const productivity: ProductivityDesktopBridge = Object.freeze({
     ipcRenderer.invoke(PRODUCTIVITY_IPC.searchTranscripts, query, limit),
   rebuildSearch: () => ipcRenderer.invoke(PRODUCTIVITY_IPC.rebuildSearch),
 });
+/**
+ * The project and repository surface.
+ *
+ * Every call here is read-only; the one exception is handing an https link to the
+ * OS browser, which is why the main process validates that URL again on arrival.
+ */
+const repo: RepoDesktopBridge = Object.freeze({
+  resolveProjects: (paths: string[]) =>
+    ipcRenderer.invoke(REPO_IPC.resolveProjects, paths),
+  readRepository: (root: string) =>
+    ipcRenderer.invoke(REPO_IPC.readRepository, root),
+  readGithub: (root: string) => ipcRenderer.invoke(REPO_IPC.readGithub, root),
+  listIssues: (root: string) => ipcRenderer.invoke(REPO_IPC.listIssues, root),
+  getIssue: (root: string, number: number) =>
+    ipcRenderer.invoke(REPO_IPC.getIssue, root, number),
+  listPulls: (root: string) => ipcRenderer.invoke(REPO_IPC.listPulls, root),
+  getPull: (root: string, number: number) =>
+    ipcRenderer.invoke(REPO_IPC.getPull, root, number),
+  openExternal: (url: string) => ipcRenderer.invoke(REPO_IPC.openExternal, url),
+  revealFolder: (path: string) =>
+    ipcRenderer.invoke(REPO_IPC.revealFolder, path),
+});
 const automations: AutomationDesktopBridge = Object.freeze({
   list: () => ipcRenderer.invoke(AUTOMATION_IPC.list),
   create: (input: AutomationInput) =>
@@ -378,6 +402,7 @@ contextBridge.exposeInMainWorld(
     management,
     productivity,
     automations,
+    repo,
     remote,
     onCycleEffort: (listener: () => void) => {
       const wrapped = () => listener();
