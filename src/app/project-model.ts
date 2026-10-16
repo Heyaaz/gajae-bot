@@ -104,11 +104,6 @@ export function buildProjectGroups(
   );
 }
 
-/** The selector's options, in the order the groups are shown. */
-export function projectIdsOf(groups: readonly ProjectGroup[]): string[] {
-  return groups.map((group) => group.id);
-}
-
 /**
  * The selection the rail can actually show.
  *
@@ -152,22 +147,14 @@ export function sessionsOfProject(
 /**
  * The sessions running in one worktree path.
  *
- * Exact comparison on purpose: the path names one checkout, and a normalized or
- * prefix match would let "/tmp/repo" claim the sessions of "/tmp/repo-old".
+ * Exact comparison on purpose: the path names one checkout, and a prefix match would
+ * let "/tmp/repo" claim the sessions of "/tmp/repo-old" -- and, because a managed
+ * worktree lives inside its source repository, would show a worktree's sessions in
+ * the main worktree's row as well.
  */
 export function sessionsInPath(
   sessions: readonly AgentSession[],
   path: string,
 ): AgentSession[] {
   return sessions.filter((session) => session.workspace === path);
-}
-
-/**
- * The roots the repository screen may ask the service about.
- *
- * Only Git-backed projects: a plain workspace has no branches, worktrees or remote
- * to show, and reading it would draw an empty repository as if it simply had none.
- */
-export function repositoryRootsOf(groups: readonly ProjectGroup[]): string[] {
-  return groups.filter((group) => group.repository).map((group) => group.root);
 }

@@ -230,7 +230,7 @@ function pullsProps(
 
 function repoViewProps(bridge: RepoDesktopBridge | null): RepoViewProps {
   return {
-    project: { root: "/tmp/project", name: "project", repository: true },
+    project: { root: "/tmp/project", name: "project" },
     sessions: [session(0)],
     // With no bridge nothing below the header can run, so the backend is never
     // reached and an empty stand-in is the honest one for this render.
@@ -293,13 +293,65 @@ describe("RepoOverviewPanel GitHub states", () => {
       ),
     );
     // Six causes, six fixes: one shared sentence would leave the user unable to tell
-    // "install gh" from "log in".
+    // "install gh" from "log in". The redacted reason a query reported follows in
+    // the same paragraph, so the sentence is the start of it rather than all of it.
     expect(new Set(rendered).size).toBe(FAILURES.length);
-    expect(rendered).toEqual(FAILURES.map(githubFailureText));
-    for (const text of rendered) {
-      expect(text.trim().length).toBeGreaterThan(0);
+    rendered.forEach((text, index) => {
+      expect(text.startsWith(githubFailureText(FAILURES[index]))).toBe(true);
       expect(text).toMatch(/[가-힣]/u);
-    }
+    });
+    expect(rendered[5]).toBe(`${githubFailureText("error")} (gh: failed)`);
+  });
+
+  it("carries the reported reason, and invents none when there is none", () => {
+    const withDetail = errorText(
+      render(
+        RepoIssuesPanel,
+        issuesProps({ query: { state: "error", detail: "gh: Not Found (HTTP 404)" } }),
+      ),
+    );
+    // A 404 for a repository this account cannot see reads the same as a refusal
+    // that is worth retrying until the reason is on screen.
+    expect(withDetail).toContain("gh: Not Found (HTTP 404)");
+    const without = errorText(
+      render(RepoPullsPanel, pullsProps({ query: { state: "no-remote" } })),
+    );
+    expect(without).toBe(githubFailureText("no-remote"));
+  });
+
+  it("reports a failed local read instead of drawing it as a project without Git", () => {
+    const markup = render(
+      RepoOverviewPanel,
+      overviewProps({
+        repository: snapshot({
+          repository: false,
+          branch: "",
+          remote: undefined,
+          worktrees: [],
+          error: "저장소를 읽지 못했습니다: dubious ownership",
+        }),
+      }),
+    );
+    expect(markup).toContain("dubious ownership");
+    expect(markup).not.toContain("Git 저장소가 아닙니다");
+    // Nothing was read, so there are no counts to state either.
+    expect(markup).not.toContain("워크트리 0");
+  });
+
+  it("keeps the not-a-repository sentence for a project outside Git", () => {
+    const markup = render(
+      RepoOverviewPanel,
+      overviewProps({
+        repository: snapshot({
+          repository: false,
+          branch: "",
+          remote: undefined,
+          worktrees: [],
+        }),
+      }),
+    );
+    expect(markup).toContain("Git 저장소가 아닙니다");
+    expect(markup).not.toContain("repo-error");
   });
 
   it("reports a failure instead of inventing counts", () => {
@@ -447,6 +499,53 @@ describe("RepoBranchesPanel", () => {
     expect(markup).toContain("체크아웃됨");
     expect(markup).toContain("feat/issue-3");
     expect(markup.split("체크아웃됨").length - 1).toBe(1);
+  });
+
+  it("names a failed read instead of showing its empty lists as the truth", () => {
+    const markup = render(
+      RepoBranchesPanel,
+      branchesProps({
+        repository: snapshot({
+          branches: [],
+          error: "저장소 정보를 일부만 읽었습니다: 브랜치 목록: bad object HEAD",
+        }),
+      }),
+    );
+    expect(markup).toContain("bad object HEAD");
+    // An empty list beside a failed read states a fact the read did not establish.
+    expect(markup).not.toContain("브랜치가 없습니다");
+  });
+
+  it("draws one notice when the snapshot read nothing at all", () => {
+    const outsideGit = render(
+      RepoBranchesPanel,
+      branchesProps({
+        repository: snapshot({
+          repository: false,
+          branch: "",
+          remote: undefined,
+          worktrees: [],
+        }),
+      }),
+    );
+    expect(outsideGit).toContain("Git 저장소가 아닙니다");
+    expect(outsideGit).not.toContain("워크트리가 없습니다");
+    expect(outsideGit).not.toContain("브랜치가 없습니다");
+
+    const failedRead = render(
+      RepoBranchesPanel,
+      branchesProps({
+        repository: snapshot({
+          repository: false,
+          branch: "",
+          remote: undefined,
+          worktrees: [],
+          error: "저장소를 읽지 못했습니다: permission denied",
+        }),
+      }),
+    );
+    expect(failedRead).toContain("permission denied");
+    expect(failedRead).not.toContain("Git 저장소가 아닙니다");
   });
 });
 

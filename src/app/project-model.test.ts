@@ -4,11 +4,9 @@ import type { AgentSession } from "../backend/types";
 import {
   ALL_PROJECTS_ID,
   buildProjectGroups,
-  projectIdsOf,
   projectNameOf,
   projectPathOf,
   projectRootOf,
-  repositoryRootsOf,
   resolveProjectSelection,
   sessionsInPath,
   sessionsOfProject,
@@ -177,7 +175,7 @@ describe("buildProjectGroups", () => {
         sessions: ["note-1", "note-2"],
       },
     ]);
-    expect(repositoryRootsOf(groups)).toEqual([]);
+    expect(groups.map((group) => group.repository)).toEqual([false]);
   });
 
   it("keeps a workspace with no resolution entry", () => {
@@ -216,27 +214,12 @@ describe("buildProjectGroups", () => {
     const alpha = session({ id: "alpha", workspace: "/tmp/alpha/project" });
     // Both are labelled "project", so the root decides; the order the sessions were
     // handed in must not leak into which project the selector leads with.
-    expect(projectIdsOf(buildProjectGroups([beta, alpha], []))).toEqual([
-      "/tmp/alpha/project",
-      "/tmp/beta/project",
-    ]);
-    expect(projectIdsOf(buildProjectGroups([alpha, beta], []))).toEqual([
-      "/tmp/alpha/project",
-      "/tmp/beta/project",
-    ]);
-  });
-});
-
-describe("projectIdsOf", () => {
-  it("lists ids in the order the groups are shown", () => {
-    const groups = buildProjectGroups(
-      [
-        session({ id: "one", workspace: "/tmp/repo" }),
-        session({ id: "two", workspace: "/tmp/notes" }),
-      ],
-      [],
-    );
-    expect(projectIdsOf(groups)).toEqual(["/tmp/notes", "/tmp/repo"]);
+    expect(
+      buildProjectGroups([beta, alpha], []).map((group) => group.id),
+    ).toEqual(["/tmp/alpha/project", "/tmp/beta/project"]);
+    expect(
+      buildProjectGroups([alpha, beta], []).map((group) => group.id),
+    ).toEqual(["/tmp/alpha/project", "/tmp/beta/project"]);
   });
 });
 
@@ -320,24 +303,10 @@ describe("sessionsInPath", () => {
 
   it("ignores paths that only look like the worktree", () => {
     // A trailing separator is a different string, and a prefix match would let the
-    // worktree claim the sessions of a sibling checkout.
+    // worktree claim the sessions of a sibling checkout -- and would show a linked
+    // worktree's sessions under the main worktree they are created inside.
     expect(sessionsInPath(sessions, `${worktree}/`)).toEqual([]);
     expect(sessionsInPath(sessions, `${worktree}0`)).toEqual([]);
   });
 });
 
-describe("repositoryRootsOf", () => {
-  it("lists the Git-backed roots only", () => {
-    const groups = buildProjectGroups(
-      [
-        session({ id: "repo", workspace: "/tmp/repo" }),
-        session({ id: "notes", workspace: "/tmp/notes" }),
-      ],
-      [
-        resolution("/tmp/repo", "/tmp/repo", true),
-        resolution("/tmp/notes", "/tmp/notes", false),
-      ],
-    );
-    expect(repositoryRootsOf(groups)).toEqual(["/tmp/repo"]);
-  });
-});

@@ -1,5 +1,6 @@
 import type { DiffSnapshot } from "../../shared/agent-contract";
 import type {
+  GithubFailure,
   GithubFailureState,
   GithubIssueDetail,
   GithubIssueSummary,
@@ -107,6 +108,24 @@ export function ciLabel(ci: RepoCiSummary): string {
     case "none":
       return "CI 없음";
   }
+}
+
+/**
+ * A GitHub query that could not answer.
+ *
+ * The sentence names the cause, because each cause has a different fix, and the
+ * redacted reason the query reported follows in parentheses when there is one: a
+ * repository this account cannot see and a refused API call read the same way in
+ * the sentence alone, and only one of them is worth retrying.
+ */
+function GithubFailureNotice({ failure }: { failure: GithubFailure }): ReactNode {
+  const detail = "detail" in failure ? failure.detail : "";
+  return (
+    <p className="repo-error">
+      {githubFailureText(failure.state)}
+      {detail && ` (${detail})`}
+    </p>
+  );
 }
 
 export function reviewLabel(review: GithubReviewState): string {
@@ -221,15 +240,20 @@ export function RepoOverviewPanel({
           <h3>로컬 저장소</h3>
           <code>{repository.branch || "detached"}</code>
         </header>
-        <p className="repo-card__meta">
-          <span>브랜치 {formatRepoCount(repository.branches.length)}</span>
-          <span>워크트리 {formatRepoCount(repository.worktrees.length)}</span>
-          {repository.remote && (
-            <span>{repository.remote.slug ?? repository.remote.name}</span>
-          )}
-        </p>
+        {repository.repository && (
+          <p className="repo-card__meta">
+            <span>브랜치 {formatRepoCount(repository.branches.length)}</span>
+            <span>워크트리 {formatRepoCount(repository.worktrees.length)}</span>
+            {repository.remote && (
+              <span>{repository.remote.slug ?? repository.remote.name}</span>
+            )}
+          </p>
+        )}
         {repository.error && <p className="repo-error">{repository.error}</p>}
-        {!repository.repository && (
+        {/* Both sentences say nothing was read here, so they never appear
+            together: Git refusing the path is the only reason this project has
+            no repository, and a failed read reports itself instead. */}
+        {!repository.repository && !repository.error && (
           <p className="repo-empty">Git 저장소가 아닙니다.</p>
         )}
         <WorktreeRows
@@ -261,7 +285,7 @@ export function RepoOverviewPanel({
             </p>
           </>
         ) : (
-          <p className="repo-error">{githubFailureText(github.state)}</p>
+          <GithubFailureNotice failure={github} />
         )}
       </section>
     </>
@@ -281,8 +305,18 @@ export function RepoBranchesPanel({
   onOpenSession,
   onOpenDiff,
 }: RepoBranchesPanelProps) {
+  // A snapshot that read nothing has nothing to draw, and two empty cards would
+  // claim the repository has no branches and no worktrees when the read is what
+  // did not happen.
+  if (!repository.repository)
+    return repository.error ? (
+      <p className="repo-error">{repository.error}</p>
+    ) : (
+      <p className="repo-empty">Git 저장소가 아닙니다.</p>
+    );
   return (
     <>
+      {repository.error && <p className="repo-error">{repository.error}</p>}
       <section className="repo-card">
         <header className="repo-card__header">
           <h3>워크트리</h3>
@@ -300,9 +334,7 @@ export function RepoBranchesPanel({
           <h3>브랜치</h3>
           <span>{formatRepoCount(repository.branches.length)}</span>
         </header>
-        {repository.branches.length === 0 ? (
-          <p className="repo-empty">브랜치가 없습니다.</p>
-        ) : (
+        {repository.branches.length > 0 && (
           <ul className="repo-branches">
             {repository.branches.map((branch) => (
               <li className="repo-branch" key={branch.name}>
@@ -316,6 +348,11 @@ export function RepoBranchesPanel({
               </li>
             ))}
           </ul>
+        )}
+        {/* An empty list beside a failed read would state a fact the read did
+            not establish. */}
+        {repository.branches.length === 0 && !repository.error && (
+          <p className="repo-empty">브랜치가 없습니다.</p>
         )}
       </section>
     </>
@@ -415,7 +452,7 @@ export function RepoIssuesPanel({
       <IssueDetailView load={detail} onBack={onBack} onOpenUrl={onOpenUrl} />
     );
   if (query.state !== "ok")
-    return <p className="repo-error">{githubFailureText(query.state)}</p>;
+    return <GithubFailureNotice failure={query} />;
   if (query.value.length === 0)
     return <p className="repo-empty">열린 이슈가 없습니다.</p>;
   return (
@@ -466,7 +503,7 @@ export function RepoPullsPanel({
   if (detail)
     return <PullDetailView load={detail} onBack={onBack} onOpenUrl={onOpenUrl} />;
   if (query.state !== "ok")
-    return <p className="repo-error">{githubFailureText(query.state)}</p>;
+    return <GithubFailureNotice failure={query} />;
   if (query.value.length === 0)
     return <p className="repo-empty">열린 풀 리퀘스트가 없습니다.</p>;
   return (
@@ -528,7 +565,7 @@ function IssueDetailView({
         (load.value.state === "ok" ? (
           <IssueDetailBody issue={load.value.value} onOpenUrl={onOpenUrl} />
         ) : (
-          <p className="repo-error">{githubFailureText(load.value.state)}</p>
+          <GithubFailureNotice failure={load.value} />
         ))}
     </article>
   );
@@ -666,7 +703,7 @@ function PullDetailBody({
 
 export interface RepoViewProps {
   /** The selected project. */
-  project: { root: string; name: string; repository: boolean };
+  project: { root: string; name: string };
   /** Every session of this project, in rail order. */
   sessions: AgentSession[];
   /** Required to reuse the existing change-file panel. */

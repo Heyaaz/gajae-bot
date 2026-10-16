@@ -1485,11 +1485,7 @@ export default function App() {
         />
       ) : centerView === "repository" && activeProject ? (
         <RepoView
-          project={{
-            root: activeProject.root,
-            name: activeProject.name,
-            repository: activeProject.repository,
-          }}
+          project={{ root: activeProject.root, name: activeProject.name }}
           sessions={activeProject.sessions}
           backend={backend}
           bridge={repoBridge}
