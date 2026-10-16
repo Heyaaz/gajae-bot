@@ -3,7 +3,11 @@ import type { GjcUpdateStatus } from "../../shared/agent-contract";
 import type { AgentSession, BackendConnection } from "../backend/types";
 import {
   ArrowDown,
+  ExternalLink,
+  FolderGit2,
+  FolderOpen,
   GitFork,
+  Layers,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -15,6 +19,9 @@ import {
 import { memo, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { connectionStateLabel, statusLabel } from "./format";
+import { Dropdown } from "./primitives";
+import { ALL_PROJECTS_ID } from "./project-model";
+import type { ProjectGroup } from "./project-model";
 import { sessionListModel } from "./sidebar-model";
 import type {
   SessionFamilySummary,
@@ -33,6 +40,38 @@ function familySummaryLabel(
     summary?.working ? `Working ${summary.working}` : "",
   ].filter(Boolean);
   return [`Fork ${hidden} hidden`, ...counts].join(" · ");
+}
+
+/**
+ * The selector's rows: 전체 프로젝트 first, then one row per project.
+ *
+ * Two repositories can share a directory name, and a dropdown that showed two
+ * identical labels could not be told apart, so a duplicated name carries the
+ * parent directory that distinguishes it.
+ */
+export function projectSelectorOptions(projects: readonly ProjectGroup[]): {
+  value: string;
+  label: string;
+}[] {
+  const seen = new Map<string, number>();
+  for (const project of projects)
+    seen.set(project.name, (seen.get(project.name) ?? 0) + 1);
+  return [
+    { value: ALL_PROJECTS_ID, label: "전체 프로젝트" },
+    ...projects.map((project) => ({
+      value: project.id,
+      label:
+        (seen.get(project.name) ?? 0) > 1
+          ? `${project.name} (${parentDirectoryName(project.root)})`
+          : project.name,
+    })),
+  ];
+}
+
+/** The directory above a path, or the path itself when it has no parent. */
+function parentDirectoryName(root: string): string {
+  const parts = root.split("/").filter(Boolean);
+  return parts.length > 1 ? parts[parts.length - 2]! : root;
 }
 
 /**
@@ -197,6 +236,18 @@ export interface SidebarProps {
   sessions: AgentSession[];
   connection: BackendConnection;
   selectedId: string | null;
+  /** Every project the rail can filter by, in selector order. */
+  projects: ProjectGroup[];
+  /** The active selector value: `ALL_PROJECTS_ID` or a project root. */
+  projectId: string;
+  onProjectChange: (projectId: string) => void;
+  /** Opens the repository screen; only offered for one selected project. */
+  onOpenRepository: () => void;
+  /** Opens the project list, which is what 전체 프로젝트 can offer instead. */
+  onOpenProjects: () => void;
+  /** Right-click helpers: the browsable GitHub page and the local folder. */
+  onOpenProjectGithub: () => void;
+  onOpenProjectFolder: () => void;
   searchQuery: string;
   onSearchChange: (query: string) => void;
   onSearchOpen: () => void;
@@ -227,6 +278,13 @@ function SidebarView({
   sessions,
   connection,
   selectedId,
+  projects,
+  projectId,
+  onProjectChange,
+  onOpenRepository,
+  onOpenProjects,
+  onOpenProjectGithub,
+  onOpenProjectFolder,
   searchQuery,
   onSearchChange,
   onSearchOpen,
@@ -244,11 +302,11 @@ function SidebarView({
   updateBusy,
   onUpdate,
 }: SidebarProps) {
-  const [contextMenu, setContextMenu] = useState<{
-    session: AgentSession;
-    x: number;
-    y: number;
-  } | null>(null);
+  const [contextMenu, setContextMenu] = useState<
+    | { kind: "session"; session: AgentSession; x: number; y: number }
+    | { kind: "project"; x: number; y: number }
+    | null
+  >(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [editingWorkspace, setEditingWorkspace] = useState(false);
@@ -347,7 +405,12 @@ function SidebarView({
         onContextMenu={(event) => {
           event.preventDefault();
           onSelect(session.id);
-          setContextMenu({ session, x: event.clientX, y: event.clientY });
+          setContextMenu({
+            kind: "session",
+            session,
+            x: event.clientX,
+            y: event.clientY,
+          });
         }}
         onRenameChange={setRenameValue}
         onRenameCommit={commitRename}
@@ -379,6 +442,54 @@ function SidebarView({
           onClick={onCreate}
         >
           <Plus size={18} />
+        </button>
+      </div>
+
+      <div className="project-bar">
+        <Dropdown
+          value={projectId}
+          options={projectSelectorOptions(projects)}
+          onChange={onProjectChange}
+          ariaLabel="프로젝트 선택"
+        />
+        {/* The repository entry point is offered for a chosen project and the
+            project list for the whole rail. A single 레포 보기 in 전체 프로젝트
+            would have to guess which repository to open. */}
+        <button
+          type="button"
+          className="project-entry"
+          title={
+            projectId === ALL_PROJECTS_ID
+              ? "프로젝트 목록"
+              : "선택한 프로젝트의 레포 보기"
+          }
+          onClick={
+            projectId === ALL_PROJECTS_ID ? onOpenProjects : onOpenRepository
+          }
+          // Right-click only carries the auxiliary actions; the repository
+          // screen itself stays on the button above. In 전체 프로젝트 there is no
+          // single project to point these at, so the menu is not offered.
+          onContextMenu={
+            projectId === ALL_PROJECTS_ID
+              ? undefined
+              : (event) => {
+                  event.preventDefault();
+                  setContextMenu({
+                    kind: "project",
+                    x: event.clientX,
+                    y: event.clientY,
+                  });
+                }
+          }
+        >
+          {projectId === ALL_PROJECTS_ID ? (
+            <Layers size={15} />
+          ) : (
+            <FolderGit2 size={15} />
+          )}
+          <span>
+            {projectId === ALL_PROJECTS_ID ? "프로젝트 목록" : "레포 보기"}
+          </span>
         </button>
       </div>
 
@@ -416,10 +527,25 @@ function SidebarView({
         {sessions.length === 0 && (
           <div className="sidebar-empty">
             <Search size={18} />
-            <span>세션이 없습니다</span>
-            <button type="button" onClick={onResumePicker}>
-              지난 세션 여기
-            </button>
+            {/* Which way to get out depends on why the list is empty: a project
+                with no sessions is a filter to widen, not a missing session. */}
+            <span>
+              {projectId === ALL_PROJECTS_ID
+                ? "세션이 없습니다"
+                : "이 프로젝트에 세션이 없습니다"}
+            </span>
+            {projectId === ALL_PROJECTS_ID ? (
+              <button type="button" onClick={onResumePicker}>
+                지난 세션 여기
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onProjectChange(ALL_PROJECTS_ID)}
+              >
+                전체 프로젝트 보기
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -515,43 +641,68 @@ function SidebarView({
           style={{ left: contextMenu.x, top: contextMenu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          <button
-            type="button"
-            onClick={() => {
-              setContextMenu(null);
-              onFork(contextMenu.session);
-            }}
-          >
-            <GitFork size={14} /> 현재 상태에서 포크
-          </button>
-          {contextMenu.session.attachment !== "attached" && (
-            <button
-              type="button"
-              onClick={() => {
-                const session = contextMenu.session;
-                setContextMenu(null);
-                onResume(session);
-              }}
-            >
-              <RotateCcw size={14} /> 세션 이어서 진행
-            </button>
+          {contextMenu.kind === "project" ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  onOpenProjectGithub();
+                }}
+              >
+                <ExternalLink size={14} /> GitHub에서 열기
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  onOpenProjectFolder();
+                }}
+              >
+                <FolderOpen size={14} /> 로컬 폴더 열기
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  onFork(contextMenu.session);
+                }}
+              >
+                <GitFork size={14} /> 현재 상태에서 포크
+              </button>
+              {contextMenu.session.attachment !== "attached" && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const session = contextMenu.session;
+                    setContextMenu(null);
+                    onResume(session);
+                  }}
+                >
+                  <RotateCcw size={14} /> 세션 이어서 진행
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => beginRename(contextMenu.session)}
+              >
+                <Pencil size={14} /> 이름 변경
+              </button>
+              <button
+                type="button"
+                className="is-danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  onDelete(contextMenu.session);
+                }}
+              >
+                <Trash2 size={14} /> 삭제
+              </button>
+            </>
           )}
-          <button
-            type="button"
-            onClick={() => beginRename(contextMenu.session)}
-          >
-            <Pencil size={14} /> 이름 변경
-          </button>
-          <button
-            type="button"
-            className="is-danger"
-            onClick={() => {
-              setContextMenu(null);
-              onDelete(contextMenu.session);
-            }}
-          >
-            <Trash2 size={14} /> 삭제
-          </button>
         </div>
       )}
     </aside>

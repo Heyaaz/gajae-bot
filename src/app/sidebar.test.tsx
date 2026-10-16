@@ -2,7 +2,14 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AgentSession, BackendConnection } from "../backend/types";
-import { consumeEscapeKey, SessionRow, Sidebar } from "./sidebar";
+import { ALL_PROJECTS_ID } from "./project-model";
+import type { ProjectGroup } from "./project-model";
+import {
+  consumeEscapeKey,
+  projectSelectorOptions,
+  SessionRow,
+  Sidebar,
+} from "./sidebar";
 import type { SessionRowProps } from "./sidebar";
 
 const connection: BackendConnection = {
@@ -36,6 +43,14 @@ function session(
 
 const noop = () => undefined;
 
+function project(
+  name: string,
+  root: string,
+  sessions: AgentSession[] = [],
+): ProjectGroup {
+  return { id: root, name, root, repository: true, sessions };
+}
+
 function props(
   sessions: AgentSession[],
   overrides: Partial<Parameters<typeof Sidebar>[0]> = {},
@@ -44,6 +59,13 @@ function props(
     sessions,
     connection,
     selectedId: sessions[0]?.id ?? null,
+    projects: [project("project", "/tmp/project", sessions)],
+    projectId: ALL_PROJECTS_ID,
+    onProjectChange: noop,
+    onOpenRepository: noop,
+    onOpenProjects: noop,
+    onOpenProjectGithub: noop,
+    onOpenProjectFolder: noop,
     searchQuery: "",
     onSearchChange: noop,
     onSearchOpen: noop,
@@ -83,7 +105,7 @@ describe("Sidebar memoization", () => {
       createElement(Sidebar, props([session(0)])),
     );
     const row = markup.match(
-      /<div class="sidebar-actions">([\s\S]*?)<div class="sidebar-scroll">/u,
+      /<div class="sidebar-actions">([\s\S]*?)<div class="project-bar">/u,
     )?.[1];
     expect(row).toBeTruthy();
     expect(row!.match(/<button/gu) ?? []).toHaveLength(1);
@@ -409,5 +431,93 @@ describe("Sidebar row keyboard", () => {
     expect(consumeEscapeKey(letter)).toBe(false);
     expect(letter.defaultPrevented).toBe(false);
     expect(letter.propagationStopped).toBe(false);
+  });
+});
+
+describe("Sidebar project selector", () => {
+  it("leads with 전체 프로젝트 and disambiguates duplicate names", () => {
+    // Two repositories can share a directory name. A dropdown with two identical
+    // labels cannot be used, so a repeated name carries its parent directory.
+    const options = projectSelectorOptions([
+      project("gajae-bot", "/Users/me/work/gajae-bot"),
+      project("gajae-bot", "/Users/me/scratch/gajae-bot"),
+      project("hermes", "/Users/me/hermes"),
+    ]);
+    expect(options[0]).toEqual({
+      value: ALL_PROJECTS_ID,
+      label: "전체 프로젝트",
+    });
+    expect(options.map((option) => option.label)).toEqual([
+      "전체 프로젝트",
+      "gajae-bot (work)",
+      "gajae-bot (scratch)",
+      "hermes",
+    ]);
+    expect(options[1]!.value).toBe("/Users/me/work/gajae-bot");
+  });
+
+  it("offers the repository entry point only for one project", () => {
+    // From 전체 프로젝트 there is no single repository to open, so the rail offers
+    // the project list instead of guessing one.
+    const all = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)])),
+    );
+    expect(all).toContain("프로젝트 목록");
+    expect(all).not.toContain("레포 보기");
+
+    const one = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([session(0)], { projectId: "/tmp/project" }),
+      ),
+    );
+    expect(one).toContain("<span>레포 보기</span>");
+    expect(one).not.toContain("프로젝트 목록");
+  });
+
+  it("names the project in the selector and keeps one entry point per action", () => {
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([session(0)], {
+          projects: [project("gajae-bot", "/Users/me/work/gajae-bot")],
+          projectId: "/Users/me/work/gajae-bot",
+        }),
+      ),
+    );
+    expect(markup).toContain('aria-label="프로젝트 선택"');
+    expect(markup).toContain("gajae-bot");
+    // One visible entry point; the title attribute repeats the words on purpose.
+    expect(markup.split("<span>레포 보기</span>").length - 1).toBe(1);
+  });
+
+  it("tells an empty project apart from an empty rail", () => {
+    // A project with no sessions is a filter to widen, not a missing session, so the
+    // empty list offers the way back to the whole rail instead of the resume picker.
+    const empty = renderToStaticMarkup(
+      createElement(Sidebar, props([], { projectId: "/tmp/project" })),
+    );
+    expect(empty).toContain("이 프로젝트에 세션이 없습니다");
+    expect(empty).toContain("전체 프로젝트 보기");
+    expect(empty).not.toContain("지난 세션 여기");
+
+    const allEmpty = renderToStaticMarkup(createElement(Sidebar, props([])));
+    expect(allEmpty).toContain("세션이 없습니다");
+    expect(allEmpty).toContain("지난 세션 여기");
+  });
+
+  it("keeps the repository entry point out of the row it belongs to", () => {
+    // The entry point is a visible button next to the selector; hiding it behind the
+    // row's right-click menu is exactly what the issue rules out.
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([session(0)], { projectId: "/tmp/project" }),
+      ),
+    );
+    const bar = markup.match(/<div class="project-bar">([\s\S]*?)<\/div><\/div>/u)?.[1];
+    expect(bar).toBeTruthy();
+    expect(bar).toContain('class="project-entry"');
+    expect(bar).toContain("레포 보기");
   });
 });

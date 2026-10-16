@@ -8,6 +8,8 @@ import type {
   SessionStatus,
   TranscriptItem,
 } from "../backend/types";
+import { ALL_PROJECTS_ID } from "./project-model";
+import type { ProjectGroup } from "./project-model";
 import App, {
   composerTurnLive,
   escapeCancelsRun,
@@ -69,10 +71,18 @@ const actionProbe = vi.hoisted(() => {
     sidebar: null as null | {
       sessions: AgentSession[];
       selectedId: string | null;
+      projects: ProjectGroup[];
+      projectId: string;
+      onSelect: (sessionId: string) => void;
       onRename: (id: string, title: string) => void;
       onDelete: (session: AgentSession) => void;
       onFork: (session: AgentSession) => void;
+      onProjectChange: (projectId: string) => void;
+      onOpenRepository: () => void;
+      onOpenProjects: () => void;
     },
+    repo: null as null | { project: { root: string } },
+    projectsView: null as null | { projects: ProjectGroup[] },
     deleteDialog: null as null | {
       session: AgentSession;
       onConfirm: () => void;
@@ -85,6 +95,8 @@ const actionProbe = vi.hoisted(() => {
       stateChanges.mockReset();
       this.onRename = null;
       this.sidebar = null;
+      this.repo = null;
+      this.projectsView = null;
       this.deleteDialog = null;
     },
   };
@@ -113,9 +125,15 @@ vi.mock("./sidebar", () => ({
   Sidebar: (props: {
     sessions: AgentSession[];
     selectedId: string | null;
+    projects: ProjectGroup[];
+    projectId: string;
+    onSelect: (sessionId: string) => void;
     onRename: (id: string, title: string) => void;
     onDelete: (session: AgentSession) => void;
     onFork: (session: AgentSession) => void;
+    onProjectChange: (projectId: string) => void;
+    onOpenRepository: () => void;
+    onOpenProjects: () => void;
   }) => {
     actionProbe.sidebar = props;
     actionProbe.onRename = props.onRename;
@@ -147,6 +165,18 @@ vi.mock("./inspector", () => ({
   Inspector: () => null,
 }));
 vi.mock("./settings", () => ({ SettingsDialog: () => null }));
+vi.mock("./repo-view", () => ({
+  RepoView: (props: { project: { root: string } }) => {
+    actionProbe.repo = props;
+    return null;
+  },
+}));
+vi.mock("./project-list", () => ({
+  ProjectList: (props: { projects: ProjectGroup[] }) => {
+    actionProbe.projectsView = props;
+    return null;
+  },
+}));
 vi.mock("./remote", () => ({
   RemoteGate: () => null,
   RemoteStrip: () => null,
@@ -399,6 +429,10 @@ describe("sidebar rename failures", () => {
 function renderApp(): string {
   actionProbe.sidebar = null;
   actionProbe.deleteDialog = null;
+  // These two record what the center area held in this pass, so they start empty
+  // for every pass instead of reporting the last view that happened to render.
+  actionProbe.repo = null;
+  actionProbe.projectsView = null;
   actionProbe.store.beginPass();
   return renderToStaticMarkup(createElement(App));
 }
@@ -530,5 +564,168 @@ describe("session delete optimism", () => {
     // The error is what the app-error bar renders, and the detail pane is back.
     expect(markup).toContain("세션을 지우지 못했습니다");
     expect(markup).toContain(row.title);
+  });
+});
+
+describe("project scope", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", {});
+    actionProbe.reset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** Puts one row in the shell through the fork path, as the listing does. */
+  async function seed(row: AgentSession): Promise<void> {
+    actionProbe.forkSession.mockResolvedValueOnce(row);
+    renderApp();
+    actionProbe.sidebar!.onFork(session("source-1"));
+    await settle();
+    renderApp();
+  }
+
+  it("groups a managed worktree under its source project instead of a second one", async () => {
+    // The worktree is a checkout of the same repository, so its session belongs to
+    // the same project. Without that rule the rail offered two projects for one
+    // repository as soon as the user asked for a worktree session.
+    await seed(session("plain"));
+    actionProbe.forkSession.mockResolvedValueOnce(
+      session("worktree", {
+        workspace: "/tmp/gajae-bot/.gajae-worktrees/feature",
+        worktree: {
+          sourceWorkspace: "/tmp/gajae-bot",
+          path: "/tmp/gajae-bot/.gajae-worktrees/feature",
+          branch: "feature",
+          managed: true,
+        },
+      }),
+    );
+    actionProbe.sidebar!.onFork(session("source-2"));
+    await settle();
+    renderApp();
+
+    expect(actionProbe.sidebar!.projects).toHaveLength(1);
+    expect(actionProbe.sidebar!.projects[0]!.id).toBe("/tmp/gajae-bot");
+    expect(actionProbe.sidebar!.projects[0]!.sessions).toHaveLength(2);
+  });
+
+  it("filters the rail to one project while keeping the project context", async () => {
+    await seed(session("first"));
+    actionProbe.forkSession.mockResolvedValueOnce(
+      session("second", { workspace: "/tmp/other-repo" }),
+    );
+    actionProbe.sidebar!.onFork(session("source-2"));
+    await settle();
+    renderApp();
+    expect(actionProbe.sidebar!.sessions).toHaveLength(2);
+
+    const selected = actionProbe.sidebar!.projects.find(
+      (group) => group.id === "/tmp/other-repo",
+    )!;
+    actionProbe.sidebar!.onProjectChange(selected.id);
+    const filtered = renderApp();
+    expect(actionProbe.sidebar!.projectId).toBe("/tmp/other-repo");
+    expect(actionProbe.sidebar!.sessions.map((item) => item.id)).toEqual([
+      "second",
+    ]);
+    // Filtering the rail is not a session pick, so the center stays where it was.
+    expect(filtered).toContain("세션 second");
+  });
+
+  it("opens the repository screen for the chosen project and comes back on a session pick", async () => {
+    await seed(session("first"));
+    expect(actionProbe.repo).toBeNull();
+
+    actionProbe.sidebar!.onProjectChange("/tmp/gajae-bot");
+    renderApp();
+    actionProbe.sidebar!.onOpenRepository();
+    renderApp();
+    expect(actionProbe.repo!.project.root).toBe("/tmp/gajae-bot");
+
+    // A session pick returns to the conversation with the project still selected:
+    // the context the user chose outlives the session they were reading.
+    actionProbe.sidebar!.onSelect("first");
+    renderApp();
+    expect(actionProbe.repo).toBeNull();
+    expect(actionProbe.sidebar!.projectId).toBe("/tmp/gajae-bot");
+    expect(actionProbe.sidebar!.selectedId).toBe("first");
+  });
+
+  it("never opens one repository straight from 전체 프로젝트", async () => {
+    await seed(session("first"));
+    // 전체 프로젝트 offers the project list, and the repository screen is only
+    // reachable after a project has been named.
+    expect(actionProbe.sidebar!.projectId).toBe(ALL_PROJECTS_ID);
+    actionProbe.sidebar!.onOpenProjects();
+    renderApp();
+    expect(actionProbe.projectsView).not.toBeNull();
+    expect(actionProbe.repo).toBeNull();
+    expect(actionProbe.projectsView!.projects).toHaveLength(1);
+
+    // Choosing one from the list is what opens its repository screen.
+    actionProbe.projectsView = null;
+    actionProbe.sidebar!.onProjectChange("/tmp/gajae-bot");
+    renderApp();
+    actionProbe.sidebar!.onOpenRepository();
+    renderApp();
+    expect(actionProbe.repo!.project.root).toBe("/tmp/gajae-bot");
+  });
+
+  it("leaves the repository screen when the rail goes back to 전체 프로젝트", async () => {
+    await seed(session("first"));
+    actionProbe.sidebar!.onProjectChange("/tmp/gajae-bot");
+    renderApp();
+    actionProbe.sidebar!.onOpenRepository();
+    renderApp();
+    expect(actionProbe.repo).not.toBeNull();
+
+    // 전체 프로젝트 is not one repository, so there is nothing for that screen to
+    // show: leaving it open would have to pick a project the user never chose.
+    actionProbe.sidebar!.onProjectChange(ALL_PROJECTS_ID);
+    renderApp();
+    expect(actionProbe.repo).toBeNull();
+    expect(actionProbe.projectsView).toBeNull();
+    expect(actionProbe.sidebar!.sessions).toHaveLength(1);
+  });
+});
+
+describe("rail order under project grouping", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", {});
+    actionProbe.reset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the backend's session order instead of re-sorting by project", async () => {
+    // The regression the desktop smoke caught: filtering for 전체 프로젝트 read the
+    // sessions back group by group, and because group order is alphabetical by
+    // project name, a pinned row from /tmp/aaa jumped ahead of the pinned row the
+    // backend listed first. The rail ranks its own rows; filtering may only remove.
+    const order = ["/tmp/zzz-last", "/tmp/aaa-first"];
+    for (const [index, workspace] of order.entries()) {
+      actionProbe.forkSession.mockResolvedValueOnce(
+        session(`row-${index}`, { workspace, title: `세션 ${index}` }),
+      );
+      renderApp();
+      actionProbe.sidebar!.onFork(session(`source-${index}`));
+      await settle();
+      renderApp();
+    }
+
+    expect(
+      actionProbe.sidebar!.projects.map((group) => group.name),
+    ).toEqual(["aaa-first", "zzz-last"]);
+    // The shell holds the newest fork first, which is the exact reverse of the
+    // alphabetical project order: a filter that rebuilt the list from groups would
+    // hand back [row-0, row-1] here.
+    expect(actionProbe.sidebar!.sessions.map((row) => row.id)).toEqual([
+      "row-1",
+      "row-0",
+    ]);
   });
 });

@@ -48,6 +48,17 @@ import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import { SettingsDialog } from "./settings";
 import { Sidebar } from "./sidebar";
 import { sessionListModel } from "./sidebar-model";
+import { ProjectList } from "./project-list";
+import { RepoView } from "./repo-view";
+import {
+  ALL_PROJECTS_ID,
+  buildProjectGroups,
+  projectPathOf,
+  resolveProjectSelection,
+  sessionsOfProject,
+} from "./project-model";
+import type { RepoDesktopBridge } from "../../shared/repo-ipc";
+import type { ProjectPathResolution } from "../../shared/repo-ipc";
 import { RecentRequestStrip, Transcript } from "./transcript";
 import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
@@ -223,6 +234,23 @@ export default function App() {
   // On a phone the session list is a drawer, not a column: 76px of permanent rail
   // is a fifth of the screen. Wide windows never see this control.
   const [navOpen, setNavOpen] = useState(false);
+  // Which project the rail is filtered by: the sentinel for the whole rail, or a
+  // canonical project root. It is kept across session picks so the context the user
+  // chose survives the trip into a conversation.
+  const [selectedProjectId, setSelectedProjectId] = useState<string>(
+    ALL_PROJECTS_ID,
+  );
+  // The center area shows one of three things. A session pick always returns to the
+  // conversation; the repository screen and the project list are entered on purpose.
+  const [centerView, setCenterView] = useState<
+    "conversation" | "repository" | "projects"
+  >("conversation");
+  // Git project roots, as the main process resolved them. Empty until that answer
+  // arrives, and empty forever in a renderer with no desktop bridge; the grouping
+  // falls back to workspace paths in that case rather than dropping sessions.
+  const [projectResolutions, setProjectResolutions] = useState<
+    ProjectPathResolution[]
+  >([]);
   // The whole object the store answered with is kept, not only the label the sidebar
   // renders: the reasoning-card preference is a field of it, and a card toggles that
   // one field through the bridge without touching the rest.
@@ -689,7 +717,52 @@ export default function App() {
     }
   }
 
-  const filteredSessions = sessions;
+  // The preload object is frozen, so this is one reference for the process's life.
+  const repoBridge: RepoDesktopBridge | null =
+    window.agentControlDesktop?.repo ?? null;
+  // Only the paths actually in use are resolved, and only when the set changes: a
+  // session's status changes far more often than its workspace does.
+  const workspaceKey = useMemo(
+    () => [...new Set(sessions.map(projectPathOf))].sort().join("\n"),
+    [sessions],
+  );
+  useEffect(() => {
+    // No bridge (a browser or a remote client) and no workspaces both leave the
+    // grouping to the workspace paths themselves; there is nothing to resolve.
+    if (!repoBridge || !workspaceKey) return;
+    let active = true;
+    void repoBridge
+      .resolveProjects(workspaceKey.split("\n"))
+      .then((resolved) => {
+        if (active) setProjectResolutions(resolved);
+      })
+      // A failed lookup leaves the previous answer in place. Grouping by workspace
+      // path is still correct, only coarser, and clearing it would redraw the whole
+      // rail as ungrouped for a transient IPC failure.
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [repoBridge, workspaceKey]);
+
+  const projectGroups = useMemo(
+    () => buildProjectGroups(sessions, projectResolutions),
+    [sessions, projectResolutions],
+  );
+  // A project whose last session was deleted must not leave the rail filtered by a
+  // row that no longer exists.
+  const activeProjectId = useMemo(
+    () => resolveProjectSelection(selectedProjectId, projectGroups),
+    [selectedProjectId, projectGroups],
+  );
+  const activeProject = useMemo(
+    () => projectGroups.find((group) => group.id === activeProjectId) ?? null,
+    [projectGroups, activeProjectId],
+  );
+  const filteredSessions = useMemo(
+    () => sessionsOfProject(sessions, projectGroups, activeProjectId),
+    [sessions, projectGroups, activeProjectId],
+  );
   // The digits the main process sends for ⌘1-⌘9 index this list, so it has to be the
   // rail's own order: pinned first, then the state groups, newest first inside each.
   const shortcutSessions = useMemo(
@@ -782,6 +855,10 @@ export default function App() {
   const selectSession = useCallback((sessionId: string): void => {
     setSelectedId(sessionId);
     setNavOpen(false);
+    // Picking a session always returns to its conversation, and the project filter
+    // is left exactly as the user set it: the point of the project selector is
+    // that the context outlives any one session.
+    setCenterView("conversation");
     setTranscripts((current) =>
       current[sessionId]
         ? cacheTranscript(current, sessionId, current[sessionId])
@@ -1265,6 +1342,45 @@ export default function App() {
   const openResumePickerStable = useCallback(() => {
     handlersRef.current.openResumePicker();
   }, []);
+  // Stable callbacks: the sidebar is memoized, and a new identity here would redraw
+  // the whole rail on every streamed chunk.
+  const changeProject = useCallback((projectId: string) => {
+    setSelectedProjectId(projectId);
+    // 전체 프로젝트 is not one repository, so the repository screen has nothing to
+    // show: leaving it open would have to pick a project the user never chose.
+    if (projectId === ALL_PROJECTS_ID)
+      setCenterView((view) => (view === "repository" ? "conversation" : view));
+  }, []);
+  const openRepository = useCallback(() => setCenterView("repository"), []);
+  const openProjects = useCallback(() => setCenterView("projects"), []);
+  const openConversation = useCallback(() => setCenterView("conversation"), []);
+  const openRepositoryFor = useCallback((projectId: string) => {
+    setSelectedProjectId(projectId);
+    setCenterView("repository");
+  }, []);
+  const projectRoot = activeProject?.root;
+  const openProjectFolder = useCallback(() => {
+    if (!repoBridge || !projectRoot) return;
+    void repoBridge.revealFolder(projectRoot).catch((error: unknown) => {
+      setAppError(humanErrorMessage(error));
+    });
+  }, [repoBridge, projectRoot]);
+  const openProjectGithub = useCallback(() => {
+    if (!repoBridge || !projectRoot) return;
+    void repoBridge
+      .readRepository(projectRoot)
+      .then((snapshot) => {
+        const url = snapshot.remote?.webUrl;
+        if (!url) {
+          setAppError("GitHub remote가 없어서 열 수 있는 페이지가 없습니다.");
+          return;
+        }
+        return repoBridge.openExternal(url);
+      })
+      .catch((error: unknown) => {
+        setAppError(humanErrorMessage(error));
+      });
+  }, [repoBridge, projectRoot]);
   const updateBusyFlag = Boolean(updateBusy);
 
   const remoteViewOnly = remoteStatus?.permission === "view";
@@ -1305,6 +1421,13 @@ export default function App() {
         sessions={filteredSessions}
         connection={connection}
         selectedId={selectedId}
+        projects={projectGroups}
+        projectId={activeProjectId}
+        onProjectChange={changeProject}
+        onOpenRepository={openRepository}
+        onOpenProjects={openProjects}
+        onOpenProjectGithub={openProjectGithub}
+        onOpenProjectFolder={openProjectFolder}
         searchQuery={searchQuery}
         onSearchChange={setSearchQuery}
         onSearchOpen={openSearch}
@@ -1352,6 +1475,28 @@ export default function App() {
             </button>
           </div>
         </main>
+      ) : centerView === "projects" ? (
+        <ProjectList
+          projects={projectGroups}
+          activeId={activeProjectId}
+          onSelect={changeProject}
+          onOpenRepository={openRepositoryFor}
+          onClose={openConversation}
+        />
+      ) : centerView === "repository" && activeProject ? (
+        <RepoView
+          project={{
+            root: activeProject.root,
+            name: activeProject.name,
+            repository: activeProject.repository,
+          }}
+          sessions={activeProject.sessions}
+          backend={backend}
+          bridge={repoBridge}
+          onOpenSession={selectSession}
+          onClose={openConversation}
+          onError={setAppError}
+        />
       ) : selectedSession ? (
         <main className="workspace">
           <header className="chat-header">
