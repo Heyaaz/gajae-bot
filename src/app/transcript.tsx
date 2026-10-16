@@ -50,6 +50,11 @@ const RESTORE_STABLE_FRAMES = 3;
 // Bounded work. A restoration that cannot settle gives up instead of fighting the user.
 const RESTORE_MAX_FRAMES = 60;
 
+// Bounded work for the hand-back to the newest content. Rows below the viewport are
+// unmounted, so its bottom is an estimate that grows a frame at a time, and the composer
+// giving up its typing height moves the viewport under the write.
+const LATEST_SETTLE_MAX_FRAMES = 60;
+
 // Constructing a DateTimeFormat costs more than formatting with one, and every todo
 // snapshot carries the observation time it was read at. Same 24-hour shape the
 // controller labels its own observations with, so the two read alike.
@@ -249,6 +254,16 @@ function layoutTopWithin(
 export interface TranscriptProps {
   sessionId: string;
   items: TranscriptItem[];
+  /**
+   * Bumped by the shell every time this window sends a request into the open session.
+   *
+   * The reader who just pressed Enter asked for the answer, so the view has to be at the
+   * newest content when it arrives. A counter rather than something compared against the
+   * transcript: a durable rebuild replaces a live row with its stored twin and can hand
+   * the same request a new id, which would look like a fresh send and move a view the
+   * user had deliberately scrolled away from.
+   */
+  sentRequestToken?: number;
   compacting?: boolean;
   /** The persisted, window-wide reasoning-card preference. */
   thoughtsExpanded?: boolean;
@@ -262,6 +277,7 @@ export interface TranscriptProps {
 export function Transcript({
   sessionId,
   items,
+  sentRequestToken = 0,
   compacting = false,
   thoughtsExpanded = false,
   onToggleThoughtsExpanded,
@@ -300,6 +316,17 @@ export function Transcript({
   // Frames of the in-flight resize restoration, so a gesture, a session switch, or the
   // next resize can take it over instead of a stale correction landing on top of it.
   const restoreFrameRef = useRef(0);
+  // Frames of the in-flight hand-back to the newest content, for the same reason.
+  const latestFrameRef = useRef(0);
+  // Set while this view is deliberately on its way to the newest content, which is the
+  // one thing the position cannot say for itself: mid-flight it sits short of the bottom
+  // it is heading for, and every consumer of the position reads that as a reader who
+  // took the view. It has to be its own flag rather than `selfScrollingRef`, which the
+  // follow chase clears in its effect cleanup -- the request's own row is what re-runs
+  // that effect, so the cleanup landed inside the hand-back and left every one of its
+  // writes unclaimed. Measured: the chase read them as a gesture, stood itself down, and
+  // left the view 376px above the request that had just been sent.
+  const handingBackRef = useRef(false);
   // The reading width the in-flight restoration was started for. The observer compares
   // against it so a restoration already converging on a position is never restarted for a
   // width it is already handling -- which is what kept it running while the user typed.
@@ -311,6 +338,9 @@ export function Transcript({
     anchor: TranscriptViewportAnchor | null;
   } | null>(null);
   const [following, setFollowing] = useState(true);
+  // The send this view has already answered for. Seeded with the token it mounted with so
+  // opening a session is not read as a request that was just typed.
+  const answeredSendRef = useRef(sentRequestToken);
 
   const blocks = useMemo(() => groupTranscriptItems(items), [items]);
   // The restoration runs across frames and has to name the anchored block, so it reads the
@@ -351,7 +381,7 @@ export function Transcript({
   function rememberViewport(): void {
     const scroller = transcriptRef.current;
     const content = scroller?.querySelector<HTMLElement>(".transcript-window");
-    if (!scroller || !content || restoreFrameRef.current || selfScrollingRef.current || resizePreparedRef.current) return;
+    if (!scroller || !content || restoreFrameRef.current || selfScrollingRef.current || handingBackRef.current || resizePreparedRef.current) return;
     const saved = stableViewportRef.current;
     const width = transcriptReadingWidth(scroller);
     if (saved && saved.width !== width) return;
@@ -392,6 +422,7 @@ export function Transcript({
     if (sessionRef.current === sessionId) return;
     // A pending restoration belongs to the session the user left.
     cancelResizeRestore();
+    cancelHandBack();
     sessionRef.current = sessionId;
     stableViewportRef.current = null;
     followingRef.current = true;
@@ -468,7 +499,7 @@ export function Transcript({
     // user was scrolling up, pulling the view up to 96px past where they had stopped.
     let interrupted = false;
     const noteForeignScroll = (): void => {
-      if (!selfScrollingRef.current) interrupted = true;
+      if (!selfScrollingRef.current && !handingBackRef.current) interrupted = true;
     };
     transcriptRef.current.addEventListener("scroll", noteForeignScroll, {
       passive: true,
@@ -572,6 +603,15 @@ export function Transcript({
     if (restoreFrameRef.current === 0) return;
     cancelAnimationFrame(restoreFrameRef.current);
     releaseResizeRestore();
+  }
+
+  /** Drop a hand-back in flight: a gesture, a session switch, or a re-anchor owns the view now. */
+  function cancelHandBack(): void {
+    if (latestFrameRef.current !== 0) {
+      cancelAnimationFrame(latestFrameRef.current);
+      latestFrameRef.current = 0;
+    }
+    handingBackRef.current = false;
   }
 
   /**
@@ -762,6 +802,7 @@ export function Transcript({
   useEffect(
     () => () => {
       window.clearTimeout(settleTimerRef.current);
+      cancelAnimationFrame(latestFrameRef.current);
     },
     [],
   );
@@ -773,6 +814,7 @@ export function Transcript({
     // A search hit is usually not mounted, so it has to be scrolled to by index before
     // its element exists to highlight. Navigation wins over a pending restoration.
     cancelResizeRestore();
+    cancelHandBack();
     followingRef.current = false;
     setFollowing(false);
     virtualizer.scrollToIndex(index, { align: "center" });
@@ -808,6 +850,9 @@ export function Transcript({
       ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
       : 0;
     if (!transcriptGestureClaimsView(deltaY, remaining)) return;
+    // A gesture that takes the view ends a hand-back: the position this is heading for
+    // is the one the reader is leaving.
+    cancelHandBack();
     scrolledAwayRef.current = true;
     // Only the upward claim needs the window; see gestureAtRef.
     if (deltaY < 0) gestureAtRef.current = performance.now();
@@ -816,7 +861,7 @@ export function Transcript({
   function updateScrollFollowing(): void {
     const transcript = transcriptRef.current;
     if (!transcript) return;
-    if (selfScrollingRef.current) return;
+    if (selfScrollingRef.current || handingBackRef.current) return;
     const readingWidth = transcriptReadingWidth(transcript);
     if (stableViewportRef.current && stableViewportRef.current.width !== readingWidth) return;
     const decision = transcriptFollowDecision({
@@ -854,6 +899,15 @@ export function Transcript({
     }, 120);
   }
 
+  // Sending a request hands the view back to the newest content. Everything the runtime
+  // streams afterwards follows it until the reader scrolls away again -- that gesture is
+  // the one that takes the view, and it is what already stands down the corrections.
+  useEffect(() => {
+    if (answeredSendRef.current === sentRequestToken) return;
+    answeredSendRef.current = sentRequestToken;
+    scrollToLatest();
+  }, [sentRequestToken]);
+
   function scrollToLatest(): void {
     cancelResizeRestore();
     followingRef.current = true;
@@ -862,6 +916,7 @@ export function Transcript({
     // the newest content, so the reading intent and its gesture window go with the request.
     scrolledAwayRef.current = false;
     gestureAtRef.current = 0;
+    cancelHandBack();
     if (blocks.length === 0) return;
     // Scrolling by index rather than to scrollHeight: rows above are unmounted, so the
     // total height is still an estimate and a raw scrollTop lands short. Dragging the
@@ -870,6 +925,61 @@ export function Transcript({
     // Instant, not smooth: a smooth scroll makes the virtualizer defer measuring the rows
     // it passes, which is what left the first screen unmeasured and overlapping.
     virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+    // One write is not the hand-back: it lands on a bottom that is still an estimate, and
+    // the layout keeps moving under it -- the composer gives back the height it held for
+    // the draft, and the rows the request appended are measured into place. A single
+    // settled frame was measured exiting after 15ms with the viewport still 379 of its
+    // eventual 477px tall, after which the compensation walked the view 472px back up.
+    // So the write is repeated until the geometry itself holds still, exactly the way a
+    // resize restoration finishes, and the claim over those writes outlives the chase
+    // effect's cleanup.
+    handingBackRef.current = true;
+    let attempts = 0;
+    let stableFrames = 0;
+    let previous: { total: number; height: number; scrollHeight: number } | null = null;
+    const settle = (): void => {
+      latestFrameRef.current = 0;
+      const scroller = transcriptRef.current;
+      attempts += 1;
+      if (
+        !scroller ||
+        !followingRef.current ||
+        scrolledAwayRef.current ||
+        attempts > LATEST_SETTLE_MAX_FRAMES
+      ) {
+        finish();
+        return;
+      }
+      const wanted = scroller.scrollHeight - scroller.clientHeight;
+      scroller.scrollTop = wanted;
+      const geometry = {
+        total: virtualizer.getTotalSize(),
+        height: scroller.clientHeight,
+        scrollHeight: scroller.scrollHeight,
+      };
+      const unchangedGeometry =
+        previous !== null &&
+        Math.abs(geometry.total - previous.total) <= 1 &&
+        geometry.height === previous.height &&
+        geometry.scrollHeight === previous.scrollHeight;
+      previous = geometry;
+      const landed =
+        Math.abs(scroller.scrollTop - wanted) <= 0.5 &&
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
+      stableFrames = landed && unchangedGeometry ? stableFrames + 1 : 0;
+      if (stableFrames >= RESTORE_STABLE_FRAMES) {
+        finish();
+        return;
+      }
+      latestFrameRef.current = requestAnimationFrame(settle);
+    };
+    const finish = (): void => {
+      handingBackRef.current = false;
+      // The position has the last word: a hand-back that could not reach the newest
+      // content must not leave the button that asks for it hidden.
+      updateScrollFollowing();
+    };
+    latestFrameRef.current = requestAnimationFrame(settle);
   }
 
   if (items.length === 0 && !compacting) {

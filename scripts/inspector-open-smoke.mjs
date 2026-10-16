@@ -15,10 +15,12 @@
 //      re-wraps every block and throws every measured row height away, so the view has to
 //      hold the block the viewport top sits on -- or, when it was following, the bottom.
 //   5. A small downward wheel notch, inside the slack band under the newest content, moves
-//      the view by a notch and leaves it there. Both corrections that keep the newest
-//      content in view are deferred (80ms of chase, 120ms of settle timer), so this is the
-//      one case a scripted scrollTop cannot stand in for: the intent comes from real input,
-//      and what arrives afterwards (a streamed reply under the reader) may not move it.
+//      the view by a notch and leaves it there, and submitting a prompt hands the view back
+//      to the newest content. Both corrections that keep the newest content in view are
+//      deferred (80ms of chase, 120ms of settle timer), so this is the one case a scripted
+//      scrollTop cannot stand in for: the intent comes from real input, and what arrives
+//      afterwards on its own (a streamed reply under a reader who scrolled away) may not
+//      move them.
 //
 // Below 980px there is no room for a third column, so the panel is deliberately an
 // overlay; there it must be fully opaque instead of clear of the text.
@@ -774,13 +776,19 @@ function checkTyping(result) {
 // on its own reads as "already near the bottom". What separates the two is the reading intent,
 // and it used to be cleared by any downward delta: the notch switched following back on, and
 // the deferred corrections (80ms of follow chase, 120ms of settle timer) carried the view the
-// rest of the way. The intent is a latch now, so the case is measured in two halves -- the
-// notch the reader asked for moves the view by a notch, and the reply that keeps arriving
-// under it leaves the position alone until the reader asks for the bottom outright.
+// rest of the way. The intent is a latch now, so the notch is measured as one gesture: it moves
+// the view by a notch, and nothing moves it the rest of the way.
 //
-// The gesture has to be real wheel input: a scripted scrollTop carries no intent, and the
-// intent is half of what is being measured. The notches go through the same debugger path as
-// the model menu's, interleaved with the snapshots from here.
+// The other half is the request. Following the newest content is what a reader working at the
+// bottom of a session wants, and the send is the gesture that asks for it: it hands the view
+// back -- latch cleared, following resumed, the view on the newest block -- because the request
+// and the reply to it have to appear where the reader is looking. Only the request may do that,
+// which is what the rest of the case measures: the reply then streams in under a reader who
+// scrolled away, and their block and its offset have to survive every chunk of it.
+//
+// The gestures have to be real input: a scripted scrollTop carries no intent, and the intent is
+// half of what is being measured. The notches go through the same debugger path as the model
+// menu's, interleaved with the snapshots from here.
 const FOLLOW_NOTCH_PX = 120
 // Notches up until the reader is inside the slack band. Capped so a transcript that will not
 // scroll fails as a case instead of looping.
@@ -793,8 +801,25 @@ const FOLLOW_WHEEL_SETTLE_MS = 260
 // Past the two corrections that did the jumping: 80ms of follow chase and 120ms of settle
 // timer, plus a measurement pass for the rows the gesture mounted.
 const FOLLOW_JUMP_SETTLE_MS = 900
-// Past the mock backend's own reply, which streams its last delta 1490ms after the submit.
-const FOLLOW_CHUNK_SETTLE_MS = 1900
+// What the send gets to reach the newest content before that counts as having failed, and how
+// often the page reads the position while it does. The requirement is that the submit *ends* on
+// the newest content, not that it is there by a given frame: the hand-back writes the bottom
+// over a few frames while the composer and the request's own row are still settling, so it is
+// read as a bounded poll on the page's own clock and the latency it took comes back with the
+// verdict. Short of the mock backend's own reply block (360ms after the submit), so a run that
+// passes is the request handing the view over before the reply arrives under it.
+const FOLLOW_SEND_POLL_MS = 700
+const FOLLOW_SEND_POLL_STEP_MS = 25
+// Notches up after the send. Two, because the send has just put the view on the newest content
+// and this is the gesture that takes it off again.
+const FOLLOW_AWAY_NOTCHES = 2
+const FOLLOW_AWAY_NOTCH_GAP_MS = 40
+const FOLLOW_AWAY_SETTLE_MS = 200
+// Past the mock backend's own reply, which streams its last delta 1490ms after the submit
+// (its block at 360ms, then deltas at 650, 1070 and 1490ms). Measured from the submit, so the
+// reader is scrolled away for the chunks of it, and the window they sit through is reported
+// with the verdict instead of being left implicit.
+const FOLLOW_STREAM_END_MS = 1700
 // The same budget the scripted return to the bottom gets in the first pass: the correction
 // closes the estimate gap over a few measurement frames.
 const FOLLOW_LATEST_SETTLE_MS = 1600
@@ -822,12 +847,13 @@ const followSetupProbe = `(async () => {
   };
 })()`
 
-// The reading state, read the same way at every step of the case. Layout pixels throughout:
-// the position, the gap under it, and the block the viewport top edge is on -- which is the
-// text the reader is looking at.
-const followSnapshotProbe = `(() => {
+// The reading state, read the same way at every step of the case -- including from inside the
+// send's own poll, which needs the same numbers on the page's own clock. Layout pixels
+// throughout: the position, the gap under it, the block the viewport top edge is on -- which is
+// the text the reader is looking at -- and when it was read.
+const followReading = `(() => {
   const transcript = document.querySelector('.transcript');
-  if (!transcript) return { error: 'transcript is missing' };
+  if (!transcript) return { error: 'transcript is missing', atMs: performance.now() };
   const viewport = transcript.getBoundingClientRect();
   // Geometrically topmost, not first in DOM order: mounted slots are in arbitrary order, and
   // the point is the sentence under the reader's eye.
@@ -840,7 +866,14 @@ const followSnapshotProbe = `(() => {
     if (!entry || box.top < entry.top) entry = { id: node.id, top: box.top };
   }
   const slots = [...document.querySelectorAll('.transcript-slot')];
+  const last = slots.length
+    ? slots.reduce((newest, slot) =>
+        Number(slot.dataset.index) > Number(newest.dataset.index) ? slot : newest,
+      )
+    : null;
+  const lastEntry = last?.querySelector('[id^="transcript-"]') ?? null;
   return {
+    atMs: performance.now(),
     gap: Math.round(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight),
     scrollTop: Math.round(transcript.scrollTop * 10) / 10,
     clientHeight: transcript.clientHeight,
@@ -850,18 +883,32 @@ const followSnapshotProbe = `(() => {
     entry: entry
       ? { id: entry.id, offset: Math.round((entry.top - viewport.top) * 10) / 10 }
       : null,
-    lastIndex: slots.length
-      ? Math.max(...slots.map((slot) => Number(slot.dataset.index)))
-      : -1,
+    // The newest block, where it sits, and how much text it renders. Content arriving under the
+    // reader is what this has to be able to name: either a newer row appeared, or the reply's own
+    // text grew -- it is one block whose height changes, not a new row per chunk.
+    newest: lastEntry
+      ? {
+          id: lastEntry.id,
+          index: Number(last.dataset.index),
+          chars: (lastEntry.textContent || '').trim().length,
+        }
+      : null,
   };
-})()`
+})`
+
+const followSnapshotProbe = followReading + '()'
 
 // Submits a prompt the way the composer is submitted -- the native value setter, then a real
-// click on its send button -- so the answer that arrives under the reader is a real arrival
-// rather than a scripted edit. The text is more than the composer's own ceiling, so the send
-// does not also change the transcript's height before it is submitted.
-const followPromptProbe = `(async () => {
+// click on its send button -- so the view is handed the newest content by the gesture the app
+// answers, and the reply that arrives under the reader is a real arrival rather than a scripted
+// edit. The text is more than the composer's own ceiling, so the send does not also change the
+// transcript's height before it is submitted. The send is then read where it happens: the poll
+// runs on the page's own clock until the view is on the newest content or its budget is gone,
+// and the latency that took, the reading it ended on, and when the click landed all come back.
+const followPromptProbe = `(async (pollMs, stepMs) => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const read = () => ${followReading}();
+  const startedAtMs = performance.now();
   const textarea = document.querySelector('.composer textarea');
   if (!textarea) return { error: 'the composer is missing' };
   if (textarea.disabled) return { error: 'the composer is read-only in this window' };
@@ -874,11 +921,26 @@ const followPromptProbe = `(async () => {
   // send slot has not re-rendered from the typed text yet. Either way the arrival is what the
   // case reads, not the submission.
   const send = document.querySelector('.composer .send-button:not(.send-button--stop)');
+  const clickedAtMs = performance.now();
   if (send) send.click();
   else textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-  await wait(${FOLLOW_CHUNK_SETTLE_MS});
-  return { submitted: true };
-})()`
+  let state = read();
+  let readings = 1;
+  while (
+    state.gap > ${BOTTOM_TOLERANCE_PX} ||
+    state.chip
+  ) {
+    if (state.atMs - clickedAtMs >= pollMs) break;
+    await wait(stepMs);
+    state = read();
+    readings += 1;
+  }
+  const convergedAtMs =
+    state.gap <= ${BOTTOM_TOLERANCE_PX} && !state.chip
+      ? Math.round(state.atMs - clickedAtMs)
+      : null;
+  return { submitted: true, startedAtMs, clickedAtMs, convergedAtMs, readings, state };
+})(${FOLLOW_SEND_POLL_MS}, ${FOLLOW_SEND_POLL_STEP_MS})`
 
 // The other half of the requirement: asking for the newest content outright hands the view
 // back, so the latch above may not leave the reader stuck short of it.
@@ -913,11 +975,58 @@ async function runFollowCase(win, wheel) {
   await new Promise((r) => setTimeout(r, FOLLOW_JUMP_SETTLE_MS))
   const afterNotch = await snapshot()
 
+  // The request. The probe owns the click and polls for the view on the newest content on its
+  // own clock, so what is left here is the reader: back off the bottom through real notches
+  // while the reply is still streaming in under them.
+  const sentAt = Date.now()
   const prompted = await win.webContents.executeJavaScript(followPromptProbe)
-  const afterChunks = prompted.error ? prompted : await snapshot()
+  const afterSend = prompted.error ? prompted : prompted.state
+  // The case's own clock for the reply, timed from the click rather than from the submit
+  // probe's round trip: the page reported when inside the probe the click landed.
+  const clickAt = sentAt + (prompted.clickedAtMs ?? 0) - (prompted.startedAtMs ?? 0)
+
+  // A reader who asked for the newest content and then started reading an older block. Real
+  // notches, because an upward gesture is what takes the view off the bottom.
+  for (let step = 0; step < FOLLOW_AWAY_NOTCHES; step += 1) {
+    await wheel(setup.centerX, setup.centerY, -FOLLOW_NOTCH_PX)
+    await new Promise((r) => setTimeout(r, FOLLOW_AWAY_NOTCH_GAP_MS))
+  }
+  await new Promise((r) => setTimeout(r, FOLLOW_AWAY_SETTLE_MS))
+  const scrolledAway = await snapshot()
+
+  // The rest of the reply, arriving under a reader who is not following it.
+  await new Promise((r) =>
+    setTimeout(r, Math.max(0, FOLLOW_STREAM_END_MS - (Date.now() - clickAt))),
+  )
+  const afterStream = await snapshot()
+
   const latest = await win.webContents.executeJavaScript(followLatestProbe)
   const afterButton = latest.error ? latest : await snapshot()
-  return { before, afterNotch, prompted, afterChunks, latest, afterButton }
+  // Page-clock distances from the click, so the numbers in the verdict read against the reply's
+  // own timing: its block at 360ms, its deltas at 650, 1070 and 1490ms.
+  const sinceClick = (reading) =>
+    reading.atMs === undefined || prompted.error ? null : Math.round(reading.atMs - prompted.clickedAtMs)
+  const awayAtMs = sinceClick(scrolledAway)
+  const streamEndAtMs = sinceClick(afterStream)
+  return {
+    before,
+    afterNotch,
+    prompted,
+    afterSend,
+    scrolledAway,
+    afterStream,
+    latest,
+    afterButton,
+    // What the assertions above rest on: how long the send took to reach the newest content,
+    // when the reader left the bottom, and how much of the reply's stream they were off it for.
+    timing: {
+      sendToNewestMs: prompted.convergedAtMs ?? null,
+      awayAtMs,
+      streamEndAtMs,
+      streamedForMs:
+        awayAtMs === null || streamEndAtMs === null ? null : streamEndAtMs - awayAtMs,
+    },
+  }
 }
 
 function checkFollowJump(follow) {
@@ -966,60 +1075,104 @@ function checkFollowJump(follow) {
     )
   }
 
-  // The reply that streams in under the reader. Its chunks land below the viewport, so the
-  // block at the viewport top and its offset both have to survive them -- and with them the
-  // 80ms chase and 120ms settle timer, which are only started when following is on. Painted
-  // geometry, not scrollTop: re-measuring the rows the arriving chunks mount moves the
-  // position without moving what the reader is looking at.
+  // The request: the send is the gesture that says the reader is done with the block they were
+  // on, so it has to leave the view on the newest content with the way back gone.
   if (follow.prompted.error) {
-    failures.push(`small downward scroll: ${follow.prompted.error}`)
+    failures.push(`sent request: ${follow.prompted.error}`)
+  } else if (!follow.afterSend || follow.afterSend.error) {
+    failures.push('sent request: the reading position could not be read')
   } else {
-    const after = follow.afterChunks
-    if (after.error) {
-      failures.push(`small downward scroll: ${after.error}`)
+    const sent = follow.afterSend
+    // The request's own bubble lands in the transcript right after the send, and the reply
+    // after it, so the distance to the bottom is read on the DOM the reader is looking at. The
+    // reading is the one the poll ended on: the send has to *end* on the newest content, and
+    // how long it took to get there is reported, not asserted away.
+    if (sent.gap > BOTTOM_TOLERANCE_PX) {
+      failures.push(
+        `sent request: the view stayed where it was instead of the newest content ` +
+          `(${sent.gap}px above the bottom after ${FOLLOW_SEND_POLL_MS}ms, ` +
+          `tolerance ${BOTTOM_TOLERANCE_PX}px)`,
+      )
+    }
+    if (sent.chip) {
+      failures.push(
+        'sent request: the view did not hand back to the newest content ' +
+          '(최신 내용으로 is still showing)',
+      )
+    }
+  }
+
+  // The reader who scrolled away while the reply streamed -- the regression this case was
+  // written for. Its chunks land below the viewport, so the block at the viewport top and its
+  // offset both have to survive them, and with them the 80ms chase and the 120ms settle timer
+  // the request just started. Painted geometry, not scrollTop: re-measuring the rows the
+  // arriving chunks mount moves the position without moving what the reader is looking at.
+  if (!follow.scrolledAway || follow.scrolledAway.error) {
+    failures.push('reading while the reply streamed: the reading position could not be read')
+  } else if (!follow.afterStream || follow.afterStream.error) {
+    failures.push('reading while the reply streamed: the reading position could not be read')
+  } else {
+    const away = follow.scrolledAway
+    const after = follow.afterStream
+    const streamedForMs = follow.timing?.streamedForMs ?? 0
+    if (!away.chip) {
+      failures.push(
+        'reading while the reply streamed: the wheel up did not take the view off the ' +
+          'newest content (최신 내용으로 is not showing)',
+      )
+    }
+    // A block under the reader that nobody can name is not a position, and the reply growing
+    // is what has to leave it where it is.
+    if (!away.entry || !after.entry) {
+      failures.push('reading while the reply streamed: no block at the viewport top to compare')
+    } else if (after.entry.id !== away.entry.id) {
+      failures.push(
+        `reading while the reply streamed: the text under the reader changed ` +
+          `(${away.entry.id} -> ${after.entry.id})`,
+      )
     } else {
-      if (after.lastIndex <= before.lastIndex) {
+      const drifted = Math.abs(after.entry.offset - away.entry.offset)
+      if (drifted > HISTORY_TOLERANCE_PX) {
         failures.push(
-          `small downward scroll: no content arrived under the reader ` +
-            `(${before.lastIndex} -> ${after.lastIndex} blocks)`,
+          `reading while the reply streamed: the block under the reader moved ` +
+            `${drifted.toFixed(1)}px in ${streamedForMs}ms of chunks`,
         )
       }
-      if (!after.entry || !afterNotch.entry) {
-        failures.push(
-          'small downward scroll: no block at the viewport top to compare',
-        )
-      } else if (after.entry.id !== afterNotch.entry.id) {
-        failures.push(
-          `small downward scroll: the text under the reader changed while reading ` +
-            `(${afterNotch.entry.id} -> ${after.entry.id})`,
-        )
-      } else {
-        const drifted = Math.abs(after.entry.offset - afterNotch.entry.offset)
-        if (drifted > HISTORY_TOLERANCE_PX) {
-          failures.push(
-            `small downward scroll: the block under the reader moved ${drifted.toFixed(1)}px ` +
-              `while ${after.lastIndex - before.lastIndex} blocks arrived`,
-          )
-        }
-      }
-      if (!after.chip) {
-        failures.push('small downward scroll: 최신 내용으로 went away while reading')
-      }
+    }
+    if (!away.newest || !after.newest) {
+      failures.push(
+        'reading while the reply streamed: no reply under the reader to watch ' +
+          `(${away.newest?.id ?? 'none'} -> ${after.newest?.id ?? 'none'})`,
+      )
+    } else if (
+      after.newest.index < away.newest.index ||
+      (after.newest.index === away.newest.index &&
+        after.newest.chars <= away.newest.chars)
+    ) {
+      failures.push(
+        `reading while the reply streamed: no content arrived under the reader in ` +
+          `${streamedForMs}ms (${away.newest.id} at ${away.newest.index} with ` +
+          `${away.newest.chars} characters -> ${after.newest.id} at ${after.newest.index} ` +
+          `with ${after.newest.chars})`,
+      )
+    }
+    if (!after.chip) {
+      failures.push('reading while the reply streamed: 최신 내용으로 went away while reading')
     }
   }
 
   // ...and the reader can always say "newest content" and get it.
   if (follow.latest.error) {
-    failures.push(`small downward scroll: ${follow.latest.error}`)
-  } else if (follow.afterButton.error) {
-    failures.push(`small downward scroll: ${follow.afterButton.error}`)
+    failures.push(`newest content: ${follow.latest.error}`)
+  } else if (!follow.afterButton || follow.afterButton.error) {
+    failures.push('newest content: the reading position could not be read')
   } else if (
     Math.abs(follow.afterButton.gap) > BOTTOM_TOLERANCE_PX ||
     follow.afterButton.chip
   ) {
     failures.push(
-      `small downward scroll: 최신 내용으로 went to ${follow.afterButton.gap}px ` +
-        `above the newest content`,
+      `newest content: the button went to ${follow.afterButton.gap}px ` +
+        `above the newest content (tolerance ${BOTTOM_TOLERANCE_PX}px)`,
     )
   }
   return failures
@@ -1511,11 +1664,11 @@ app.whenReady().then(async () => {
     for (const failure of checkTyping(typing)) failures.push(`${width}px: ${failure}`)
   }
 
-  // The small downward scroll, at the wide size and after the passes above. It is the only
-  // case that submits a prompt of its own, and the mock backend answers with a streamed reply,
-  // so the transcript is a few blocks longer afterwards -- which moves where the cases above
-  // measure the reader in the seeded content. That is a change to their subject, not to this
-  // one, so this case runs after all of them rather than inside the loop.
+  // The follow case, at the wide size and after the passes above. It is the only case that
+  // submits a prompt of its own, and the mock backend answers with a streamed reply, so the
+  // transcript is a few blocks longer afterwards -- which moves where the cases above measure
+  // the reader in the seeded content. That is a change to their subject, not to this one, so
+  // this case runs after all of them rather than inside the loop.
   win.setSize(1400, 900)
   await new Promise((r) => setTimeout(r, 900))
   const follow = await runFollowCase(win, wheel)

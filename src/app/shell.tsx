@@ -211,6 +211,10 @@ export default function App() {
     null,
   );
   const [newSessionOpen, setNewSessionOpen] = useState(false);
+  // Bumped for every request this window sends into the open session. The transcript
+  // reads it as "the reader asked for this" and takes the view to the newest content,
+  // which is the one append that may move a view someone had scrolled away from.
+  const [sentRequestToken, setSentRequestToken] = useState(0);
   const [resumeOpen, setResumeOpen] = useState(false);
   const [historySessions, setHistorySessions] = useState<HistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -943,6 +947,10 @@ export default function App() {
     sessionId: string,
     input: MessageInput,
   ): Promise<MessageDelivery> {
+    // Answering the reader is part of sending: the transcript takes the view to the
+    // newest content, so the request they just made and the reply to it appear where
+    // they are looking instead of below a scroll position they had left behind.
+    setSentRequestToken((token) => token + 1);
     try {
       return await backend.sendMessage(
         await resolveSessionId(sessionId),
@@ -1410,6 +1418,7 @@ export default function App() {
               <Transcript
                 sessionId={selectedSession.id}
                 items={selectedTranscript}
+                sentRequestToken={sentRequestToken}
                 compacting={selectedSession.phase === "compacting"}
                 thoughtsExpanded={preferences.thoughtsExpanded}
                 onToggleThoughtsExpanded={toggleThoughtsExpanded}
