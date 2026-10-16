@@ -1,16 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, stat, writeFile, rm } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   GjcSdkController,
+  LIVE_EVIDENCE_GRACE_MS,
   busyPromptError,
   cancelledOperationError,
   gitBranchFromHeader,
   inferToolName,
   persistedTranscriptRunning,
+  readTranscriptTail,
   sharedTranscriptItems,
   toolStatus,
   readableModelLabel,
@@ -1300,6 +1302,26 @@ describe("detached task launch markers", () => {
     label: id,
   });
 
+  /**
+   * Ordinary tool activity that pushes a launch marker out of the run-state window.
+   *
+   * `readTranscriptTail` starts at the last 256KB, so a launch row buried under later
+   * rows is invisible to every run-state read while the full-history read that installs
+   * the session still sees it -- the discrepancy the reported session showed.
+   */
+  const paddingRows = (count: number) =>
+    Array.from({ length: count }, (_, index) => ({
+      type: "message",
+      id: `pad-${index}`,
+      timestamp: "2026-01-01T00:00:00.500Z",
+      message: {
+        role: "toolResult",
+        toolCallId: `call-pad-${index}`,
+        toolName: "read",
+        content: [{ type: "text", text: `padding row ${index}` }],
+      },
+    }));
+
   /** One session whose transcript lives in a private agent directory. */
   async function markerHarness(rows: unknown[]) {
     const root = await mkdtemp(path.join(tmpdir(), "async-marker-"));
@@ -1352,7 +1374,7 @@ describe("detached task launch markers", () => {
       expect(await internals.discoveredRunState("s1")).toBe("idle");
       expect(cli.queryItems).toHaveBeenCalledTimes(1);
       // A durable rebuild meets the same rows and must not re-arm the latch.
-      internals.pendingAsyncWorkSessions.add("s1");
+      internals.pendingAsyncWorkSessions.set("s1", ["job-1"]);
       await internals.refreshTranscriptFromFile("s1");
       expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
       expect(await internals.discoveredRunState("s1")).toBe("idle");
@@ -1497,6 +1519,140 @@ describe("detached task launch markers", () => {
     }
   });
 
+  it("settles a session whose launch markers sit behind every window a run-state read parses", async () => {
+    // The reported session's shape: the detached launches sit under a long run of
+    // later rows, far outside the 256KB tail a run-state read parses. The full-history
+    // read that installs a session latched both markers, every bounded run-state read
+    // after that saw neither and computed idle, and the latch turned that idle back
+    // into running -- so the row never left 작업 중 with no job running.
+    const rows = [
+      taskLaunch("job-1"),
+      taskLaunch("job-2"),
+      ...paddingRows(2000),
+      terminalStop(),
+    ];
+    const { cli, internals, jobs, cleanup } = await markerHarness(rows);
+    jobs();
+    try {
+      // The transcript on its own reads running: neither launch has a release row.
+      expect(persistedTranscriptRunning(rows)).toBe(true);
+      const filePath = await internals.locateSharedTranscriptFile("s1");
+      const info = await stat(filePath);
+      const tail = await readTranscriptTail(filePath, info.size, false);
+      if (!tail) throw new Error("the bounded run-state window parsed no rows");
+      // The window the bounded read parses on its own cannot see either marker, so
+      // nothing in it can retire one.
+      expect(
+        tail.some((row: any) => row?.message?.toolName === "task"),
+      ).toBe(false);
+      expect(persistedTranscriptRunning(tail)).toBe(false);
+      // The install path reads the whole file: this is where those markers are
+      // known, and where the runtime has to be asked about them.
+      await internals.refreshTranscriptFromFile("s1");
+      expect(cli.queryItems).toHaveBeenCalledWith("s1", "runtime.jobs.list", {}, {
+        repo: "/repo",
+      });
+      // Neither job runs any more, so the row leaves 작업 중 rather than holding
+      // markers no read of the current window can even name.
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps the row running when the job behind an out-of-window launch is still alive", async () => {
+    // The complement of the test above: the window cannot see the launch marker, but
+    // the job it names is still running. A window without that row is not evidence
+    // the work ended, and a real detached task outlives the turn that launched it.
+    const rows = [
+      taskLaunch("job-1"),
+      taskLaunch("job-2"),
+      ...paddingRows(2000),
+      terminalStop(),
+    ];
+    const { cli, internals, jobs, cleanup } = await markerHarness(rows);
+    jobs(runningJob("job-1"));
+    try {
+      await internals.refreshTranscriptFromFile("s1");
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(cli.queryItems).toHaveBeenCalledWith("s1", "runtime.jobs.list", {}, {
+        repo: "/repo",
+      });
+      // Only the job the runtime still reports survives, and it is what the latch and
+      // every later read rest on.
+      expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
+      expect(
+        internals.asyncJobReconciliations.get("s1")?.deadJobIds.has("job-2"),
+      ).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("holds an out-of-window latch while the runtime cannot be asked about it", async () => {
+    const rows = [taskLaunch("job-1"), ...paddingRows(2000), terminalStop()];
+    const { cli, internals, cleanup } = await markerHarness(rows);
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => {
+        if (query === "runtime.jobs.list")
+          throw new SdkCliError(
+            "endpoint_stale",
+            "The SDK endpoint is stale or unavailable.",
+          );
+        return [];
+      },
+    );
+    try {
+      await internals.refreshTranscriptFromFile("s1");
+      // An unanswered query is not evidence the work ended, so the latch stands -- and
+      // a runtime that cannot answer is not re-asked on every read either.
+      expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(cli.queryItems).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("reconciles a latch no read of the cached file size could see", async () => {
+    const { cli, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    jobs();
+    try {
+      // The marker is retired and the verdict cached against this file size.
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      // A full-history read from before that job ended left a marker behind that this
+      // file size cannot show. It must not be trusted on its own, and it must not
+      // inherit the cached verdict's age either: the runtime was never asked about it.
+      internals.pendingAsyncWorkSessions.set("s1", ["job-old"]);
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+      expect(cli.queryItems).toHaveBeenCalledTimes(2);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("settles an ordinary turn without asking the runtime anything", async () => {
+    const { cli, internals, cleanup } = await markerHarness([
+      userRequest(),
+      terminalStop(),
+    ]);
+    try {
+      // No launch marker and no latch: nothing here needs the runtime, so a finished
+      // turn settles as soon as its terminal row is on disk.
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(cli.queryItems).not.toHaveBeenCalled();
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("keeps the release rows the transcript writes for itself", () => {
     // A completed detached task, an awaited subagent, and a polled job inspector all
     // release the launch marker without any query: this is the state machine the
@@ -1597,6 +1753,270 @@ describe("todo snapshot phases", () => {
       if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
       else process.env.GJC_CODING_AGENT_DIR = previous;
       await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * A live report arms an in-memory latch, and only another report releases it.
+ *
+ * Discovery also reuses a latched row's status instead of asking the transcript again,
+ * so a session whose reports stopped kept the running status its last report set for
+ * the life of the process: the sidebar held a finished row in its working group for 16
+ * hours while a fresh controller process reading the same transcript reported idle.
+ * These tests cover the aging that releases it and the guards that must survive it.
+ */
+describe("quiet live evidence", () => {
+  const assistantFinal = () => ({
+    type: "message",
+    id: "assistant-final",
+    timestamp: "2026-01-01T00:00:02.000Z",
+    message: {
+      role: "assistant",
+      stopReason: "stop",
+      content: [{ type: "text", text: "최신화 끝났습니다" }],
+    },
+  });
+  const userRequest = () => ({
+    type: "message",
+    id: "user-1",
+    timestamp: "2026-01-01T00:00:01.000Z",
+    message: { role: "user", content: [{ type: "text", text: "최신화 해줘" }] },
+  });
+  /** Evidence older than the grace, and evidence still inside it. */
+  const STALE = LIVE_EVIDENCE_GRACE_MS + 1_000;
+  const FRESH = LIVE_EVIDENCE_GRACE_MS - 1_000;
+
+  /**
+   * One row left running by a live signal, with its transcript already recording the
+   * end of the turn and the broker listing the session as live.
+   */
+  async function quietHarness(
+    options: {
+      latch?: (target: any) => void;
+      evidenceAgeMs?: number;
+      activePrompt?: boolean;
+      transcript?: boolean;
+    } = {},
+  ) {
+    const root = await mkdtemp(path.join(tmpdir(), "quiet-live-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    if (options.transcript !== false)
+      await transcriptFile(root, "s1", [userRequest(), assistantFinal()]);
+    (cli.listSessions as any).mockResolvedValue([
+      {
+        sessionId: "s1",
+        repo: "/repo",
+        live: true,
+        deleted: false,
+        endpointGeneration: 1,
+        runtime: "gjc",
+      },
+    ]);
+    (options.latch ?? ((target: any) => target.liveRunningSessions.add("s1")))(
+      internals,
+    );
+    if (options.evidenceAgeMs !== undefined)
+      internals.liveEvidenceAt.set("s1", Date.now() - options.evidenceAgeMs);
+    if (options.activePrompt) internals.activePromptSessions.add("s1");
+    return {
+      emit,
+      internals,
+      list: () => controller.listSessions(),
+      cleanup: async () => {
+        controller.dispose();
+        if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+        else process.env.GJC_CODING_AGENT_DIR = previous;
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("settles a latched row once the transcript ends the turn and the reports stopped", async () => {
+    const { emit, internals, list, cleanup } = await quietHarness({
+      evidenceAgeMs: STALE,
+    });
+    try {
+      // The transcript is the newer account: a fresh controller process reads the same
+      // session as idle, which is what the report against the live app showed.
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      const listed = await list();
+      expect(listed.find((row) => row.id === "s1")?.status).toBe("idle");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      for (const latch of [
+        internals.liveRunningSessions,
+        internals.liveRunningDigests,
+        internals.transcriptRunningSessions,
+        internals.workingPhaseSessions,
+        internals.runtimeIdleSessions,
+        internals.compactingSessions,
+        internals.discoveredRunStates,
+        internals.liveEvidenceAt,
+        internals.compactionRecordBaseline,
+        internals.compactionStartedAt,
+      ])
+        expect(latch.has("s1")).toBe(false);
+      // The renderer keeps its own status while it holds the higher revision, so the
+      // settle has to publish a revision that outranks the running row.
+      expect(internals.currentRunRevision("s1")).toBeGreaterThan(0);
+      expect(emit).toHaveBeenCalledWith({
+        type: "session.updated",
+        session: expect.objectContaining({ id: "s1", status: "idle" }),
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps a row running inside the grace, so a turn that just started does not flicker", async () => {
+    const { internals, list, cleanup } = await quietHarness({ evidenceAgeMs: FRESH });
+    try {
+      // The transcript still describes the previous turn for the gap between a turn
+      // starting and its first row reaching disk: the case the grace exists for.
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("running");
+      expect(internals.sessions.get("s1").status).toBe("running");
+      expect(internals.liveRunningSessions.has("s1")).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("leaves a session this window is driving alone", async () => {
+    const { internals, list, cleanup } = await quietHarness({
+      evidenceAgeMs: STALE,
+      activePrompt: true,
+    });
+    try {
+      // The prompt's own round trip owns the status until it settles, whatever the
+      // transcript says meanwhile.
+      const revision = internals.currentRunRevision("s1");
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("running");
+      expect(internals.sessions.get("s1").status).toBe("running");
+      expect(internals.currentRunRevision("s1")).toBe(revision);
+      expect(internals.liveRunningSessions.has("s1")).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("ages a 'working' phase report that no later report followed", async () => {
+    const { internals, list, cleanup } = await quietHarness({
+      latch: (target: any) => target.workingPhaseSessions.add("s1"),
+      evidenceAgeMs: STALE,
+    });
+    try {
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("idle");
+      expect(internals.workingPhaseSessions.has("s1")).toBe(false);
+      expect(internals.sessions.get("s1").status).toBe("idle");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps the working phase while its report is still inside the grace", async () => {
+    const { internals, list, cleanup } = await quietHarness({
+      latch: (target: any) => target.workingPhaseSessions.add("s1"),
+      evidenceAgeMs: FRESH,
+    });
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("running");
+      expect(internals.workingPhaseSessions.has("s1")).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("never settles a session whose reports keep arriving", async () => {
+    const { internals, list, cleanup } = await quietHarness({ evidenceAgeMs: STALE });
+    try {
+      // A live turn reports again inside the window. The report itself restarts the
+      // aging clock, so the transcript never gets to overrule the row.
+      internals.patchSessionInfo("s1", {
+        sessionUpdate: "session_info_update",
+        updatedAt: new Date().toISOString(),
+        _meta: { gjcPhase: "working", gjcRunning: true },
+      });
+      expect(internals.liveEvidenceAt.get("s1")).toBeGreaterThan(
+        Date.now() - LIVE_EVIDENCE_GRACE_MS,
+      );
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("running");
+      expect(internals.sessions.get("s1").status).toBe("running");
+      expect(internals.liveRunningSessions.has("s1")).toBe(true);
+      expect(internals.workingPhaseSessions.has("s1")).toBe(true);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("re-derives a row on the refresh after its evidence went quiet", async () => {
+    const { internals, list, cleanup } = await quietHarness({ evidenceAgeMs: FRESH });
+    try {
+      // The first scan lists the running row and records the scan fingerprint it was
+      // listed at. Nothing else then moves -- no report, no transcript write -- so the
+      // fingerprint itself has to notice that the evidence stopped.
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("running");
+      internals.liveEvidenceAt.set("s1", Date.now() - STALE);
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("idle");
+      expect(internals.liveRunningSessions.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("settles a row whose revision bump no transcript read ever consumed", async () => {
+    const { internals, list, cleanup } = await quietHarness({ evidenceAgeMs: STALE });
+    try {
+      // A report advanced the revision, and the transcript read that would have
+      // consumed it was discarded as stale. Preserving a status across that bump is
+      // what pinned the row in the report, so the settle cannot depend on it.
+      internals.runRevisions.set("s1", 9);
+      internals.sessions.get("s1").runRevision = 9;
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("idle");
+      expect(internals.currentRunRevision("s1")).toBeGreaterThan(9);
+      expect(internals.liveRunningSessions.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("settles when a report lands while the transcript is being read", async () => {
+    const { internals, list, cleanup } = await quietHarness({ evidenceAgeMs: STALE });
+    try {
+      const readRunState = internals.discoveredRunState.bind(internals);
+      internals.discoveredRunState = vi.fn(async (sessionId: string) => {
+        const status = await readRunState(sessionId);
+        // The revision moved after the verdict was taken, the way a live report
+        // arriving mid-read moves it.
+        internals.advanceRunRevision(sessionId);
+        return status;
+      });
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("idle");
+      expect(internals.liveRunningSessions.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("leaves a latched row alone when no transcript verdict exists", async () => {
+    const { internals, list, cleanup } = await quietHarness({
+      evidenceAgeMs: STALE,
+      transcript: false,
+    });
+    try {
+      // An unreadable or missing transcript is not a verdict that the turn ended.
+      expect(await internals.discoveredRunState("s1")).toBeUndefined();
+      expect((await list()).find((row) => row.id === "s1")?.status).toBe("running");
+      expect(internals.liveRunningSessions.has("s1")).toBe(true);
+    } finally {
+      await cleanup();
     }
   });
 });
