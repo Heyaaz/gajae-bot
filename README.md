@@ -239,6 +239,19 @@ single repository to open. The repository screen fills the center area:
 | 브랜치·워크트리 | local branches, which worktree has each checked out, and each worktree's changed-file count |
 
 - Selecting a session returns to its conversation with the project still selected.
+- Filtering the rail never closes the open conversation. A session from another
+  project stays on screen with no row highlighted until a session of the selected
+  project is picked.
+- `레포 보기` is offered for any selected project, including one outside Git, and the
+  screen then says the project is not a repository. The project list leaves the entry
+  point out for such a project, because its row already says the same thing.
+- A worktree row lists the sessions whose workspace is that checkout root. A session
+  started in a subdirectory of a worktree is grouped into its project but gets no chip
+  there: a managed worktree lives inside its source repository, so a prefix join would
+  also list its sessions under the main worktree.
+- A local Git read that fails is reported as its own sentence, and only a path Git
+  itself refuses reads as `Git 저장소가 아닙니다` — a repository that could not be read
+  is never drawn as one without branches.
 - Right-click on `레포 보기` carries the auxiliary actions only: `GitHub에서 열기`
   and `로컬 폴더 열기`.
 - `변경 파일` reuses the session's existing panel, so Stage / Unstage / Commit /
