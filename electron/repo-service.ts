@@ -62,6 +62,15 @@ const CREDENTIAL =
   /(gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})/gu;
 
 /**
+ * Git's own refusals for a path that is not inside a working tree.
+ *
+ * They are the only Git failures that mean "this path is not a repository"; every
+ * other failure is a repository the read could not reach, which is a different
+ * thing to report.
+ */
+const NOT_A_REPOSITORY = /not a git repository|not a working tree|must be run in a work tree/iu;
+
+/**
  * The shipped runner.
  *
  * `execFile` reports a failed spawn through the error and a refused command
@@ -132,6 +141,31 @@ export function parseWorktreeList(stdout: string): RepoWorktree[] {
     else if (key === "prunable") current.prunable = true;
   }
   return worktrees;
+}
+
+/**
+ * How many entries `git status --porcelain=v1 -z` reported.
+ *
+ * Each entry is `<XY> <path>` followed by a NUL, and a rename or a copy appends
+ * the original path as one more field, so counting fields would report a single
+ * renamed file as two changes. The rename letter is read from the index column,
+ * which is where Git puts it, and the field that follows it is skipped.
+ */
+export function countStatusEntries(stdout: string): number {
+  const fields = stdout.split("\0");
+  let entries = 0;
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index];
+    if (entry.length === 0) continue;
+    entries += 1;
+    const staged = entry[0];
+    const followedByOriginalPath =
+      staged === "R" || staged === "C"
+        ? index + 1 < fields.length && fields[index + 1].length > 0
+        : false;
+    if (followedByOriginalPath) index += 1;
+  }
+  return entries;
 }
 
 /** The parts of a GitHub remote the repository screen needs. */
@@ -241,7 +275,13 @@ export interface GithubFailureClassification {
   detail: string;
 }
 
-const NO_CLI = /ENOENT|not found|not recognized/iu;
+/**
+ * The wording a shell uses when the binary itself is missing, as a backstop to
+ * the spawn error's code. `not found` on its own is not that wording: `gh` prints
+ * GitHub's 404 as `gh: Not Found (HTTP 404)`, which is a repository the signed-in
+ * account cannot see, so classifying it as a missing CLI would name the wrong fix.
+ */
+const NO_CLI = /ENOENT|command not found|not recognized as an internal or external command/iu;
 const UNAUTHENTICATED = /gh auth login|not logged|authentication|Bad credentials|HTTP 401|401 Unauthorized/iu;
 const UNREACHABLE =
   /could not resolve host|no such host|dial tcp|network is unreachable|connection refused|i\/o timeout|timed out|timeout|proxy|TLS handshake|HTTP 50[0-9]|HTTP 429|rate limit/iu;
@@ -531,14 +571,31 @@ export class RepoService {
     const name = path.basename(root);
     const refreshedAt = new Date(this.now()).toISOString();
     let worktrees: RepoWorktree[];
+    let failure: string | undefined;
     try {
       const listed = await this.git(["worktree", "list", "--porcelain"], root);
       worktrees = parseWorktreeList(listed.stdout);
-    } catch {
+    } catch (error) {
       worktrees = [];
+      // Git refusing the path is the same as the path being outside Git only
+      // when Git says so. A missing binary, a `safe.directory` refusal or a
+      // permission error would otherwise be drawn as a project that has no
+      // repository, which asks the user to fix the wrong thing.
+      if (!NOT_A_REPOSITORY.test(errorText(error)))
+        failure = redactDetail(errorText(error)) || "저장소를 읽지 못했습니다.";
     }
     if (worktrees.length === 0) {
-      return { root, name, repository: false, branch: "", branches: [], worktrees: [], refreshedAt };
+      const empty: RepositorySnapshot = {
+        root,
+        name,
+        repository: false,
+        branch: "",
+        branches: [],
+        worktrees: [],
+        refreshedAt,
+      };
+      if (failure) empty.error = failure;
+      return empty;
     }
     const failures: string[] = [];
     // The change counts, the branch list and the remote answer independent
@@ -572,7 +629,7 @@ export class RepoService {
   private async changedEntries(worktreePath: string): Promise<number | undefined> {
     try {
       const status = await this.git(["status", "--porcelain=v1", "-z"], worktreePath);
-      return status.stdout.split("\0").filter((entry) => entry.length > 0).length;
+      return countStatusEntries(status.stdout);
     } catch {
       return undefined;
     }
@@ -749,16 +806,6 @@ export class RepoService {
         ]),
       ),
     );
-  }
-
-  /** The browsable https URL for a project root when its remote is GitHub. */
-  async githubUrlFor(root: string): Promise<string | undefined> {
-    try {
-      const remote = await this.readRemote(root);
-      return remote ? parseGithubRemote(remote.url)?.webUrl : undefined;
-    } catch {
-      return undefined;
-    }
   }
 
   private git(args: readonly string[], cwd: string): Promise<CommandResult> {

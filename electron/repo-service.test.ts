@@ -3,6 +3,7 @@ import { REPO_LIST_LIMIT } from "../shared/repo-ipc.js";
 import {
   RepoService,
   classifyGithubFailure,
+  countStatusEntries,
   defaultCommandRunner,
   parseGithubRemote,
   parseWorktreeList,
@@ -64,7 +65,6 @@ const LINKED_STATUS = `git -C ${LINKED} status --porcelain=v1 -z`;
 const BRANCH_FORMAT = `git -C ${MAIN} branch --format=%(refname:short)%09%(upstream:short)`;
 const MAIN_REMOTE = `git -C ${MAIN} remote`;
 const MAIN_ORIGIN_URL = `git -C ${MAIN} remote get-url origin`;
-const NOTES_REMOTE = `git -C ${NOTES} remote`;
 
 const GITHUB_URL = "https://github.com/owner/app.git";
 const GITHUB_WEB_URL = "https://github.com/owner/app";
@@ -212,6 +212,29 @@ describe("parseWorktreeList", () => {
   });
 });
 
+describe("countStatusEntries", () => {
+  it("counts one entry per changed path", () => {
+    expect(countStatusEntries(" M src/app.ts\0?? notes.txt\0")).toBe(2);
+    expect(countStatusEntries("A  added.ts\0 D gone.ts\0UU merged.ts\0")).toBe(3);
+    expect(countStatusEntries("")).toBe(0);
+  });
+
+  it("counts a rename once, not once per field", () => {
+    // `-z` writes a rename as `<XY> <new path>` followed by a field holding the
+    // original path, and counting fields reported one renamed file as two changes.
+    expect(countStatusEntries("R  new-name.ts\0old-name.ts\0")).toBe(1);
+    expect(countStatusEntries("R  new-name.ts\0old-name.ts\0 M other.ts\0")).toBe(2);
+    expect(countStatusEntries("C  copy.ts\0source.ts\0")).toBe(1);
+  });
+
+  it("keeps a path that begins with the letter of a status", () => {
+    // Only the index column is read as a status, so a path is never mistaken for
+    // the original-path field of an entry before it.
+    expect(countStatusEntries("?? R notes.md\0")).toBe(1);
+    expect(countStatusEntries("R  new.ts\0")).toBe(1);
+  });
+});
+
 describe("parseGithubRemote", () => {
   const github = {
     host: "github.com",
@@ -303,6 +326,19 @@ describe("readRepository", () => {
     expect(calls).toEqual([NOTES_LIST]);
   });
 
+  it("reports a Git read that failed as an error, not as a project without Git", async () => {
+    // A path Git refuses because git is missing, the directory is unreadable or
+    // `safe.directory` rejected it is not the same answer as a path outside Git:
+    // the first asks the user to fix the read, the second is simply not a project
+    // the repository screen can draw.
+    const { run } = fakeRunner({
+      [NOTES_LIST]: failed("fatal: detected dubious ownership in repository at '/notes'"),
+    });
+    const snapshot = await new RepoService({ run }).readRepository(NOTES);
+    expect(snapshot.repository).toBe(false);
+    expect(snapshot.error).toContain("dubious ownership");
+  });
+
   it("keeps what it read and names the read that failed", async () => {
     const { run } = fakeRunner(
       repositoryRoutes({
@@ -354,8 +390,9 @@ describe("GitHub failure states", () => {
     const { run, calls } = fakeRunner({
       [MAIN_REMOTE]: ok("upstream\nfork\n"),
       [`git -C ${MAIN} remote get-url upstream`]: ok(`${GITHUB_URL}\n`),
+      [ISSUE_LIST]: ok("[]"),
     });
-    await expect(new RepoService({ run }).githubUrlFor(MAIN)).resolves.toBe(GITHUB_WEB_URL);
+    await expect(new RepoService({ run }).listIssues(MAIN)).resolves.toEqual({ state: "ok", value: [] });
     expect(calls).toContain(`git -C ${MAIN} remote get-url upstream`);
   });
 
@@ -754,27 +791,6 @@ describe("GitHub list and detail mapping", () => {
   });
 });
 
-describe("githubUrlFor", () => {
-  it("answers the browsable URL for a GitHub remote", async () => {
-    const { run } = fakeRunner(githubRoutes());
-    await expect(new RepoService({ run }).githubUrlFor(MAIN)).resolves.toBe(GITHUB_WEB_URL);
-  });
-
-  it("answers nothing when there is no GitHub remote", async () => {
-    const noRemote = fakeRunner({ [MAIN_REMOTE]: ok("") });
-    await expect(new RepoService({ run: noRemote.run }).githubUrlFor(MAIN)).resolves.toBeUndefined();
-
-    const notGithub = fakeRunner({
-      [MAIN_REMOTE]: ok("origin\n"),
-      [MAIN_ORIGIN_URL]: ok("git@gitlab.com:owner/app.git\n"),
-    });
-    await expect(new RepoService({ run: notGithub.run }).githubUrlFor(MAIN)).resolves.toBeUndefined();
-
-    const outsideGit = fakeRunner({ [NOTES_REMOTE]: failed("fatal: not a git repository") });
-    await expect(new RepoService({ run: outsideGit.run }).githubUrlFor(NOTES)).resolves.toBeUndefined();
-  });
-});
-
 describe("check summaries", () => {
   it("counts failing, pending and passing check runs", () => {
     expect(summarizeCheckRuns([])).toEqual({ state: "none", total: 0, failing: 0, pending: 0 });
@@ -818,6 +834,17 @@ describe("classifyGithubFailure", () => {
       state: "no-cli",
       detail: "GitHub CLI(gh)를 찾을 수 없습니다.",
     });
+  });
+
+  it("reads GitHub's own 404 as an answer, not as a missing CLI", () => {
+    // `gh` prints a repository it cannot see as `Not Found (HTTP 404)`, and
+    // "not found" alone used to be read as a CLI that is not installed -- which
+    // would send the user off to install a CLI they are already running.
+    expect(classifyGithubFailure(new Error("gh: Not Found (HTTP 404)"))).toEqual({
+      state: "error",
+      detail: "gh: Not Found (HTTP 404)",
+    });
+    expect(classifyGithubFailure(new Error("gh: Not Found (HTTP 404)")).state).not.toBe("no-cli");
   });
 
   it("tells a signed-out CLI from an unreachable network", () => {

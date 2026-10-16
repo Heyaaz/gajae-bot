@@ -111,11 +111,19 @@ export type GithubFailureState =
  * say which of "no remote", "not GitHub", "no `gh`", "not logged in", "offline"
  * and "the API refused" applies, and an empty list is none of them.
  */
-export type GithubQuery<T> =
-  | { state: "ok"; value: T }
+/**
+ * A query that could not answer.
+ *
+ * It is its own type so a screen that renders a failure can take exactly the
+ * states that carry a sentence -- and be told about the redacted `detail` when
+ * the query has one -- instead of handling an `ok` value again at every site.
+ */
+export type GithubFailure =
   | { state: Exclude<GithubFailureState, "no-remote" | "not-github">; detail: string }
   | { state: "no-remote" }
   | { state: "not-github"; remote: string };
+
+export type GithubQuery<T> = { state: "ok"; value: T } | GithubFailure;
 
 export type CiState = "passing" | "failing" | "pending" | "none";
 
