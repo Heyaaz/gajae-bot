@@ -11,6 +11,7 @@ import {
   attachmentSummaryText,
   copyableMessageText,
   groupTranscriptItems,
+  parseSkillInvocation,
   shouldFollowTranscript,
   recentUserRequests,
   transcriptBlockIndexForItem,
@@ -31,6 +32,7 @@ import {
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { httpUrls, humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
 import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
+import { SkillInvocation, SkillPromptCard } from "./skill-activity";
 
 // How long a gesture keeps its say over the follow decision. Long enough to cover the
 // smooth-scroll animation one notch triggers -- measured at ~157ms from the wheel event to
@@ -1499,8 +1501,9 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   if (item.kind === "message") {
     const copyText = copyableMessageText(item.content);
     const attachments = attachmentSummaryText(item.content);
+    const skill = item.role === "user" ? parseSkillInvocation(copyText) : undefined;
     return (
-      <article className={`message message--${item.role}`}>
+      <article className={`message message--${item.role}${skill ? " message--skill" : ""}`}>
         {item.role === "assistant" && (
           <div className="message-author">
             <span className="assistant-mark">
@@ -1514,7 +1517,9 @@ export const TranscriptItemView = memo(function TranscriptItemView({
           <div
             className={`message-body ${item.role === "assistant" && !item.streaming ? "markdown-body" : ""}`}
           >
-            {item.content ? (
+            {skill ? (
+              <SkillInvocation name={skill.name} args={skill.args} />
+            ) : item.content ? (
               item.role === "assistant" ? (
                 item.streaming ? (
                   item.content
@@ -1598,6 +1603,9 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   }
 
   if (item.kind === "system") {
+    if (item.sourceType?.trim() === "skill-prompt") {
+      return <SkillPromptCard item={item} />;
+    }
     // The app-owned todo row carries the store it was read from; a row without it is an
     // older record whose content is the only thing there is to show.
     if (item.sourceType?.trim() === "todo.list" && item.todoPhases) {

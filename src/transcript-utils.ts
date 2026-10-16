@@ -2,6 +2,12 @@ import type { TranscriptItem } from "./backend/types";
 
 export const MAX_CACHED_TRANSCRIPTS = 3;
 
+export function parseSkillInvocation(text: string): { name: string; args: string } | undefined {
+  const match = /^\/skill:([\p{L}\p{N}][\p{L}\p{N}_.-]*)(?:\s+([\s\S]*))?$/u.exec(text.trim());
+  if (!match) return undefined;
+  return { name: match[1], args: match[2]?.trim() ?? "" };
+}
+
 export interface RecentUserRequest {
   id: string;
   text: string;

@@ -2665,6 +2665,7 @@ export class GjcSdkController {
     // The new runtime re-attaches from scratch, so last run's throttle stamps must
     // not delay the first attempt against it.
     this.attachAttempts.clear();
+    this.transcriptAttachments.clear();
     this.activePromptSessions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
@@ -2706,6 +2707,9 @@ export class GjcSdkController {
   }
 
   private discoveryInFlight: Promise<AgentSession[]> | undefined;
+  // The startup reachability check is also the first complete global index.
+  // Only discovery consumes it; lifecycle operations always ask for fresh evidence.
+  private startupSessionRows: SdkSessionRow[] | undefined;
   // The session map is a durable cache keyed by every id ever seen, including
   // rows discovery later filtered out. Yielding must replay the last discovered
   // list instead, or skipping a scan resurrects dead sessions in the sidebar.
@@ -2724,7 +2728,7 @@ export class GjcSdkController {
     // uncontrollable by evidence the index does not carry -- discarding that made
     // the row advertise controls that fail again on the next click. Entries are
     // dropped when the session row itself goes away (removeLocalSession).
-    const brokerRows = await this.brokerSessions();
+    const brokerRows = await this.brokerSessions({ initialDiscovery: true });
     // Without the index there is no liveness or placeholder evidence, so the
     // previous result stands rather than republishing every historical session.
     if (!brokerRows)
@@ -2736,7 +2740,7 @@ export class GjcSdkController {
       new Set(brokerRows.map((session) => session.sessionId)),
     );
     for (const session of brokerRows) {
-      if (!session.live) {
+      if (!session.live || session.deleted || this.sessionMetadata?.isHidden(session.sessionId)) {
         // The broker keeps every historical session id. Only live ones can be
         // controlled or replayed from here, so a dead id must not become a row.
         deadSessionIds.add(session.sessionId);
@@ -2849,7 +2853,8 @@ export class GjcSdkController {
           for (const row of brokerRows) {
             if (!row.repo || path.resolve(row.repo) !== path.resolve(cwd))
               continue;
-            if (row.deleted) continue;
+            // Excluded rows must not scan the session directories or read history.
+            if (!liveRanks.has(row.sessionId)) continue;
             const filePath = await this.locateSharedTranscriptFile(
               row.sessionId,
             );
@@ -3509,9 +3514,15 @@ export class GjcSdkController {
    */
   private async brokerSessions(options?: {
     scope?: "repo" | "cwd" | "worktree" | "all";
+    initialDiscovery?: boolean;
   }): Promise<SdkSessionRow[] | undefined> {
     try {
       const cli = await this.requireCli();
+      if (options?.initialDiscovery && this.startupSessionRows !== undefined) {
+        const rows = this.startupSessionRows;
+        this.startupSessionRows = undefined;
+        return rows;
+      }
       return await cli.listSessions({
         scope: options?.scope ?? "all",
       });
@@ -3713,29 +3724,39 @@ export class GjcSdkController {
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }
 
-  async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
-    // Opening a session attaches it, which is what reports its real preset, thinking
-    // level, and mode. Waiting for the first prompt to attach is what left a restarted
-    // app showing the app-wide default preset instead of the session's own.
+  private readonly transcriptAttachments = new Map<string, Promise<void>>();
+
+  private refreshTranscriptAttachment(sessionId: string): void {
     if (
+      !this.disposed &&
       this.sessions.get(sessionId)?.attachment === "attachable" &&
       !this.terminalOnlySessions.has(sessionId) &&
-      !this.attachedSessions.has(sessionId)
+      !this.attachedSessions.has(sessionId) &&
+      !this.transcriptAttachments.has(sessionId)
     ) {
       const lastAttempt = this.attachAttempts.get(sessionId) ?? 0;
       if (Date.now() - lastAttempt > ATTACH_RETRY_INTERVAL_MS) {
         this.attachAttempts.set(sessionId, Date.now());
-        // A refused attachment is not authority to call the session terminal-only: the
-        // lease can be held for one turn and released, and the later transcript load
-        // still owns that decision.
-        try {
-          await this.ensureAttached(sessionId, false);
-          await this.refreshSessionSettings(sessionId);
-        } catch {
-          /* still owned elsewhere */
-        }
+        const generation = this.generation;
+        const refresh = (async () => {
+          try {
+            await this.ensureAttached(sessionId, false);
+            if (!this.disposed && generation === this.generation && this.sessions.has(sessionId))
+              await this.refreshSessionSettings(sessionId);
+          } catch {
+            // Readable history does not establish runtime control. Required control
+            // operations still report their own attachment errors.
+          }
+        })().finally(() => {
+          if (this.transcriptAttachments.get(sessionId) === refresh)
+            this.transcriptAttachments.delete(sessionId);
+        });
+        this.transcriptAttachments.set(sessionId, refresh);
       }
     }
+  }
+
+  async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     // The controller survives renderer reloads, while command discovery is a
     // session event. Re-opening the transcript is the renderer's bootstrap, so
     // replay the cached snapshot and then rebuild it from the runtime, which is the
@@ -3759,6 +3780,9 @@ export class GjcSdkController {
         const shared = await this.readSharedTranscript(sessionId);
         if (shared.length > 0) {
           const installed = this.installTranscript(sessionId, shared);
+          // Local history is readable before the runtime finishes inspecting its
+          // endpoint, profiles and settings. Hydrate those independently.
+          this.refreshTranscriptAttachment(sessionId);
           return installed.map(cloneTranscriptItem);
         }
         if (this.terminalOnlySessions.has(sessionId))
@@ -6110,6 +6134,8 @@ export class GjcSdkController {
       this.stopTailFollower(sessionId);
     this.attachedSessions.clear();
     this.sessionSdkOperations.clear();
+    this.transcriptAttachments.clear();
+    this.attachAttempts.clear();
     this.generation += 1;
     await this.ensureStarted();
     await this.recoverOwnedSessions();
@@ -6342,6 +6368,7 @@ export class GjcSdkController {
     this.sessions.delete(sessionId);
     this.sessionCwds.delete(sessionId);
     this.attachedSessions.delete(sessionId);
+    this.transcriptAttachments.delete(sessionId);
     this.transcripts.delete(sessionId);
     this.messageKeys.delete(sessionId);
     this.activeAssistantMessages.delete(sessionId);
@@ -6411,6 +6438,8 @@ export class GjcSdkController {
     this.tailControllers.clear();
     this.cli = undefined;
     this.startup = undefined;
+    this.startupSessionRows = undefined;
+    this.transcriptAttachments.clear();
     this.permissionModeApplied.clear();
     this.tailReads.clear();
     this.tailCheckpoints.clear();
@@ -6505,6 +6534,7 @@ export class GjcSdkController {
    */
   private async start(): Promise<void> {
     const generation = ++this.generation;
+    this.startupSessionRows = undefined;
     this.setConnection({
       state: "connecting",
       backend: "gjc",
@@ -6539,8 +6569,9 @@ export class GjcSdkController {
     });
     // The broker index doubles as the reachability check: it fails closed with a
     // typed operational error when the broker cannot be started at all.
-    await cli.listSessions();
+    const rows = await cli.listSessions({ scope: "all" });
     if (generation !== this.generation || this.disposed) return;
+    this.startupSessionRows = rows;
     this.cli = cli;
     this.permissionModeApplied.clear();
     this.setConnection({
@@ -6873,12 +6904,20 @@ export class GjcSdkController {
   ): Promise<void> {
     if (this.attachedSessions.has(sessionId)) return;
     const cli = await this.requireCli();
+    const generation = this.generation;
+    const wasListed = this.sessions.has(sessionId);
+    const requireCurrentAttachment = (): void => {
+      if (this.disposed || generation !== this.generation || (wasListed && !this.sessions.has(sessionId)))
+        throw new Error("GJC session attachment was cancelled");
+    };
+    requireCurrentAttachment();
     const cwd = this.repoFor(sessionId);
     if (replay) {
       this.installTranscript(sessionId, []);
       this.messageKeys.set(sessionId, new Map());
     }
     const row = await cli.inspectSession(sessionId, { repo: cwd });
+    requireCurrentAttachment();
     if (row?.deleted)
       throw new SdkCliError(
         "session_deleted",
@@ -6917,9 +6956,11 @@ export class GjcSdkController {
     // left the session rejecting every tool call afterwards. Reading a session is not
     // authority over it.
     const owned = rehosted || this.sessions.get(sessionId)?.ownership === "gajae";
+    requireCurrentAttachment();
     if (owned) await this.applyPermissionMode(sessionId);
     await this.refreshSessionConfigOptions(sessionId);
     await this.refreshModelProfiles(sessionId);
+    requireCurrentAttachment();
     if (replay) {
       const restored = await this.readSharedTranscript(sessionId).catch(() => []);
       if (restored.length > 0) this.installTranscript(sessionId, restored);

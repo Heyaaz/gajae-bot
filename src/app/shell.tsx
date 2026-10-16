@@ -398,7 +398,10 @@ export default function App() {
     });
     // A GJC session started from the CLI after this window opened only shows up if
     // discovery runs again, so the list refreshes instead of loading once.
+    let listing = false;
     const loadSessions = (initial: boolean): void => {
+      if (listing || !active) return;
+      listing = true;
       void backend
         .listSessions()
         .then((loadedSessions) => {
@@ -415,7 +418,8 @@ export default function App() {
               initialSessionId(loadedSessions, selected),
             );
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => { listing = false; });
     };
     loadSessions(true);
     // A full scan costs seconds on a large broker index, so polling faster than
@@ -568,33 +572,47 @@ export default function App() {
   const selectedSessionStatus = selectedSession?.status;
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
+  const cachedSelectedTranscript = selectedId ? transcripts[selectedId] : undefined;
+  const transcriptReads = useMemo(
+    () => ({ backend, pending: new Map<string, Promise<TranscriptItem[]>>() }),
+    [backend],
+  );
 
   useEffect(() => {
-    if (!selectedId) return;
-    if (transcripts[selectedId]) return;
+    if (!selectedId || cachedSelectedTranscript) return;
     let active = true;
-    void backend
-      .getTranscript(selectedId)
+    let read = transcriptReads.pending.get(selectedId);
+    if (!read) {
+      read = transcriptReads.backend.getTranscript(selectedId).finally(() => {
+        if (transcriptReads.pending.get(selectedId) === read)
+          transcriptReads.pending.delete(selectedId);
+      });
+      transcriptReads.pending.set(selectedId, read);
+    }
+    void read
       .then((items) => {
         if (active)
           setTranscripts((current) =>
-            cacheTranscript(current, selectedId, items),
+            current[selectedId] ? current : cacheTranscript(current, selectedId, items),
           );
       })
       .catch((error) => {
         if (!active) return;
-        setTranscripts((current) => cacheTranscript(current, selectedId, []));
+        setTranscripts((current) => current[selectedId] ? current : cacheTranscript(current, selectedId, []));
         setAppError(humanErrorMessage(error));
       });
     return () => {
       active = false;
     };
-  }, [backend, selectedId, transcripts]);
+  }, [backend, selectedId, cachedSelectedTranscript, transcriptReads]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
     let active = true;
+    let refreshing = false;
     const refresh = (): void => {
+      if (!active || refreshing) return;
+      refreshing = true;
       void backend
         .getGoal(selectedSessionId)
         .then((snapshot) => {
@@ -602,7 +620,8 @@ export default function App() {
         })
         .catch(() => {
           if (active) setGoal({ enabled: false, completed: 0, total: 0 });
-        });
+        })
+        .finally(() => { refreshing = false; });
     };
     queueMicrotask(refresh);
     // Goal and todo state advance at tool-call pace, not at streaming pace. Two
