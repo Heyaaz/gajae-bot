@@ -1379,6 +1379,36 @@ describe("shared terminal session control", () => {
     controller.dispose();
   });
 
+  it("leaves a finished row settled when the release cannot confirm a stop", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external", status: "idle" });
+    internals.attachedSessions.add("s1");
+    internals.transcripts.set("s1", []);
+    cli.rawControl.mockRejectedValue(new SdkCliError("session_unavailable", "no lifecycle authority"));
+    // The transcript is the account of a turn nobody here drove: with nothing in
+    // flight it answers idle, and the row must stay settled. Publishing running
+    // instead made the renderer hand its next message over as a steer, so the text
+    // sat in the queue behind a turn that had already ended.
+    internals.discoveredRunState = vi.fn(async () => "idle" as const);
+    await expect(controller.flushQueuedNow("s1")).resolves.toBe(true);
+    expect(internals.sessions.get("s1")?.status).toBe("idle");
+    controller.dispose();
+  });
+
+  it("keeps a running row running when the release cannot confirm a stop", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
+    internals.attachedSessions.add("s1");
+    internals.transcripts.set("s1", []);
+    cli.rawControl.mockRejectedValue(new SdkCliError("session_unavailable", "no lifecycle authority"));
+    // A turn this window could not stop is still open, so the released work has to
+    // arrive as a steer that its boundary consumes.
+    internals.discoveredRunState = vi.fn(async () => "running" as const);
+    await expect(controller.flushQueuedNow("s1")).resolves.toBe(true);
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    controller.dispose();
+  });
+
   it("still fails the release when the metadata probe cannot reach the session", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session());

@@ -4725,12 +4725,25 @@ export class GjcSdkController {
       // stuck in the composer over a stop this window was never able to substantiate
       // anyway, so the refusal is not an error for a release. A session the metadata
       // probe could not reach still throws (see controlSession).
+      let stopped = false;
       try {
         await this.abortOwnedThroughControl(sessionId);
+        stopped = true;
       } catch (error) {
         if (!(error instanceof OwnedStopUnavailableError)) throw error;
       }
-      this.updateSessionStatus(sessionId, "running");
+      // A release only marks the row running when a turn could not be stopped. A
+      // confirmed stop means the turn is over, and a host that never granted this
+      // window the operator Stop is answered by the transcript instead. Publishing
+      // running unconditionally was how a release against an already finished row
+      // left it looking mid-turn: every later message then arrived as a steer
+      // behind a turn that had ended, which is the queue the user watched swallow
+      // their text.
+      const stillRunning =
+        !stopped && (await this.discoveredRunState(sessionId)) === "running";
+      this.updateSessionStatus(sessionId, stillRunning ? "running" : "idle", {
+        announce: false,
+      });
       return true;
     } catch (error) {
       if (uncertainAfterSendError(error) || cancelledOperationError(error)) {
