@@ -14,6 +14,11 @@
 //   4. Toggling that panel keeps the transcript where it was reading. The width change
 //      re-wraps every block and throws every measured row height away, so the view has to
 //      hold the block the viewport top sits on -- or, when it was following, the bottom.
+//   5. A small downward wheel notch, inside the slack band under the newest content, moves
+//      the view by a notch and leaves it there. Both corrections that keep the newest
+//      content in view are deferred (80ms of chase, 120ms of settle timer), so this is the
+//      one case a scripted scrollTop cannot stand in for: the intent comes from real input,
+//      and what arrives afterwards (a streamed reply under the reader) may not move it.
 //
 // Below 980px there is no room for a third column, so the panel is deliberately an
 // overlay; there it must be fully opaque instead of clear of the text.
@@ -611,13 +616,19 @@ const typingProbe = `(async (typed, settleMs, maxComposerPx) => {
 
   // The two blocks whose bounding boxes this is about: the first two entries painted in
   // the viewport, re-read every frame because a re-wrap remounts rows.
+  // The two blocks the reader is looking at: the block the viewport top edge falls on, and the
+  // one after it -- the same rule the transcript's own anchor uses. Deliberately not "every
+  // entry intersecting the viewport": this case grows the composer by 159px, and the viewport's
+  // bottom edge moves up with it, which dropped a block that was still there and still where it
+  // was and read as a 999px move. The offset from the viewport top is what the reader's eye is
+  // on; the bottom edge is the composer's business.
   const visiblePair = () => {
     const viewport = transcript.getBoundingClientRect();
     return [...document.querySelectorAll('.transcript-entry')]
       .map((entry) => ({ id: entry.id || 'tool-run', box: entry.getBoundingClientRect() }))
-      .filter((entry) => entry.box.width > 0 && entry.box.height > 0 && entry.box.bottom > viewport.top + 1 && entry.box.top < viewport.bottom)
+      .filter((entry) => entry.box.width > 0 && entry.box.height > 0 && entry.box.bottom > viewport.top + 1)
       .slice(0, 2)
-      .map((entry) => ({ id: entry.id, top: Math.round(entry.box.top * 100) / 100 }));
+      .map((entry) => ({ id: entry.id, top: Math.round((entry.box.top - viewport.top) * 100) / 100 }));
   };
   const geometry = () => ({
     readingWidth: transcript.offsetWidth,
@@ -751,6 +762,265 @@ function checkTyping(result) {
   }
   if (result.driftPx > HISTORY_TOLERANCE_PX) {
     failures.push(`typing: a block moved ${result.driftPx}px under the reader`)
+  }
+  return failures
+}
+
+// The report: a reader a little above the newest content scrolls down one notch and the view
+// jumps all the way to the bottom.
+//
+// One notch lands inside the slack that unmounted rows need -- a whole viewport of it, because
+// a drag to the end can land hundreds of pixels short of an estimated total -- so the position
+// on its own reads as "already near the bottom". What separates the two is the reading intent,
+// and it used to be cleared by any downward delta: the notch switched following back on, and
+// the deferred corrections (80ms of follow chase, 120ms of settle timer) carried the view the
+// rest of the way. The intent is a latch now, so the case is measured in two halves -- the
+// notch the reader asked for moves the view by a notch, and the reply that keeps arriving
+// under it leaves the position alone until the reader asks for the bottom outright.
+//
+// The gesture has to be real wheel input: a scripted scrollTop carries no intent, and the
+// intent is half of what is being measured. The notches go through the same debugger path as
+// the model menu's, interleaved with the snapshots from here.
+const FOLLOW_NOTCH_PX = 120
+// Notches up until the reader is inside the slack band. Capped so a transcript that will not
+// scroll fails as a case instead of looping.
+const FOLLOW_UP_STEPS = 5
+// How much of the band to aim for. Deep enough that an unfixed decision would carry the view
+// a long way from the text it is reading, shallow enough to stay inside the band -- which is a
+// whole viewport, so the two ends of the range are far apart.
+const FOLLOW_BAND_TARGET = 0.7
+const FOLLOW_WHEEL_SETTLE_MS = 260
+// Past the two corrections that did the jumping: 80ms of follow chase and 120ms of settle
+// timer, plus a measurement pass for the rows the gesture mounted.
+const FOLLOW_JUMP_SETTLE_MS = 900
+// Past the mock backend's own reply, which streams its last delta 1490ms after the submit.
+const FOLLOW_CHUNK_SETTLE_MS = 1900
+// The same budget the scripted return to the bottom gets in the first pass: the correction
+// closes the estimate gap over a few measurement frames.
+const FOLLOW_LATEST_SETTLE_MS = 1600
+
+// Opens the session and hands back the point to wheel at: the middle of the transcript, clear
+// of the sticky 최신 내용으로 button at its bottom edge.
+const followSetupProbe = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  for (let i = 0; i < 80 && !document.querySelector('.session-row'); i += 1) await wait(100);
+  const row = document.querySelector('.session-row');
+  if (!row) return { error: 'no session rows' };
+  row.click();
+  for (let i = 0; i < 80 && !document.querySelector('.transcript-column'); i += 1) await wait(100);
+  const transcript = document.querySelector('.transcript');
+  if (!transcript) return { error: 'transcript never rendered' };
+  await wait(1200);
+  // Following the newest message, whatever the previous case left behind; a scripted
+  // scrollTop carries no intent, so the gesture below is the only claim on the view.
+  transcript.scrollTop = transcript.scrollHeight;
+  await wait(900);
+  const box = transcript.getBoundingClientRect();
+  return {
+    centerX: Math.round((box.left + box.right) / 2),
+    centerY: Math.round((box.top + box.bottom) / 2),
+  };
+})()`
+
+// The reading state, read the same way at every step of the case. Layout pixels throughout:
+// the position, the gap under it, and the block the viewport top edge is on -- which is the
+// text the reader is looking at.
+const followSnapshotProbe = `(() => {
+  const transcript = document.querySelector('.transcript');
+  if (!transcript) return { error: 'transcript is missing' };
+  const viewport = transcript.getBoundingClientRect();
+  // Geometrically topmost, not first in DOM order: mounted slots are in arbitrary order, and
+  // the point is the sentence under the reader's eye.
+  let entry = null;
+  for (const node of document.querySelectorAll('[id^="transcript-"]')) {
+    const box = node.getBoundingClientRect();
+    if (box.width === 0 || box.height === 0) continue;
+    if (box.bottom <= viewport.top + 1) continue;
+    if (box.top >= viewport.bottom) continue;
+    if (!entry || box.top < entry.top) entry = { id: node.id, top: box.top };
+  }
+  const slots = [...document.querySelectorAll('.transcript-slot')];
+  return {
+    gap: Math.round(transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight),
+    scrollTop: Math.round(transcript.scrollTop * 10) / 10,
+    clientHeight: transcript.clientHeight,
+    chip: [...document.querySelectorAll('button')].some((b) =>
+      (b.textContent || '').includes('최신 내용으로'),
+    ),
+    entry: entry
+      ? { id: entry.id, offset: Math.round((entry.top - viewport.top) * 10) / 10 }
+      : null,
+    lastIndex: slots.length
+      ? Math.max(...slots.map((slot) => Number(slot.dataset.index)))
+      : -1,
+  };
+})()`
+
+// Submits a prompt the way the composer is submitted -- the native value setter, then a real
+// click on its send button -- so the answer that arrives under the reader is a real arrival
+// rather than a scripted edit. The text is more than the composer's own ceiling, so the send
+// does not also change the transcript's height before it is submitted.
+const followPromptProbe = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const textarea = document.querySelector('.composer textarea');
+  if (!textarea) return { error: 'the composer is missing' };
+  if (textarea.disabled) return { error: 'the composer is read-only in this window' };
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+  textarea.focus();
+  setter.call(textarea, '읽던 자리를 지킨다. '.repeat(60));
+  textarea.dispatchEvent(new Event('input', { bubbles: true }));
+  await wait(250);
+  // The button is the click a user makes; the Enter is the same submit for a composer whose
+  // send slot has not re-rendered from the typed text yet. Either way the arrival is what the
+  // case reads, not the submission.
+  const send = document.querySelector('.composer .send-button:not(.send-button--stop)');
+  if (send) send.click();
+  else textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await wait(${FOLLOW_CHUNK_SETTLE_MS});
+  return { submitted: true };
+})()`
+
+// The other half of the requirement: asking for the newest content outright hands the view
+// back, so the latch above may not leave the reader stuck short of it.
+const followLatestProbe = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const chip = [...document.querySelectorAll('button')].find((b) =>
+    (b.textContent || '').includes('최신 내용으로'),
+  );
+  if (!chip) return { error: '최신 내용으로 is not showing while reading' };
+  chip.click();
+  await wait(${FOLLOW_LATEST_SETTLE_MS});
+  return { clicked: true };
+})()`
+
+async function runFollowCase(win, wheel) {
+  const setup = await win.webContents.executeJavaScript(followSetupProbe)
+  if (setup.error) return { error: setup.error }
+  const snapshot = () => win.webContents.executeJavaScript(followSnapshotProbe)
+
+  let before = await snapshot()
+  for (let step = 0; step < FOLLOW_UP_STEPS; step += 1) {
+    if (before.error) break
+    if (before.gap >= before.clientHeight * FOLLOW_BAND_TARGET) break
+    await wheel(setup.centerX, setup.centerY, -FOLLOW_NOTCH_PX)
+    await new Promise((r) => setTimeout(r, FOLLOW_WHEEL_SETTLE_MS))
+    before = await snapshot()
+  }
+
+  // The gesture from the report: one notch back down, then nothing until every timer the
+  // transcript runs has had its say.
+  await wheel(setup.centerX, setup.centerY, FOLLOW_NOTCH_PX)
+  await new Promise((r) => setTimeout(r, FOLLOW_JUMP_SETTLE_MS))
+  const afterNotch = await snapshot()
+
+  const prompted = await win.webContents.executeJavaScript(followPromptProbe)
+  const afterChunks = prompted.error ? prompted : await snapshot()
+  const latest = await win.webContents.executeJavaScript(followLatestProbe)
+  const afterButton = latest.error ? latest : await snapshot()
+  return { before, afterNotch, prompted, afterChunks, latest, afterButton }
+}
+
+function checkFollowJump(follow) {
+  if (follow.error) return [`small downward scroll: ${follow.error}`]
+  if (!follow.before || follow.before.error || !follow.afterNotch || follow.afterNotch.error) {
+    return [`small downward scroll: the reading position could not be read`]
+  }
+  const failures = []
+  const before = follow.before
+  const afterNotch = follow.afterNotch
+
+  // The case is the position one notch leaves the reader at: inside the slack band, so an
+  // unfixed decision reads it as "near the bottom" -- and a wheel has to have claimed the
+  // view, or the intent the case is about was never set.
+  if (!(before.gap > 40 && before.gap < before.clientHeight)) {
+    failures.push(
+      `small downward scroll: the view is not inside the slack band ` +
+        `(${before.gap}px above the bottom of a ${before.clientHeight}px viewport)`,
+    )
+  }
+  if (!before.chip) {
+    failures.push(
+      'small downward scroll: the wheel up did not take the view off the bottom ' +
+        '(최신 내용으로 is not showing)',
+    )
+  }
+
+  // One notch down means one notch down. A view that lands on the bottom, and a view that does
+  // not move at all, are both the gesture being ignored -- the band is what the jump is made
+  // of, so an unfixed decision moves the view most of the way to the newest content.
+  const notchDownPx = Math.round(afterNotch.scrollTop - before.scrollTop)
+  if (notchDownPx < FOLLOW_NOTCH_PX * 0.5 || notchDownPx > FOLLOW_NOTCH_PX * 2) {
+    failures.push(
+      `small downward scroll: one wheel notch moved the view ${notchDownPx}px ` +
+        `(a ${FOLLOW_NOTCH_PX}px notch, from ${before.gap}px above the bottom)`,
+    )
+  }
+  if (afterNotch.gap <= 40) {
+    failures.push(
+      `small downward scroll: the view jumped to ${afterNotch.gap}px above the newest content`,
+    )
+  }
+  if (!afterNotch.chip) {
+    failures.push(
+      'small downward scroll: the view started following again on a downward notch',
+    )
+  }
+
+  // The reply that streams in under the reader. Its chunks land below the viewport, so the
+  // block at the viewport top and its offset both have to survive them -- and with them the
+  // 80ms chase and 120ms settle timer, which are only started when following is on. Painted
+  // geometry, not scrollTop: re-measuring the rows the arriving chunks mount moves the
+  // position without moving what the reader is looking at.
+  if (follow.prompted.error) {
+    failures.push(`small downward scroll: ${follow.prompted.error}`)
+  } else {
+    const after = follow.afterChunks
+    if (after.error) {
+      failures.push(`small downward scroll: ${after.error}`)
+    } else {
+      if (after.lastIndex <= before.lastIndex) {
+        failures.push(
+          `small downward scroll: no content arrived under the reader ` +
+            `(${before.lastIndex} -> ${after.lastIndex} blocks)`,
+        )
+      }
+      if (!after.entry || !afterNotch.entry) {
+        failures.push(
+          'small downward scroll: no block at the viewport top to compare',
+        )
+      } else if (after.entry.id !== afterNotch.entry.id) {
+        failures.push(
+          `small downward scroll: the text under the reader changed while reading ` +
+            `(${afterNotch.entry.id} -> ${after.entry.id})`,
+        )
+      } else {
+        const drifted = Math.abs(after.entry.offset - afterNotch.entry.offset)
+        if (drifted > HISTORY_TOLERANCE_PX) {
+          failures.push(
+            `small downward scroll: the block under the reader moved ${drifted.toFixed(1)}px ` +
+              `while ${after.lastIndex - before.lastIndex} blocks arrived`,
+          )
+        }
+      }
+      if (!after.chip) {
+        failures.push('small downward scroll: 최신 내용으로 went away while reading')
+      }
+    }
+  }
+
+  // ...and the reader can always say "newest content" and get it.
+  if (follow.latest.error) {
+    failures.push(`small downward scroll: ${follow.latest.error}`)
+  } else if (follow.afterButton.error) {
+    failures.push(`small downward scroll: ${follow.afterButton.error}`)
+  } else if (
+    Math.abs(follow.afterButton.gap) > BOTTOM_TOLERANCE_PX ||
+    follow.afterButton.chip
+  ) {
+    failures.push(
+      `small downward scroll: 최신 내용으로 went to ${follow.afterButton.gap}px ` +
+        `above the newest content`,
+    )
   }
   return failures
 }
@@ -909,6 +1179,17 @@ app.whenReady().then(async () => {
     console.log(JSON.stringify(typing))
     for (const failure of checkTyping(typing)) failures.push(`${width}px: ${failure}`)
   }
+
+  // The small downward scroll, at the wide size and last. It is the only case that submits a
+  // prompt of its own, and the mock backend answers with a streamed reply, so the transcript is
+  // a few blocks longer afterwards -- which moves where the cases above measure the reader in
+  // the seeded content. That is a change to their subject, not to this one, so this case runs
+  // after all of them rather than inside the loop.
+  win.setSize(1400, 900)
+  await new Promise((r) => setTimeout(r, 900))
+  const follow = await runFollowCase(win, wheel)
+  console.log(JSON.stringify(follow))
+  for (const failure of checkFollowJump(follow)) failures.push(`1400px: ${failure}`)
 
   clearTimeout(failAfter)
   for (const failure of failures) console.error(`  ${failure}`)

@@ -1,15 +1,16 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { MessageInput } from "../backend/types";
 import { isImmediateSdkCommandSubmission } from "../composer-utils";
 import {
+  Composer,
   FastTierControls,
   fastTierBusy,
   requestFastTier,
   selectedCommandDraft,
 } from "./composer";
-import type { FastTierControlsProps } from "./composer";
+import type { ComposerProps, FastTierControlsProps } from "./composer";
 
 const FAST = {
   name: "fast",
@@ -203,5 +204,62 @@ describe("selectedCommandDraft", () => {
         false,
       ),
     ).toBe(false);
+  });
+});
+
+function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
+  return {
+    sessionId: "session-1",
+    running: false,
+    sessionTitle: "Session",
+    workspace: "/repo",
+    workspaces: ["/repo"],
+    commands: [],
+    configOptions: [],
+    onSend: async () => undefined,
+    onCancel: () => undefined,
+    onFlushQueued: async () => undefined,
+    onCompact: () => undefined,
+    onNewSession: () => undefined,
+    onWorkspaceChange: () => undefined,
+    onConfigChange: () => undefined,
+    onCycleThinking: () => undefined,
+    ...overrides,
+  };
+}
+
+/**
+ * The submit slot's stop control.
+ *
+ * With an empty draft the slot renders stop, and `running` is the only thing that
+ * enables it -- this is where the shell's derived turn state reaches the surface
+ * the user reported: a live stop and an "이어서 보내기" send on a session that had
+ * already finished.
+ */
+function stopButton(markup: string): string {
+  const found = markup.match(/<button[^>]*send-button--stop[^>]*>/u)?.[0];
+  if (!found) throw new Error("no stop button in the composer markup");
+  return found;
+}
+
+describe("Composer turn surface", () => {
+  it("stops only while the shell reports an open turn", () => {
+    vi.stubGlobal("window", {});
+    try {
+      const live = renderToStaticMarkup(
+        createElement(Composer, composerProps({ running: true })),
+      );
+      expect(stopButton(live)).not.toContain("disabled");
+
+      // A settled turn reads false here even when the transcript still carries a
+      // running tool card, which is the row that used to keep the composer holding
+      // the next message as a steer.
+      const settled = renderToStaticMarkup(
+        createElement(Composer, composerProps({ running: false })),
+      );
+      expect(stopButton(settled)).toContain("disabled");
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

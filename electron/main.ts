@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  ipcMain,
   Menu,
   nativeImage,
   Notification,
@@ -21,6 +22,7 @@ import {
 import { GJC_IPC } from "../shared/gjc-ipc.js";
 import { GjcSdkController } from "./gjc-sdk-controller.js";
 import { registerGjcIpcHandlers } from "./gjc-ipc-handlers.js";
+import { DesktopEventStream } from "./desktop-event-stream.js";
 import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
 import { SettingsStore, validDirectory } from "./settings-store.js";
@@ -79,6 +81,12 @@ let productivityService: ProductivityService | undefined;
 // Declared before the controller so the event fan-out below can reach it; the
 // instance itself is created once the controller exists.
 let remoteAccess: RemoteAccessService | undefined;
+// The desktop windows read runtime events over this loopback stream now instead of an
+// IPC push. Constructing it only allocates the process secret; the listener starts with
+// the first window.
+const desktopEvents = new DesktopEventStream((message) =>
+  console.log(`desktop events: ${message}`),
+);
 
 // The most recent notification this process handed to macOS. The smoke run
 // asserts against it so "the app sends the notification" is a checked fact.
@@ -99,9 +107,9 @@ function broadcastAgentEvent(event: AgentEvent): void {
   )
     productivityService?.invalidateSearch();
   const windows = BrowserWindow.getAllWindows();
-  for (const window of windows) {
-    if (!window.isDestroyed()) window.webContents.send(GJC_IPC.event, event);
-  }
+  // The windows on this machine read the same events from the loopback stream. Nothing
+  // is pushed over IPC as well: a second delivery path is how one event becomes two.
+  desktopEvents.publish(event);
   // The remote devices watch the same runtime, so they see the same events the
   // desktop windows do rather than a separately polled view.
   remoteAccess?.publish(event);
@@ -188,6 +196,18 @@ export const ipcSecurity = new IpcSecurity(
   !app.isPackaged && smokeMode ? async () => true : nativeDestructiveConfirmation,
 );
 const unregisterGjcIpc = registerGjcIpcHandlers(gjcController, attachmentStore, ipcSecurity);
+// One authorized invoke hands a window this process launched the event stream endpoint.
+// It goes through the same sender verification every gjc channel uses, so a frame or
+// window this process did not open cannot read the token.
+const unregisterEventStreamIpc = (() => {
+  ipcMain.handle(
+    GJC_IPC.eventStream,
+    ipcSecurity.guarded((event: Electron.IpcMainInvokeEvent) =>
+      desktopEvents.descriptorFor(`window:${event.sender.id}`),
+    ),
+  );
+  return () => ipcMain.removeHandler(GJC_IPC.eventStream);
+})();
 const desktopManagement = new ManagementService(
   process.env.GJC_BIN || preferences.gjcExecutable || "gjc",
 );
@@ -278,6 +298,13 @@ function createWindow(): BrowserWindow {
     !app.isPackaged && !developmentUrl && mockSmokeMode,
   );
   ipcSecurity.register(window, expectedUrl);
+  // Bind this window to the stream before its document can load, so an event published
+  // while it is still loading is replayed to its preload instead of being lost.
+  void desktopEvents
+    .start(`window:${window.webContents.id}`)
+    .catch((error) =>
+      console.error("Desktop event stream failed to start", error),
+    );
   const senderId = window.webContents.id;
   attachmentStore.activateSender(senderId);
   window.webContents.once("destroyed", () =>
@@ -1078,6 +1105,8 @@ app.on("before-quit", () => {
   unregisterProductivityIpc();
   unregisterAutomationIpc();
   unregisterRemoteIpc();
+  unregisterEventStreamIpc();
+  void desktopEvents.close();
   void remoteAccess?.dispose();
   gjcController.dispose();
   attachmentStore.dispose();

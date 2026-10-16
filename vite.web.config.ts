@@ -5,9 +5,9 @@ import { defineConfig } from 'vite'
  * The web client build.
  *
  * It is the same renderer as the desktop app, compiled for a browser that talks
- * to the host over the remote API. The desktop build's CSP forbids every network
- * destination (`connect-src 'none'`) because that window only speaks IPC; this one
- * must reach its own origin for `/api/*` and the event stream, and nothing else.
+ * to the host over the remote API. The desktop build's CSP reaches only the
+ * loopback event stream; this one must reach its own origin for `/api/*` and the
+ * event stream, and nothing else.
  *
  * Output goes to `dist/web`, which the host serves and the macOS package bundles.
  */

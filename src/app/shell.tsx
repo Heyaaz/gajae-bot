@@ -103,6 +103,63 @@ export function isTextEntryTarget(target: unknown): boolean {
   );
 }
 
+/**
+ * Whether a transcript still shows work in progress: something streaming, or a
+ * tool mid-execution.
+ *
+ * Two states deliberately do NOT count, because both outlive their turn and
+ * treating either as running left the composer queueing every later message
+ * while the header read idle -- the message only went out after some unrelated
+ * interaction: a tool card awaiting approval, and a plan entry left at
+ * in_progress once the turn ended.
+ */
+function transcriptHasLiveWork(transcript: readonly TranscriptItem[]): boolean {
+  return transcript.some((item) => {
+    if (item.kind === "message" || item.kind === "thought")
+      return item.streaming === true;
+    if (item.kind === "tool") return item.status === "running";
+    return false;
+  });
+}
+
+/**
+ * Whether the composer has to treat the selected session as mid-turn.
+ *
+ * The session row is the runtime's own account of the run, so a terminal status
+ * settles this outright. The transcript is the weaker account: a row synced while
+ * a turn was open carries `streaming` on its message or thought and `running` on
+ * an unresolved tool card, and nothing re-syncs that row once the turn ends, so
+ * those flags outlive the work they describe. Letting them outrank an idle row
+ * kept the composer on 이어서 보내기 and held every later message as a steer
+ * behind a turn that was already done -- the row read 완료 while the next prompt
+ * queued forever. Nothing in the transcript can date its own evidence, so the
+ * stale flag and a freshly started turn look identical there; the row, which the
+ * runtime advances as work begins and ends, is the only account that
+ * distinguishes them.
+ *
+ * `starting` is the other side of that: the row exists but has not reported a
+ * turn yet, so the transcript is the only account of work already underway. A
+ * session with no row at all has nothing to go on.
+ *
+ * Compaction and a waiting approval outlive the turn that started them and have
+ * no live transcript row of their own, so they are read from the row directly.
+ */
+export function composerTurnLive(
+  // A row can arrive without a status yet (a freshly listed session), and the
+  // caller then has only the transcript to go on, so the field is optional here
+  // even though a fully read AgentSession always carries one.
+  session: { status?: AgentSession["status"]; phase?: AgentSession["phase"] } | null,
+  transcript: readonly TranscriptItem[],
+): boolean {
+  if (!session) return false;
+  if (session.phase === "compacting") return true;
+  if (session.status === "running" || session.status === "waiting") return true;
+  // A terminal status is the runtime stating the turn is over. Any live-looking
+  // row under it belongs to that finished turn, not to the next one.
+  if (session.status === "idle" || session.status === "failed") return false;
+  return transcriptHasLiveWork(transcript);
+}
+
 export default function App() {
   const backend = useAgentBackend();
   const [connection, setConnection] = useState<BackendConnection>({
@@ -657,20 +714,6 @@ export default function App() {
   const selectedTranscript = selectedId
     ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT)
     : EMPTY_TRANSCRIPT;
-  // Live work means the transcript is still producing output right now:
-  // something is streaming or a tool is mid-execution.
-  //
-  // Two states deliberately do NOT count, because both outlive their turn and
-  // treating either as running left the composer queueing every later message
-  // while the header read idle -- the message only went out after some unrelated
-  // interaction: a tool card awaiting approval, and a plan entry left at
-  // in_progress once the turn ended.
-  const transcriptHasLiveWork = selectedTranscript.some((item) => {
-    if (item.kind === "message" || item.kind === "thought")
-      return item.streaming === true;
-    if (item.kind === "tool") return item.status === "running";
-    return false;
-  });
   // Queue state changes when the turn starts or ends, not on every streamed
   // chunk. Keying this on transcript length re-listed the queue over the shared
   // GJC connection for each chunk, which is what made sending feel slow.
@@ -1352,12 +1395,10 @@ export default function App() {
                 />
                 <Composer
                   sessionId={selectedSession.id}
-                  running={
-                    selectedSession.phase === "compacting" ||
-                    selectedSession.status === "running" ||
-                    selectedSession.status === "waiting" ||
-                    transcriptHasLiveWork
-                  }
+                  running={composerTurnLive(
+                    selectedSession,
+                    selectedTranscript,
+                  )}
                   sessionTitle={selectedSession.title}
                   workspace={selectedSession.workspace}
                   workspaces={recentWorkspaces}

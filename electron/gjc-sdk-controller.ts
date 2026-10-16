@@ -205,6 +205,23 @@ const HISTORY_SUMMARY_HEAD_BYTES = 128 * 1024;
 // settles its own recent rows; a disagreement older than this is republished as
 // a whole history instead of being reconciled row by row.
 const TRANSCRIPT_RESCAN_WINDOW = 32;
+/**
+ * How long one `sdk session tail` reader waits inside the CLI before it answers.
+ *
+ * The CLI is a batch command, not a stream: it accumulates frames in-process and
+ * answers when the observed turn goes idle or this window elapses. The window is
+ * therefore the worst-case latency of everything it carries -- reasoning and bash
+ * cards arrived in the batch that followed the window, which the user read as
+ * "only when it finishes" -- so it is short enough to feel live. The trade is one
+ * short-lived CLI process per poll, which the per-session follower bounds to a
+ * single reader at a time; the session file watch remains the durable account, and
+ * a reader that answers with no frames is paced by one window before the next read.
+ *
+ * What this cannot shorten is a tool's own output: the protocol carries no partial
+ * tool result (`shared/agent-contract.ts` has no tool delta), so a card gained its
+ * result only when the call reported one, and nothing here may invent the rest.
+ */
+export const TAIL_WINDOW_MS = 1_200;
 // A fork whose lifecycle receipt could not be verified is looked up in the broker
 // index, which only lists the new session once it settles.
 const FORK_RECOVERY_ATTEMPTS = 20;
@@ -506,6 +523,224 @@ export function sameTranscriptItem(
       return false;
   }
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+// The prefixes the live wire names its own rows with, the same list the renderer
+// retires those rows by (src/transcript-utils.ts, which this file must not import:
+// the two sides mirror each other instead). A recorded rebuild of the same block is
+// named from the row it was written under -- `shared-message-*`, `shared-thought-*` --
+// so ids alone can never pair a streamed row with its rebuild; the text is what does.
+const LIVE_MESSAGE_PREFIXES = ["gjc-message-", "local-prompt-"] as const;
+const LIVE_THOUGHT_PREFIX = "gjc-thought-";
+/**
+ * Tool statuses that still owe an outcome.
+ *
+ * These are the statuses a cancel clears (see `cancelOpenTools`), so a card that is
+ * retained while it owes work is also retired by the cancel that ended it. A decided
+ * call -- approved, denied -- or a finished one is not this window's to keep: the
+ * recorded row accounts for it.
+ */
+const LIVE_TOOL_STATUSES: ReadonlySet<ToolActivity["status"]> = new Set([
+  "pending",
+  "running",
+  "approval-required",
+]);
+
+function hasLivePrefix(id: string, prefixes: readonly string[]): boolean {
+  return prefixes.some((prefix) => id.startsWith(prefix));
+}
+
+/**
+ * Whether a row exists only in this process's account of the session.
+ *
+ * The live wire marks its rows: a streamed reply or reasoning block is `streaming`
+ * until the block is finalized, and a tool card reports its own status, which reads
+ * as owing an outcome while the runtime is still working the call. Everything else
+ * in the transcript was built from a durable read, and the rebuild is authoritative
+ * over it.
+ */
+function isLiveOnlyRow(row: TranscriptItem): boolean {
+  if (row.kind === "message" || row.kind === "thought")
+    return row.streaming === true;
+  if (row.kind === "tool") return LIVE_TOOL_STATUSES.has(row.status);
+  return false;
+}
+
+/**
+ * The comparable text of a transcript row.
+ *
+ * An attachment block is not part of what a row says -- it names the files the app
+ * attached -- and the renderer strips it before pairing a rebuild with the row it
+ * replaces. Whitespace is collapsed because a streamed row and its recorded twin can
+ * differ only in how the streamed parts were joined.
+ */
+function comparableRowText(content: string): string {
+  return content
+    .replace(
+      /<local-(?:attachments|files|images)>[\s\S]*?<\/local-(?:attachments|files|images)>/gu,
+      "",
+    )
+    .replace(/\s+/gu, " ")
+    .trim();
+}
+
+/**
+ * The durable row that accounts for a live row, when the read carries one.
+ *
+ * A tool call reconciles by id: the live card is named with the runtime's own
+ * `toolCallId`, which the recorded call carries too. Messages and thoughts do not --
+ * the wire names a streamed reply `gjc-message-<messageId>` while the recorded row is
+ * `shared-message-<row>` -- so the block itself is what pairs them, compared with the
+ * renderer's rule: the same prefix, the same role, and the same text once the
+ * attachment block and whitespace are normalized away.
+ *
+ * A rebuild that carries no outcome for a call this window still shows as working is
+ * not an account of it (the renderer's `supersedesRunningTool` rule): the broker
+ * records no status on a tool block, so a call in flight comes back reading
+ * `cancelled` with nothing in it. Taking that row would put a finished-looking card
+ * over live work, so the live row keeps the block and the next read decides again.
+ */
+function durableTwinOf(
+  items: readonly TranscriptItem[],
+  live: TranscriptItem,
+): TranscriptItem | undefined {
+  if (live.kind === "tool") {
+    const twin = items.find(
+      (item): item is ToolActivity => item.kind === "tool" && item.id === live.id,
+    );
+    if (!twin) return undefined;
+    const owing = LIVE_TOOL_STATUSES.has(live.status);
+    if (owing && twin.status === "cancelled" && !twin.output) return undefined;
+    return twin;
+  }
+  if (live.kind === "message" && hasLivePrefix(live.id, LIVE_MESSAGE_PREFIXES)) {
+    const text = comparableRowText(live.content);
+    const role = live.role;
+    if (!text) return undefined;
+    return items.find(
+      (item): item is ChatMessage =>
+        item.kind === "message" &&
+        item.role === role &&
+        item.id.startsWith("shared-message-") &&
+        comparableRowText(item.content) === text,
+    );
+  }
+  if (live.kind === "thought" && live.id.startsWith(LIVE_THOUGHT_PREFIX)) {
+    const text = comparableRowText(live.content);
+    if (!text) return undefined;
+    return items.find(
+      (item): item is ThoughtActivity =>
+        item.kind === "thought" &&
+        item.id.startsWith("shared-thought-") &&
+        comparableRowText(item.content) === text,
+    );
+  }
+  return undefined;
+}
+
+/**
+ * The last row before `index` in `previous` that the durable read still carries.
+ *
+ * It is the boundary a live row belongs after: whatever the read holds past it was
+ * recorded after the live row was streamed, so it is also what says whether the row's
+ * own turn is still open.
+ */
+function precedingSharedRow(
+  previous: readonly TranscriptItem[],
+  index: number,
+  ids: ReadonlySet<string>,
+): TranscriptItem | undefined {
+  for (let at = index - 1; at >= 0; at -= 1) {
+    const candidate = previous[at]!;
+    if (ids.has(candidate.id)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Waits out one read window, or ends as soon as the follower is detached.
+ *
+ * `detached` is created once per follower: the loop polls for as long as the session
+ * stays attached, and a listener per poll would pile them onto the same signal.
+ */
+function tailReadPause(detached: Promise<void>): Promise<void> {
+  return Promise.race([
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, TAIL_WINDOW_MS);
+    }),
+    detached,
+  ]);
+}
+
+/**
+ * Whether the durable read records a finished assistant turn after `anchor`.
+ *
+ * The read is the whole session, so an older turn's reply says nothing about a row
+ * streamed after it: only a terminal assistant row past the last row the live block
+ * followed proves the file moved past that block's own turn. A read that shows the
+ * turn over without carrying the live row's block is what retires it -- the
+ * alternative is a streamed card outliving every account of it.
+ */
+function durableTurnEnded(
+  items: readonly TranscriptItem[],
+  anchor: TranscriptItem | undefined,
+): boolean {
+  let start = 0;
+  if (anchor) {
+    // A duplicated id makes the position ambiguous; the later row is the safer
+    // boundary, because it retires only what the read has clearly moved past.
+    for (let at = items.length - 1; at >= 0; at -= 1) {
+      if (items[at]!.id === anchor.id) {
+        start = at + 1;
+        break;
+      }
+    }
+  }
+  for (let at = start; at < items.length; at += 1) {
+    const item = items[at]!;
+    if (
+      item.kind === "message" &&
+      item.role === "assistant" &&
+      item.streaming !== true
+    )
+      return true;
+  }
+  return false;
+}
+
+/**
+ * Put rows the durable read cannot account for back into it.
+ *
+ * Each one goes where it was -- directly after the rebuilt row it followed -- rather
+ * than at the end. A rebuild that has written past a live block would otherwise
+ * render that block after newer rows, and a row that jumps position is republished
+ * as though the history had been rewritten. Rows with no shared row before them are
+ * the newest this window made, so they stay at the end.
+ */
+function composeTranscriptRows(
+  items: TranscriptItem[],
+  retained: ReadonlyArray<{ row: TranscriptItem; afterId: string | undefined }>,
+): TranscriptItem[] {
+  if (retained.length === 0) return items;
+  const pending = new Map<string, TranscriptItem[]>();
+  const trailing: TranscriptItem[] = [];
+  for (const { row, afterId } of retained) {
+    if (afterId === undefined) {
+      trailing.push(row);
+      continue;
+    }
+    const rows = pending.get(afterId);
+    if (rows) rows.push(row);
+    else pending.set(afterId, [row]);
+  }
+  const composed = [...items];
+  for (const [afterId, rows] of pending) {
+    const at = composed.findIndex((item) => item.id === afterId);
+    if (at < 0) trailing.push(...rows);
+    else composed.splice(at + 1, 0, ...rows);
+  }
+  if (trailing.length > 0) composed.push(...trailing);
+  return composed;
 }
 
 function transcriptTime(value: unknown): string {
@@ -3975,6 +4210,17 @@ export class GjcSdkController {
       return;
     }
 
+    // A row can also disappear without the history getting shorter: a live row the
+    // rebuild recorded under its own id, or one the ended turn never recorded. An
+    // appended event cannot take a row away, so a history that dropped one is
+    // republished whole -- the renderer's own merge retires the row when the rebuild
+    // carries the same block, and this is what covers the rest.
+    const present = new Set(items.map((item) => item.id));
+    if (previous.some((item) => !present.has(item.id))) {
+      syncWholeHistory();
+      return;
+    }
+
     // Rows already published can still change -- a tool call gains its result, a
     // streamed message settles -- but only recent ones do, so the scan walks back
     // from the end and stops at the first row that still matches. Comparing the
@@ -6720,6 +6966,13 @@ export class GjcSdkController {
     sessionId: string,
     controller: AbortController,
   ): Promise<void> {
+    const detached = new Promise<void>((resolve) => {
+      if (controller.signal.aborted) resolve();
+      else
+        controller.signal.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+    });
     while (
       !this.disposed &&
       !controller.signal.aborted &&
@@ -6733,7 +6986,7 @@ export class GjcSdkController {
             ? { cursor: this.tailCheckpoints.get(sessionId) }
             : {}),
           untilIdle: true,
-          timeoutMs: 8_000,
+          timeoutMs: TAIL_WINDOW_MS,
           signal: controller.signal,
         });
         if (tail.gap) {
@@ -6745,6 +6998,14 @@ export class GjcSdkController {
           this.tailCheckpoints.set(sessionId, tail.checkpointToken);
         this.projectTailItems(sessionId, tail.items);
         if (tail.source === "offline") return;
+        // A reader that answered with no frames at all did no work. The CLI owns the
+        // wait window and normally blocks for it, but an endpoint that accepts the
+        // read and has nothing to send answers at once, and re-issuing that straight
+        // away would spawn one reader process per iteration -- a tighter loop than
+        // the longer window ever allowed. One window of quiet before the next read
+        // bounds the poll rate; frames that arrive during it wait for the next pass,
+        // which the shorter window already made the norm.
+        if (tail.items.length === 0) await tailReadPause(detached);
       } catch (error) {
         if (controller.signal.aborted || this.disposed) return;
         if (error instanceof SdkCliError) {
@@ -6988,23 +7249,64 @@ export class GjcSdkController {
    * process observed.
    *
    * A durable read is authoritative over recorded rows, but it cannot speak for a
-   * live plan or for a todo snapshot this window queried, and both were being
-   * deleted by the replacement. The retained rows are appended in a fixed order so
-   * every rebuild of the same views the same sequence.
+   * live plan, for a todo snapshot this window queried, or for a row the live wire
+   * produced while the file that records it was still behind: a streamed reply, a
+   * reasoning block, or a tool card whose call has not been written yet. Replacing
+   * the transcript wholesale deleted those rows, and the sync that followed carried
+   * a shorter history -- which the renderer reads as a rewrite -- so a streamed
+   * block vanished until the turn that produced it finished and the file caught up.
+   *
+   * A retained row goes back to the position it held, is retired rather than
+   * duplicated the moment the read accounts for its block, and is dropped when the
+   * read shows the turn it belongs to ended without recording it.
    */
   private installTranscript(
     sessionId: string,
     items: TranscriptItem[],
   ): TranscriptItem[] {
-    const retained: TranscriptItem[] = [];
-    const plan = this.sessionPlans.get(sessionId);
-    if (plan) retained.push(plan);
-    const todo = this.sessionTodoSnapshots.get(sessionId)?.row;
-    if (todo) retained.push(todo);
-    const missing = retained.filter(
-      (row) => !items.some((item) => item.id === row.id),
-    );
-    const composed = missing.length > 0 ? [...items, ...missing] : items;
+    const previous = this.transcripts.get(sessionId) ?? [];
+    const ids = new Set(items.map((item) => item.id));
+    // App-owned views the durable read never carries: the plan the runtime reported
+    // and the todo snapshot this window queried.
+    const appOwned = [
+      this.sessionPlans.get(sessionId),
+      this.sessionTodoSnapshots.get(sessionId)?.row,
+    ];
+    const retained: Array<{
+      row: TranscriptItem;
+      afterId: string | undefined;
+    }> = [];
+    for (let index = 0; index < previous.length; index += 1) {
+      const row = previous[index]!;
+      const isAppOwned = appOwned.some(
+        (view) => view !== undefined && view.id === row.id,
+      );
+      if (isAppOwned) {
+        if (!ids.has(row.id))
+          retained.push({
+            row,
+            afterId: precedingSharedRow(previous, index, ids)?.id,
+          });
+        continue;
+      }
+      if (!isLiveOnlyRow(row)) continue;
+      const twin = durableTwinOf(items, row);
+      if (twin) {
+        // The block this row streamed is now recorded under the read's own id, so
+        // the deltas still addressed to the id the wire invented are handed to the
+        // row that holds it. Without that they would find no row to append to and
+        // the rest of the block would be dropped.
+        if (this.activeAssistantMessages.get(sessionId) === row.id)
+          this.activeAssistantMessages.set(sessionId, twin.id);
+        if (this.activeThoughts.get(sessionId) === row.id)
+          this.activeThoughts.set(sessionId, twin.id);
+        continue;
+      }
+      const anchor = precedingSharedRow(previous, index, ids);
+      if (durableTurnEnded(items, anchor)) continue;
+      retained.push({ row, afterId: anchor?.id });
+    }
+    const composed = composeTranscriptRows(items, retained);
     this.transcripts.set(sessionId, composed);
     return composed;
   }
@@ -8403,12 +8705,18 @@ export class GjcSdkController {
     if (finishedTurn) this.emitActivity(sessionId, "completed");
   }
 
+  /**
+   * Cancel every tool card a stopped turn could still be showing as open work.
+   *
+   * A queued call is included: it was waiting rather than running, and a cancelled
+   * turn never starts it -- leaving it `pending` kept a live card (and its spinner)
+   * in a transcript whose turn is over.
+   */
   private cancelOpenTools(sessionId: string): void {
     const items = this.transcripts.get(sessionId) ?? [];
     for (const item of items) {
       if (item.kind !== "tool") continue;
-      if (item.status !== "running" && item.status !== "approval-required")
-        continue;
+      if (!LIVE_TOOL_STATUSES.has(item.status)) continue;
       item.status = "cancelled";
       if (item.subagents) {
         item.subagents = item.subagents.map((agent) =>

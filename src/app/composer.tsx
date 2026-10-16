@@ -449,9 +449,32 @@ export function Composer({
   useLayoutEffect(() => {
     const textarea = textareaRef.current;
     if (!textarea) return;
-    textarea.style.height = "auto";
-    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 52), 196)}px`;
-    textarea.style.overflowY = textarea.scrollHeight > 196 ? "auto" : "hidden";
+    // Measuring the live field at height:auto temporarily shrinks its flex sibling,
+    // the transcript. The browser can clamp scrollTop during that layout read even
+    // when the final textarea height is unchanged. Measure outside the layout flow.
+    const measure = textarea.cloneNode(false) as HTMLTextAreaElement;
+    measure.removeAttribute("id");
+    measure.removeAttribute("name");
+    measure.setAttribute("aria-hidden", "true");
+    measure.tabIndex = -1;
+    Object.assign(measure.style, {
+      position: "fixed",
+      visibility: "hidden",
+      pointerEvents: "none",
+      width: `${textarea.offsetWidth}px`,
+      height: "0px",
+      minHeight: "0px",
+      maxHeight: "none",
+      overflow: "hidden",
+      transition: "none",
+    });
+    measure.value = value;
+    textarea.parentElement!.appendChild(measure);
+    const height = measure.scrollHeight;
+    measure.remove();
+    const nextHeight = `${Math.min(Math.max(height, 52), 196)}px`;
+    if (textarea.style.height !== nextHeight) textarea.style.height = nextHeight;
+    textarea.style.overflowY = height > 196 ? "auto" : "hidden";
   }, [value]);
 
   useEffect(() => {

@@ -7,6 +7,7 @@ import path from "node:path";
 import {
   GjcSdkController,
   LIVE_EVIDENCE_GRACE_MS,
+  TAIL_WINDOW_MS,
   busyPromptError,
   cancelledOperationError,
   gitBranchFromHeader,
@@ -366,7 +367,9 @@ describe("GjcSdkController CLI seam", () => {
       })
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // An answer with no frames is paced by one window before the next read, so the
+    // cursor this test is about is handed over on the second poll.
+    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 250));
     expect(cli.tail).toHaveBeenCalledTimes(2);
     expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({ cursor: "checkpoint-1" }),
@@ -384,7 +387,9 @@ describe("GjcSdkController CLI seam", () => {
       .mockRejectedValueOnce(new SdkCliError("tail_timeout", "still running"))
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // The first answer carries no frames, so the follower waits one window before
+    // the timeout that follows it.
+    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 250));
     expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({ cursor: "checkpoint-1" }),
     );
@@ -1041,6 +1046,290 @@ describe("runtime activity visibility", () => {
       internals.readTodoRecords("s1"),
     ]);
     expect(reads).toBe(1);
+  });
+});
+
+/**
+ * The durable read is the authoritative account of a session, but it is written after
+ * the fact: the live wire shows a streamed reply, reasoning block, or tool card while
+ * the file behind it is still catching up. Replacing the transcript with the read
+ * dropped those rows, and the shorter-history sync that followed could not re-add
+ * them, so reasoning and bash cards appeared only once the turn that produced them
+ * finished.
+ */
+describe("live rows across a durable rebuild", () => {
+  /** A controller whose session file lives in a private agent directory. */
+  async function rebuildHarness() {
+    const root = await mkdtemp(path.join(tmpdir(), "live-rows-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const app = harness({ artifactDirectory: path.join(root, "artifacts") });
+    app.internals.sessions.set("s1", session());
+    app.internals.sessionCwds.set("s1", "/repo");
+    app.internals.transcripts.set("s1", []);
+    return {
+      ...app,
+      root,
+      cleanup: async () => {
+        app.controller.dispose();
+        if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+        else process.env.GJC_CODING_AGENT_DIR = previous;
+        await rm(root, { recursive: true, force: true });
+      },
+    };
+  }
+
+  const rows = (internals: any): any[] => internals.transcripts.get("s1") ?? [];
+  const ids = (internals: any): string[] =>
+    rows(internals).map((item) => item.id);
+
+  /**
+   * The session file as the runtime leaves it: newline-terminated records.
+   *
+   * `transcriptFile` ends the file on the last record, and the reader rightly treats a
+   * trailing record without its newline as a write still in progress -- it holds that
+   * line back until the terminator arrives. These tests are about the rows the durable
+   * read carries, so their file is written the way an append leaves it.
+   */
+  async function durableFile(
+    root: string,
+    id: string,
+    records: unknown[],
+  ): Promise<void> {
+    const directory = path.join(root, "sessions", "v2-bucket");
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      path.join(directory, `2026-01-01T00-00-00-000Z_${id}.jsonl`),
+      `${records.map((record) => JSON.stringify(record)).join("\n")}\n`,
+      "utf8",
+    );
+  }
+  const userRow = {
+    type: "message",
+    id: "u1",
+    timestamp: "2026-01-01T00:00:00.000Z",
+    message: { role: "user", content: [{ type: "text", text: "정리해줘" }] },
+  };
+  const messageChunk = (messageId: string, text: string) => ({
+    sessionId: "s1",
+    update: {
+      sessionUpdate: "agent_message_chunk",
+      messageId,
+      content: { type: "text", text },
+    },
+  });
+  const thoughtChunk = (messageId: string, text: string) => ({
+    sessionId: "s1",
+    update: {
+      sessionUpdate: "agent_thought_chunk",
+      messageId,
+      content: { type: "text", text },
+    },
+  });
+  const toolCall = (toolCallId: string) => ({
+    sessionId: "s1",
+    update: {
+      sessionUpdate: "tool_call",
+      toolCallId,
+      title: "bash",
+      rawInput: { command: "npm test" },
+      status: "in_progress",
+    },
+  });
+
+  it("keeps the reply and reasoning block the live wire is still streaming", async () => {
+    const { internals, root, cleanup } = await rebuildHarness();
+    try {
+      await durableFile(root, "s1", [userRow]);
+      internals.handleSessionUpdate(messageChunk("m2", "정리했습니다"));
+      internals.handleSessionUpdate(thoughtChunk("m3", "무엇을 고칠지 보는 중"));
+      // The file records neither block: the read is the user row and nothing else.
+      await internals.refreshTranscriptFromFile("s1");
+      expect(ids(internals)).toEqual([
+        "shared-message-u1",
+        "gjc-message-m2",
+        "gjc-thought-m3",
+      ]);
+      // Both are still live, so the deltas that follow land on them instead of
+      // starting the blocks again.
+      internals.handleSessionUpdate(thoughtChunk("m3", " (계속)"));
+      internals.handleSessionUpdate(messageChunk("m2", " — 확인 완료"));
+      expect(
+        rows(internals).find((item) => item.id === "gjc-thought-m3")?.content,
+      ).toBe("무엇을 고칠지 보는 중 (계속)");
+      expect(
+        rows(internals).find((item) => item.id === "gjc-message-m2")?.content,
+      ).toBe("정리했습니다 — 확인 완료");
+      expect(rows(internals).filter((item) => item.kind === "thought")).toHaveLength(1);
+      expect(
+        rows(internals).filter(
+          (item) => item.kind === "message" && item.role === "assistant",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps a tool card until the recorded call arrives, then replaces it in place", async () => {
+    const { internals, root, cleanup } = await rebuildHarness();
+    try {
+      await durableFile(root, "s1", [userRow]);
+      internals.handleSessionUpdate(toolCall("call-1"));
+      await internals.refreshTranscriptFromFile("s1");
+      expect(rows(internals).filter((item) => item.id === "call-1")).toHaveLength(1);
+      expect(rows(internals).find((item) => item.id === "call-1")).toMatchObject({
+        kind: "tool",
+        status: "running",
+      });
+
+      // The call and its result reach the file. The card reconciles by the id the
+      // runtime gave the call, so the rebuilt row replaces it rather than joining it.
+      await durableFile(root, "s1", [
+        userRow,
+        {
+          type: "message",
+          id: "a1",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          message: {
+            role: "assistant",
+            stopReason: "toolUse",
+            content: [
+              {
+                type: "toolCall",
+                id: "call-1",
+                name: "bash",
+                arguments: { command: "npm test" },
+              },
+            ],
+          },
+        },
+        {
+          type: "message",
+          id: "r1",
+          timestamp: "2026-01-01T00:00:02.000Z",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-1",
+            toolName: "bash",
+            body: "42 passing",
+            content: [{ type: "text", text: "42 passing" }],
+          },
+        },
+      ]);
+      await internals.refreshTranscriptFromFile("s1");
+      const rebuilt = rows(internals).filter((item) => item.id === "call-1");
+      expect(rebuilt).toHaveLength(1);
+      expect(rebuilt[0]).toMatchObject({ kind: "tool", status: "completed" });
+      expect(rebuilt[0].output).toContain("42 passing");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("retires the streamed twin once the file records the turn's reply", async () => {
+    const { internals, root, cleanup } = await rebuildHarness();
+    try {
+      await durableFile(root, "s1", [userRow]);
+      internals.handleSessionUpdate(messageChunk("m2", "정리했습니다"));
+      await durableFile(root, "s1", [
+        userRow,
+        {
+          type: "message",
+          id: "a1",
+          timestamp: "2026-01-01T00:00:01.000Z",
+          message: {
+            role: "assistant",
+            stopReason: "stop",
+            content: [{ type: "text", text: "정리했습니다" }],
+          },
+        },
+      ]);
+      await internals.refreshTranscriptFromFile("s1");
+      const replies = rows(internals).filter(
+        (item) => item.kind === "message" && item.role === "assistant",
+      );
+      // Streamed once and recorded once: the terminal row is the block, and the row
+      // the wire named is gone rather than standing beside it.
+      expect(replies).toHaveLength(1);
+      expect(replies[0].id).toBe("shared-message-a1");
+      // A delta that arrives after the rebuild follows the block, not the dead id.
+      internals.handleSessionUpdate(messageChunk("m2", " 확인 완료"));
+      expect(
+        rows(internals).find((item) => item.id === "shared-message-a1")?.content,
+      ).toBe("정리했습니다 확인 완료");
+      expect(
+        rows(internals).filter(
+          (item) => item.kind === "message" && item.role === "assistant",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("clears retained rows when the turn is cancelled and when the session is deleted", async () => {
+    const { controller, cli, internals, root, cleanup } = await rebuildHarness();
+    try {
+      await durableFile(root, "s1", [userRow]);
+      internals.handleSessionUpdate(messageChunk("m2", "진행 중"));
+      internals.handleSessionUpdate(thoughtChunk("m3", "정리하는 중"));
+      await internals.refreshTranscriptFromFile("s1");
+      expect(ids(internals)).toEqual([
+        "shared-message-u1",
+        "gjc-message-m2",
+        "gjc-thought-m3",
+      ]);
+
+      // The user stops the run: the reply and the reasoning block stop streaming,
+      // so the rebuild that follows no longer carries them.
+      (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
+      await controller.cancelRun("s1");
+      await internals.refreshTranscriptFromFile("s1");
+      expect(ids(internals)).toEqual(["shared-message-u1"]);
+
+      // A call this window is still working is live in the same way, and the cancel
+      // that cancelled it is what clears the card.
+      internals.locallyAbortedSessions.delete("s1");
+      internals.handleSessionUpdate(toolCall("call-4"));
+      await internals.refreshTranscriptFromFile("s1");
+      expect(ids(internals)).toEqual(["shared-message-u1", "call-4"]);
+      await controller.cancelRun("s1");
+      expect(
+        rows(internals).find((item) => item.id === "call-4")?.status,
+      ).toBe("cancelled");
+      await internals.refreshTranscriptFromFile("s1");
+      expect(ids(internals)).toEqual(["shared-message-u1"]);
+
+      // A deleted session takes the transcript the rows lived in with it.
+      internals.removeLocalSession("s1", false);
+      expect(internals.transcripts.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("polls the tail reader on the short window without spinning on an empty answer", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.attachedSessions.add("s1");
+    // A reader that answers at once with nothing: without pacing it is spawned again
+    // immediately, and a shorter window only makes that loop tighter.
+    (cli.tail as any).mockResolvedValue({
+      source: "session",
+      terminal: false,
+      items: [],
+    });
+    internals.startTailFollower("s1");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect((cli.tail as any).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ untilIdle: true, timeoutMs: TAIL_WINDOW_MS }),
+    );
+    expect(cli.tail).toHaveBeenCalledTimes(1);
+    // Detaching ends the wait rather than holding the follower open.
+    internals.stopTailFollower("s1");
+    controller.dispose();
   });
 });
 

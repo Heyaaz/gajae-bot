@@ -13,7 +13,6 @@ import {
   groupTranscriptItems,
   shouldFollowTranscript,
   recentUserRequests,
-  transcriptScrollIntent,
   transcriptBlockIndexForItem,
 } from "../transcript-utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -33,11 +32,15 @@ import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "rea
 import { httpUrls, humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
 import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
 
-// How long an upward gesture keeps its say over the follow decision. Long enough to
-// cover the smooth-scroll animation one notch triggers -- measured at ~157ms from the
-// wheel event to the last scroll event -- so the position the gesture started from
-// cannot cancel it.
+// How long a gesture keeps its say over the follow decision. Long enough to cover the
+// smooth-scroll animation one notch triggers -- measured at ~157ms from the wheel event to
+// the last scroll event -- so the position the gesture started from cannot cancel it.
 const GESTURE_WINDOW_MS = 400;
+
+// How close to the content bottom counts as having arrived at it, in layout pixels. A
+// fraction of a pixel of rounding in scrollTop is not a position, and it is deliberately
+// not the slack for unmounted rows: that is a separate, much wider rule.
+const BOTTOM_EPSILON_PX = 1;
 
 // How many frames in a row the position, the measured total, and the viewport height have
 // to agree before a resize restoration is finished. Landing on the current bottom is not
@@ -171,6 +174,67 @@ export function transcriptRestoreWidthDecision(
   return readingWidth === coveredWidth ? "covered" : "restore";
 }
 
+/**
+ * Whether a wheel or touch gesture takes the view off the newest content.
+ *
+ * Direction is input, not a hand-back. An upward gesture always takes the view; a downward
+ * one takes it too unless the view is already at the newest content. The scroll position
+ * cannot stand in for this: unmounted rows get a whole viewport of slack (see
+ * `shouldFollowTranscript`), so a small scroll *toward* the newest content reads as "already
+ * at the bottom", and treating that reading as arrived switched following back on -- which
+ * then had the corrections carry the view the rest of the way, away from the text the user
+ * was reading.
+ */
+export function transcriptGestureClaimsView(
+  deltaY: number,
+  remaining: number,
+): boolean {
+  return deltaY < 0 || remaining > BOTTOM_EPSILON_PX;
+}
+
+/**
+ * The follow decision for one scroll reading, and the reading intent it leaves behind.
+ *
+ * The position alone cannot answer it: rows below the viewport are unmounted, so the scroll
+ * height is an estimate and a drag to the end can land a few hundred pixels short of it.
+ * That has to read as following, or the view stalls with a blank band under the newest
+ * message. The intent is what keeps that slack from swallowing a deliberate move: while the
+ * view is off the newest content, nothing short of arriving at it hands the view back.
+ *
+ * So the intent is a latch, cleared by the newest content being reached and by nothing else.
+ * Scrolling back down a little is a position on the way there, not permission to follow
+ * again; the direction of the gesture does not decide, and neither does the width of the
+ * slack band. The one exception is the window: a gesture's opening scroll events report the
+ * position it started from, so at the bottom they read as "arrived" before the gesture has
+ * moved anything, and that would erase the gesture that took the view before it took it.
+ */
+export function transcriptFollowDecision(frame: {
+  scrollHeight: number;
+  scrollTop: number;
+  clientHeight: number;
+  /** The view has been taken off the newest content and has not arrived back at it. */
+  reading: boolean;
+  /** How long ago the gesture that claimed the view happened. */
+  gestureAgeMs: number;
+}): { following: boolean; reading: boolean } {
+  const remaining = frame.scrollHeight - frame.scrollTop - frame.clientHeight;
+  const arrived =
+    remaining <= BOTTOM_EPSILON_PX &&
+    (!frame.reading || frame.gestureAgeMs > GESTURE_WINDOW_MS);
+  const reading = frame.reading && !arrived;
+  return {
+    reading,
+    following:
+      arrived ||
+      shouldFollowTranscript(
+        frame.scrollHeight,
+        frame.scrollTop,
+        frame.clientHeight,
+        reading,
+      ),
+  };
+}
+
 /** Unzoomed offset of an element's top edge from the scroll container's content origin. */
 function layoutTopWithin(
   element: HTMLElement,
@@ -216,16 +280,20 @@ export function Transcript({
   const selfScrollingRef = useRef(false);
   // Pending bottom correction, so a burst of scroll events collapses into one.
   const settleTimerRef = useRef(0);
-  // Set by a wheel or touch gesture, cleared once the view is back at the bottom. The
-  // scroll position cannot carry this on its own: one notch is ~109px, which is inside
-  // the slack that unmounted rows require, so a small scroll up read as "still at the
-  // bottom" and was pulled straight back -- net movement 0px.
+  // Set by a wheel or touch gesture that took the view off the newest content, and cleared
+  // only once the view has arrived back at it. The scroll position cannot carry this on its
+  // own: one notch is ~109px, which is inside the slack that unmounted rows require, so a
+  // small scroll read as "still at the bottom" and was pulled straight back -- net movement
+  // 0px. It is deliberately direction-agnostic: a scroll back down a little is a position
+  // on the way to the newest content, not permission to follow it again.
   const scrolledAwayRef = useRef(false);
-  // When the last upward gesture happened. The first scroll event of a gesture still
-  // reports the old position -- one notch fires it while scrollTop is unchanged and
-  // remaining is 0 -- so clearing the intent on "at the bottom" erased the gesture
-  // before it moved anything. A gesture stays in force until the scrolling it caused
-  // has stopped.
+  // When the last upward gesture happened -- the shape of claim whose own opening scroll events
+  // report the bottom it is leaving. Those events read as "arrived" before the gesture has
+  // moved anything, which would erase the claim that took the view, so a claim stays in force
+  // over them until the scrolling it caused has stopped. A downward claim is away from the
+  // bottom by definition (that is why it claimed), and the position it is heading for is the
+  // bottom: arriving there is a real arrival, and stamping this would delay it by the window
+  // while the corrections stood down behind a claim the user had already spent.
   const gestureAtRef = useRef(0);
   const touchYRef = useRef<number | undefined>(undefined);
   const sessionRef = useRef(sessionId);
@@ -418,6 +486,14 @@ export function Transcript({
         selfScrollingRef.current = false;
         followingRef.current = false;
         setFollowing(false);
+        return;
+      }
+      // A gesture that claimed the view while this correction was pending owns it. The
+      // correction stands down without writing: the write lands on the bottom the gesture is
+      // scrolling away from, and aborting the browser's own scroll animation is what left a
+      // wheel notch worth 0px of movement.
+      if (scrolledAwayRef.current) {
+        selfScrollingRef.current = false;
         return;
       }
       // Marked as our own scroll: mid-correction the position is legitimately short of the
@@ -724,36 +800,49 @@ export function Transcript({
     };
   }, [blocks, onRevealComplete, revealItemId, virtualizer]);
 
+  // A wheel, a trackpad swipe, or a touch drag over the transcript. Direction decides who
+  // owns the view, never the distance to the bottom -- see transcriptGestureClaimsView.
+  function noteGesture(deltaY: number): void {
+    const scroller = transcriptRef.current;
+    const remaining = scroller
+      ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+      : 0;
+    if (!transcriptGestureClaimsView(deltaY, remaining)) return;
+    scrolledAwayRef.current = true;
+    // Only the upward claim needs the window; see gestureAtRef.
+    if (deltaY < 0) gestureAtRef.current = performance.now();
+  }
+
   function updateScrollFollowing(): void {
     const transcript = transcriptRef.current;
     if (!transcript) return;
     if (selfScrollingRef.current) return;
     const readingWidth = transcriptReadingWidth(transcript);
     if (stableViewportRef.current && stableViewportRef.current.width !== readingWidth) return;
-    const nearBottom = shouldFollowTranscript(
-      transcript.scrollHeight,
-      transcript.scrollTop,
-      transcript.clientHeight,
-      scrolledAwayRef.current,
-    );
-    // Back at the bottom: the gesture is spent, so the slack for unmounted rows applies
-    // again and new content resumes arriving in view. Not while it is still under way,
-    // because its opening events report the position it started from.
-    if (nearBottom && performance.now() - gestureAtRef.current > GESTURE_WINDOW_MS)
-      scrolledAwayRef.current = false;
-    followingRef.current = nearBottom;
-    setFollowing(nearBottom);
+    const decision = transcriptFollowDecision({
+      scrollHeight: transcript.scrollHeight,
+      scrollTop: transcript.scrollTop,
+      clientHeight: transcript.clientHeight,
+      reading: scrolledAwayRef.current,
+      gestureAgeMs: performance.now() - gestureAtRef.current,
+    });
+    scrolledAwayRef.current = decision.reading;
+    followingRef.current = decision.following;
+    setFollowing(decision.following);
     rememberViewport();
 
-    // Only close a gap the user did not ask for. Scrolling up must stay put: an earlier
-    // version force-enabled following whenever the last block was mounted, but overscan
-    // keeps it mounted well past the viewport, so scrolling up switched following back on
-    // and the view was dragged to the bottom 120ms later.
-    if (!nearBottom) return;
+    // Only close a gap the user did not ask for. Reading must stay put: an earlier version
+    // force-enabled following whenever the last block was mounted, but overscan keeps it
+    // mounted well past the viewport, so scrolling up switched following back on and the
+    // view was dragged to the bottom 120ms later.
+    if (!decision.following) return;
     window.clearTimeout(settleTimerRef.current);
     settleTimerRef.current = window.setTimeout(() => {
       const scroller = transcriptRef.current;
-      if (!scroller || !followingRef.current) return;
+      // Re-read instead of trusting the reading this was armed from: 120ms is long enough
+      // for a gesture to arrive, and a claimed view is the user's own statement that the
+      // position must not move on its own.
+      if (!scroller || !followingRef.current || scrolledAwayRef.current) return;
       const remaining =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
       if (remaining <= 1) return;
@@ -769,6 +858,10 @@ export function Transcript({
     cancelResizeRestore();
     followingRef.current = true;
     setFollowing(true);
+    // The one action that hands the view back from outside the position. The user asked for
+    // the newest content, so the reading intent and its gesture window go with the request.
+    scrolledAwayRef.current = false;
+    gestureAtRef.current = 0;
     if (blocks.length === 0) return;
     // Scrolling by index rather than to scrollHeight: rows above are unmounted, so the
     // total height is still an estimate and a raw scrollTop lands short. Dragging the
@@ -796,18 +889,15 @@ export function Transcript({
       aria-live="polite"
       ref={transcriptRef}
       onScroll={updateScrollFollowing}
-      // Input direction carries intent. Upward means "reading older content" and
-      // downward reverses it; the resulting position is indistinguishable from the
-      // measurement slack that unmounted rows need.
+      // Input direction carries intent: upward means "reading older content", downward means
+      // "moving toward the newest content". Neither direction is a hand-back -- arriving at
+      // the newest content is, and so is asking for it outright. The resulting position
+      // cannot stand in for this: it is indistinguishable from the measurement slack that
+      // unmounted rows need.
       onWheel={(event) => {
         // Real input takes the view back from a resize restoration in flight.
         cancelResizeRestore();
-        scrolledAwayRef.current = transcriptScrollIntent(
-          scrolledAwayRef.current,
-          event.deltaY,
-        );
-        if (event.deltaY < 0) gestureAtRef.current = performance.now();
-        else if (event.deltaY > 0) gestureAtRef.current = 0;
+        noteGesture(event.deltaY);
       }}
       onTouchStart={(event) => {
         cancelResizeRestore();
@@ -819,13 +909,9 @@ export function Transcript({
         const previousY = touchYRef.current;
         touchYRef.current = currentY;
         if (currentY === undefined || previousY === undefined) return;
-        const deltaY = previousY - currentY;
-        scrolledAwayRef.current = transcriptScrollIntent(
-          scrolledAwayRef.current,
-          deltaY,
-        );
-        if (deltaY < 0) gestureAtRef.current = performance.now();
-        else if (deltaY > 0) gestureAtRef.current = 0;
+        // A finger dragged down (positive clientY) reveals older content, which is the wheel's
+        // negative delta: the same sign the gesture rule reads.
+        noteGesture(previousY - currentY);
       }}
       onTouchEnd={() => {
         touchYRef.current = undefined;

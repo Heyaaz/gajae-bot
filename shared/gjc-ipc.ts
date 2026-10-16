@@ -1,3 +1,16 @@
+/**
+ * The endpoint of the loopback event stream.
+ *
+ * `port` and `token` are where it listens and the per-process secret that reaches it;
+ * `seq` is the event sequence the renderer must read from, so an event published while
+ * its window was still loading is replayed by the stream instead of being lost.
+ */
+export interface GjcEventStreamDescriptor {
+  port: number;
+  token: string;
+  seq: number;
+}
+
 export const GJC_IPC = {
   getConnection: "agent-control:gjc:get-connection",
   listSessions: "agent-control:gjc:list-sessions",
@@ -33,5 +46,13 @@ export const GJC_IPC = {
   unstageFiles: "agent-control:gjc:unstage-files",
   commitChanges: "agent-control:gjc:commit-changes",
   pushChanges: "agent-control:gjc:push-changes",
+  /**
+   * Hands a window this process launched the endpoint of the event stream. The events
+   * themselves travel over that stream, never over IPC.
+   */
+  eventStream: "agent-control:gjc:event-stream",
+  // The name desktop events used to travel on. It stays in the channel set because the
+  // shared unregister loop and the smoke harnesses iterate over this object and
+  // special-case this entry.
   event: "agent-control:gjc:event",
 } as const;

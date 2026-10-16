@@ -24,7 +24,7 @@ import type {
   AutomationDesktopBridge,
   AutomationInput,
 } from "../shared/automation-ipc.js";
-import { GJC_IPC } from "../shared/gjc-ipc.js";
+import { GJC_IPC, type GjcEventStreamDescriptor } from "../shared/gjc-ipc.js";
 import {
   DESKTOP_IPC,
   SETTINGS_IPC,
@@ -33,6 +33,181 @@ import {
 import { DESKTOP_SERVICES_IPC as SERVICES_IPC } from "../shared/desktop-services-ipc.js";
 import { PRODUCTIVITY_IPC } from "../shared/productivity-ipc.js";
 import { AUTOMATION_IPC } from "../shared/automation-ipc.js";
+
+/**
+ * The desktop event stream.
+ *
+ * Runtime events do not travel over IPC any more: the main process serves them from a
+ * loopback HTTP response as Server-Sent Events, and this preload is its only client. The
+ * window keeps calling `onEvent` exactly as it did, so nothing above the bridge knows the
+ * delivery changed.
+ *
+ * The fetch lives here instead of in the renderer because the renderer's Content
+ * Security Policy forbids every network destination (`connect-src 'none'`), while a
+ * sandboxed preload runs in an isolated world whose requests are not subject to the
+ * document's policy. The stream is authenticated with a per-process secret that main
+ * hands out over the authorized `GJC_IPC.eventStream` channel.
+ *
+ * A frame can also be a resync notice. The server's replay buffer is bounded, so a window
+ * whose cursor fell out of it is told a gap exists rather than being left to believe its
+ * view is complete. The notice is logged: this window rebuilds state through the ordinary
+ * IPC reads, and there is no snapshot call to refresh from here.
+ */
+const DESKTOP_STREAM_RETRY_MS = 1000;
+const DESKTOP_STREAM_MAX_RETRY_MS = 15_000;
+
+const eventListeners = new Set<(event: AgentEvent) => void>();
+let eventStreamEndpoint: Promise<GjcEventStreamDescriptor | null> | undefined;
+/** The one attach/read/retry loop, so two subscribers can never open two streams. */
+let eventStreamTask: Promise<void> | undefined;
+let eventStreamAbort: AbortController | undefined;
+let eventStreamRetryMs = DESKTOP_STREAM_RETRY_MS;
+let eventStreamAttached = false;
+let eventStreamLastId = 0;
+let eventStreamPending = "";
+
+function eventStreamDescriptor(): Promise<GjcEventStreamDescriptor | null> {
+  eventStreamEndpoint ??= ipcRenderer
+    .invoke(GJC_IPC.eventStream)
+    .then((value: unknown) => {
+      const candidate = value as Partial<GjcEventStreamDescriptor> | null;
+      if (
+        !candidate ||
+        typeof candidate.port !== "number" ||
+        typeof candidate.token !== "string"
+      )
+        return null;
+      return {
+        port: candidate.port,
+        token: candidate.token,
+        seq: typeof candidate.seq === "number" ? candidate.seq : 0,
+      };
+    })
+    // A host that does not serve the stream at all — the smoke harnesses mock this
+    // channel — leaves the window without events instead of failing to boot.
+    .catch(() => null);
+  return eventStreamEndpoint;
+}
+
+function startEventStream(): void {
+  if (eventStreamTask) return;
+  eventStreamTask = runEventStream().finally(() => {
+    eventStreamTask = undefined;
+  });
+}
+
+function stopEventStream(): void {
+  eventStreamRetryMs = DESKTOP_STREAM_RETRY_MS;
+  eventStreamPending = "";
+  eventStreamAbort?.abort();
+  eventStreamAbort = undefined;
+}
+
+/**
+ * Attaches once and keeps re-attaching while the window has listeners.
+ *
+ * Each attempt reads from the last frame this window saw, so a stream that dropped is
+ * resumed instead of restarted, and the server answers with the frames in between.
+ */
+async function runEventStream(): Promise<void> {
+  for (;;) {
+    if (eventListeners.size === 0) return;
+    const descriptor = await eventStreamDescriptor();
+    if (!descriptor) return;
+    if (!eventStreamAttached) {
+      // The first attach reads from the cursor main took when this window was created, so
+      // an event published while the document was still loading is delivered rather than
+      // lost; a reload starts from the current position instead of replaying history.
+      eventStreamLastId = descriptor.seq;
+      eventStreamAttached = true;
+    }
+    const controller = new AbortController();
+    eventStreamAbort = controller;
+    try {
+      const response = await fetch(
+        `http://127.0.0.1:${descriptor.port}/events?since=${eventStreamLastId}`,
+        {
+          headers: { Authorization: `Bearer ${descriptor.token}` },
+          cache: "no-store",
+          signal: controller.signal,
+        },
+      );
+      if (!response.ok || !response.body)
+        throw new Error(`the event stream answered ${response.status}`);
+      eventStreamRetryMs = DESKTOP_STREAM_RETRY_MS;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        eventStreamPending += decoder.decode(value, { stream: true });
+        eventStreamPending = dispatchEventFrames(eventStreamPending);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted)
+        console.error("Desktop event stream failed", error);
+    } finally {
+      if (eventStreamAbort === controller) eventStreamAbort = undefined;
+    }
+    if (eventListeners.size === 0) return;
+    const wait = eventStreamRetryMs;
+    eventStreamRetryMs = Math.min(wait * 2, DESKTOP_STREAM_MAX_RETRY_MS);
+    await new Promise((resolve) => setTimeout(resolve, wait));
+  }
+}
+
+/** Frames are separated by a blank line; the trailing partial frame is kept. */
+function dispatchEventFrames(pending: string): string {
+  let rest = pending;
+  for (;;) {
+    const separator = rest.indexOf("\n\n");
+    if (separator === -1) return rest;
+    handleEventFrame(rest.slice(0, separator));
+    rest = rest.slice(separator + 2);
+  }
+}
+
+function handleEventFrame(frame: string): void {
+  let id: number | undefined;
+  let name = "";
+  const data: string[] = [];
+  for (const line of frame.split("\n")) {
+    if (!line || line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator === -1 ? line : line.slice(0, separator);
+    const value =
+      separator === -1 ? "" : line.slice(separator + 1).replace(/^ /u, "");
+    if (field === "id") {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isInteger(parsed) && parsed >= 0) id = parsed;
+    } else if (field === "event") name = value;
+    else if (field === "data") data.push(value);
+  }
+  if (id !== undefined) eventStreamLastId = id;
+  if (data.length === 0) return;
+  if (name === "resync") {
+    console.warn(
+      "Desktop event stream fell behind its replay buffer",
+      data.join("\n"),
+    );
+    return;
+  }
+  let event: AgentEvent;
+  try {
+    event = JSON.parse(data.join("\n")) as AgentEvent;
+  } catch (error) {
+    console.error("Desktop event stream delivered an unreadable frame", error);
+    return;
+  }
+  for (const listener of [...eventListeners]) {
+    try {
+      listener(event);
+    } catch (error) {
+      // One broken listener must not end the stream for the others.
+      console.error("Desktop event listener failed", error);
+    }
+  }
+}
 
 const gjc: GjcDesktopBridge = Object.freeze({
   getConnection: () => ipcRenderer.invoke(GJC_IPC.getConnection),
@@ -109,10 +284,12 @@ const gjc: GjcDesktopBridge = Object.freeze({
   pushChanges: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.pushChanges, sessionId),
   onEvent: (listener: (event: AgentEvent) => void) => {
-    const wrapped = (_event: Electron.IpcRendererEvent, payload: AgentEvent) =>
-      listener(payload);
-    ipcRenderer.on(GJC_IPC.event, wrapped);
-    return () => ipcRenderer.removeListener(GJC_IPC.event, wrapped);
+    eventListeners.add(listener);
+    startEventStream();
+    return () => {
+      if (!eventListeners.delete(listener)) return;
+      if (eventListeners.size === 0) stopEventStream();
+    };
   },
 });
 

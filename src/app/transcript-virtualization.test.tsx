@@ -6,6 +6,8 @@ import {
 } from "../transcript-utils";
 import {
   transcriptAnchorScrollTop,
+  transcriptFollowDecision,
+  transcriptGestureClaimsView,
   transcriptRestoreSettled,
   transcriptRestoreWidthDecision,
   transcriptViewportAnchor,
@@ -301,5 +303,136 @@ describe("restoring only when the reading width really changed", () => {
     expect(
       transcriptRestoreWidthDecision(WINDOW_READING_WIDTH, opened, opened),
     ).toBe("restore");
+  });
+});
+
+describe("keeping a small downward scroll from jumping to the bottom", () => {
+  // The report: a reader a little above the newest content scrolls down one notch and the
+  // view jumps all the way to the bottom.
+  //
+  // Two rules meet at that position. The slack for unmounted rows is a whole viewport wide,
+  // because a drag to the end can land hundreds of pixels short of an estimated total -- and
+  // one wheel notch lands in that same band. What separates them is the reading intent, and
+  // the intent used to be cleared by any downward delta: the notch moved the view down a
+  // little, read as "still near the bottom", switched following back on, and the deferred
+  // bottom correction (80ms of chase, 120ms of settle timer) carried it the rest of the way.
+  //
+  // So the intent is a latch now. A gesture takes it; the newest content being reached, the
+  // 최신 내용으로 button, and a session switch are the only things that give it back.
+  const VIEWPORT_PX = 760;
+  const CONTENT_PX = 40_000;
+  /** A scroll reading `remaining` px above the content bottom, with the intent as given. */
+  const reading = (
+    remaining: number,
+    readingIntent: boolean,
+    gestureAgeMs = 0,
+  ) => ({
+    scrollHeight: CONTENT_PX,
+    scrollTop: CONTENT_PX - VIEWPORT_PX - remaining,
+    clientHeight: VIEWPORT_PX,
+    reading: readingIntent,
+    gestureAgeMs,
+  });
+  const NEAR_BOTTOM_PX = 300; // Inside the viewport-wide slack, well outside the bottom.
+
+  it("keeps the reading position after a small downward scroll near the bottom", () => {
+    // The gesture: one notch toward the newest content, ~109px of it. It claims the view
+    // because the view has not arrived at the newest content -- the distance is the slack's
+    // business, not the gesture's.
+    expect(transcriptGestureClaimsView(109, NEAR_BOTTOM_PX)).toBe(true);
+
+    const held = transcriptFollowDecision(reading(NEAR_BOTTOM_PX - 109, true));
+    expect(held.following).toBe(false);
+    expect(held.reading).toBe(true);
+
+    // The same position with the latch dropped is "near the bottom" and follows -- which is
+    // the jump, and is exactly what a downward delta used to do to the intent.
+    expect(
+      transcriptFollowDecision(reading(NEAR_BOTTOM_PX - 109, false)).following,
+    ).toBe(true);
+  });
+
+  it("holds the position while incoming chunks grow the content below it", () => {
+    // A reply keeps arriving under the reader: every chunk adds height below the viewport
+    // while the position does not move, so the gap to the bottom grows rather than closes.
+    // Both deferred corrections are gated on this flag, so it may not flip to following at
+    // any point in the arrival -- and the latch has to survive it.
+    let readingIntent = true;
+    let scrollHeight = CONTENT_PX;
+    const scrollTop = CONTENT_PX - VIEWPORT_PX - NEAR_BOTTOM_PX;
+    for (const [index, chunk] of [180, 240, 90, 420, 160].entries()) {
+      scrollHeight += chunk;
+      const decision = transcriptFollowDecision({
+        scrollHeight,
+        scrollTop,
+        clientHeight: VIEWPORT_PX,
+        reading: readingIntent,
+        gestureAgeMs: 500 + index * 250,
+      });
+      readingIntent = decision.reading;
+      expect(decision.following).toBe(false);
+      expect(decision.reading).toBe(true);
+      // The reader's own gap is untouched by the chunks landing under it.
+      expect(scrollHeight - scrollTop - VIEWPORT_PX).toBeGreaterThan(
+        NEAR_BOTTOM_PX,
+      );
+    }
+  });
+
+  it("arms no deferred correction while the view is away from the bottom", () => {
+    // Every timer the component runs is gated on the follow decision: the 80ms chase and the
+    // 120ms settle timer are only started when it is true, and the 400ms gesture window only
+    // decides when a latch may be released. Away from the bottom the answer is false across
+    // all of them.
+    for (const age of [0, 80, 120, 121, 399, 401, 5_000]) {
+      const decision = transcriptFollowDecision(
+        reading(NEAR_BOTTOM_PX, true, age),
+      );
+      expect(decision.following).toBe(false);
+      expect(decision.reading).toBe(true);
+    }
+  });
+
+  it("hands the view back on reaching the newest content, and only then", () => {
+    // The reader scrolls the rest of the way down. Short of the bottom is still a position
+    // in the slack band, and it is still theirs.
+    expect(transcriptFollowDecision(reading(109, true, 900)).following).toBe(
+      false,
+    );
+
+    const arrived = transcriptFollowDecision(reading(0, true, 900));
+    expect(arrived.following).toBe(true);
+    expect(arrived.reading).toBe(false);
+
+    // Except inside the gesture window. Its opening scroll events report the position the
+    // gesture started from, so a wheel notch that begins at the bottom reads as arrived
+    // before it has moved anything -- and releasing the latch there would erase the gesture
+    // that just took the view.
+    const openingEvent = transcriptFollowDecision(reading(0, true, 150));
+    expect(openingEvent.reading).toBe(true);
+
+    // The 최신 내용으로 button is the other hand-back: it clears the latch outright, so the
+    // position it scrolls to is following from its first frame.
+    const asked = transcriptFollowDecision(reading(0, false));
+    expect(asked.following).toBe(true);
+    expect(asked.reading).toBe(false);
+  });
+
+  it("keeps the slack a scrollbar drag to the end needs", () => {
+    // A drag on the scrollbar is not a wheel or touch gesture, so nothing claims the view
+    // and the slack has to stay live: the drag lands 577px short of an estimated total on a
+    // real session, and without the band that position reads as "reading" and the view
+    // stalls with a blank band under the newest message.
+    expect(transcriptFollowDecision(reading(577, false)).following).toBe(true);
+    // Further than a viewport away is a position, not a measurement error.
+    expect(transcriptFollowDecision(reading(2_000, false)).following).toBe(false);
+
+    // A downward gesture at the newest content claims nothing: there is no position to
+    // hold, and the estimate still needs its slack.
+    expect(transcriptGestureClaimsView(109, 0)).toBe(false);
+    // An upward one claims it even from the bottom, which is where reading older content
+    // starts, and the gesture window above is what keeps its opening event from releasing
+    // the latch before it has moved anything.
+    expect(transcriptGestureClaimsView(-109, 0)).toBe(true);
   });
 });

@@ -3,7 +3,12 @@ import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import App, { escapeCancelsRun, isTextEntryTarget } from "./shell";
+import type { SessionStatus, TranscriptItem } from "../backend/types";
+import App, {
+  composerTurnLive,
+  escapeCancelsRun,
+  isTextEntryTarget,
+} from "./shell";
 
 const actionProbe = vi.hoisted(() => ({
   rename: vi.fn(),
@@ -82,6 +87,121 @@ describe("Escape routing", () => {
     expect(escapeCancelsRun(press({ altKey: true }))).toBe(false);
     expect(escapeCancelsRun(press({ shiftKey: true }))).toBe(false);
     expect(escapeCancelsRun(press({ defaultPrevented: true }))).toBe(false);
+  });
+});
+
+function tool(status: "running" | "approval-required"): TranscriptItem {
+  return {
+    id: `tool-${status}`,
+    kind: "tool",
+    sessionId: "session-1",
+    name: "bash",
+    description: "bun test",
+    status,
+    createdAt: "10:02",
+  };
+}
+
+function streamingThought(): TranscriptItem {
+  return {
+    id: "thought-1",
+    kind: "thought",
+    sessionId: "session-1",
+    content: "reading the controller",
+    streaming: true,
+    createdAt: "10:03",
+  };
+}
+
+function streamingMessage(): TranscriptItem {
+  return {
+    id: "message-1",
+    kind: "message",
+    sessionId: "session-1",
+    role: "assistant",
+    content: "the fix is in",
+    streaming: true,
+    createdAt: "10:04",
+  };
+}
+
+/**
+ * The plan row the composer must not read as work: it stays in_progress after the
+ * turn ended.
+ */
+function planInProgress(): TranscriptItem {
+  return {
+    id: "plan-1",
+    kind: "plan",
+    sessionId: "session-1",
+    entries: [{ content: "ship the fix", status: "in_progress" }],
+    createdAt: "10:05",
+  };
+}
+
+function sessionState(
+  status: SessionStatus | undefined,
+  phase?: string,
+): { status: SessionStatus | undefined; phase: string | undefined } {
+  return { status, phase };
+}
+
+describe("composer turn state", () => {
+  it("settles an idle row whose transcript still shows an unfinished turn", () => {
+    // The reported bug: the row read 완료, but a tool card left `running` (or a
+    // message left `streaming`) by the finished turn still outranked it, so the
+    // composer held the next message as a steer and only released it after some
+    // unrelated interaction.
+    expect(composerTurnLive(sessionState("idle"), [tool("running")])).toBe(
+      false,
+    );
+    expect(composerTurnLive(sessionState("idle"), [streamingThought()])).toBe(
+      false,
+    );
+    expect(composerTurnLive(sessionState("idle"), [streamingMessage()])).toBe(
+      false,
+    );
+  });
+
+  it("does not hold messages behind a failed turn either", () => {
+    // A failed row has no live turn left to steer into, and the release effect
+    // only drains the composer's own queue on a running -> idle transition, so
+    // reading this as running swallowed the message for good.
+    expect(composerTurnLive(sessionState("failed"), [tool("running")])).toBe(
+      false,
+    );
+  });
+
+  it("keeps the states the composer really does queue behind", () => {
+    expect(composerTurnLive(sessionState("running"), [])).toBe(true);
+    expect(composerTurnLive(sessionState("waiting"), [])).toBe(true);
+    // Compaction outlives the turn that started it and writes no live transcript
+    // row of its own, so the row is the only account of it.
+    expect(composerTurnLive(sessionState("idle", "compacting"), [])).toBe(true);
+    expect(composerTurnLive(sessionState("running"), [tool("running")])).toBe(
+      true,
+    );
+  });
+
+  it("reads live transcript work while the row cannot answer yet", () => {
+    // A starting session has not reported a turn, so work already underway there
+    // is only visible in the transcript. The same holds before any row arrives.
+    expect(composerTurnLive(sessionState("starting"), [tool("running")])).toBe(
+      true,
+    );
+    expect(
+      composerTurnLive(sessionState(undefined), [streamingMessage()]),
+    ).toBe(true);
+    expect(composerTurnLive(sessionState("starting"), [])).toBe(false);
+    expect(composerTurnLive(null, [tool("running")])).toBe(false);
+  });
+
+  it("does not count the transcript rows that outlive their turn", () => {
+    // A tool card awaiting approval and a plan entry left in_progress both stay
+    // after the turn ended; counting either queued every later message.
+    const afterTurn = [tool("approval-required"), planInProgress()];
+    expect(composerTurnLive(sessionState("starting"), afterTurn)).toBe(false);
+    expect(composerTurnLive(sessionState("idle"), afterTurn)).toBe(false);
   });
 });
 
