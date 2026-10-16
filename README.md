@@ -13,6 +13,7 @@ files; they never share a TUI connection.
 - Apple-silicon macOS (arm64 only)
 - Bun 1.4 or newer for the GJC runtime
 - GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.11` or newer (the current compatibility target is `gajae-code@0.18.11`)
+- Optional: the [`gh` CLI](https://cli.github.com), signed in with `gh auth login`, for the repository screen's issues, pull requests and CI
 
 For a clean install, install GJC first, then copy the notarized Gajae release to
 `/Applications`:
@@ -216,6 +217,49 @@ attaching is refused, so the failure is reported on the session rather than
 holding the dialog open.
 
 The full session id sits under the title in the inspector and copies on click.
+
+### Projects and the repository screen
+
+The rail opens on `전체 프로젝트` and can be filtered to one project. A project is a
+Git repository's main working tree, so every linked worktree of the same repository
+— including a Gajae managed worktree — belongs to the same project instead of
+appearing as a second one. A workspace outside Git is still a project: it keeps its
+sessions and its own root, and the repository screen says it is not a repository
+rather than showing an empty one.
+
+`레포 보기` sits next to the selector whenever one project is selected; from
+`전체 프로젝트` the same place offers `프로젝트 목록`, because the whole rail has no
+single repository to open. The repository screen fills the center area:
+
+| Tab | What it reads |
+| --- | --- |
+| 개요 | current branch, worktree and branch counts, changed-file counts per worktree, connected sessions, GitHub issue/PR counts and default-branch CI |
+| 이슈 | open issues, then one issue's body and labels |
+| PR | open pull requests with review state and CI, then one pull's branches, diff size and reviews |
+| 브랜치·워크트리 | local branches, which worktree has each checked out, and each worktree's changed-file count |
+
+- Selecting a session returns to its conversation with the project still selected.
+- Right-click on `레포 보기` carries the auxiliary actions only: `GitHub에서 열기`
+  and `로컬 폴더 열기`.
+- `변경 파일` reuses the session's existing panel, so Stage / Unstage / Commit /
+  Push are the same code, prompts and managed-worktree checks as the conversation's
+  `변경 파일` button. Nothing on the repository screen writes on its own.
+- `DONE` is the session's own state. It does not mean the pull request merged or the
+  issue closed; those live on the PR and 이슈 tabs.
+
+GitHub reads go through the [`gh` CLI](https://cli.github.com), which supplies its
+own credential from the keychain. The app never reads, stores or prints a token, and
+every read is a `gh` subprocess whose failure is reported as a state:
+
+- `원격 저장소가 없습니다` — the project has no remote configured
+- `GitHub 저장소가 아닙니다` — the remote is not github.com
+- `GitHub CLI(gh)를 찾을 수 없습니다` — `gh` is not on `PATH` (`GAJAE_GH_BIN`
+  overrides the path for a packaged install)
+- `GitHub에 로그인되어 있지 않습니다` — run `gh auth login`
+- `GitHub에 연결하지 못했습니다` — DNS, TLS, timeout or proxy failure
+- `GitHub에서 응답을 받지 못했습니다` — anything else the API answered
+
+An empty issue or pull list is none of those: it is reported as an empty list.
 
 ## Remote access
 
