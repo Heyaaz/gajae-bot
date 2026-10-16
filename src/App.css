@@ -5205,3 +5205,466 @@
   accent-color: var(--accent-bright);
   border-radius: 4px;
 }
+
+/* ---- Projects and the repository screen ---------------------------------- */
+
+/* The project selector and its entry point form one bar: the repository button
+   only means something next to the project it would open. */
+.project-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 0 12px 8px;
+}
+.project-bar .dropdown,
+.project-bar .dropdown-trigger {
+  width: 100%;
+}
+.project-bar .dropdown-menu {
+  max-height: 300px;
+  overflow: auto;
+}
+.project-entry {
+  display: inline-flex;
+  height: 32px;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+.project-entry:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+/* The repository screen replaces the conversation in the center column, so it
+   owns the scroll area the transcript would have had. */
+.repo-view {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--bg-app);
+}
+.repo-view__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.repo-view__title {
+  font-size: 14px;
+}
+.repo-view__root {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-view__header .button-secondary:last-child {
+  margin-left: auto;
+}
+.repo-view__tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px 0;
+  border-bottom: 1px solid var(--border);
+}
+.repo-tab {
+  padding: 6px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+.repo-tab:hover {
+  color: var(--text-primary);
+}
+.repo-tab.is-active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent);
+}
+.repo-view__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 24px;
+  overflow: auto;
+}
+.repo-view__status,
+.repo-view__notice,
+.repo-empty {
+  margin: 0;
+  padding: 8px 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.repo-error {
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 12px;
+  background: rgba(238, 123, 123, 0.08);
+  border: 1px solid rgba(238, 123, 123, 0.24);
+  border-radius: var(--radius-sm);
+}
+.repo-view__body > .diff-panel {
+  width: 100%;
+  border-left: 0;
+}
+
+.repo-card {
+  padding: 12px 13px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.repo-card__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.repo-card__header h3 {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.repo-card__header code,
+.repo-card__header span {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.repo-card__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+
+.repo-badge {
+  padding: 1px 7px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+}
+.repo-badge--passing {
+  color: var(--success);
+  border-color: rgba(103, 214, 165, 0.4);
+}
+.repo-badge--failing {
+  color: var(--danger);
+  border-color: rgba(238, 123, 123, 0.42);
+}
+.repo-badge--pending {
+  color: var(--warning);
+  border-color: rgba(227, 179, 106, 0.4);
+}
+.repo-badge--none {
+  color: var(--text-tertiary);
+  border-color: var(--border);
+}
+.repo-badge--open {
+  color: var(--success);
+  border-color: rgba(103, 214, 165, 0.36);
+}
+.repo-badge--merged {
+  color: var(--accent-bright);
+  border-color: rgba(255, 146, 56, 0.42);
+}
+.repo-badge--main,
+.repo-badge--checked-out {
+  color: var(--text-primary);
+}
+.repo-badge--review-approved {
+  color: var(--success);
+  border-color: rgba(103, 214, 165, 0.4);
+}
+.repo-badge--review-changes-requested {
+  color: var(--danger);
+  border-color: rgba(238, 123, 123, 0.42);
+}
+.repo-badge--review-review-required {
+  color: var(--warning);
+  border-color: rgba(227, 179, 106, 0.4);
+}
+
+.repo-list,
+.repo-branches,
+.repo-worktrees,
+.repo-reviews {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.repo-row {
+  border-radius: var(--radius-sm);
+}
+.repo-row__button {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 7px 9px;
+  color: inherit;
+  font-size: 12px;
+  text-align: left;
+  background: rgba(255, 255, 255, 0.025);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+}
+.repo-row__button:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+}
+.repo-row__number {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.repo-row__title {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-row__meta {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+.repo-worktree {
+  display: grid;
+  gap: 5px;
+  padding: 7px 9px;
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: var(--radius-sm);
+}
+.repo-worktree__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.repo-worktree__head code {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.repo-worktree__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+.repo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.repo-chip {
+  padding: 2px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.repo-chip:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.repo-branch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.repo-branch__path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repo-detail {
+  display: grid;
+  gap: 10px;
+}
+.repo-detail__header {
+  display: flex;
+}
+.repo-detail__title {
+  margin: 0;
+  font-size: 14px;
+}
+.repo-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.repo-detail__branches,
+.repo-detail__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+}
+.repo-detail__additions {
+  color: var(--success);
+}
+.repo-detail__deletions {
+  color: var(--danger);
+}
+.repo-detail__body {
+  max-height: 360px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  white-space: pre-wrap;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* 전체 프로젝트 has no single repository, so its entry point opens this list. */
+.project-list {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--bg-app);
+}
+.project-list__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.project-list__header strong {
+  font-size: 14px;
+}
+.project-list__header small {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.project-list__header .icon-button {
+  margin-left: auto;
+}
+.project-list__rows {
+  display: grid;
+  gap: 6px;
+  padding: 12px 16px;
+  overflow: auto;
+}
+.project-list__empty {
+  margin: 0;
+  padding: 14px 16px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.project-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.project-row.is-active {
+  border-color: rgba(240, 100, 22, 0.5);
+}
+.project-row__select {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 2px;
+  padding: 0;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+.project-row__select strong {
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.project-row__select code,
+.project-row__select small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-row__hint {
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+}
+
+/* The narrow rail (561-720px) hides labels down to icons. The project selector
+   keeps its label because it is the only thing that says which project the rail
+   is showing -- it truncates instead of vanishing. */
+@media (min-width: 561px) and (max-width: 720px) {
+  .project-bar {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    padding-inline: 8px;
+  }
+  .project-bar .dropdown-trigger {
+    padding-inline: 6px;
+  }
+  .project-entry {
+    width: 32px;
+    padding: 0;
+    justify-content: center;
+  }
+  .project-entry span {
+    display: none;
+  }
+}
