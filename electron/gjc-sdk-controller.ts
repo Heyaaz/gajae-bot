@@ -2388,6 +2388,7 @@ export class GjcSdkController {
   private readonly activeAssistantMessages = new Map<string, string>();
   private readonly activeThoughts = new Map<string, string>();
   private readonly activePromptSessions = new Set<string>();
+  private readonly activePromptAdmissions = new Map<string, symbol>();
   private readonly cancellingSessions = new Set<string>();
   private readonly cancellationPromises = new Map<string, Promise<void>>();
   private readonly flushingSessions = new Set<string>();
@@ -2667,6 +2668,7 @@ export class GjcSdkController {
     this.attachAttempts.clear();
     this.transcriptAttachments.clear();
     this.activePromptSessions.clear();
+    this.activePromptAdmissions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
     this.liveEvidenceAt.clear();
@@ -5184,6 +5186,8 @@ export class GjcSdkController {
       await this.steerSession(sessionId, { ...input, text: bare });
       return "steer";
     }
+    const admission = Symbol(sessionId);
+    this.activePromptAdmissions.set(sessionId, admission);
     this.activePromptSessions.add(sessionId);
 
     // The bubble is echoed before any await so the window shows the request the
@@ -5250,7 +5254,10 @@ export class GjcSdkController {
       // no-op on a Set.
       const settlementGeneration = this.generation;
       const settlementRevision = this.currentRunRevision(sessionId);
-      this.activePromptSessions.delete(sessionId);
+      if (this.activePromptAdmissions.get(sessionId) === admission) {
+        this.activePromptAdmissions.delete(sessionId);
+        this.activePromptSessions.delete(sessionId);
+      }
       const stillRunning = await this.discoveredRunState(sessionId);
       if (
         settlementGeneration === this.generation &&
@@ -5300,7 +5307,10 @@ export class GjcSdkController {
       this.emitActivity(sessionId, "failed");
       throw error;
     } finally {
-      this.activePromptSessions.delete(sessionId);
+      if (this.activePromptAdmissions.get(sessionId) === admission) {
+        this.activePromptAdmissions.delete(sessionId);
+        this.activePromptSessions.delete(sessionId);
+      }
     }
     return "prompt";
   }
@@ -5392,6 +5402,8 @@ export class GjcSdkController {
         this.cancelPermissionsForSession(sessionId);
         this.appendCancelledNotice(sessionId, stop === "plain");
         this.locallyAbortedSessions.add(sessionId);
+        this.activePromptAdmissions.delete(sessionId);
+        this.activePromptSessions.delete(sessionId);
         // Only confirmed aborts may clear run authority and publish idle.
         this.clearRunState(sessionId);
       }
@@ -6373,6 +6385,7 @@ export class GjcSdkController {
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
+    this.activePromptAdmissions.delete(sessionId);
     this.liveRunningSessions.delete(sessionId);
     this.liveRunningDigests.delete(sessionId);
     this.liveEvidenceAt.delete(sessionId);
@@ -6458,6 +6471,7 @@ export class GjcSdkController {
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
+    this.activePromptAdmissions.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
     this.liveEvidenceAt.clear();

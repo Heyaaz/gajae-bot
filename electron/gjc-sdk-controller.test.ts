@@ -327,6 +327,30 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.transcripts.get("s1")).toEqual([]);
   });
 
+  it("keeps the new prompt admission when an aborted send settles late", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.ensureAttached = vi.fn(async () => undefined);
+    internals.executeSdkSlashCommand = vi.fn(async () => false);
+    let finishOld!: (result: { status: string }) => void;
+    (cli.send as any)
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+      .mockResolvedValue({ status: "accepted" });
+    internals.awaitPromptSettlement = vi.fn(async () => "unknown");
+    (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
+    const oldSend = controller.sendMessage("s1", { text: "old", images: [], files: [] });
+    while (!finishOld) await Promise.resolve();
+    await controller.cancelRun("s1");
+    await controller.sendMessage("s1", { text: "new", images: [], files: [] });
+    const newAdmission = internals.activePromptAdmissions.get("s1");
+    finishOld({ status: "accepted" });
+    await oldSend;
+    expect(internals.activePromptAdmissions.get("s1")).toBe(newAdmission);
+    controller.dispose();
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
