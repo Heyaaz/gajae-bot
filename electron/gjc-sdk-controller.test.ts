@@ -225,10 +225,34 @@ describe("GjcSdkController CLI seam", () => {
 
   it("recovers a lifecycle-uncertain create from the broker list", async () => {
     const { controller, cli } = harness();
-    (cli.rawGlobal as any).mockRejectedValueOnce(new Error("terminal_uncertain"));
-    (cli.listSessions as any).mockResolvedValueOnce([]).mockResolvedValue([{ sessionId: "recovered", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", runtime: "gjc" }]);
+    let requestId: string | undefined;
+    cli.rawGlobal.mockImplementationOnce(async (...args: unknown[]) => {
+      requestId = (args[2] as { idempotencyKey: string }).idempotencyKey;
+      throw new Error("terminal_uncertain");
+    });
+    cli.listSessions.mockResolvedValueOnce([]).mockImplementation(async () => [
+      { sessionId: "unrelated", live: true, deleted: false, endpointGeneration: 1, repo: "/repo" },
+      { sessionId: "recovered", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", lifecycleRequestId: requestId },
+    ] as never);
     const created = await controller.createSession({ runtime: "gjc", workspace: "/repo" } as any);
     expect(created.id).toBe("recovered");
+  });
+
+  it("never adopts an uncorrelated create or fork from the same workspace", async () => {
+    vi.useFakeTimers();
+    const { controller, cli, internals } = harness();
+    try {
+      cli.listSessions.mockResolvedValueOnce([]).mockResolvedValue([{ sessionId: "unrelated", live: true, deleted: false, endpointGeneration: 1, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValueOnce(new Error("terminal_uncertain"));
+      const creation = expect(controller.createSession({ runtime: "gjc", workspace: "/repo", isolation: "workspace" })).rejects.toThrow("reconciliation");
+      await vi.runAllTimersAsync();
+      await creation;
+      const fork = internals.recoverForkedSession("/repo", new Set(), "expected-request");
+      await vi.runAllTimersAsync();
+      expect(await fork).toBeUndefined();
+      expect(internals.sessions.has("unrelated")).toBe(false);
+      expect(cli.rawControl).not.toHaveBeenCalled();
+    } finally { controller.dispose(); vi.useRealTimers(); }
   });
 
   it("sends with semantic send, fresh op ref, and status reconciliation", async () => {

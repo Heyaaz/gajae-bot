@@ -3608,8 +3608,7 @@ export class GjcSdkController {
               (session.endpointGeneration ?? 0) > 0 &&
               session.repo !== undefined &&
               path.resolve(session.repo) === sessionWorkspace &&
-              (session.lifecycleRequestId === undefined ||
-                session.lifecycleRequestId === createRequestId),
+              session.lifecycleRequestId === createRequestId,
           );
           if (retained) {
             this.sessionCwds.set(retained.sessionId, sessionWorkspace);
@@ -8514,8 +8513,7 @@ export class GjcSdkController {
           (listed.endpointGeneration ?? 0) > 0 &&
           listed.repo !== undefined &&
           path.resolve(listed.repo) === workspace &&
-          (listed.lifecycleRequestId === undefined ||
-            listed.lifecycleRequestId === lifecycleRequestId),
+          listed.lifecycleRequestId === lifecycleRequestId,
       );
       if (retained) {
         this.sessionCwds.set(retained.sessionId, workspace);
