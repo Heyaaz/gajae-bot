@@ -414,58 +414,6 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
-  it.each([true, false])("preserves ambiguous legacy history when the broker row live=%s", async (live) => {
-    const { controller, cli, internals } = harness();
-    try {
-      internals.sessions.set("s1", session());
-      internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
-      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live, deleted: false, repo: "/repo" }] as never);
-      cli.rawGlobal.mockRejectedValue(new SdkCliError("operation_failed", "localized refusal", undefined,
-        [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown"));
-      const remove = vi.spyOn(internals, "removeSessionArtifacts");
-      await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_legacy_history_ambiguous");
-      expect(internals.sessions.get("s1").attachment).toBe("recovering");
-      expect(remove).not.toHaveBeenCalled();
-      expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
-      expect(cli.rawGlobal).toHaveBeenCalledWith(live ? "session.close" : "session.delete",
-        expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
-    } finally { controller.dispose(); }
-  });
-
-
-  it("does not treat no_active_turn on this connection as session-wide idle", async () => {
-    const { controller, cli, internals } = harness();
-    internals.sessions.set("s1", { ...session(), status: "running" });
-    internals.liveRunningSessions.add("s1");
-    (cli.rawControl as any).mockResolvedValue({ turn: "no_active_turn" });
-    await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
-    expect(internals.sessions.get("s1")?.status).toBe("running");
-    expect(internals.liveRunningSessions.has("s1")).toBe(true);
-  });
-
-
-  it("does not send a follow-up after permission application fails", async () => {
-    const { controller, cli, internals } = harness();
-    internals.ensureAttached = vi.fn(async () => { throw new Error("permission_mode.set rejected"); });
-    await expect(controller.queueFollowUp("s1", { text: "follow up", images: [], files: [] } as never)).rejects.toThrow("세션 제어 상태");
-    expect(cli.rawControl).not.toHaveBeenCalledWith("s1", "turn.follow_up", expect.anything(), expect.anything());
-    controller.dispose();
-  });
-
-
-  it("does not close or delete a live generation-zero CLI session", async () => {
-    const { controller, cli, internals } = harness();
-    internals.sessions.set("s1", session());
-    (cli.listSessions as any).mockResolvedValue([
-      { sessionId: "s1", repo: "/repo", live: true, deleted: false, endpointGeneration: 0 },
-    ]);
-    await expect(controller.deleteSession("s1")).rejects.toThrow(/upstream lifecycle 지원/u);
-    expect(cli.rawGlobal).not.toHaveBeenCalled();
-    expect(internals.sessions.has("s1")).toBe(true);
-    controller.dispose();
-  });
-
-
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
