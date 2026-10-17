@@ -122,6 +122,18 @@ export async function cancelBeforeQueueDiscard(
   discard();
 }
 
+export function restoreRejectedDraft(
+  currentOwner: string,
+  drafts: Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>,
+  owner: string,
+  input: MessageInput,
+): { value: string; images: ImageAttachment[]; files: FileAttachment[] } | null {
+  const draft = { value: input.text, images: input.images, files: input.files };
+  if (currentOwner === owner) return draft;
+  drafts.set(owner, draft);
+  return null;
+}
+
 /** Whether this session's runtime advertises the Fast service-tier control. */
 export function advertisesFast(
   commands: readonly { name: string }[],
@@ -483,6 +495,25 @@ export function Composer({
       pendingQueuesRef.current.delete(sessionId);
       setPendingQueue([]);
     }).catch(() => undefined);
+  }
+
+  function restoreRejectedSubmission(owner: string, input: MessageInput): void {
+    const draft = restoreRejectedDraft(draftSessionRef.current, draftsRef.current, owner, input);
+    if (!draft) return;
+    const restored = {
+      value: [draft.value, valueRef.current].filter(Boolean).join("\n"),
+      images: [...draft.images, ...imagesRef.current],
+      files: [...draft.files, ...filesRef.current],
+    };
+    valueRef.current = restored.value;
+    imagesRef.current = restored.images;
+    filesRef.current = restored.files;
+    if (draftSessionRef.current === owner) {
+      setValue(restored.value);
+      setImages(restored.images);
+      setFiles(restored.files);
+      setAttachmentError("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요.");
+    }
   }
 
   const discardPrepared = useCallback(
@@ -897,8 +928,10 @@ export function Composer({
       )
     )
       return;
-    if (content)
-      lastSubmissionRef.current = { text: content, at: performance.now() };
+    const submission = content
+      ? { text: content, at: performance.now() }
+      : undefined;
+    if (submission) lastSubmissionRef.current = submission;
     // GJC CLI semantics: an empty submit interrupts a live run and releases the
     // queue this composer has been holding. With nothing held it is a no-op.
     if (!content && images.length === 0 && files.length === 0) {
@@ -963,7 +996,13 @@ export function Composer({
       // Immediate commands are intentionally fire-and-forget. The shell has
       // already surfaced delivery failures, so consume this promise here rather
       // than creating an unhandled renderer rejection.
-      void onSend({ text: content, images, files }).catch(() => undefined);
+      const owner = sessionId;
+      const input = { text: content, images, files };
+      void onSend(input).catch(() => {
+        if (submission && lastSubmissionRef.current === submission)
+          lastSubmissionRef.current = { text: "", at: 0 };
+        restoreRejectedSubmission(owner, input);
+      });
     }
     // submit() reads the textarea's DOM value, so clearing React state alone left
     // the same text readable until the next render. A second Enter arriving in that

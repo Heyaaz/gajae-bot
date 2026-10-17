@@ -14,6 +14,7 @@ import type { PendingRequest } from "../composer-utils";
 import {
   Composer,
   cancelBeforeQueueDiscard,
+  restoreRejectedDraft,
   FastTierControls,
   fastTierBusy,
   handleComposerEnter,
@@ -627,5 +628,35 @@ describe("stop queue ownership", () => {
     await expect(cancelBeforeQueueDiscard(async () => { throw failure; }, discard))
       .rejects.toBe(failure);
     expect(discard).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("rejected submission recovery", () => {
+  it("parks a late failure with its originating session", () => {
+    const drafts = new Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>();
+    const input: MessageInput = {
+      text: "review this",
+      images: [{ id: "image-1", name: "proof.png", mimeType: "image/png", data: "aW1hZ2U=" }],
+      files: [],
+    };
+    expect(restoreRejectedDraft("session-b", drafts, "session-a", input)).toBeNull();
+    expect(drafts.get("session-a")).toEqual({
+      value: input.text,
+      images: input.images,
+      files: input.files,
+    });
+    expect(drafts.has("session-b")).toBe(false);
+  });
+
+  it("returns rejected content for immediate restoration in its own session", () => {
+    const input: MessageInput = { text: "inspect", images: [], files: [] };
+    const drafts = new Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>();
+    expect(restoreRejectedDraft("session-a", drafts, "session-a", input)).toEqual({
+      value: "inspect",
+      images: [],
+      files: [],
+    });
+    expect(drafts.size).toBe(0);
   });
 });
