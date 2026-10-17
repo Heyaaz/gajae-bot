@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   GjcSdkCli,
   SdkCliError,
@@ -281,6 +284,61 @@ describe("GjcSdkCli.send", () => {
             commandId: "c1",
             turnId: "t1",
             accepted: true,
+  it("classifies a local send transport timeout as unknown, without retrying", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "gjc-sdk-send-timeout-"));
+    const executable = join(directory, "gjc");
+    try {
+      await writeFile(
+        executable,
+        "#!/usr/bin/env node\nsetTimeout(() => {}, 10_000);\n",
+      );
+      await chmod(executable, 0o755);
+      const client = new GjcSdkCli({
+        executable,
+        repo: directory,
+        env: process.env,
+        timeoutMs: 30,
+      });
+      const exec = client.exec;
+      let calls = 0;
+      client.exec = (...args) => {
+        calls += 1;
+        return exec(...args);
+      };
+      await expect(client.send("s1", "hello", { opRef: "known-op-ref" })).rejects.toMatchObject({
+        code: "uncertain_after_send",
+        message: expect.stringContaining("outcome is unknown"),
+      });
+      expect(calls).toBe(1);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("does not classify a non-send local timeout as prompt uncertainty", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "gjc-sdk-list-timeout-"));
+    const executable = join(directory, "gjc");
+    try {
+      await writeFile(
+        executable,
+        "#!/usr/bin/env node\nsetTimeout(() => {}, 10_000);\n",
+      );
+      await chmod(executable, 0o755);
+      const client = new GjcSdkCli({
+        executable,
+        repo: directory,
+        env: process.env,
+        timeoutMs: 30,
+      });
+      const error = await client.listSessions().catch((caught: unknown) => caught);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(SdkCliError);
+      expect(error).toHaveProperty("message", expect.stringContaining("GJC control timed out"));
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
             clientRef: "01m199cqagzwqz7mck26zbsk7j",
           },
         },

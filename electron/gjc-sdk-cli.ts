@@ -80,7 +80,16 @@ export async function brokerExec(
     };
     options.signal?.addEventListener("abort", abort, { once: true });
     const timer = setTimeout(() => {
-      finish(new Error(`GJC control timed out after ${options.timeoutMs}ms`));
+      const timeout = `GJC control timed out after ${options.timeoutMs}ms`;
+      const isSessionSend = args[0] === "sdk" && args[1] === "session" && args[2] === "send";
+      finish(
+        isSessionSend
+          ? new SdkCliError(
+              "uncertain_after_send",
+              `${timeout}; request outcome is unknown because the send may have been delivered.`,
+            )
+          : new Error(timeout),
+      );
     }, options.timeoutMs);
     const settleIfComplete = (): void => {
       const text = stdout.trim();
