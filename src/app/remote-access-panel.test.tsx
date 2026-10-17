@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { RemoteAccessState } from "../../shared/remote-protocol";
 import {
   RemoteAccessPanelView,
+  shouldApplyRemoteResponse,
   writeClipboard,
   type RemoteAccessPanelActions,
   type RemoteAccessPanelViewProps,
@@ -221,6 +222,13 @@ describe("RemoteAccessPanelView states", () => {
     expect(markup).toContain('aria-label="원격 접속 포트"');
     // Unchanged draft: applying it would be a no-op.
     expect(buttonElement(markup, "적용")).toContain('disabled=""');
+  });
+});
+
+describe("remote refresh response ownership", () => {
+  it("rejects an older refresh after a newer mutation has started", () => {
+    expect(shouldApplyRemoteResponse(4, 5)).toBe(false);
+    expect(shouldApplyRemoteResponse(5, 5)).toBe(true);
   });
 });
 

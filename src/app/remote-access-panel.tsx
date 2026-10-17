@@ -1,5 +1,5 @@
 import QRCode from "qrcode";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -69,6 +69,13 @@ export interface RemoteAccessPanelViewProps {
   qr: string;
   portDraft: string;
   actions: RemoteAccessPanelActions;
+}
+
+export function shouldApplyRemoteResponse(
+  responseGeneration: number,
+  latestGeneration: number,
+): boolean {
+  return responseGeneration === latestGeneration;
 }
 
 export function RemoteAccessPanelView({
@@ -417,6 +424,7 @@ export function RemoteAccessPanel() {
   const [error, setError] = useState("");
   const [qr, setQr] = useState<string>("");
   const [portDraft, setPortDraft] = useState("");
+  const requestGeneration = useRef(0);
 
   const apply = useCallback((next: RemoteAccessState) => {
     setState(next);
@@ -425,24 +433,43 @@ export function RemoteAccessPanel() {
 
   const refresh = useCallback(async () => {
     if (!bridge) return;
+    const generation = ++requestGeneration.current;
+    setBusy("refresh");
+    setError("");
     try {
-      apply(await bridge.refresh());
+      const refreshed = await bridge.refresh();
+      if (!shouldApplyRemoteResponse(generation, requestGeneration.current))
+        return;
+      apply(refreshed);
       setError("");
     } catch (failure) {
-      setError(message(failure));
+      if (shouldApplyRemoteResponse(generation, requestGeneration.current))
+        setError(message(failure));
+    } finally {
+      if (shouldApplyRemoteResponse(generation, requestGeneration.current))
+        setBusy(null);
     }
   }, [apply, bridge]);
 
   useEffect(() => {
     if (!bridge) return;
     let active = true;
+    const generation = ++requestGeneration.current;
     void bridge
       .getState()
       .then((next) => {
-        if (active) apply(next);
+        if (
+          active &&
+          shouldApplyRemoteResponse(generation, requestGeneration.current)
+        )
+          apply(next);
       })
       .catch((failure: unknown) => {
-        if (active) setError(message(failure));
+        if (
+          active &&
+          shouldApplyRemoteResponse(generation, requestGeneration.current)
+        )
+          setError(message(failure));
       });
     return () => {
       active = false;
@@ -473,15 +500,24 @@ export function RemoteAccessPanel() {
 
   if (!bridge) return <p className="settings-note">데스크톱 앱에서만 설정할 수 있습니다.</p>;
 
-  async function run(label: string, action: () => Promise<RemoteAccessState>): Promise<void> {
+  async function run(
+    label: string,
+    action: () => Promise<RemoteAccessState>,
+  ): Promise<void> {
+    const generation = ++requestGeneration.current;
     setBusy(label);
     setError("");
     try {
-      apply(await action());
+      const next = await action();
+      if (!shouldApplyRemoteResponse(generation, requestGeneration.current))
+        return;
+      apply(next);
     } catch (failure) {
-      setError(message(failure));
+      if (shouldApplyRemoteResponse(generation, requestGeneration.current))
+        setError(message(failure));
     } finally {
-      setBusy(null);
+      if (shouldApplyRemoteResponse(generation, requestGeneration.current))
+        setBusy(null);
     }
   }
 
