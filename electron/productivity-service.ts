@@ -65,6 +65,22 @@ export interface LinkResponse {
 export type LinkTransport = (url: URL, address: string, signal: AbortSignal) => Promise<LinkResponse>
 export type AddressResolver = (hostname: string) => Promise<string[]>
 
+type LinkBodyIterator = AsyncIterator<Uint8Array> & Iterator<Uint8Array>
+
+function bodyIterator(body: LinkResponse['body']): LinkBodyIterator {
+  const source = body as AsyncIterable<Uint8Array> & Iterable<Uint8Array>
+  return (source[Symbol.asyncIterator]?.() || source[Symbol.iterator]()) as LinkBodyIterator
+}
+
+function discardBody(body: LinkResponse['body']): void {
+  const source = body as AsyncIterable<Uint8Array> & Iterable<Uint8Array> & { destroy?: () => void }
+  if (typeof source.destroy === 'function') source.destroy()
+  else {
+    const iterator = source[Symbol.asyncIterator]?.() || source[Symbol.iterator]()
+    void iterator.return?.()
+  }
+}
+
 const MAX_URL = 2048
 const MAX_BODY = 512 * 1024
 const MAX_REDIRECTS = 5
@@ -144,28 +160,48 @@ export class ProductivityService {
     if (!['http:', 'https:'].includes(current.protocol) || current.username || current.password || !validHostname(current.hostname)) throw new Error('URL is not public')
     const cached = this.cache.get(current.toString()); if (cached) return cached
     for (let redirects = 0; ; redirects++) {
-      const addresses = await this.resolve(current.hostname)
-      const address = addresses.find(a => !privateAddress(a))
-      if (!address || addresses.some(privateAddress)) throw new Error('URL resolves to a private address')
       const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), TIMEOUT)
-      let response: LinkResponse
-      try { response = await this.transport(current, address, controller.signal) } finally { clearTimeout(timer) }
-      if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-        if (redirects >= MAX_REDIRECTS) throw new Error('Too many redirects')
-        const location = Array.isArray(response.headers.location) ? response.headers.location[0] : response.headers.location
-        current = new URL(location, current)
-        if (current.username || current.password || !['http:', 'https:'].includes(current.protocol) || !validHostname(current.hostname)) throw new Error('Invalid redirect')
-        continue
+      let response: LinkResponse | undefined
+      let completed = false
+      const timedOut = new Promise<never>((_resolve, reject) => controller.signal.addEventListener('abort', () => reject(new Error('Link preview timed out')), { once: true }))
+      try {
+        const outcome = await Promise.race([ (async () => {
+          const addresses = await this.resolve(current.hostname)
+          const address = addresses.find(a => !privateAddress(a))
+          if (!address || addresses.some(privateAddress)) throw new Error('URL resolves to a private address')
+          response = await this.transport(current, address, controller.signal)
+          if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+            if (redirects >= MAX_REDIRECTS) throw new Error('Too many redirects')
+            const location = Array.isArray(response.headers.location) ? response.headers.location[0] : response.headers.location
+            const next = new URL(location, current)
+            if (next.username || next.password || !['http:', 'https:'].includes(next.protocol) || !validHostname(next.hostname)) throw new Error('Invalid redirect')
+            return { redirect: next } as const
+          }
+          if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`HTTP ${response.statusCode}`)
+          const contentTypeValue = response.headers['content-type']
+          const contentType = Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue
+          if (contentType && !/^text\/html(?:\s*;|$)|^application\/xhtml\+xml(?:\s*;|$)/iu.test(contentType)) throw new Error('URL did not return HTML')
+          const iterator = bodyIterator(response.body)
+          const chunks: Uint8Array[] = []; let size = 0
+          while (true) {
+            const next = await Promise.race([Promise.resolve(iterator.next()), timedOut])
+            if (next.done) break
+            size += next.value.byteLength
+            if (size > MAX_BODY) throw new Error('Response too large')
+            chunks.push(next.value)
+          }
+          const result = metadata(new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c)))), current)
+          return { result } as const
+        })(), timedOut ])
+        if ('redirect' in outcome && outcome.redirect) { current = outcome.redirect; continue }
+        const result = outcome.result
+        this.cache.set(result.url, result); if (this.cache.size > MAX_CACHE) this.cache.delete(this.cache.keys().next().value!)
+        completed = true
+        return result
+      } finally {
+        clearTimeout(timer)
+        if (response && !completed) discardBody(response.body)
       }
-      if (response.statusCode < 200 || response.statusCode >= 300) throw new Error(`HTTP ${response.statusCode}`)
-      const contentTypeValue = response.headers['content-type']
-      const contentType = Array.isArray(contentTypeValue) ? contentTypeValue[0] : contentTypeValue
-      if (contentType && !/^text\/html(?:\s*;|$)|^application\/xhtml\+xml(?:\s*;|$)/iu.test(contentType)) throw new Error('URL did not return HTML')
-      const chunks: Uint8Array[] = []; let size = 0
-      for await (const chunk of response.body) { size += chunk.byteLength; if (size > MAX_BODY) throw new Error('Response too large'); chunks.push(chunk) }
-      const result = metadata(new TextDecoder().decode(Buffer.concat(chunks.map(c => Buffer.from(c)))), current)
-      this.cache.set(result.url, result); if (this.cache.size > MAX_CACHE) this.cache.delete(this.cache.keys().next().value!)
-      return result
     }
   }
 

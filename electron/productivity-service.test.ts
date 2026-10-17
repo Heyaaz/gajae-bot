@@ -27,6 +27,33 @@ describe('ProductivityService', () => {
     await expect(binaryService.previewLink('https://example.com')).rejects.toThrow('HTML')
   })
 
+  it('keeps the deadline active while a response body is stalled and closes the body', async () => {
+    vi.useFakeTimers()
+    const returnBody = vi.fn(async () => ({ done: true as const, value: undefined }))
+    let aborted = false
+    const service = new ProductivityService(source(), ':memory:', {
+      resolver: async () => ['93.184.216.34'],
+      transport: async (_url, _address, signal) => {
+        signal.addEventListener('abort', () => { aborted = true }, { once: true })
+        return {
+          statusCode: 200,
+          headers: { 'content-type': 'text/html' },
+          body: { [Symbol.asyncIterator]: () => ({ next: () => new Promise<IteratorResult<Uint8Array>>(() => undefined), return: returnBody }) },
+        }
+      },
+    })
+    try {
+      const preview = service.previewLink('https://example.com')
+      const rejected = expect(preview).rejects.toThrow('timed out')
+      await vi.advanceTimersByTimeAsync(8_000)
+      await rejected
+      expect(aborted).toBe(true)
+      expect(returnBody).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('indexes kinds, rebuilds idempotently, and safely handles FTS input', async () => {
     const service = new ProductivityService(source([item('m1', 'message', 'alpha'), item('t1', 'tool', 'alpha tool')]), ':memory:')
     await service.rebuildSearch(); await service.rebuildSearch()
