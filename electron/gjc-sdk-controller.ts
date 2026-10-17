@@ -2389,6 +2389,7 @@ export class GjcSdkController {
   private readonly activeThoughts = new Map<string, string>();
   private readonly activePromptSessions = new Set<string>();
   private readonly activePromptAdmissions = new Map<string, symbol>();
+  private readonly cancellationWatermarks = new Map<string, number>();
   private readonly cancellingSessions = new Set<string>();
   private readonly cancellationPromises = new Map<string, Promise<void>>();
   private readonly flushingSessions = new Set<string>();
@@ -2669,6 +2670,7 @@ export class GjcSdkController {
     this.transcriptAttachments.clear();
     this.activePromptSessions.clear();
     this.activePromptAdmissions.clear();
+    this.cancellationWatermarks.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
     this.liveEvidenceAt.clear();
@@ -5402,6 +5404,7 @@ export class GjcSdkController {
         this.cancelPermissionsForSession(sessionId);
         this.appendCancelledNotice(sessionId, stop === "plain");
         this.locallyAbortedSessions.add(sessionId);
+        this.cancellationWatermarks.set(sessionId, Date.now());
         this.activePromptAdmissions.delete(sessionId);
         this.activePromptSessions.delete(sessionId);
         // Only confirmed aborts may clear run authority and publish idle.
@@ -6386,6 +6389,7 @@ export class GjcSdkController {
     this.activeThoughts.delete(sessionId);
     this.activePromptSessions.delete(sessionId);
     this.activePromptAdmissions.delete(sessionId);
+    this.cancellationWatermarks.delete(sessionId);
     this.liveRunningSessions.delete(sessionId);
     this.liveRunningDigests.delete(sessionId);
     this.liveEvidenceAt.delete(sessionId);
@@ -6472,6 +6476,7 @@ export class GjcSdkController {
     this.activeThoughts.clear();
     this.activePromptSessions.clear();
     this.activePromptAdmissions.clear();
+    this.cancellationWatermarks.clear();
     this.liveRunningSessions.clear();
     this.liveRunningDigests.clear();
     this.liveEvidenceAt.clear();
@@ -8303,6 +8308,13 @@ export class GjcSdkController {
       !staleOrderedPhase &&
       (running === true || (phase !== undefined && phase !== "idle"));
     if (runtimeConfirmedWorkingCycle) {
+      // A new ordered runtime cycle supersedes the app's cancellation fence; the
+      // fence only suppresses stale evidence from the cancelled run.
+      const cancelledAt = this.cancellationWatermarks.get(sessionId);
+      if (cancelledAt !== undefined && Number.isFinite(phaseTimestamp) && phaseTimestamp > cancelledAt) {
+        this.locallyAbortedSessions.delete(sessionId);
+        this.cancellationWatermarks.delete(sessionId);
+      }
       // A non-idle phase with a timestamp is a state change the runtime just
       // reported, which is live evidence of work like any other.
       this.recordLiveEvidence(sessionId);

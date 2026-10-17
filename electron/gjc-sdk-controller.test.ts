@@ -378,6 +378,61 @@ describe("GjcSdkController CLI seam", () => {
   });
 
 
+  it("admits newer external runtime work without reopening stale cancelled evidence", () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.locallyAbortedSessions.add("s1");
+    internals.cancellationWatermarks.set("s1", 2_000);
+    const update = (at: number) => internals.patchSessionInfo("s1", {
+      sessionUpdate: "session_info_update", updatedAt: new Date(at).toISOString(),
+      _meta: { gjcPhase: "working", gjcRunning: true },
+    });
+    update(1_000);
+    expect(internals.locallyAbortedSessions.has("s1")).toBe(true);
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    update(3_000);
+    expect(internals.locallyAbortedSessions.has("s1")).toBe(false);
+    expect(internals.sessions.get("s1").status).toBe("running");
+    controller.dispose();
+  });
+
+  it.each(["dispose", "generation", "deleted"])("does not resume after a delayed attachment becomes invalid: %s", async (cause) => {
+    const { controller, cli, internals } = harness();
+    let release!: (value: string) => void;
+    const located = new Promise<string>((resolve) => { release = resolve; });
+    internals.sessions.set("s1", session());
+    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
+    internals.locateSharedTranscriptFile = vi.fn(() => located);
+    const attaching = internals.ensureAttached("s1", false);
+    await vi.waitFor(() => expect(internals.locateSharedTranscriptFile).toHaveBeenCalled());
+    if (cause === "dispose") controller.dispose();
+    else if (cause === "generation") internals.generation += 1;
+    else internals.sessions.delete("s1");
+    release("/repo/s1.jsonl");
+    await expect(attaching).rejects.toThrow("attachment was cancelled");
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it.each([true, false])("preserves ambiguous legacy history when the broker row live=%s", async (live) => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(new SdkCliError("operation_failed", "localized refusal", undefined,
+        [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown"));
+      const remove = vi.spyOn(internals, "removeSessionArtifacts");
+      await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_legacy_history_ambiguous");
+      expect(internals.sessions.get("s1").attachment).toBe("recovering");
+      expect(remove).not.toHaveBeenCalled();
+      expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
+      expect(cli.rawGlobal).toHaveBeenCalledWith(live ? "session.close" : "session.delete",
+        expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+    } finally { controller.dispose(); }
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
