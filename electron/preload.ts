@@ -2,9 +2,8 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentEvent,
   AgentSession,
-  BackendConnection,
-  TranscriptItem,
   AgentControlPreferences,
+  BackendConnection,
   CreateSessionInput,
   ForkSessionInput,
   GjcDesktopBridge,
@@ -14,6 +13,7 @@ import type {
   EffectiveRuntimeState,
   SettingsDesktopBridge,
   ToolDecision,
+  TranscriptItem,
   ManagementDesktopBridge,
   McpServerInput,
 } from "../shared/agent-contract.js";
@@ -71,7 +71,7 @@ let eventStreamAttached = false;
 let eventStreamLastId = 0;
 
 function eventStreamDescriptor(): Promise<GjcEventStreamDescriptor | null> {
-  eventStreamEndpoint ??= ipcRenderer
+  eventStreamEndpoint = ipcRenderer
     .invoke(GJC_IPC.eventStream)
     .then((value: unknown) => {
       const candidate = value as Partial<GjcEventStreamDescriptor> | null;
@@ -79,17 +79,20 @@ function eventStreamDescriptor(): Promise<GjcEventStreamDescriptor | null> {
         !candidate ||
         typeof candidate.port !== "number" ||
         typeof candidate.token !== "string"
-      )
+      ) {
+        console.error("Desktop event stream discovery returned an invalid descriptor");
         return null;
+      }
       return {
         port: candidate.port,
         token: candidate.token,
         seq: typeof candidate.seq === "number" ? candidate.seq : 0,
       };
     })
-    // A host that does not serve the stream at all — the smoke harnesses mock this
-    // channel — leaves the window without events instead of failing to boot.
-    .catch(() => null);
+    .catch((error) => {
+      console.error("Unable to discover desktop event stream", error);
+      return null;
+    });
   return eventStreamEndpoint;
 }
 
@@ -102,7 +105,6 @@ function startEventStream(): void {
 
 function stopEventStream(): void {
   eventStreamRetryMs = DESKTOP_STREAM_RETRY_MS;
-  eventStreamPending = "";
   eventStreamAbort?.abort();
   eventStreamAbort = undefined;
 }
@@ -117,7 +119,12 @@ async function runEventStream(): Promise<void> {
   for (;;) {
     if (eventListeners.size === 0) return;
     const descriptor = await eventStreamDescriptor();
-    if (!descriptor) return;
+    if (!descriptor) {
+      const wait = eventStreamRetryMs;
+      eventStreamRetryMs = Math.min(wait * 2, DESKTOP_STREAM_MAX_RETRY_MS);
+      await new Promise((resolve) => setTimeout(resolve, wait));
+      continue;
+    }
     if (!eventStreamAttached) {
       // The first attach reads from the cursor main took when this window was created, so
       // an event published while the document was still loading is delivered rather than

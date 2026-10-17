@@ -175,4 +175,27 @@ describe("preload SSE event handling", () => {
     vi.useRealTimers();
   });
 
+  it("retries event-stream IPC discovery after its initial failure", async () => {
+    vi.useFakeTimers();
+    const stream = responseStream();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: stream.body,
+    } as Response);
+    const invoke = vi.fn()
+      .mockRejectedValueOnce(new Error("main is not ready"))
+      .mockResolvedValue({ port: 4321, token: "secret", seq: 0 });
+    const bridge = createHarness(invoke, fetchMock);
+    const unsubscribe = bridge.gjc.onEvent(() => undefined);
+    await waitFor(() => invoke.mock.calls.length === 1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1000);
+    await waitFor(() => fetchMock.mock.calls.length === 1);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://127.0.0.1:4321/events?since=0");
+    unsubscribe();
+    stream.controller.close();
+    vi.useRealTimers();
+  });
 });
