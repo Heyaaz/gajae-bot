@@ -93,6 +93,27 @@ export function fastTierBusy(
   return request?.sessionId === sessionId;
 }
 
+export function mergePreparedAttachments<T>(
+  current: readonly T[],
+  prepared: readonly T[],
+  limit: number,
+): T[] {
+  return [...current, ...prepared].slice(0, limit);
+}
+
+export function storePreparedAttachments(
+  drafts: Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>,
+  owner: string,
+  kind: "images" | "files",
+  prepared: ImageAttachment[] | FileAttachment[],
+): void {
+  const draft = drafts.get(owner) ?? { value: "", images: [], files: [] };
+  if (kind === "images")
+    draft.images = mergePreparedAttachments(draft.images, prepared as ImageAttachment[], 6);
+  else draft.files = mergePreparedAttachments(draft.files, prepared as FileAttachment[], 5);
+  drafts.set(owner, draft);
+}
+
 /** Whether this session's runtime advertises the Fast service-tier control. */
 export function advertisesFast(
   commands: readonly { name: string }[],
@@ -375,6 +396,11 @@ export function Composer({
     >(),
   );
   const draftSessionRef = useRef(sessionId);
+  const renderedSessionRef = useRef(sessionId);
+  renderedSessionRef.current = sessionId;
+  const pendingPreparedRef = useRef(
+    new Map<string, { images: ImageAttachment[]; files: FileAttachment[] }>(),
+  );
   const pendingQueuesRef = useRef(new Map<string, PendingRequest[]>());
   // Anything the user could submit right now. This decides which single action the
   // submit slot exposes, so send and stop can never render together.
@@ -456,11 +482,38 @@ export function Composer({
     [settingsBridge],
   );
 
+  const commitPrepared = useCallback(
+    (owner: string, kind: "images" | "files", prepared: ImageAttachment[] | FileAttachment[]): void => {
+      if (owner === renderedSessionRef.current && owner === draftSessionRef.current) {
+        if (kind === "images") {
+          const next = mergePreparedAttachments(imagesRef.current, prepared as ImageAttachment[], 6);
+          imagesRef.current = next;
+          setImages(next);
+        } else {
+          const next = mergePreparedAttachments(filesRef.current, prepared as FileAttachment[], 5);
+          filesRef.current = next;
+          setFiles(next);
+        }
+        return;
+      }
+      if (owner === draftSessionRef.current) {
+        const pending = pendingPreparedRef.current.get(owner) ?? { images: [], files: [] };
+        if (kind === "images") pending.images.push(...prepared as ImageAttachment[]);
+        else pending.files.push(...prepared as FileAttachment[]);
+        pendingPreparedRef.current.set(owner, pending);
+        return;
+      }
+      storePreparedAttachments(draftsRef.current, owner, kind, prepared);
+    },
+    [],
+  );
+
   const addDroppedImages = useCallback(
     async (files: FileList | readonly File[]): Promise<void> => {
+      const owner = sessionId;
       setAttachmentError("");
       try {
-        if (images.length + files.length > 6)
+        if (imagesRef.current.length + files.length > 6)
           throw new Error("이미지는 메시지당 최대 6장까지 첨부할 수 있습니다");
         const all = Array.from(files);
         // Only a file selected or dragged from the OS has a main-authorizable
@@ -468,8 +521,8 @@ export function Composer({
         // validation failure must surface rather than silently bypassing the main
         // process capability boundary.
         if (!settingsBridge) {
-          const inline = await droppedImageAttachments(all, images.length);
-          setImages((current) => [...current, ...inline]);
+          const inline = await droppedImageAttachments(all, imagesRef.current.length);
+          commitPrepared(owner, "images", inline);
           return;
         }
         const native = all.filter((file) => settingsBridge.isNativeFile(file));
@@ -480,21 +533,22 @@ export function Composer({
         const inline = pathless.length
           ? await droppedImageAttachments(
               pathless,
-              images.length + attachments.length,
+              imagesRef.current.length + attachments.length,
             )
           : [];
-        setImages((current) => [...current, ...attachments, ...inline]);
+        commitPrepared(owner, "images", [...attachments, ...inline]);
       } catch (error) {
         setAttachmentError(
           error instanceof Error ? error.message : String(error),
         );
       }
     },
-    [images.length, settingsBridge],
+    [commitPrepared, sessionId, settingsBridge],
   );
 
   const addDroppedAttachments = useCallback(
     async (dropped: FileList | readonly File[]): Promise<void> => {
+      const owner = sessionId;
       const all = Array.from(dropped);
       const imageFiles = all.filter((file) => file.type.startsWith("image/"));
       const textFiles = all.filter((file) => !file.type.startsWith("image/"));
@@ -507,9 +561,7 @@ export function Composer({
               "원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요.",
             );
           const selected = await settingsBridge.prepareFiles(textFiles);
-          const combined = [...files, ...selected];
-          discardPrepared(combined.slice(5));
-          setFiles(combined.slice(0, 5));
+          commitPrepared(owner, "files", selected);
         }
       } catch (error) {
         setAttachmentError(
@@ -517,7 +569,7 @@ export function Composer({
         );
       }
     },
-    [addDroppedImages, discardPrepared, files, settingsBridge],
+    [addDroppedImages, commitPrepared, discardPrepared, sessionId, settingsBridge],
   );
 
   useEffect(() => {
@@ -536,6 +588,13 @@ export function Composer({
       images: imagesRef.current,
       files: filesRef.current,
     });
+    const prepared = pendingPreparedRef.current.get(previous);
+    if (prepared) {
+      const draft = draftsRef.current.get(previous)!;
+      draft.images = mergePreparedAttachments(draft.images, prepared.images, 6);
+      draft.files = mergePreparedAttachments(draft.files, prepared.files, 5);
+      pendingPreparedRef.current.delete(previous);
+    }
     if (pendingQueueRef.current.length > 0)
       pendingQueuesRef.current.set(previous, pendingQueueRef.current);
     else pendingQueuesRef.current.delete(previous);
@@ -908,6 +967,7 @@ export function Composer({
 
   async function acceptImages(selectedFiles: FileList | null): Promise<void> {
     if (!selectedFiles?.length || choosingImages) return;
+    const owner = sessionId;
     setAttachmentError("");
     setChoosingImages(true);
     try {
@@ -915,12 +975,8 @@ export function Composer({
       // read straight into the message instead of through a native path lease.
       const selected = settingsBridge
         ? await settingsBridge.prepareImages(Array.from(selectedFiles))
-        : await droppedImageAttachments(Array.from(selectedFiles), images.length);
-      if (selected.length > 0) {
-        const combined = [...images, ...selected];
-        discardPrepared(combined.slice(6));
-        setImages(combined.slice(0, 6));
-      }
+        : await droppedImageAttachments(Array.from(selectedFiles), imagesRef.current.length);
+      if (selected.length > 0) commitPrepared(owner, "images", selected);
     } catch (error) {
       setAttachmentError(
         error instanceof Error ? error.message : String(error),
@@ -933,6 +989,7 @@ export function Composer({
 
   async function acceptFiles(selectedFiles: FileList | null): Promise<void> {
     if (!selectedFiles?.length) return;
+    const owner = sessionId;
     if (!settingsBridge) {
       setAttachmentError(
         "원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요.",
@@ -943,9 +1000,7 @@ export function Composer({
     setAttachmentError("");
     try {
       const selected = await settingsBridge.prepareFiles(Array.from(selectedFiles));
-      const combined = [...files, ...selected];
-      discardPrepared(combined.slice(5));
-      setFiles(combined.slice(0, 5));
+      commitPrepared(owner, "files", selected);
     } catch (error) {
       setAttachmentError(
         error instanceof Error ? error.message : String(error),

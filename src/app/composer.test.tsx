@@ -2,6 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { MessageInput } from "../backend/types";
+import type { FileAttachment, ImageAttachment } from "../../shared/agent-contract";
 import {
   consumeQueuePullKey,
   isImmediateSdkCommandSubmission,
@@ -16,8 +17,10 @@ import {
   fastTierBusy,
   handleComposerEnter,
   QueueChip,
+  mergePreparedAttachments,
   requestFastTier,
   selectedCommandDraft,
+  storePreparedAttachments,
 } from "./composer";
 import type {
   ComposerEnterEffects,
@@ -199,6 +202,32 @@ describe("fastTierBusy", () => {
     expect(fastTierBusy({ sessionId: "session-a" }, "session-b")).toBe(false);
     expect(fastTierBusy({ sessionId: "session-b" }, "session-b")).toBe(true);
     expect(fastTierBusy(null, "session-b")).toBe(false);
+  });
+});
+
+describe("prepared attachment drafts", () => {
+  it("keeps late preparations with their origin session", () => {
+    const drafts = new Map<
+      string,
+      { value: string; images: ImageAttachment[]; files: FileAttachment[] }
+    >();
+    storePreparedAttachments(drafts, "session-a", "images", [
+      { id: "a-image" } as unknown as ImageAttachment,
+    ]);
+
+    expect(drafts.get("session-b")).toBeUndefined();
+    expect(drafts.get("session-a")?.images).toEqual([{ id: "a-image" }]);
+  });
+
+  it("composes concurrent preparations and respects the attachment limit", () => {
+    const first = [{ id: "first" }];
+    const second = [{ id: "second" }];
+
+    expect(mergePreparedAttachments(first, second, 6)).toEqual([
+      { id: "first" },
+      { id: "second" },
+    ]);
+    expect(mergePreparedAttachments(first, second, 1)).toEqual(first);
   });
 });
 
