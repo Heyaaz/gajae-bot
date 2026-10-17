@@ -6,6 +6,7 @@ import type {
   GithubFailureState,
   GithubIssueDetail,
   GithubIssueSummary,
+  GithubPullDetail,
   GithubPullSummary,
   GithubQuery,
   GithubRepositoryStatus,
@@ -24,6 +25,7 @@ import {
   RepoView,
   changesForProject,
   ciLabel,
+  detailForSelection,
   formatRepoCount,
   githubFailureText,
   issueStateLabel,
@@ -170,6 +172,20 @@ function pull(overrides: Partial<GithubPullSummary> = {}): GithubPullSummary {
     review: "changes-requested",
     ci: ci({ state: "failing", failing: 1 }),
     updatedAt: "5m",
+    ...overrides,
+  };
+}
+
+function pullDetail(overrides: Partial<GithubPullDetail> = {}): GithubPullDetail {
+  return {
+    ...pull(),
+    body: "PR 본문입니다.",
+    createdAt: "2026-10-15T01:00:00.000Z",
+    mergeable: "mergeable",
+    additions: 4,
+    deletions: 2,
+    changedFiles: 1,
+    reviews: [],
     ...overrides,
   };
 }
@@ -583,6 +599,40 @@ describe("Issue detail", () => {
     expect(markup).toContain("#12");
     // The list stays loaded behind the detail, but it is not what the user sees.
     expect(markup).not.toContain("repo-row__number");
+  });
+});
+
+describe("repository detail selection", () => {
+  it("returns to the issue list when the selection is cleared", () => {
+    const detail = loaded<GithubQuery<GithubIssueDetail>>({
+      state: "ok",
+      value: issueDetail(),
+    });
+
+    expect(detailForSelection(12, detail)).toBe(detail);
+    expect(detailForSelection(null, detail)).toBeNull();
+    const markup = render(
+      RepoIssuesPanel,
+      issuesProps({ detail: detailForSelection(null, detail) }),
+    );
+    expect(markup).toContain("repo-row__number");
+    expect(markup).not.toContain("repo-detail__body");
+  });
+
+  it("returns to the pull request list when the selection is cleared", () => {
+    const detail = loaded<GithubQuery<GithubPullDetail>>({
+      state: "ok",
+      value: pullDetail(),
+    });
+
+    expect(detailForSelection(34, detail)).toBe(detail);
+    expect(detailForSelection(null, detail)).toBeNull();
+    const markup = render(
+      RepoPullsPanel,
+      pullsProps({ detail: detailForSelection(null, detail) }),
+    );
+    expect(markup).toContain("repo-row__number");
+    expect(markup).not.toContain("repo-detail__body");
   });
 });
 

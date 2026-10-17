@@ -733,6 +733,14 @@ export function changesForProject(
   return changes?.projectRoot === projectRoot ? changes : null;
 }
 
+/** A fetched detail is visible only while its list selection is active. */
+export function detailForSelection<T>(
+  selection: number | null,
+  detail: T | null,
+): T | null {
+  return selection === null ? null : detail;
+}
+
 export function RepoView({
   project,
   sessions,
@@ -972,9 +980,12 @@ export function RepoView({
         return (
           <RepoIssuesPanel
             query={issues.value}
-            detail={issueDetail}
+            detail={detailForSelection(issueNumber, issueDetail)}
             onSelect={(number) => setIssueNumber(number)}
-            onBack={() => setIssueNumber(null)}
+            onBack={() => {
+              setIssueNumber(null);
+              setIssueDetail(null);
+            }}
             onOpenUrl={openUrl}
           />
         );
@@ -986,9 +997,12 @@ export function RepoView({
         return (
           <RepoPullsPanel
             query={pulls.value}
-            detail={pullDetail}
+            detail={detailForSelection(pullNumber, pullDetail)}
             onSelect={(number) => setPullNumber(number)}
-            onBack={() => setPullNumber(null)}
+            onBack={() => {
+              setPullNumber(null);
+              setPullDetail(null);
+            }}
             onOpenUrl={openUrl}
           />
         );
