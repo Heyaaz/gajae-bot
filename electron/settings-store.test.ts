@@ -130,6 +130,31 @@ describe('SettingsStore', () => {
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
   })
 
+  it('keeps accepted settings unchanged when persistence fails', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+    const original = store.save({
+      workspace: root,
+      workspaceLabel: 'Accepted workspace',
+      modelPreset: 'codex-medium',
+      permissionHandling: 'prompt',
+      gjcExecutable: '',
+      thoughtsExpanded: false,
+    })
+    const temporaryPath = path.join(userData, 'agent-control-settings.json.tmp')
+    mkdirSync(temporaryPath)
+
+    expect(() => store.setWorkspaceLabel('Rejected workspace')).toThrow()
+    expect(store.get()).toEqual(original)
+    expect(new SettingsStore(userData, root).get()).toEqual(original)
+
+    rmSync(temporaryPath, { recursive: true })
+    expect(store.setWorkspaceLabel('Persisted workspace')).toBe('Persisted workspace')
+    expect(store.get().workspaceLabel).toBe('Persisted workspace')
+    expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Persisted workspace')
+  })
+
   it('toggles the reasoning-card preference alone and reads a missing or junk value as collapsed', () => {
     const root = temporaryDirectory()
     const userData = path.join(root, 'user-data')

@@ -113,28 +113,30 @@ export class SettingsStore {
 
   save(value: unknown): AgentControlPreferences {
     const preferences = this.validate(value)
+    this.persist(preferences)
     this.preferences = preferences
-    this.persist()
     return this.get()
   }
 
   setWorkspaceLabel(value: unknown): string {
     if (typeof value !== 'string' || !value.trim()) throw new Error('Workspace name cannot be empty')
-    this.preferences = { ...this.preferences, workspaceLabel: value.trim().slice(0, 60) }
-    this.persist()
+    const preferences = { ...this.preferences, workspaceLabel: value.trim().slice(0, 60) }
+    this.persist(preferences)
+    this.preferences = preferences
     return this.preferences.workspaceLabel
   }
 
   setThoughtsExpanded(value: boolean): boolean {
-    this.preferences = { ...this.preferences, thoughtsExpanded: value }
-    this.persist()
+    const preferences = { ...this.preferences, thoughtsExpanded: value }
+    this.persist(preferences)
+    this.preferences = preferences
     return this.preferences.thoughtsExpanded
   }
 
-  private persist(): void {
+  private persist(preferences: AgentControlPreferences): void {
     mkdirSync(path.dirname(this.filePath), { recursive: true })
     const temporaryPath = `${this.filePath}.tmp`
-    writeFileSync(temporaryPath, `${JSON.stringify(this.preferences, null, 2)}\n`, { mode: 0o600 })
+    writeFileSync(temporaryPath, `${JSON.stringify(preferences, null, 2)}\n`, { mode: 0o600 })
     renameSync(temporaryPath, this.filePath)
   }
 
