@@ -973,6 +973,7 @@ export default function App() {
         await backend.cancelRun(await resolveSessionId(sessionId));
       } catch (error) {
         setAppError(humanErrorMessage(error));
+        throw error;
       }
     },
     [backend, resolveSessionId],
@@ -994,7 +995,7 @@ export default function App() {
       (shortcut) => {
         if (shortcut.type === "abort") {
           const session = selectedSessionRef.current;
-          if (session) void cancelRun(session.id);
+          if (session) void cancelRun(session.id).catch(() => undefined);
           return;
         }
         if (shortcut.type === "new") {
@@ -1009,7 +1010,7 @@ export default function App() {
     );
     const unsubscribeAbort = window.agentControlDesktop?.onAbortRun(() => {
       const session = selectedSessionRef.current;
-      if (session) void cancelRun(session.id);
+      if (session) void cancelRun(session.id).catch(() => undefined);
     });
     function abortWithEscape(event: globalThis.KeyboardEvent): void {
       if (
@@ -1027,7 +1028,7 @@ export default function App() {
         return;
       event.preventDefault();
       const session = selectedSessionRef.current;
-      if (session) void cancelRun(session.id);
+      if (session) void cancelRun(session.id).catch(() => undefined);
     }
     // Bubble phase, not capture: a dialog field, the rename editor and the composer
     // are all nearer the key and each one decides for itself whether Escape means
@@ -1627,7 +1628,7 @@ export default function App() {
                   usagePercent={selectedSession.usagePercent}
                   serviceTier={selectedSession.serviceTier}
                   onSend={(input) => sendMessage(selectedSession.id, input)}
-                  onCancel={() => void cancelRun(selectedSession.id)}
+                  onCancel={() => cancelRun(selectedSession.id)}
                   onFlushQueued={() => flushQueuedNow(selectedSession.id)}
                   onCompact={() => void compactSession(selectedSession.id)}
                   onNewSession={() =>

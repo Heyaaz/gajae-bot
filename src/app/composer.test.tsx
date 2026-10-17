@@ -13,6 +13,7 @@ import {
 import type { PendingRequest } from "../composer-utils";
 import {
   Composer,
+  cancelBeforeQueueDiscard,
   FastTierControls,
   fastTierBusy,
   handleComposerEnter,
@@ -263,7 +264,7 @@ function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     commands: [],
     configOptions: [],
     onSend: async () => undefined,
-    onCancel: () => undefined,
+    onCancel: async () => undefined,
     onFlushQueued: async () => undefined,
     onCompact: () => undefined,
     onNewSession: () => undefined,
@@ -604,5 +605,27 @@ describe("Composer queue pull-back", () => {
     const [pullButton] = childButtons(chip);
     pullButton?.props.onClick!();
     expect(pulls).toEqual(["pull"]);
+  });
+});
+
+describe("stop queue ownership", () => {
+  it("discards held work only after cancellation resolves", async () => {
+    let resolveCancel!: () => void;
+    const cancel = vi.fn(() => new Promise<void>((resolve) => { resolveCancel = resolve; }));
+    const discard = vi.fn();
+    const stopping = cancelBeforeQueueDiscard(cancel, discard);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(discard).not.toHaveBeenCalled();
+    resolveCancel();
+    await stopping;
+    expect(discard).toHaveBeenCalledOnce();
+  });
+
+  it("preserves held work when cancellation fails", async () => {
+    const failure = new Error("cancel refused");
+    const discard = vi.fn();
+    await expect(cancelBeforeQueueDiscard(async () => { throw failure; }, discard))
+      .rejects.toBe(failure);
+    expect(discard).not.toHaveBeenCalled();
   });
 });

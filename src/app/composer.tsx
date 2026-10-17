@@ -114,6 +114,14 @@ export function storePreparedAttachments(
   drafts.set(owner, draft);
 }
 
+export async function cancelBeforeQueueDiscard(
+  cancel: () => Promise<void>,
+  discard: () => void,
+): Promise<void> {
+  await cancel();
+  discard();
+}
+
 /** Whether this session's runtime advertises the Fast service-tier control. */
 export function advertisesFast(
   commands: readonly { name: string }[],
@@ -332,7 +340,7 @@ export interface ComposerProps {
   usagePercent?: number;
   serviceTier?: string;
   onSend: (input: MessageInput) => Promise<MessageDelivery | undefined>;
-  onCancel: () => void;
+  onCancel: () => Promise<void>;
   onFlushQueued: () => Promise<void>;
   onCompact: () => void;
   onNewSession: () => void;
@@ -468,6 +476,14 @@ export function Composer({
   const draftUrl = httpUrls(value, 1)[0];
   const effortValueRef = useRef(currentEffort);
   effortValueRef.current = currentEffort;
+
+  function discardQueueAfterCancel(): void {
+    void cancelBeforeQueueDiscard(onCancel, () => {
+      pendingQueueRef.current = [];
+      pendingQueuesRef.current.delete(sessionId);
+      setPendingQueue([]);
+    }).catch(() => undefined);
+  }
 
   const discardPrepared = useCallback(
     (attachments: Array<{ token?: string }>): void => {
@@ -1030,10 +1046,8 @@ export function Composer({
   function selectCommand(command: AgentCommand): void {
     if (command.name === "abort") {
       setValue("");
-      if (running) {
-        onCancel();
-        setPendingQueue([]);
-      } else setAttachmentError("중단할 실행 작업이 없습니다");
+      if (running) discardQueueAfterCancel();
+      else setAttachmentError("중단할 실행 작업이 없습니다");
       return;
     }
     if (command.name === "steer") {
@@ -1115,13 +1129,12 @@ export function Composer({
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     if (event.key === "Escape" || event.key === "Esc") {
-      setPendingQueue([]);
       setWorkspaceOpen(false);
       setConfigMenu(null);
       if (matchingCommands.length > 0) setValue("");
-      if (!event.metaKey && !event.ctrlKey && !event.altKey) {
-        onCancel();
-      }
+      if (running && !event.metaKey && !event.ctrlKey && !event.altKey)
+        discardQueueAfterCancel();
+      else setPendingQueue([]);
       return;
     }
     // Pulling a held request back is decided before anything else that watches the
@@ -1619,10 +1632,7 @@ export function Composer({
               className="send-button send-button--stop"
               type="button"
               disabled={!running || readOnly}
-              onClick={() => {
-                onCancel();
-                setPendingQueue([]);
-              }}
+              onClick={discardQueueAfterCancel}
               title="작업 중단 (Esc)"
             >
               <CircleStop size={18} />
