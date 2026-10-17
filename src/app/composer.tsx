@@ -669,7 +669,7 @@ export function Composer({
         );
       }
     },
-    [addDroppedImages, commitPrepared, discardPrepared, sessionId, settingsBridge],
+    [addDroppedImages, commitPrepared, sessionId, settingsBridge],
   );
 
   useEffect(() => {
