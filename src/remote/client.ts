@@ -506,6 +506,9 @@ export class RemoteClient {
         if (generation !== this.streamGeneration || controller.signal.aborted) return;
         if (done) break;
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+          // A listener can replace the pairing/stream while dispatching a frame.
+          // Remaining frames from this chunk no longer own revocation authority.
+          if (generation !== this.streamGeneration || this.token !== presented) return;
           this.handleFrame(frame);
         }
       }
