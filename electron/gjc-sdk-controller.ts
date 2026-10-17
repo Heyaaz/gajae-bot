@@ -4622,7 +4622,11 @@ export class GjcSdkController {
     try {
       await this.ensureAttached(sessionId, false);
     } catch {
-      /* terminal owns the attachment */
+      if (
+        !this.terminalOnlySessions.has(sessionId) ||
+        this.sessions.get(sessionId)?.ownership !== "external"
+      )
+        throw new Error("세션 제어 상태를 확인할 수 없어 후속 메시지를 보내지 않았습니다.");
     }
     await this.controlSession(sessionId, "turn.follow_up", { text });
   }

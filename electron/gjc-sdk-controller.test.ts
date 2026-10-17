@@ -444,6 +444,15 @@ describe("GjcSdkController CLI seam", () => {
   });
 
 
+  it("does not send a follow-up after permission application fails", async () => {
+    const { controller, cli, internals } = harness();
+    internals.ensureAttached = vi.fn(async () => { throw new Error("permission_mode.set rejected"); });
+    await expect(controller.queueFollowUp("s1", { text: "follow up", images: [], files: [] } as never)).rejects.toThrow("세션 제어 상태");
+    expect(cli.rawControl).not.toHaveBeenCalledWith("s1", "turn.follow_up", expect.anything(), expect.anything());
+    controller.dispose();
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
