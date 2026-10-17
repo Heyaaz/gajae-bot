@@ -73,6 +73,7 @@ export function SettingsDialog({
     useState<AgentControlPreferences>(fallbackPreferences);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const editedBeforeLoad = useRef(false);
   const preferencesRef = useRef(preferences);
@@ -134,6 +135,7 @@ export function SettingsDialog({
     const next = update(preferencesRef.current);
     preferencesRef.current = next;
     setPreferences(next);
+    setSaveError("");
   }
 
   useEffect(() => {
@@ -182,15 +184,18 @@ export function SettingsDialog({
   async function saveSettings(): Promise<void> {
     if (!settingsBridge || !dirty) return;
     setSaving(true);
+    setSaveError("");
     try {
       const saved = await settingsBridge.savePreferences(preferences);
+      preferencesRef.current = saved.preferences;
       setPreferences(saved.preferences);
       setOriginal(saved.preferences);
       onSaved(saved.preferences);
       onClose();
     } catch (error) {
+      setSaveError(settingsErrorMessage(error));
+    } finally {
       setSaving(false);
-      console.error(error);
     }
   }
 
@@ -278,7 +283,11 @@ export function SettingsDialog({
               </button>
             </p>
           )}
-
+          {saveError && (
+            <p className="diff-error" role="alert">
+              설정을 저장하지 못했습니다: {saveError}
+            </p>
+          )}
 
           {tab === "gjc" && (
             <div className="settings-stack">
