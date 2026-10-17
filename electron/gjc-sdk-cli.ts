@@ -135,6 +135,8 @@ export class SdkCliError extends Error {
     readonly code: string,
     message: string,
     readonly details?: Record<string, unknown>,
+    readonly diagnostics: readonly { code: string }[] = [],
+    readonly outcomeCertainty?: string,
   ) {
     super(message);
     this.name = "SdkCliError";
@@ -180,7 +182,8 @@ export function parseEnvelope(stdout: string, label: string): Record<string, unk
       typeof error?.message === "string"
         ? error.message
         : `GJC ${label} failed`;
-    throw new SdkCliError(code, message, asRecord(error?.details));
+    throw new SdkCliError(code, message, asRecord(error?.details), [],
+      typeof error?.outcomeCertainty === "string" ? error.outcomeCertainty : undefined);
   }
   return record;
 }
