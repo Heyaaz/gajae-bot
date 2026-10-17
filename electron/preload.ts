@@ -66,7 +66,6 @@ let eventStreamAbort: AbortController | undefined;
 let eventStreamRetryMs = DESKTOP_STREAM_RETRY_MS;
 let eventStreamAttached = false;
 let eventStreamLastId = 0;
-let eventStreamPending = "";
 
 function eventStreamDescriptor(): Promise<GjcEventStreamDescriptor | null> {
   eventStreamEndpoint ??= ipcRenderer
@@ -125,6 +124,9 @@ async function runEventStream(): Promise<void> {
     }
     const controller = new AbortController();
     eventStreamAbort = controller;
+    // An incomplete SSE frame belongs to this response only. Replaying it into
+    // the next response can corrupt an otherwise complete replayed frame.
+    let pending = "";
     try {
       const response = await fetch(
         `http://127.0.0.1:${descriptor.port}/events?since=${eventStreamLastId}`,
@@ -142,13 +144,15 @@ async function runEventStream(): Promise<void> {
       for (;;) {
         const { value, done } = await reader.read();
         if (done) break;
-        eventStreamPending += decoder.decode(value, { stream: true });
-        eventStreamPending = dispatchEventFrames(eventStreamPending);
+        pending += decoder.decode(value, { stream: true });
+        pending = dispatchEventFrames(pending);
       }
     } catch (error) {
       if (!controller.signal.aborted)
         console.error("Desktop event stream failed", error);
     } finally {
+      // Drop the truncated tail when this particular connection ends.
+      pending = "";
       if (eventStreamAbort === controller) eventStreamAbort = undefined;
     }
     if (eventListeners.size === 0) return;
