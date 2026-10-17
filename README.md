@@ -159,7 +159,14 @@ desktop slash commands are not a complete copy of the CLI command surface.
 
 ### Session delete
 
-Delete is close-then-delete, not hide-from-list. A live session is closed with `session.close`, then artifacts are removed with `session.delete`. Only the clicked session is targeted.
+Delete targets saved history, not its host process and not just the sidebar row.
+Gajae requests `session.delete` with the exact session ID, configured location and
+transcript path; it never calls `session.close` to make deletion possible. This
+preserves a CLI that may have switched to another conversation with `/new`.
+The CLI picker can delete old history through its owning `SessionManager`, but
+GJC 0.18.12's public SDK rejects live rows and does not expose that owner-local
+flow. A refusal or unknown outcome leaves the row and local evidence intact and
+shows an error; use that CLI's session picker for owner-local history deletion.
 
 ### Resume a session
 
@@ -392,7 +399,7 @@ Two flag rules come from the 0.18.11 grammar and are load-bearing:
   a usage error before dispatch. `session list` also states `--scope` explicitly
   because the 0.18.11 default scope is `repo`, which fails outside a git checkout.
 
-Create, fork, resume, close, and delete use `raw global` with a fresh lifecycle
+Create, fork, resume, and delete use `raw global` with a fresh lifecycle
 idempotency key. Prompt submission uses semantic `send` with a fresh operation
 reference and reconciles completion with `status` plus the durable transcript.
 Model, effort, commands, context, and capabilities use `raw query`. Live lifecycle

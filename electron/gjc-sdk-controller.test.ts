@@ -429,29 +429,31 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
-  it("closes then deletes through lifecycle globals", async () => {
+  it.each([true, false])("requests only saved-history deletion when live=%s", async (live) => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
-    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
-    (cli.listSessions as any)
-      .mockResolvedValueOnce([{ sessionId: "s1", repo: "/repo", live: true, deleted: false }])
-      .mockResolvedValue([{ sessionId: "s1", repo: "/repo", live: false, deleted: false }]);
+    internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
+    cli.listSessions.mockResolvedValue([{ sessionId: "s1", repo: "/repo", live, deleted: false, stateRoot: "/state" }] as never);
     await controller.deleteSession("s1");
-    const calls = (cli.rawGlobal as any).mock.calls.map((c: any[]) => c[0]);
-    expect(calls.indexOf("session.close")).toBeGreaterThanOrEqual(0);
-    expect(calls.indexOf("session.delete")).toBeGreaterThan(calls.indexOf("session.close"));
+    expect(cli.rawGlobal).toHaveBeenCalledExactlyOnceWith("session.delete",
+      { sessionId: "s1", cwd: "/repo", stateRoot: "/state", sessionPath: "/repo/s1.jsonl" },
+      expect.objectContaining({ repo: "/repo", idempotencyKey: expect.any(String) }));
+    expect(cli.rawControl).not.toHaveBeenCalled();
     expect(internals.sessions.has("s1")).toBe(false);
+    controller.dispose();
   });
 
-  it("keeps local state when close fails with a verified operational error", async () => {
+  it("keeps local state when deletion fails with a verified operational error", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     (cli.listSessions as any).mockResolvedValue([
       { sessionId: "s1", repo: "/repo", live: true, deleted: false },
     ]);
-    (cli.rawGlobal as any).mockRejectedValue(new SdkCliError("invalid_input", "bad close"));
-    await expect(controller.deleteSession("s1")).rejects.toThrow("bad close");
+    (cli.rawGlobal as any).mockRejectedValue(new SdkCliError("invalid_input", "delete refused"));
+    await expect(controller.deleteSession("s1")).rejects.toThrow("delete refused");
     expect(internals.sessions.has("s1")).toBe(true);
+    expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
+    expect((cli.rawGlobal as any).mock.calls[0][0]).toBe("session.delete");
   });
 
   it("preserves a non-live session when delete receipt remains uncertain", async () => {
@@ -470,6 +472,27 @@ describe("GjcSdkController CLI seam", () => {
     await expect(controller.deleteSession("s1")).rejects.toThrow(/삭제 결과가 확인되지/u);
     expect(internals.sessions.get("s1")?.attachment).toBe("recovering");
     expect(internals.sessions.has("s1")).toBe(true);
+  });
+
+  it.each([0, 1, undefined])("preserves a CLI's sessions when SDK history deletion is refused at generation %s", async (endpointGeneration) => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    const successor = { ...session("new"), ownership: "external" };
+    internals.sessions.set("new", successor);
+    internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
+    const remove = vi.spyOn(internals, "removeSessionArtifacts");
+    (cli.listSessions as any).mockResolvedValue([
+      { sessionId: "s1", repo: "/repo", live: true, deleted: false, endpointGeneration },
+    ]);
+    cli.rawGlobal.mockRejectedValue(new SdkCliError("live_session", "Refusing to delete a live session; close it first."));
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/CLI를 종료/u);
+    expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
+    expect((cli.rawGlobal as any).mock.calls[0][0]).toBe("session.delete");
+    expect(cli.rawControl).not.toHaveBeenCalled();
+    expect(remove).not.toHaveBeenCalled();
+    expect(internals.sessions.has("s1")).toBe(true);
+    expect(internals.sessions.get("new")).toBe(successor);
+    controller.dispose();
   });
 
   it("skips the close when the broker row proves the session is absent", async () => {

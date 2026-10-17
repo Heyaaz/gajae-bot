@@ -6178,9 +6178,8 @@ export class GjcSdkController {
     const session = this.sessions.get(sessionId);
     this.deletingSessions.add(sessionId);
     try {
-      // Close, then delete. Both are lifecycle globals over the session CLI; there
-      // is no separate owned-session path any more because this window never hosts
-      // a session runtime.
+      // Delete saved history, not its host process. The CLI picker likewise
+      // removes a transcript without shutting down the current CLI runtime.
       const outcome = await this.brokerLifecycleDelete(sessionId);
       if (outcome === "recovering") {
         if (session) {
@@ -6189,7 +6188,7 @@ export class GjcSdkController {
           this.stopTailFollower(sessionId);
           this.emitEvent({ type: "session.updated", session: { ...session } });
         }
-        throw new Error("세션 삭제 결과가 확인되지 않았습니다. 로컬 기록을 보존했습니다. live 제어 연결 또는 broker 상태를 확인해야 하며, generation-zero 세션은 upstream lifecycle 지원이 필요합니다. 자동으로 재시도하지 않습니다.");
+        throw new Error("세션 삭제 결과가 확인되지 않았습니다. 로컬 기록을 보존했습니다. 현재 SDK가 기록 삭제를 거부했거나 broker 상태를 확인할 수 없습니다. CLI가 사용 중인 기록은 해당 CLI의 세션 선택 화면에서 삭제해야 합니다. 앱은 삭제를 위해 CLI를 종료하거나 자동으로 재시도하지 않습니다.");
       }
       await this.removeSessionArtifacts(sessionId);
       this.removeLocalSession(sessionId, false);
@@ -6201,7 +6200,7 @@ export class GjcSdkController {
       }
       if (liveSessionDeleteError(error)) {
         throw new Error(
-          "실행 중인 세션은 삭제할 수 없습니다. 해당 GJC 프로세스를 종료한 뒤 다시 시도하세요.",
+          "현재 SDK는 사용 중인 세션의 기록 삭제를 지원하지 않습니다. 해당 CLI의 세션 선택 화면에서 삭제하세요. 앱은 기록 삭제를 위해 CLI를 종료하지 않습니다.",
         );
       }
       if (lifecycleUncertainError(error) || uncertainLifecycleOutcomeError(error)) {
@@ -6227,40 +6226,13 @@ export class GjcSdkController {
     // of behind them; the delete still receives the path this lookup resolves on its
     // own.
     const locatedSessionPath = this.locateSharedTranscriptFile(sessionId);
-    // Only a live row has an endpoint for `session.close` to stop. An absent,
-    // tombstoned, or non-live row proves there is nothing to close, and one raw
-    // lifecycle op costs the same whether or not a live session is behind it.
-    let row = await this.sessionBrokerRow(sessionId);
+    const row = await this.sessionBrokerRow(sessionId);
     // An unreadable index is not an absent session: with no row there is no evidence
     // that a live endpoint is gone, so the session stays for reconciliation.
     if (row === undefined) return "recovering";
-    // Generation-zero rows identify legacy/live CLI-owned hosts without a
-    // generation-scoped control endpoint. Never close/delete them from the app.
-    if (row?.live === true && row.endpointGeneration === 0) return "recovering";
-    let closeUncertain = false;
-    if (row?.live === true) {
-      try {
-        await this.brokerLifecycle("session.close", { sessionId });
-      } catch (error) {
-        if (missingLifecycleSessionError(error) || missingSessionError(error)) {
-          // Still issue delete: a saved transcript can exist without a live endpoint.
-        } else if (
-          lifecycleUncertainError(error) ||
-          uncertainLifecycleOutcomeError(error)
-        )
-          closeUncertain = true;
-        else throw error;
-      }
-      const afterClose = await this.sessionBrokerRow(sessionId);
-      if (afterClose === undefined) return "recovering";
-      if (afterClose?.live === true) {
-        if (closeUncertain) return "recovering";
-        throw new Error(
-          "실행 중인 세션은 삭제할 수 없습니다. 해당 GJC 프로세스를 종료한 뒤 다시 시도하세요.",
-        );
-      }
-      row = afterClose;
-    }
+    // Let the SDK authorize this exact saved-session deletion. A live or
+    // generation-zero row is neither permission to stop its process nor proof
+    // that a future owner-authorized history deletion must be refused locally.
     const cwd = row?.repo ?? this.sessionCwds.get(sessionId) ?? this.workspace;
     const sessionPath = await locatedSessionPath;
     try {
@@ -6369,7 +6341,7 @@ export class GjcSdkController {
   }
 
   private async brokerLifecycle(
-    operation: "session.close" | "session.delete",
+    operation: "session.delete",
     input: Record<string, unknown>,
   ): Promise<void> {
     const sessionId =
