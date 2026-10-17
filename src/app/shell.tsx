@@ -272,6 +272,7 @@ export default function App() {
   const workspaceLabel = preferences.workspaceLabel;
   const pendingSessions = useRef(new Map<string, Promise<AgentSession>>());
   const selectedIdRef = useRef<string | null>(null);
+  const navigationGenerationRef = useRef(0);
 
   useEffect(() => {
     if (!appError) return;
@@ -879,6 +880,7 @@ export default function App() {
   );
 
   const selectSession = useCallback((sessionId: string): void => {
+    navigationGenerationRef.current += 1;
     setSelectedId(sessionId);
     setNavOpen(false);
     // Picking a session always returns to its conversation, and the project filter
@@ -1172,6 +1174,7 @@ export default function App() {
   }
 
   async function openHistorySession(sessionId: string): Promise<void> {
+    const navigationGeneration = ++navigationGenerationRef.current;
     setResumingId(sessionId);
     setHistoryError("");
     // The picker's job ends once a session is chosen. Keeping it open over the
@@ -1186,7 +1189,8 @@ export default function App() {
         opened,
         ...current.filter((item) => item.id !== opened.id),
       ]);
-      setSelectedId(opened.id);
+      if (navigationGenerationRef.current === navigationGeneration)
+        setSelectedId(opened.id);
     } catch (error) {
       setAppError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1212,6 +1216,7 @@ export default function App() {
   }
 
   async function forkSession(session: AgentSession): Promise<void> {
+    const navigationGeneration = navigationGenerationRef.current;
     try {
       const fork = await backend.forkSession({
         sourceSessionId: await resolveSessionId(session.id),
@@ -1221,7 +1226,8 @@ export default function App() {
         fork,
         ...current.filter((item) => item.id !== fork.id),
       ]);
-      setSelectedId(fork.id);
+      if (navigationGenerationRef.current === navigationGeneration)
+        setSelectedId(fork.id);
       setTranscripts((current) => cacheTranscript(current, fork.id, []));
       setSearchQuery("");
     } catch (error) {

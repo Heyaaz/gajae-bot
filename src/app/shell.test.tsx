@@ -444,6 +444,19 @@ describe("session-scoped goal updates", () => {
   });
 });
 
+describe("asynchronous session navigation", () => {
+  it("does not let a late history or fork result replace a newer selection", async () => {
+    const shell = await source("src/app/shell.tsx");
+    expect(shell).toContain("navigationGenerationRef.current += 1");
+    expect(shell).toContain(
+      "if (navigationGenerationRef.current === navigationGeneration)\n        setSelectedId(opened.id);",
+    );
+    expect(shell).toContain(
+      "if (navigationGenerationRef.current === navigationGeneration)\n        setSelectedId(fork.id);",
+    );
+  });
+});
+
 /** The next state the shell would render, from the store's current slot values. */
 function renderApp(): string {
   actionProbe.sidebar = null;
