@@ -3621,7 +3621,7 @@ export class GjcSdkController {
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
       }
-      if (!response && worktree && !isLifecycleUncertain(error)) {
+      if (!response && worktree && error instanceof SdkCliError && error.outcomeCertainty === "not-applied") {
         try {
           const status = (
             await execFile("git", [

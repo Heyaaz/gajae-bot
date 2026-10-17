@@ -525,6 +525,35 @@ describe("GjcSdkController CLI seam", () => {
     }
   });
 
+  it.each([
+    new Error("GJC CLI timed out"),
+    new SdkCliError("operation_failed", "unknown outcome", undefined, [], "unknown"),
+  ])("preserves the managed worktree when creation has no not-applied proof: %s", async (failure) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "gajae-create-uncertain-"));
+    let worktreePath: string | undefined;
+    const { controller, cli } = harness();
+    try {
+      await execFile("git", ["init", "-q", dir]);
+      await writeFile(path.join(dir, "README"), "seed");
+      await execFile("git", ["-C", dir, "add", "README"]);
+      await execFile("git", ["-C", dir, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", "seed"]);
+      cli.rawGlobal.mockImplementation(async (...args: unknown[]) => {
+        worktreePath = (args[1] as { cwd: string }).cwd;
+        throw failure;
+      });
+      await expect(controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "gajae/uncertain" })).rejects.toThrow();
+      expect(worktreePath).toBeDefined();
+      expect((await stat(worktreePath!)).isDirectory()).toBe(true);
+      expect((await execFile("git", ["-C", dir, "branch", "--list", "gajae/uncertain"])).stdout).toContain("gajae/uncertain");
+    } finally {
+      controller.dispose();
+      if (worktreePath) await execFile("git", ["-C", dir, "worktree", "remove", "--force", worktreePath]).catch(() => undefined);
+      await execFile("git", ["-C", dir, "branch", "-D", "gajae/uncertain"]).catch(() => undefined);
+      if (worktreePath) await rm(path.dirname(worktreePath), { recursive: true, force: true });
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("creates a managed worktree and submits its cwd", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "gajae-test-"));
     let worktreePath: string | undefined;
