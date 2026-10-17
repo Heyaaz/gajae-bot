@@ -169,6 +169,24 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
+  it("replaces cached transcripts after an SSE replay gap", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const transcript = [{ id: "m-1", role: "assistant", content: "complete snapshot" }];
+    const { instance, calls } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
+      if (call.url.includes(REMOTE_API.transcript("s-1")))
+        return new Response(JSON.stringify({ result: transcript }), { status: 200 });
+      return undefined;
+    });
+    const synchronized: unknown[][] = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") synchronized.push(event.items);
+    });
+    await vi.waitFor(() => expect(synchronized).toEqual([transcript]));
+    expect(calls.some((call) => call.url.includes(REMOTE_API.transcript("s-1")))).toBe(true);
+    instance.dispose();
+  });
+
   it("refuses desktop-only work with a reason instead of an empty success", async () => {
     const { instance, calls } = backend(() => undefined);
     const desktopOnly = [

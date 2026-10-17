@@ -47,7 +47,7 @@ export class RemoteAgentBackend implements AgentBackend {
       ...options,
       onEvent: (event) => this.emit(event),
       onResync: () => {
-        void this.refreshSnapshot();
+        void this.reconcileReplayGap();
       },
     });
     this.remoteAccess = {
@@ -76,6 +76,15 @@ export class RemoteAgentBackend implements AgentBackend {
 
   private async refreshSnapshot(): Promise<void> {
     await this.client.snapshot().catch(() => undefined);
+  }
+
+  private async reconcileReplayGap(): Promise<void> {
+    const snapshot = await this.client.snapshot().catch(() => undefined);
+    if (!snapshot) return;
+    await Promise.all(snapshot.sessions.map(async (session) => {
+      const items = await this.client.transcript(session.id).catch(() => undefined);
+      if (items) this.emit({ type: "transcript.synced", sessionId: session.id, items: items as TranscriptItem[] });
+    }));
   }
 
   async getConnection(): Promise<BackendConnection> {
