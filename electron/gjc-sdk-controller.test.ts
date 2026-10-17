@@ -113,6 +113,35 @@ describe("history opening with an unavailable endpoint", () => {
     }
   });
 
+  it("shows a CLI that is still mid-turn as running and follows it to idle", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gajae-history-running-"));
+    const { controller, internals } = harness({ emit: vi.fn() });
+    try {
+      const user = { type: "message", id: "u1", timestamp: "2026-01-01T00:00:01Z", message: { role: "user", content: [{ type: "text", text: "work" }] } };
+      const working = { type: "message", id: "a1", timestamp: "2026-01-01T00:00:02Z", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "t1", name: "bash", arguments: {} }] } };
+      await transcriptFile(root, "s1", [{ type: "session", id: "s1", cwd: "/repo", timestamp: "2026-01-01T00:00:00Z" }, user, working]);
+      const file = path.join(root, "sessions", "v2-bucket", "2026-01-01T00-00-00-000Z_s1.jsonl");
+      internals.locateSharedTranscriptFile = vi.fn(async () => file);
+      internals.refreshSdkCommands = vi.fn(async () => undefined);
+      internals.readTodoRecords = vi.fn(async () => undefined);
+      internals.resumeSession = vi.fn(async () => { throw new SdkCliError("endpoint_stale", "unavailable"); });
+      const opened = await controller.openHistorySession("s1");
+      expect(opened).toMatchObject({ attachment: "terminal-only", status: "running" });
+      expect(internals.sessions.get("s1").status).toBe("running");
+
+      // The CLI finishes: the transcript gains the turn's end, and the row follows.
+      const done = { type: "message", id: "a2", timestamp: "2026-01-01T00:00:03Z", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] } };
+      await writeFile(file, [{ type: "session", id: "s1", cwd: "/repo", timestamp: "2026-01-01T00:00:00Z" }, user, working, { type: "message", id: "r1", timestamp: "2026-01-01T00:00:02.5Z", message: { role: "toolResult", toolCallId: "t1", content: [{ type: "text", text: "ok" }] } }, done].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      await internals.republishRunState("s1");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+    } finally {
+      const writes = [...internals.artifactWrites.values()];
+      controller.dispose();
+      await Promise.allSettled(writes);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not turn missing persisted history into an empty successful open", async () => {
     const { controller, internals } = harness();
     const failure = new SdkCliError("endpoint_stale", "unavailable");

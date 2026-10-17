@@ -4238,6 +4238,11 @@ export class GjcSdkController {
                 // renderer. Re-query after transcript changes so the first response
                 // following compaction replaces the pending usage indicator immediately.
                 void this.refreshContextUsage(sessionId);
+                // A terminal-only row outside discovery has no run-state watcher of
+                // its own, and the transcript read above never promotes idle to
+                // running. Without this its status stays where it was opened.
+                if (this.terminalOnlySessions.has(sessionId))
+                  void this.republishRunState(sessionId);
               });
             }, 25),
           );
@@ -6881,6 +6886,22 @@ export class GjcSdkController {
         throw new Error("GJC session history opening was cancelled");
       this.markTerminalOnly(sessionId);
       const installed = this.installTranscript(sessionId, items);
+      // The row is not discovered, so nothing else describes its run state. The
+      // transcript is the only account of a CLI that is still working, and the
+      // freshly opened row must not claim it finished.
+      const status = await this.discoveredRunState(sessionId);
+      const opened = this.sessions.get(sessionId);
+      if (
+        opened &&
+        status &&
+        opened.status !== status &&
+        opened.status !== "failed" &&
+        opened.status !== "starting"
+      ) {
+        this.advanceRunRevision(sessionId);
+        opened.status = status;
+        this.emitEvent({ type: "session.updated", session: { ...opened } });
+      }
       this.emitEvent({
         type: "transcript.synced",
         sessionId,
