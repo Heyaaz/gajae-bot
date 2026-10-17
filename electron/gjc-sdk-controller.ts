@@ -4355,6 +4355,7 @@ export class GjcSdkController {
     value: string,
   ): Promise<void> {
     if (configId === "thinking") {
+      await this.controlSession(sessionId, "thinking.set", { level: value });
       this.explicitSessionThinking.set(sessionId, value);
       this.patchSessionRuntime(sessionId, { thinking: value });
       const existing = this.sessionConfig.get(sessionId);
@@ -4367,10 +4368,10 @@ export class GjcSdkController {
         this.sessionConfig.set(sessionId, updated);
         this.emitEvent({ type: "session.config", sessionId, options: updated });
       }
-      await this.controlSession(sessionId, "thinking.set", { level: value });
       return;
     }
     if (configId === "model") {
+      await this.controlSession(sessionId, "model.profile.set", { id: value });
       this.explicitSessionThinking.delete(sessionId);
       const existing = this.sessionConfig.get(sessionId);
       const selected = existing?.find(
@@ -4392,7 +4393,6 @@ export class GjcSdkController {
         this.sessionConfig.set(sessionId, updated);
         this.emitEvent({ type: "session.config", sessionId, options: updated });
       }
-      await this.controlSession(sessionId, "model.profile.set", { id: value });
       await this.refreshSessionSettings(sessionId);
       await this.refreshModelProfiles(sessionId);
       return;

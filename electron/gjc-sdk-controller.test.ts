@@ -365,6 +365,19 @@ describe("GjcSdkController CLI seam", () => {
   });
 
 
+  it("does not publish rejected thinking configuration", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionConfig.set("s1", [{ id: "thinking", category: "thought_level", currentValue: "medium" }]);
+    internals.controlSession = vi.fn(async () => { throw new Error("invalid_input"); });
+    await expect(controller.setSessionConfig("s1", "thinking", "high")).rejects.toThrow("invalid_input");
+    expect(internals.explicitSessionThinking.has("s1")).toBe(false);
+    expect(internals.sessionConfig.get("s1")[0].currentValue).toBe("medium");
+    expect(cli.rawControl).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
