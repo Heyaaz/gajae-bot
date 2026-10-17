@@ -497,6 +497,7 @@ export class RemoteClient {
         const snapshot = await this.snapshot().catch(() => undefined);
         if (!snapshot) throw new Error("snapshot unavailable");
       }
+      if (generation !== this.streamGeneration || controller.signal.aborted) return;
       const parser = new SseParser();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
