@@ -1698,6 +1698,35 @@ describe("shared terminal session control", () => {
     controller.dispose();
   });
 
+  it("does not list a broker-live row whose endpoint is proven stale, but keeps unproven ones", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessionMetadata = undefined;
+    const rows = [
+      { sessionId: "stale", live: true, deleted: false, endpointGeneration: 0, repo: "/repo" },
+      { sessionId: "slow", live: true, deleted: false, endpointGeneration: 0, repo: "/repo" },
+      { sessionId: "ok", live: true, deleted: false, endpointGeneration: 0, repo: "/repo" },
+      { sessionId: "driven", live: true, deleted: false, endpointGeneration: 0, repo: "/repo" },
+    ];
+    internals.brokerSessions = vi.fn(async () => rows);
+    internals.attachedSessions.add("driven");
+    (cli.queryItems as any).mockImplementation(async (id: string) => {
+      if (id === "stale") throw new SdkCliError("endpoint_stale", "The SDK endpoint is stale or unavailable.");
+      if (id === "slow") throw new SdkCliError("timeout", "timed out");
+      return [];
+    });
+    cli.listSessions.mockResolvedValue(rows.map((row) => ({ ...row, repo: "/repo" })) as never);
+    const listed = (await internals.discoverSessions()).map((row: { id: string }) => row.id).sort();
+    expect(listed).toEqual(["driven", "ok", "slow"]);
+    expect(cli.queryItems).not.toHaveBeenCalledWith("driven", "session.metadata", expect.anything(), expect.anything());
+    // A scan inside the retry interval reuses the proof instead of probing again.
+    const probes = (cli.queryItems.mock.calls as unknown as string[][]).filter(([id]) => id === "stale").length;
+    await internals.discoverSessions();
+    expect((cli.queryItems.mock.calls as unknown as string[][]).filter(([id]) => id === "stale").length).toBe(probes);
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    expect(cli.rawControl).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it("attaches to a reachable live generation-zero host without resuming or changing permissions", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", { ...session(), ownership: "external" });

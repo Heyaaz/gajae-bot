@@ -2660,6 +2660,7 @@ export class GjcSdkController {
     // the next call rebuilds it against the new runtime.
     this.cli = undefined;
     this.startup = undefined;
+    this.routeProbes.clear();
     this.permissionModeApplied.clear();
     for (const sessionId of this.tailControllers.keys())
       this.stopTailFollower(sessionId);
@@ -2743,6 +2744,7 @@ export class GjcSdkController {
     this.sessionMetadata?.forgetHiddenOutside(
       new Set(brokerRows.map((session) => session.sessionId)),
     );
+    const liveRows: SdkSessionRow[] = [];
     for (const session of brokerRows) {
       if (!session.live || session.deleted || this.sessionMetadata?.isHidden(session.sessionId)) {
         // The broker keeps every historical session id. Only live ones can be
@@ -2750,22 +2752,30 @@ export class GjcSdkController {
         deadSessionIds.add(session.sessionId);
         continue;
       }
+      liveRows.push(session);
+    }
+    // Broker liveness is not a usable route. A live row whose public endpoint is
+    // proven stale cannot be controlled or even followed, so it is not listed; its
+    // saved history stays reachable from the history picker.
+    const reachable = await Promise.all(
+      liveRows.map((session) => this.liveRouteReachable(session)),
+    );
+    liveRows.forEach((session, index) => {
+      if (!reachable[index]) {
+        deadSessionIds.add(session.sessionId);
+        return;
+      }
       const attachable = (session.endpointGeneration ?? 0) > 0;
       liveRanks.set(session.sessionId, attachable ? 2 : 1);
       if (attachable && this.terminalOnlySessions.has(session.sessionId)) {
-        try {
-          const cli = await this.requireCli();
-          await cli.queryItems(session.sessionId, "session.metadata", {}, { repo: session.repo ?? this.workspace });
-          this.terminalOnlySessions.delete(session.sessionId);
-          const cached = this.sessions.get(session.sessionId);
-          if (cached) cached.attachment = "attachable";
-          this.lastLiveFingerprint = undefined;
-        } catch {
-          // Index liveness alone cannot establish a usable shared route.
-        }
+        // A positive probe above is the evidence that clears a recorded route failure.
+        this.terminalOnlySessions.delete(session.sessionId);
+        const cached = this.sessions.get(session.sessionId);
+        if (cached) cached.attachment = "attachable";
+        this.lastLiveFingerprint = undefined;
       }
       if (session.repo) liveWorkspaces.add(session.repo);
-    }
+    });
     const workspaces = [
       ...new Set([
         this.workspace,
@@ -3008,6 +3018,40 @@ export class GjcSdkController {
       ...this.sessions.get(info.sessionId)!,
     }));
     return this.lastDiscovered.map((session) => ({ ...session }));
+  }
+
+  private readonly routeProbes = new Map<string, { at: number; reachable: boolean }>();
+
+  /**
+   * Whether a broker-live row still answers the public metadata route.
+   *
+   * Only a session this window is not already driving needs the probe, and only a
+   * row whose route is unproven: a generation-zero host, or one that failed an
+   * operation before. Only an unreachable-endpoint error counts as proof; a timeout
+   * or any other failure keeps the row listed. Results are cached for one retry
+   * interval so a scan does not spawn a CLI per row.
+   */
+  private async liveRouteReachable(row: SdkSessionRow): Promise<boolean> {
+    const sessionId = row.sessionId;
+    const attachable = (row.endpointGeneration ?? 0) > 0;
+    if (
+      this.attachedSessions.has(sessionId) ||
+      this.activePromptSessions.has(sessionId) ||
+      (attachable && !this.terminalOnlySessions.has(sessionId))
+    )
+      return true;
+    const cached = this.routeProbes.get(sessionId);
+    if (cached && Date.now() - cached.at < ATTACH_RETRY_INTERVAL_MS) return cached.reachable;
+    let reachable = true;
+    try {
+      const cli = await this.requireCli();
+      await cli.queryItems(sessionId, "session.metadata", {}, { repo: row.repo ?? this.workspace });
+    } catch (error) {
+      if (!isSessionUnreachable(error)) return true;
+      reachable = false;
+    }
+    if (!this.disposed) this.routeProbes.set(sessionId, { at: Date.now(), reachable });
+    return reachable;
   }
 
   private readonly runStateWatchers = new Map<string, FSWatcher>();
@@ -6147,6 +6191,7 @@ export class GjcSdkController {
     // nothing owned by another window can be disturbed by it.
     this.cli = undefined;
     this.startup = undefined;
+    this.routeProbes.clear();
     this.permissionModeApplied.clear();
     for (const sessionId of this.tailControllers.keys())
       this.stopTailFollower(sessionId);
@@ -6395,6 +6440,7 @@ export class GjcSdkController {
     this.sessionSdkOperations.delete(sessionId);
     this.sessionConfig.delete(sessionId);
     this.terminalOnlySessions.delete(sessionId);
+    this.routeProbes.delete(sessionId);
     this.modelProfiles.delete(sessionId);
     this.explicitSessionThinking.delete(sessionId);
     this.sharedSessionWatchers.get(sessionId)?.close();
@@ -6426,6 +6472,7 @@ export class GjcSdkController {
       pending.resolve({ outcome: { outcome: "cancelled" } });
     }
     this.pendingPermissions.clear();
+    this.routeProbes.clear();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     // No agent process is owned here, so disposal never kills a running session.
