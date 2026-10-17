@@ -7166,8 +7166,11 @@ export class GjcSdkController {
   }
 
   private async reconcileTailTerminalState(sessionId: string): Promise<void> {
+    const generation = this.generation;
+    const revision = this.currentRunRevision(sessionId);
     const state = await this.discoveredRunState(sessionId);
-    if (state !== "running") this.updateSessionStatus(sessionId, "idle");
+    if (state !== undefined && state !== "running" && generation === this.generation && revision === this.currentRunRevision(sessionId))
+      this.updateSessionStatus(sessionId, "idle");
   }
 
   /**

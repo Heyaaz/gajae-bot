@@ -351,6 +351,20 @@ describe("GjcSdkController CLI seam", () => {
   });
 
 
+  it("preserves a new run when an older tail settlement returns idle", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    let settle!: (value: string) => void;
+    internals.discoveredRunState = vi.fn(() => new Promise((resolve) => { settle = resolve; }));
+    const reconcile = internals.reconcileTailTerminalState("s1");
+    internals.advanceRunRevision("s1");
+    settle("idle");
+    await reconcile;
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    controller.dispose();
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
