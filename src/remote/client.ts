@@ -188,6 +188,7 @@ export class RemoteClient {
   private lastSeq = 0;
   private attempt = 0;
   private stream?: AbortController;
+  private streamGeneration = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private closed = false;
 
@@ -332,7 +333,11 @@ export class RemoteClient {
       throw new RemoteRequestError(body.message, { status: response.status, code: body.code });
     }
     if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
+    try {
+      return (await response.json()) as T;
+    } catch {
+      throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", { uncertain: true });
+    }
   }
 
   private async readResult<T>(path: string): Promise<T> {
@@ -464,8 +469,11 @@ export class RemoteClient {
   }
 
   private async openStream(): Promise<void> {
+    if (this.closed || !this.hasAccess() || this.stream) return;
     const controller = new AbortController();
+    const generation = ++this.streamGeneration;
     this.stream = controller;
+    const presented = this.token;
     const since = this.lastSeq > 0 ? this.lastSeq : undefined;
     try {
       const response = await this.fetchImpl(
@@ -473,14 +481,16 @@ export class RemoteClient {
         { headers: { ...this.authorized(), Accept: "text/event-stream" }, signal: controller.signal },
       );
       if (response.status === 401) {
-        this.stream = undefined;
-        this.forget();
-        this.setStatus({
-          state: "revoked",
-          detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
-        });
+        if (generation === this.streamGeneration && this.token === presented) {
+          this.forget();
+          this.setStatus({
+            state: "revoked",
+            detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+          });
+        }
         return;
       }
+      if (generation !== this.streamGeneration || controller.signal.aborted) return;
       if (!response.ok || !response.body) throw new Error(`stream refused: ${response.status}`);
       this.attempt = 0;
       if (this.status.state !== "connected" || this.status.permission === undefined) {
@@ -492,6 +502,7 @@ export class RemoteClient {
       const decoder = new TextDecoder();
       for (;;) {
         const { done, value } = await reader.read();
+        if (generation !== this.streamGeneration || controller.signal.aborted) return;
         if (done) break;
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
           this.handleFrame(frame);
@@ -501,8 +512,10 @@ export class RemoteClient {
     } catch {
       // A closed stream is normal on sleep, network switch, and host restart.
     } finally {
-      if (this.stream === controller) this.stream = undefined;
-      this.scheduleReconnect();
+      if (generation === this.streamGeneration && this.stream === controller) {
+        this.stream = undefined;
+        this.scheduleReconnect(generation);
+      }
     }
   }
 
@@ -548,19 +561,21 @@ export class RemoteClient {
     this.options.onResync?.();
   }
 
-  private scheduleReconnect(): void {
+  private scheduleReconnect(generation: number): void {
     if (this.closed || !this.hasAccess() || this.reconnectTimer) return;
     if (this.status.state === "revoked") return;
     this.attempt += 1;
     const delay = nextReconnectDelay(this.attempt, this.options.reconnect);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
-      if (!this.closed && this.hasAccess()) void this.openStream();
+      if (generation === this.streamGeneration && !this.stream && !this.closed && this.hasAccess())
+        void this.openStream();
     }, delay);
     if (typeof this.reconnectTimer.unref === "function") this.reconnectTimer.unref();
   }
 
   closeRealtime(): void {
+    this.streamGeneration += 1;
     this.stream?.abort();
     this.stream = undefined;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);

@@ -282,6 +282,27 @@ describe("control operations", () => {
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
     client.dispose();
   });
+
+  it("reconciles a successful control response whose JSON body cannot be read", async () => {
+    const operation = {
+      operationId: "op-jsonfailure01",
+      state: "completed",
+      result: "prompt",
+      at: new Date(0).toISOString(),
+    };
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.method === "POST")
+        return new Response("not-json", { status: 200, headers: { "Content-Type": "application/json" } });
+      if (call.url.includes(REMOTE_API.operations)) return jsonResponse(200, operation);
+      return undefined;
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage: memoryStorage(TOKEN), fetchImpl });
+    await expect(client.sendMessage("s-1", message)).resolves.toBe("prompt");
+    expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    const submitted = calls.find((call) => call.method === "POST")?.body as { operationId: string };
+    expect(calls.find((call) => call.url.includes(REMOTE_API.operations))?.url).toContain(submitted.operationId);
+    client.dispose();
+  });
 });
 
 describe("event stream", () => {
@@ -373,6 +394,64 @@ describe("event stream", () => {
     expect(storage.value).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(streamCalls).toBe(1);
+    client.dispose();
+  });
+
+  it("does not open a second stream when the old stream ends after resume", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    let streams = 0;
+    const { fetchImpl } = recorder(async (call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        streams += 1;
+        if (streams === 1) {
+          await blocked;
+          return streamResponse([]);
+        }
+        return streamResponse([], { keepOpen: true });
+      }
+      if (call.url.includes(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host", storage: memoryStorage(TOKEN), fetchImpl,
+      reconnect: { minDelayMs: 1, maxDelayMs: 2, jitter: () => 0 },
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(streams).toBe(1));
+    await client.resume();
+    await vi.waitFor(() => expect(streams).toBe(2));
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(streams).toBe(2);
+    client.dispose();
+  });
+
+  it("does not forget a newly paired token when an old stream is refused", async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => (release = resolve));
+    const storage = memoryStorage(TOKEN);
+    const replacement = "n".repeat(43);
+    const { fetchImpl } = recorder(async (call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        await blocked;
+        return jsonResponse(401, { error: { code: "unauthorized", message: "expired" } });
+      }
+      if (call.url.endsWith(REMOTE_API.pair))
+        return jsonResponse(200, {
+          token: replacement,
+          device: { id: "d-2", name: "New phone", permission: "control" },
+        });
+      return undefined;
+    });
+    const client = new RemoteClient({ baseUrl: "https://host", storage, fetchImpl });
+    client.startRealtime();
+    await vi.waitFor(() => expect(storage.value).toBe(TOKEN));
+    await client.pair("ABCD2345");
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(storage.value).toBe(replacement);
+    expect(client.getStatus().state).toBe("connected");
     client.dispose();
   });
 });
