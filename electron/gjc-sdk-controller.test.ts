@@ -433,6 +433,17 @@ describe("GjcSdkController CLI seam", () => {
   });
 
 
+  it("does not treat no_active_turn on this connection as session-wide idle", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.liveRunningSessions.add("s1");
+    (cli.rawControl as any).mockResolvedValue({ turn: "no_active_turn" });
+    await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    expect(internals.liveRunningSessions.has("s1")).toBe(true);
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
@@ -1761,10 +1772,10 @@ describe("shared terminal session control", () => {
         ? Promise.reject(new SdkCliError("session_unavailable", "no lifecycle authority"))
         : Promise.resolve({ aborted: false, turn: "no_active_turn" }),
     );
-    await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
-    expect(internals.sessions.get("s1").status).toBe("idle");
-    expect(internals.liveRunningSessions.has("s1")).toBe(false);
-    expect(internals.workingPhaseSessions.has("s1")).toBe(false);
+    await expect(controller.cancelRun("s1")).rejects.toThrow(/중지 여부는 확인되지 않았습니다/u);
+    expect(internals.sessions.get("s1").status).toBe("running");
+    expect(internals.liveRunningSessions.has("s1")).toBe(true);
+    expect(internals.workingPhaseSessions.has("s1")).toBe(true);
     // Nothing was stopped, so nothing announces a cancellation and the window does
     // not fence the session: live evidence of work elsewhere can still show.
     expect(internals.transcripts.get("s1")).toEqual([]);

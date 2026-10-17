@@ -5395,7 +5395,7 @@ export class GjcSdkController {
         // was showing is cleared so the row settles at idle, and the transcript is
         // left alone -- it stays the source of truth for whether work continued on
         // another connection. A notice here would claim a stop that did not happen.
-        this.clearRunState(sessionId);
+        throw new Error("GJC가 현재 연결에서 활성 turn을 찾지 못했습니다. 세션 작업의 중지 여부는 확인되지 않았습니다.");
       } else {
         this.finalizeThought(sessionId);
         this.finalizeAssistantMessage(sessionId);
