@@ -35,6 +35,27 @@ describe('ProductivityService', () => {
     expect(results[0]).toMatchObject({ sessionId: 's1', sessionTitle: 'First', workspace: '/workspace' })
   })
 
+  it('shares one rebuild across parallel searches', async () => {
+    let releaseTranscript!: (items: TranscriptItem[]) => void
+    let transcriptCalls = 0
+    const items = new Promise<TranscriptItem[]>(resolve => { releaseTranscript = resolve })
+    const searchSource: ProductivitySource = {
+      listSessions: async () => [session('s1', 'First')],
+      getTranscript: async () => { transcriptCalls++; return items },
+    }
+    const service = new ProductivityService(searchSource, ':memory:')
+
+    const first = service.searchTranscripts('alpha')
+    const second = service.searchTranscripts('alpha')
+    await Promise.resolve()
+    expect(transcriptCalls).toBe(1)
+    releaseTranscript([item('m1', 'message', 'alpha searchable')])
+    await expect(Promise.all([first, second])).resolves.toEqual(expect.arrayContaining([
+      expect.arrayContaining([expect.objectContaining({ itemId: 'm1' })]),
+      expect.arrayContaining([expect.objectContaining({ itemId: 'm1' })]),
+    ]))
+  })
+
   it('rebuilds an unreadable index instead of taking the app down with it', async () => {
     // The search index is derived data -- every row is reconstructed from the
     // transcripts. It used to throw straight out of the constructor, which runs at

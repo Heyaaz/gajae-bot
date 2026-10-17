@@ -125,6 +125,7 @@ export class ProductivityService {
   private readonly transport: LinkTransport
   private readonly db: DatabaseSync
   private searchStale = true
+  private searchRebuild?: Promise<void>
 
   constructor(private readonly source: ProductivitySource, dbPath: string, options: { transport?: LinkTransport; resolver?: AddressResolver } = {}) {
     this.transport = options.transport || defaultTransport
@@ -167,7 +168,17 @@ export class ProductivityService {
     }
   }
 
-  async rebuildSearch(): Promise<void> {
+  rebuildSearch(): Promise<void> {
+    if (this.searchRebuild) return this.searchRebuild
+    const rebuild = this.rebuildSearchIndex()
+    this.searchRebuild = rebuild
+    void rebuild.finally(() => {
+      if (this.searchRebuild === rebuild) this.searchRebuild = undefined
+    }).catch(() => undefined)
+    return rebuild
+  }
+
+  private async rebuildSearchIndex(): Promise<void> {
     const sessions = await this.source.listSessions()
     this.db.exec('BEGIN'); try {
       this.db.exec('DELETE FROM productivity_search')
