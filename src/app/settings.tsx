@@ -74,6 +74,7 @@ export function SettingsDialog({
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [saveError, setSaveError] = useState("");
+  const [workspaceError, setWorkspaceError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const editedBeforeLoad = useRef(false);
   const preferencesRef = useRef(preferences);
@@ -172,12 +173,17 @@ export function SettingsDialog({
 
   async function chooseWorkspace(): Promise<void> {
     if (!settingsBridge) return;
-    const selected = await settingsBridge.chooseWorkspace(
-      preferences.workspace,
-    );
-    if (selected) {
-      editPreferences((current) => ({ ...current, workspace: selected }));
-      setManagement(null);
+    setWorkspaceError("");
+    try {
+      const selected = await settingsBridge.chooseWorkspace(
+        preferences.workspace,
+      );
+      if (selected) {
+        editPreferences((current) => ({ ...current, workspace: selected }));
+        setManagement(null);
+      }
+    } catch (error) {
+      setWorkspaceError(settingsErrorMessage(error));
     }
   }
 
@@ -271,6 +277,7 @@ export function SettingsDialog({
             </button>
           </header>
 
+          {workspaceError && <p className="diff-error" role="alert">폴더를 선택하지 못했습니다: {workspaceError}</p>}
           {loadError && (
             <p className="diff-error" role="alert">
               설정을 불러오지 못했습니다: {loadError}

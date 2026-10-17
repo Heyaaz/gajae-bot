@@ -36,14 +36,20 @@ export function NewSessionDialog({
   );
   const [worktreeBranch, setWorktreeBranch] = useState("");
   const [choosing, setChoosing] = useState(false);
+  const [workspaceError, setWorkspaceError] = useState("");
   const settingsBridge = window.agentControlDesktop?.settings;
 
   async function chooseWorkspace(): Promise<void> {
     if (!settingsBridge) return;
     setChoosing(true);
+    setWorkspaceError("");
     try {
       const selected = await settingsBridge.chooseWorkspace(workspace);
       if (selected) setWorkspace(selected);
+    } catch (error) {
+      setWorkspaceError(
+        error instanceof Error ? error.message : String(error),
+      );
     } finally {
       setChoosing(false);
     }
@@ -131,6 +137,7 @@ export function NewSessionDialog({
             </button>
           </div>
         </label>
+        {workspaceError && <p role="alert">{workspaceError}</p>}
         <footer>
           <button type="button" className="button-secondary" onClick={onCancel}>
             취소
