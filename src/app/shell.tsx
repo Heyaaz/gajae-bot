@@ -215,7 +215,7 @@ export default function App() {
     completed: 0,
     total: 0,
   });
-  const [goalBusy, setGoalBusy] = useState(false);
+  const [goalBusySessionId, setGoalBusySessionId] = useState<string | null>(null);
   const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
   const [diffLoading, setDiffLoading] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<AgentSession | null>(
@@ -572,6 +572,7 @@ export default function App() {
   const selectedSessionStatus = selectedSession?.status;
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
+  selectedIdRef.current = selectedId;
   const cachedSelectedTranscript = selectedId ? transcripts[selectedId] : undefined;
   const transcriptReads = useMemo(
     () => ({ backend, pending: new Map<string, Promise<TranscriptItem[]>>() }),
@@ -615,10 +616,12 @@ export default function App() {
       void backend
         .getGoal(selectedSessionId)
         .then((snapshot) => {
-          if (active) setGoal(snapshot);
+          if (active && selectedIdRef.current === selectedSessionId)
+            setGoal(snapshot);
         })
         .catch(() => {
-          if (active) setGoal({ enabled: false, completed: 0, total: 0 });
+          if (active && selectedIdRef.current === selectedSessionId)
+            setGoal({ enabled: false, completed: 0, total: 0 });
         })
         .finally(() => { refreshing = false; });
     };
@@ -724,14 +727,19 @@ export default function App() {
   }
 
   async function operateGoal(operation: GoalOperation): Promise<void> {
-    if (!selectedId || goalBusy) return;
-    setGoalBusy(true);
+    const sessionId = selectedId;
+    if (!sessionId || goalBusySessionId === sessionId) return;
+    setGoalBusySessionId(sessionId);
     try {
-      setGoal(await backend.operateGoal(selectedId, operation));
+      const snapshot = await backend.operateGoal(sessionId, operation);
+      if (selectedIdRef.current === sessionId) setGoal(snapshot);
     } catch (error) {
-      setAppError(humanErrorMessage(error));
+      if (selectedIdRef.current === sessionId)
+        setAppError(humanErrorMessage(error));
     } finally {
-      setGoalBusy(false);
+      setGoalBusySessionId((current) =>
+        current === sessionId ? null : current,
+      );
     }
   }
 
@@ -1594,7 +1602,7 @@ export default function App() {
               <div className="composer-wrap">
                 <GoalProgressRow
                   goal={goal}
-                  busy={goalBusy}
+                  busy={goalBusySessionId === selectedSession.id}
                   onOperate={(operation) => void operateGoal(operation)}
                 />
                 <Composer

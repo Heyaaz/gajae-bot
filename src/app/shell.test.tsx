@@ -434,6 +434,16 @@ describe("transcript loading failures", () => {
   });
 });
 
+describe("session-scoped goal updates", () => {
+  it("ignores a late goal operation result after selection changes", async () => {
+    const shell = await source("src/app/shell.tsx");
+    expect(shell).toContain(
+      "if (selectedIdRef.current === sessionId) setGoal(snapshot);",
+    );
+    expect(shell).toContain("goalBusySessionId === selectedSession.id");
+  });
+});
+
 /** The next state the shell would render, from the store's current slot values. */
 function renderApp(): string {
   actionProbe.sidebar = null;
