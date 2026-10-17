@@ -3,7 +3,7 @@ import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
 import type { GjcUpdateStatus, ManagementSnapshot } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
 import { CalendarClock, Check, Command, FolderOpen, ShieldCheck, Smartphone, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
@@ -25,6 +25,20 @@ export interface SettingsDialogProps {
   updateError: string;
   onCheckUpdate: () => void;
   onInstallUpdate: () => void;
+}
+
+export function mergeInitialPreferences(
+  current: AgentControlPreferences,
+  loaded: AgentControlPreferences,
+  edited: boolean,
+): { preferences: AgentControlPreferences; original: AgentControlPreferences } {
+  return edited
+    ? { preferences: current, original: loaded }
+    : { preferences: loaded, original: loaded };
+}
+
+export function settingsErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 export function SettingsDialog({
@@ -58,6 +72,10 @@ export function SettingsDialog({
   const [original, setOriginal] =
     useState<AgentControlPreferences>(fallbackPreferences);
   const [saving, setSaving] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const editedBeforeLoad = useRef(false);
+  const preferencesRef = useRef(preferences);
   const settingsBridge = window.agentControlDesktop?.settings;
   const managementBridge = window.agentControlDesktop?.management;
   const dirty = JSON.stringify(preferences) !== JSON.stringify(original);
@@ -87,15 +105,36 @@ export function SettingsDialog({
   useEffect(() => {
     if (!settingsBridge) return;
     let active = true;
-    void settingsBridge.getPreferences().then((loaded) => {
-      if (!active) return;
-      setPreferences(loaded);
-      setOriginal(loaded);
-    });
+    void settingsBridge
+      .getPreferences()
+      .then((loaded) => {
+        if (!active) return;
+        const result = mergeInitialPreferences(
+          preferencesRef.current,
+          loaded,
+          editedBeforeLoad.current,
+        );
+        preferencesRef.current = result.preferences;
+        setPreferences(result.preferences);
+        setOriginal(result.original);
+        setLoadError("");
+      })
+      .catch((error: unknown) => {
+        if (active) setLoadError(settingsErrorMessage(error));
+      });
     return () => {
       active = false;
     };
-  }, [settingsBridge]);
+  }, [loadAttempt, settingsBridge]);
+
+  function editPreferences(
+    update: (current: AgentControlPreferences) => AgentControlPreferences,
+  ): void {
+    editedBeforeLoad.current = true;
+    const next = update(preferencesRef.current);
+    preferencesRef.current = next;
+    setPreferences(next);
+  }
 
   useEffect(() => {
     if (
@@ -135,7 +174,7 @@ export function SettingsDialog({
       preferences.workspace,
     );
     if (selected) {
-      setPreferences((current) => ({ ...current, workspace: selected }));
+      editPreferences((current) => ({ ...current, workspace: selected }));
       setManagement(null);
     }
   }
@@ -227,6 +266,20 @@ export function SettingsDialog({
             </button>
           </header>
 
+          {loadError && (
+            <p className="diff-error" role="alert">
+              설정을 불러오지 못했습니다: {loadError}
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={() => setLoadAttempt((attempt) => attempt + 1)}
+              >
+                다시 시도
+              </button>
+            </p>
+          )}
+
+
           {tab === "gjc" && (
             <div className="settings-stack">
               <article className="backend-card">
@@ -253,7 +306,7 @@ export function SettingsDialog({
                     list="gjc-model-profiles"
                     value={preferences.modelPreset}
                     onChange={(event) =>
-                      setPreferences((current) => ({
+                      editPreferences((current) => ({
                         ...current,
                         modelPreset: event.target.value,
                       }))
@@ -280,7 +333,7 @@ export function SettingsDialog({
                       { value: "always-allow", label: "항상 허용" },
                     ]}
                     onChange={(value) =>
-                      setPreferences((current) => ({
+                      editPreferences((current) => ({
                         ...current,
                         permissionHandling:
                           value as AgentControlPreferences["permissionHandling"],
@@ -297,7 +350,7 @@ export function SettingsDialog({
                     type="checkbox"
                     checked={preferences.thoughtsExpanded}
                     onChange={(event) =>
-                      setPreferences((current) => ({
+                      editPreferences((current) => ({
                         ...current,
                         thoughtsExpanded: event.target.checked,
                       }))
@@ -313,7 +366,7 @@ export function SettingsDialog({
                     value={preferences.gjcExecutable}
                     placeholder="Auto-detect (~/.bun/bin/gjc)"
                     onChange={(event) =>
-                      setPreferences((current) => ({
+                      editPreferences((current) => ({
                         ...current,
                         gjcExecutable: event.target.value,
                       }))
