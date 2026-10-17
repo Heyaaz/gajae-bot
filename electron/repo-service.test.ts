@@ -363,6 +363,38 @@ describe("readRepository", () => {
     expect(snapshot).not.toHaveProperty("error");
     expect(snapshot.worktrees[1].changed).toBe(0);
   });
+
+  it("strips HTTPS userinfo from public remote metadata while retaining repository identity", async () => {
+    const { run } = fakeRunner(
+      repositoryRoutes({
+        [MAIN_ORIGIN_URL]: ok("https://build-user:example-token@github.com/owner/app.git\n"),
+      }),
+    );
+    const snapshot = await new RepoService({ run }).readRepository(MAIN);
+    expect(snapshot.remote).toEqual({
+      name: "origin",
+      url: "https://github.com/owner/app.git",
+      slug: "github.com/owner/app",
+      webUrl: GITHUB_WEB_URL,
+    });
+    expect(JSON.stringify(snapshot.remote)).not.toContain("example-token");
+    expect(JSON.stringify(snapshot.remote)).not.toContain("build-user");
+  });
+
+  it("strips SCP-style SSH usernames without changing the remote identity", async () => {
+    const { run } = fakeRunner(
+      repositoryRoutes({
+        [MAIN_ORIGIN_URL]: ok("git@github.com:owner/app.git\n"),
+      }),
+    );
+    const snapshot = await new RepoService({ run }).readRepository(MAIN);
+    expect(snapshot.remote).toEqual({
+      name: "origin",
+      url: "github.com:owner/app.git",
+      slug: "github.com/owner/app",
+      webUrl: GITHUB_WEB_URL,
+    });
+  });
 });
 
 describe("GitHub failure states", () => {

@@ -180,6 +180,22 @@ export interface GithubRemote {
 const REMOTE_SCHEMES = new Set(["https:", "http:", "ssh:", "git:"]);
 const SCP_REMOTE = /^(?:[^/@:]+@)?([^/@:]+):(?!\/)(.+)$/u;
 
+/** Remove URL userinfo before a remote URL crosses the repository screen boundary. */
+function publicRemoteUrl(url: string): string {
+  if (/^[a-z][a-z0-9+.-]*:\/\//iu.test(url)) {
+    try {
+      const parsed = new URL(url);
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString().replace(/\/$/u, url.endsWith("/") ? "/" : "");
+    } catch {
+      // Preserve malformed remotes; normal parsing still decides whether they
+      // can be identified, and the output sanitizer below handles known forms.
+    }
+  }
+  return url.replace(/^([^/@:]+)@([^/@:]+):(?!\/)/u, "$2:");
+}
+
 /**
  * A remote URL reduced to its GitHub parts.
  *
@@ -676,7 +692,10 @@ export class RepoService {
     const url = fetched.stdout.trim();
     if (!url) return undefined;
     const github = parseGithubRemote(url);
-    return github ? { name, url, slug: github.slug, webUrl: github.webUrl } : { name, url };
+    const publicUrl = publicRemoteUrl(url);
+    return github
+      ? { name, url: publicUrl, slug: github.slug, webUrl: github.webUrl }
+      : { name, url: publicUrl };
   }
 
   /**
