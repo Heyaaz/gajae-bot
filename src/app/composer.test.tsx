@@ -13,14 +13,16 @@ import {
 import type { PendingRequest } from "../composer-utils";
 import {
   Composer,
-  cancelBeforeQueueDiscard,
-  restoreRejectedDraft,
+  type ComposerSnapshot,
   FastTierControls,
   fastTierBusy,
   handleComposerEnter,
   QueueChip,
+  cancelBeforeQueueDiscard,
   mergePreparedAttachments,
   requestFastTier,
+  restoreRejectedDraft,
+  saveComposerSnapshot,
   selectedCommandDraft,
   storePreparedAttachments,
 } from "./composer";
@@ -631,7 +633,6 @@ describe("stop queue ownership", () => {
   });
 });
 
-
 describe("rejected submission recovery", () => {
   it("parks a late failure with its originating session", () => {
     const drafts = new Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>();
@@ -658,5 +659,20 @@ describe("rejected submission recovery", () => {
       files: [],
     });
     expect(drafts.size).toBe(0);
+  });
+});
+
+describe("composer state across unmounts", () => {
+  it("retains each session's draft, attachments, and held requests in its snapshot", () => {
+    const snapshots = new Map<string, ComposerSnapshot>();
+    const snapshot = {
+      value: "finish later",
+      images: [{ id: "image-1", name: "proof.png", mimeType: "image/png", data: "aW1hZ2U=" }],
+      files: [],
+      pendingQueue: [heldRequest("queued-1", "follow up")],
+    };
+    saveComposerSnapshot(snapshots, "session-a", snapshot);
+    expect(snapshots.get("session-a")).toEqual(snapshot);
+    expect(snapshots.get("session-b")).toBeUndefined();
   });
 });

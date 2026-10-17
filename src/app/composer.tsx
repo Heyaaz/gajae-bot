@@ -42,6 +42,26 @@ const FAST_SERVICE_TIERS = new Set([
   "claude-only",
 ]);
 
+type ComposerDraft = {
+  value: string;
+  images: ImageAttachment[];
+  files: FileAttachment[];
+};
+
+export type ComposerSnapshot = ComposerDraft & { pendingQueue: PendingRequest[] };
+
+// Screen navigation can unmount the composer without ending the session. Keep
+// its local-only work outside the component lifetime, keyed by session identity.
+const composerSnapshots = new Map<string, ComposerSnapshot>();
+
+export function saveComposerSnapshot(
+  snapshots: Map<string, ComposerSnapshot>,
+  sessionId: string,
+  snapshot: ComposerSnapshot,
+): void {
+  snapshots.set(sessionId, snapshot);
+}
+
 /**
  * Apply a Fast tier change through the runtime's own service-tier control.
  *
@@ -385,9 +405,9 @@ export function Composer({
   onCycleThinking,
   readOnly = false,
 }: ComposerProps) {
-  const [value, setValue] = useState("");
-  const [images, setImages] = useState<ImageAttachment[]>([]);
-  const [files, setFiles] = useState<FileAttachment[]>([]);
+  const [value, setValue] = useState(() => composerSnapshots.get(sessionId)?.value ?? "");
+  const [images, setImages] = useState(() => composerSnapshots.get(sessionId)?.images ?? []);
+  const [files, setFiles] = useState(() => composerSnapshots.get(sessionId)?.files ?? []);
   const [attachmentError, setAttachmentError] = useState("");
   const [choosingImages, setChoosingImages] = useState(false);
   const [dragActive, setDragActive] = useState(false);
@@ -404,24 +424,30 @@ export function Composer({
   // The composer is the single owner of pending work. GJC is only told about a
   // request when it is actually released, so there is no remote queue to
   // reconcile against and nothing can retire a chip behind the user's back.
-  const [pendingQueue, setPendingQueue] = useState<PendingRequest[]>([]);
+  const [pendingQueue, setPendingQueue] = useState(
+    () => composerSnapshots.get(sessionId)?.pendingQueue ?? [],
+  );
   const [historyCursor, setHistoryCursor] = useState(-1);
   // A draft belongs to the session it was typed in. The composer is one mounted
   // component for every session, so unsent text has to be parked per session or
   // switching rows would carry it along and let it be sent to the wrong agent.
-  const draftsRef = useRef(
-    new Map<
-      string,
-      { value: string; images: ImageAttachment[]; files: FileAttachment[] }
-    >(),
-  );
+  const draftsRef = useRef(new Map<string, ComposerDraft>(
+    [...composerSnapshots].map(([id, snapshot]) => [id, {
+      value: snapshot.value,
+      images: snapshot.images,
+      files: snapshot.files,
+    }]),
+  ));
   const draftSessionRef = useRef(sessionId);
   const renderedSessionRef = useRef(sessionId);
   renderedSessionRef.current = sessionId;
   const pendingPreparedRef = useRef(
     new Map<string, { images: ImageAttachment[]; files: FileAttachment[] }>(),
   );
-  const pendingQueuesRef = useRef(new Map<string, PendingRequest[]>());
+  const pendingQueuesRef = useRef(new Map<string, PendingRequest[]>(
+    [...composerSnapshots].map(([id, snapshot]) => [id, snapshot.pendingQueue]),
+  ));
+  const mountedRef = useRef(false);
   // Anything the user could submit right now. This decides which single action the
   // submit slot exposes, so send and stop can never render together.
   const hasDraft =
@@ -489,32 +515,59 @@ export function Composer({
   const effortValueRef = useRef(currentEffort);
   effortValueRef.current = currentEffort;
 
-  function discardQueueAfterCancel(): void {
+  function discardQueueAfterCancel(owner: string): void {
     void cancelBeforeQueueDiscard(onCancel, () => {
+      if (draftSessionRef.current !== owner) {
+        pendingQueuesRef.current.delete(owner);
+        const snapshot = composerSnapshots.get(owner);
+        if (snapshot)
+          saveComposerSnapshot(composerSnapshots, owner, { ...snapshot, pendingQueue: [] });
+        return;
+      }
       pendingQueueRef.current = [];
-      pendingQueuesRef.current.delete(sessionId);
+      pendingQueuesRef.current.delete(owner);
       setPendingQueue([]);
+      saveComposerSnapshot(composerSnapshots, owner, {
+        value: valueRef.current,
+        images: imagesRef.current,
+        files: filesRef.current,
+        pendingQueue: [],
+      });
     }).catch(() => undefined);
   }
 
-  function restoreRejectedSubmission(owner: string, input: MessageInput): void {
+  function restoreRejectedSubmission(
+    owner: string,
+    input: MessageInput,
+  ): void {
     const draft = restoreRejectedDraft(draftSessionRef.current, draftsRef.current, owner, input);
-    if (!draft) return;
-    const restored = {
-      value: [draft.value, valueRef.current].filter(Boolean).join("\n"),
-      images: [...draft.images, ...imagesRef.current],
-      files: [...draft.files, ...filesRef.current],
-    };
-    valueRef.current = restored.value;
-    imagesRef.current = restored.images;
-    filesRef.current = restored.files;
-    if (draftSessionRef.current === owner) {
+    if (draft) {
+      const restored = {
+        value: [draft.value, valueRef.current].filter(Boolean).join("\n"),
+        images: [...draft.images, ...imagesRef.current],
+        files: [...draft.files, ...filesRef.current],
+      };
+      valueRef.current = restored.value;
+      imagesRef.current = restored.images;
+      filesRef.current = restored.files;
+      saveComposerSnapshot(composerSnapshots, owner, {
+        ...restored,
+        pendingQueue: pendingQueueRef.current,
+      });
+      if (!mountedRef.current) return;
       setValue(restored.value);
       setImages(restored.images);
       setFiles(restored.files);
       setAttachmentError("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요.");
     }
   }
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const discardPrepared = useCallback(
     (attachments: Array<{ token?: string }>): void => {
@@ -655,6 +708,21 @@ export function Composer({
     queueMicrotask(() => {
       setHistoryCursor(-1);
       historyDraftRef.current = "";
+    });
+  }, [sessionId]);
+
+  useEffect(() => () => {
+    for (const [owner, draft] of draftsRef.current) {
+      saveComposerSnapshot(composerSnapshots, owner, {
+        ...draft,
+        pendingQueue: pendingQueuesRef.current.get(owner) ?? [],
+      });
+    }
+    saveComposerSnapshot(composerSnapshots, sessionId, {
+      value: valueRef.current,
+      images: imagesRef.current,
+      files: filesRef.current,
+      pendingQueue: pendingQueueRef.current,
     });
   }, [sessionId]);
 
@@ -817,6 +885,11 @@ export function Composer({
     const write = (pending: PendingRequest[]): void => {
       if (pending.length > 0) pendingQueuesRef.current.set(owner, pending);
       else pendingQueuesRef.current.delete(owner);
+      const draft = draftSessionRef.current === owner
+        ? { value: valueRef.current, images: imagesRef.current, files: filesRef.current }
+        : draftsRef.current.get(owner) ?? composerSnapshots.get(owner);
+      if (draft)
+        saveComposerSnapshot(composerSnapshots, owner, { ...draft, pendingQueue: pending });
       if (draftSessionRef.current !== owner) return;
       pendingQueueRef.current = pending;
       setPendingQueue(pending);
@@ -1085,8 +1158,9 @@ export function Composer({
   function selectCommand(command: AgentCommand): void {
     if (command.name === "abort") {
       setValue("");
-      if (running) discardQueueAfterCancel();
-      else setAttachmentError("중단할 실행 작업이 없습니다");
+      if (running) {
+        discardQueueAfterCancel(sessionId);
+      } else setAttachmentError("중단할 실행 작업이 없습니다");
       return;
     }
     if (command.name === "steer") {
@@ -1172,7 +1246,7 @@ export function Composer({
       setConfigMenu(null);
       if (matchingCommands.length > 0) setValue("");
       if (running && !event.metaKey && !event.ctrlKey && !event.altKey)
-        discardQueueAfterCancel();
+        discardQueueAfterCancel(sessionId);
       else setPendingQueue([]);
       return;
     }
@@ -1671,7 +1745,7 @@ export function Composer({
               className="send-button send-button--stop"
               type="button"
               disabled={!running || readOnly}
-              onClick={discardQueueAfterCancel}
+              onClick={() => discardQueueAfterCancel(sessionId)}
               title="작업 중단 (Esc)"
             >
               <CircleStop size={18} />
