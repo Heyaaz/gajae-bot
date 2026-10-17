@@ -9,8 +9,16 @@ import type {
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
 import { Copy, RotateCcw, Target, X } from "lucide-react";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { statusLabel, subagentLabel } from "./format";
+
+export function shouldClearCommitMessage(
+  succeeded: boolean,
+  submittedRevision: number,
+  currentRevision: number,
+): boolean {
+  return succeeded && submittedRevision === currentRevision;
+}
 
 export interface InspectorProps {
   session: AgentSession;
@@ -220,6 +228,7 @@ export function DiffPanel({
   const [git, setGit] = useState<GitStatusSnapshot | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
   const [commitMessage, setCommitMessage] = useState("");
+  const commitMessageRevision = useRef(0);
   const [gitBusy, setGitBusy] = useState(false);
   const [gitError, setGitError] = useState("");
   const refreshGit = useCallback(() => {
@@ -237,15 +246,17 @@ export function DiffPanel({
 
   async function mutate(
     operation: () => Promise<GitStatusSnapshot>,
-  ): Promise<void> {
+  ): Promise<boolean> {
     setGitBusy(true);
     setGitError("");
     try {
       setGit(await operation());
       setSelected([]);
       onRefresh();
+      return true;
     } catch (error) {
       setGitError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
       setGitBusy(false);
     }
@@ -360,7 +371,10 @@ export function DiffPanel({
             <input
               placeholder="커밋 메시지"
               value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
+              onChange={(event) => {
+                commitMessageRevision.current += 1;
+                setCommitMessage(event.target.value);
+              }}
             />
             <button
               className="button-primary"
@@ -373,9 +387,21 @@ export function DiffPanel({
                   )
                 )
                   return;
+                const submittedRevision = commitMessageRevision.current;
                 void mutate(() =>
                   backend.commitChanges(session.id, commitMessage),
-                ).then(() => setCommitMessage(""));
+                ).then((succeeded) => {
+                  if (
+                    shouldClearCommitMessage(
+                      succeeded,
+                      submittedRevision,
+                      commitMessageRevision.current,
+                    )
+                  ) {
+                    commitMessageRevision.current += 1;
+                    setCommitMessage("");
+                  }
+                });
               }}
             >
               Commit

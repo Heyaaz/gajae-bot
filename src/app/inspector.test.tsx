@@ -2,7 +2,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AgentSession, TranscriptItem } from "../backend/types";
-import { Inspector } from "./inspector";
+import { Inspector, shouldClearCommitMessage } from "./inspector";
 
 function session(): AgentSession {
   return {
@@ -71,5 +71,22 @@ describe("Inspector", () => {
   it("says so when no subagent ran", () => {
     const markup = renderToStaticMarkup(createElement(Inspector, props([])));
     expect(markup).toContain("실행된 서브 에이전트가 없습니다");
+  });
+
+  it("clears a commit message only after success and only if it was not edited", () => {
+    const submittedRevision = 3;
+
+    // A rejected backend mutation is reported by mutate as unsuccessful, so its
+    // typed message stays available alongside the error.
+    expect(shouldClearCommitMessage(false, submittedRevision, submittedRevision)).toBe(
+      false,
+    );
+
+    expect(shouldClearCommitMessage(true, submittedRevision, submittedRevision)).toBe(
+      true,
+    );
+    expect(shouldClearCommitMessage(true, submittedRevision, submittedRevision + 1)).toBe(
+      false,
+    );
   });
 });
