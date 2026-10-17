@@ -56,6 +56,32 @@ describe('ProductivityService', () => {
     ]))
   })
 
+  it('retains invalidation that arrives while rebuilding', async () => {
+    let releaseFirstTranscript!: (items: TranscriptItem[]) => void
+    let transcriptCalls = 0
+    let currentItems = [item('old', 'message', 'alpha old')]
+    const searchSource: ProductivitySource = {
+      listSessions: async () => [session('s1', 'First')],
+      getTranscript: async () => {
+        transcriptCalls++
+        if (transcriptCalls === 1) return new Promise(resolve => { releaseFirstTranscript = resolve })
+        return currentItems
+      },
+    }
+    const service = new ProductivityService(searchSource, ':memory:')
+    const firstSearch = service.searchTranscripts('alpha')
+    await Promise.resolve()
+    currentItems = [item('new', 'message', 'alpha new')]
+    service.invalidateSearch()
+    releaseFirstTranscript([item('old', 'message', 'alpha old')])
+    await firstSearch
+
+    await expect(service.searchTranscripts('alpha')).resolves.toEqual([
+      expect.objectContaining({ itemId: 'new' }),
+    ])
+    expect(transcriptCalls).toBe(2)
+  })
+
   it('rebuilds an unreadable index instead of taking the app down with it', async () => {
     // The search index is derived data -- every row is reconstructed from the
     // transcripts. It used to throw straight out of the constructor, which runs at

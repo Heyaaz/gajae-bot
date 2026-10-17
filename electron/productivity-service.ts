@@ -125,6 +125,7 @@ export class ProductivityService {
   private readonly transport: LinkTransport
   private readonly db: DatabaseSync
   private searchStale = true
+  private searchGeneration = 0
   private searchRebuild?: Promise<void>
 
   constructor(private readonly source: ProductivitySource, dbPath: string, options: { transport?: LinkTransport; resolver?: AddressResolver } = {}) {
@@ -134,7 +135,7 @@ export class ProductivityService {
   }
   private readonly resolve: AddressResolver
 
-  invalidateSearch(): void { this.searchStale = true }
+  invalidateSearch(): void { this.searchStale = true; this.searchGeneration++ }
 
   async previewLink(input: string): Promise<LinkPreview> {
     if (typeof input !== 'string' || input.length === 0 || input.length > MAX_URL) throw new Error('Invalid URL')
@@ -170,7 +171,8 @@ export class ProductivityService {
 
   rebuildSearch(): Promise<void> {
     if (this.searchRebuild) return this.searchRebuild
-    const rebuild = this.rebuildSearchIndex()
+    const generation = this.searchGeneration
+    const rebuild = this.rebuildSearchIndex(generation)
     this.searchRebuild = rebuild
     void rebuild.finally(() => {
       if (this.searchRebuild === rebuild) this.searchRebuild = undefined
@@ -178,7 +180,7 @@ export class ProductivityService {
     return rebuild
   }
 
-  private async rebuildSearchIndex(): Promise<void> {
+  private async rebuildSearchIndex(generation: number): Promise<void> {
     const sessions = await this.source.listSessions()
     this.db.exec('BEGIN'); try {
       this.db.exec('DELETE FROM productivity_search')
@@ -188,7 +190,7 @@ export class ProductivityService {
         insert.run(item.id, session.id, session.title, session.workspace, item.kind, text, `${session.title} ${session.workspace} ${item.kind} ${text}`.toLocaleLowerCase())
       }
       this.db.exec('COMMIT')
-      this.searchStale = false
+      this.searchStale = this.searchGeneration !== generation
     } catch (error) { this.db.exec('ROLLBACK'); throw error }
   }
 
