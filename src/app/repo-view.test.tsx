@@ -22,6 +22,7 @@ import {
   RepoOverviewPanel,
   RepoPullsPanel,
   RepoView,
+  changesForProject,
   ciLabel,
   formatRepoCount,
   githubFailureText,
@@ -260,6 +261,22 @@ describe("RepoView without a desktop bridge", () => {
     expect(markup).not.toContain("로컬 폴더 열기");
     expect(markup).not.toContain("불러오는 중");
     expect(markup).not.toContain("repo-error");
+  });
+});
+
+describe("repository change selection ownership", () => {
+  it("does not expose a previous project's selected session after switching roots", () => {
+    const priorSelection = {
+      projectRoot: "/repo-a",
+      requestId: 1,
+      session: session(0, { workspace: "/repo-a" }),
+      diff: null,
+      loading: true,
+      error: "",
+    };
+
+    expect(changesForProject(priorSelection, "/repo-b")).toBeNull();
+    expect(changesForProject(priorSelection, "/repo-a")).toBe(priorSelection);
   });
 });
 

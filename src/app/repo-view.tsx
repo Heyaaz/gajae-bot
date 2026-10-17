@@ -18,7 +18,7 @@ import type {
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession } from "../backend/types";
 import { ArrowLeft, ExternalLink, FolderOpen, GitCompare } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { humanErrorMessage } from "./format";
 import { DiffPanel } from "./inspector";
@@ -716,11 +716,21 @@ export interface RepoViewProps {
 }
 
 /** Which session's changed files are open, and what has arrived for it. */
-interface ChangesView {
+export interface ChangesView {
+  projectRoot: string;
+  requestId: number;
   session: AgentSession;
   diff: DiffSnapshot | null;
   loading: boolean;
   error: string;
+}
+
+/** A cached selection is actionable only in the project that opened it. */
+export function changesForProject(
+  changes: ChangesView | null,
+  projectRoot: string,
+): ChangesView | null {
+  return changes?.projectRoot === projectRoot ? changes : null;
 }
 
 export function RepoView({
@@ -754,6 +764,7 @@ export function RepoView({
     RepoLoad<GithubQuery<GithubPullDetail>> | null
   >(null);
   const [changes, setChanges] = useState<ChangesView | null>(null);
+  const changesRequestId = useRef(0);
 
   // The rail can switch projects under this screen. Nothing read for the previous
   // root may stand in for the new one while it loads, so every read starts over --
@@ -854,18 +865,33 @@ export function RepoView({
   }
 
   function openChanges(session: AgentSession): void {
-    setChanges({ session, diff: null, loading: true, error: "" });
+    const projectRoot = project.root;
+    const requestId = ++changesRequestId.current;
+    setChanges({
+      projectRoot,
+      requestId,
+      session,
+      diff: null,
+      loading: true,
+      error: "",
+    });
     void backend.getDiff(session.id).then(
       (diff) => {
         setChanges((current) =>
-          current && current.session.id === session.id
+          current &&
+          current.projectRoot === projectRoot &&
+          current.requestId === requestId &&
+          current.session.id === session.id
             ? { ...current, diff, loading: false }
             : current,
         );
       },
       (failure: unknown) => {
         setChanges((current) =>
-          current && current.session.id === session.id
+          current &&
+          current.projectRoot === projectRoot &&
+          current.requestId === requestId &&
+          current.session.id === session.id
             ? { ...current, loading: false, error: humanErrorMessage(failure) }
             : current,
         );
@@ -883,16 +909,22 @@ export function RepoView({
   }
 
   function tabBody(): ReactNode {
-    if (changes)
+    // Project props can change before the reset effect runs. Never let the old
+    // project's selection or diff be actionable during that render.
+    const currentChanges = changesForProject(changes, project.root);
+    if (currentChanges)
       return (
         <>
-          {changes.error && <p className="repo-error">{changes.error}</p>}
+          {currentChanges.error && (
+            <p className="repo-error">{currentChanges.error}</p>
+          )}
           <DiffPanel
-            session={changes.session}
+            key={`${currentChanges.projectRoot}:${currentChanges.session.id}`}
+            session={currentChanges.session}
             backend={backend}
-            diff={changes.diff}
-            loading={changes.loading}
-            onRefresh={() => openChanges(changes.session)}
+            diff={currentChanges.diff}
+            loading={currentChanges.loading}
+            onRefresh={() => openChanges(currentChanges.session)}
             onClose={() => setChanges(null)}
           />
         </>
