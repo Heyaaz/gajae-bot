@@ -6932,6 +6932,7 @@ export class GjcSdkController {
       // when known so the host adopts this exact transcript rather than resolving a
       // same-id file elsewhere.
       const sessionPath = await this.locateSharedTranscriptFile(sessionId);
+      requireCurrentAttachment();
       await cli.rawGlobal(
         "session.resume",
         {

@@ -171,6 +171,24 @@ describe("protocol-neutral helpers", () => {
   });
 });
 
+  it.each(["dispose", "generation", "deleted"])("does not resume after a delayed attachment becomes invalid: %s", async (cause) => {
+    const { controller, cli, internals } = harness();
+    let release!: (value: string) => void;
+    const located = new Promise<string>((resolve) => { release = resolve; });
+    internals.sessions.set("s1", session());
+    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
+    internals.locateSharedTranscriptFile = vi.fn(() => located);
+    const attaching = internals.ensureAttached("s1", false);
+    await vi.waitFor(() => expect(internals.locateSharedTranscriptFile).toHaveBeenCalled());
+    if (cause === "dispose") controller.dispose();
+    else if (cause === "generation") internals.generation += 1;
+    else internals.sessions.delete("s1");
+    release("/repo/s1.jsonl");
+    await expect(attaching).rejects.toThrow("attachment was cancelled");
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
 describe("GjcSdkController CLI seam", () => {
   it("reports the preset new sessions start from on the connection", async () => {
     // The composer and the settings dialog label themselves from this field, so a
