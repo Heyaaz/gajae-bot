@@ -1120,6 +1120,7 @@ export default function App() {
       await backend.flushQueuedNow(resolved);
     } catch (error) {
       setAppError(humanErrorMessage(error));
+      throw error;
     }
   }
 

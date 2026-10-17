@@ -175,6 +175,7 @@ describe("composer-owned pending queue", () => {
     const sent: string[] = [];
 
     await releaseRequests({
+      canSend: () => true,
       read: () => rendered,
       write: (pending) => {
         live = pending;
@@ -202,6 +203,7 @@ describe("composer-owned pending queue", () => {
     const sent: string[] = [];
 
     await releaseRequests({
+      canSend: () => true,
       read: () => live,
       write: (pending) => {
         live = pending;
@@ -221,6 +223,7 @@ describe("composer-owned pending queue", () => {
 
     await expect(
       releaseRequests({
+        canSend: () => true,
         read: () => live,
         write: (pending) => {
           live = pending;
@@ -234,6 +237,51 @@ describe("composer-owned pending queue", () => {
 
     expect(sent).toEqual(["fails"]);
     expect(live.map((entry) => entry.id)).toEqual(["a", "b"]);
+    expect(live[0]?.blocked).toBe(true);
+    expect(nextRequestToRelease(live)).toBeUndefined();
+  });
+
+  it("never automatically retries a rejected request, even if it was accepted before failing", async () => {
+    const original = request("a", "monitor the PR");
+    let live: PendingRequest[] = [original, request("b", "later")];
+    const sent: string[] = [];
+    const release = () => releaseRequests({
+      canSend: () => true,
+      read: () => live,
+      write: pending => { live = pending; },
+      send: async entry => {
+        sent.push(entry.id);
+        throw new Error("Runtime accepted the request, then execution failed");
+      },
+    });
+    await release();
+    for (let i = 0; i < 100; i++) await release();
+    expect(sent).toEqual(["a"]);
+    expect(live).toEqual([{ ...original, blocked: true }, request("b", "later")]);
+    expect(live[0]?.images).toBe(original.images);
+    expect(live[0]?.files).toBe(original.files);
+  });
+
+  it("allows recovery only after the user pulls the blocked request out of the queue", async () => {
+    const blocked = { ...request("a", "review before retry"), blocked: true as const };
+    const pulled = pullQueuedRequest([blocked], { id: "a" });
+    expect(pulled?.entry.text).toBe("review before retry");
+    expect(pulled?.pending).toEqual([]);
+    expect(nextRequestToRelease([blocked, request("b", "later")])).toBeUndefined();
+  });
+
+  it("stops releasing when the owner session is no longer active", async () => {
+    let active = true;
+    let live: PendingRequest[] = [request("a", "first"), request("b", "second")];
+    const sent: string[] = [];
+    await releaseRequests({
+      canSend: () => active,
+      read: () => live,
+      write: pending => { live = pending; },
+      send: async entry => { sent.push(entry.id); active = false; },
+    });
+    expect(sent).toEqual(["a"]);
+    expect(live).toEqual([request("b", "second")]);
   });
 });
 

@@ -552,6 +552,19 @@ describe("Composer queue pull-back", () => {
     ).toEqual(["a"]);
   });
 
+  it("labels rejected queued sends as requiring review instead of promising automatic execution", () => {
+    const markup = renderToStaticMarkup(createElement(QueueChip, {
+      entry: { ...heldRequest("failed", "monitor the PR"), blocked: true },
+      onPull: () => undefined,
+      onDiscard: () => undefined,
+    }));
+    expect(markup).toContain("composer-queue-item--blocked");
+    expect(markup).toContain("확인 필요");
+    expect(markup).toContain("이미 처리됐을 수 있습니다");
+    expect(markup).toContain("monitor the PR");
+    expect(markup).toContain('aria-label="대기 항목 버리기"');
+  });
+
   it("pulls the entry a chip's body stands for", () => {
     const pulls: string[] = [];
     const chip = QueueChip({

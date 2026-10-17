@@ -3300,6 +3300,20 @@
   font-size: 8px;
   white-space: nowrap;
 }
+.composer-queue--blocked {
+  grid-template-columns: auto minmax(0, 1fr);
+  border-color: var(--warning);
+}
+.composer-queue--blocked strong,
+.composer-queue-item--blocked em {
+  color: var(--warning);
+}
+.composer-queue--blocked small {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: normal;
+}
 
 /* Takes its own column beside the conversation -- it must never cover the text being
    read. Overlaying it was tried and hid up to 157px of every visible row.

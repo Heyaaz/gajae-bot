@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { configOptionGroups, directoryName, httpUrls } from "./format";
+import { configOptionGroups, directoryName, httpUrls, humanErrorMessage } from "./format";
 import { LinkPreviewCard } from "./primitives";
 
 const FAST_SERVICE_TIERS = new Set([
@@ -280,9 +280,10 @@ export interface QueueChipProps {
  */
 export function QueueChip({ entry, onPull, onDiscard }: QueueChipProps) {
   return (
-    <span className={`composer-queue-item composer-queue-item--${entry.mode}`}>
-      <button type="button" className="composer-queue-pull" onClick={onPull}>
-        <em>{entry.mode === "steer" ? "즉시" : "대기"}</em>
+    <span className={`composer-queue-item composer-queue-item--${entry.mode}${entry.blocked ? " composer-queue-item--blocked" : ""}`}>
+      <button type="button" className="composer-queue-pull" onClick={onPull}
+        title={entry.blocked ? "이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요." : undefined}>
+        <em>{entry.blocked ? "확인 필요" : entry.mode === "steer" ? "즉시" : "대기"}</em>
         <span className="composer-queue-text">{entry.text}</span>
       </button>
       <button
@@ -695,24 +696,35 @@ export function Composer({
     };
   }, [addDroppedAttachments]);
 
-  const releasingRef = useRef(false);
+  const releasingSessionsRef = useRef(new Set<string>());
 
   // Interrupt the open turn, then hand the held requests over in order. Each entry
   // leaves the queue only after onSend resolves for it, so a failed release keeps
   // the request visible instead of losing the user's text.
   const releasePendingQueue = useCallback(async (): Promise<void> => {
-    if (releasingRef.current) return;
-    releasingRef.current = true;
+    if (readOnly || releasingSessionsRef.current.has(sessionId) || draftSessionRef.current !== sessionId) return;
+    const owner = sessionId;
+    const read = (): PendingRequest[] =>
+      draftSessionRef.current === owner
+        ? pendingQueueRef.current
+        : pendingQueuesRef.current.get(owner) ?? [];
+    const write = (pending: PendingRequest[]): void => {
+      if (pending.length > 0) pendingQueuesRef.current.set(owner, pending);
+      else pendingQueuesRef.current.delete(owner);
+      if (draftSessionRef.current !== owner) return;
+      pendingQueueRef.current = pending;
+      setPendingQueue(pending);
+    };
+    if (read()[0]?.blocked) return;
+    releasingSessionsRef.current.add(owner);
     try {
       // Only an open turn needs interrupting. Aborting an idle session would
       // cancel nothing and emit a spurious cancellation notice.
       if (running) await onFlushQueued();
       await releaseRequests({
-        read: () => pendingQueueRef.current,
-        write: (pending) => {
-          pendingQueueRef.current = pending;
-          setPendingQueue(pending);
-        },
+        canSend: () => draftSessionRef.current === owner,
+        read,
+        write,
         send: (request) =>
           onSend({
             text: request.text,
@@ -720,10 +732,15 @@ export function Composer({
             files: request.files,
           }),
       });
+    } catch (error) {
+      // A failed flush must not restart the release loop on its idle event.
+      const pending = read();
+      if (pending[0]) write([{ ...pending[0], blocked: true }, ...pending.slice(1)]);
+      if (draftSessionRef.current === owner) setAttachmentError(humanErrorMessage(error));
     } finally {
-      releasingRef.current = false;
+      releasingSessionsRef.current.delete(owner);
     }
-  }, [onFlushQueued, onSend, running]);
+  }, [onFlushQueued, onSend, running, readOnly, sessionId]);
 
   // A pull takes one held request back into the draft the user is editing. The
   // queue is written through its ref first for the same reason the release loop
@@ -731,7 +748,7 @@ export function Composer({
   function pullQueuedEntry(target: QueuePullTarget): void {
     // A release in flight is handing entries over one at a time from this same
     // queue, so a pull beside it would race that loop for the entry it claimed.
-    if (releasingRef.current) return;
+    if (releasingSessionsRef.current.has(sessionId)) return;
     const pulled = pullQueuedRequest(pendingQueueRef.current, target);
     if (!pulled) return;
     pendingQueueRef.current = pulled.pending;
@@ -765,7 +782,7 @@ export function Composer({
   // A chip's × discards exactly that entry. Same guard as a pull: the release
   // loop may be awaiting a send for an entry it has already claimed.
   function discardQueuedEntry(id: string): void {
-    if (releasingRef.current) return;
+    if (releasingSessionsRef.current.has(sessionId)) return;
     const remaining = withoutReleasedRequest(pendingQueueRef.current, id);
     pendingQueueRef.current = remaining;
     setPendingQueue(remaining);
@@ -781,13 +798,14 @@ export function Composer({
   // backend reporting the turn, releasing the queue into a turn that is still
   // starting up. It has to sit after `releasePendingQueue` because the effect
   // closes over the callback it calls.
-  const wasRunningRef = useRef(running);
+  const wasRunningRef = useRef({ sessionId, running });
   useEffect(() => {
-    const turnEnded = wasRunningRef.current && !running;
-    wasRunningRef.current = running;
+    const previous = wasRunningRef.current;
+    const turnEnded = previous.sessionId === sessionId && previous.running && !running;
+    wasRunningRef.current = { sessionId, running };
     if (!turnEnded || pendingQueueRef.current.length === 0) return;
     void releasePendingQueue();
-  }, [releasePendingQueue, running]);
+  }, [releasePendingQueue, running, sessionId]);
 
   function submit(): void {
     if (readOnly) {
@@ -1055,7 +1073,7 @@ export function Composer({
     // arrow keys, and only consumes the keydown when a pull can actually happen.
     const pull = consumeQueuePullKey(event, {
       pending: pendingQueueRef.current,
-      releasing: releasingRef.current,
+      releasing: releasingSessionsRef.current.has(sessionId),
     });
     if (pull) {
       pullQueuedEntry(pull);
@@ -1240,8 +1258,8 @@ export function Composer({
         <small className="composer-error">{attachmentError}</small>
       )}
       {pendingQueue.length > 0 && (
-        <span className="composer-queue">
-          <strong>{pendingQueue.length}개 대기 중</strong>
+        <span className={`composer-queue${pendingQueue[0]?.blocked ? " composer-queue--blocked" : ""}`}>
+          <strong>{pendingQueue[0]?.blocked ? "자동 전송 중지" : `${pendingQueue.length}개 대기 중`}</strong>
           <span className="composer-queue-items">
             {pendingQueue.map((entry) => (
               <QueueChip
@@ -1252,8 +1270,10 @@ export function Composer({
               />
             ))}
           </span>
-          <small>
-            Enter 한 번 더 = 바로 실행 · ⌥↑/⌥↓ = 꺼내기 · 항목 클릭 = 꺼내기
+          <small role={pendingQueue[0]?.blocked ? "status" : undefined}>
+            {pendingQueue[0]?.blocked
+              ? "이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요."
+              : "Enter 한 번 더 = 바로 실행 · ⌥↑/⌥↓ = 꺼내기 · 항목 클릭 = 꺼내기"}
           </small>
         </span>
       )}

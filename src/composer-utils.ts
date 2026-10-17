@@ -192,6 +192,8 @@ export interface PendingRequest {
   label: string;
   images: ImageAttachment[];
   files: FileAttachment[];
+  /** A rejected send may already have been accepted. Only the user may resubmit it. */
+  blocked?: true;
 }
 
 export function normalizeComposerText(value: string): string {
@@ -211,7 +213,7 @@ export function withoutReleasedRequest(
 export function nextRequestToRelease(
   pending: readonly PendingRequest[],
 ): PendingRequest | undefined {
-  return pending[0];
+  return pending[0]?.blocked ? undefined : pending[0];
 }
 
 // Hand held requests over one at a time, oldest first.
@@ -220,21 +222,23 @@ export function nextRequestToRelease(
 // only refreshes a ref on render -- which lands after the await. Reading the
 // rendered value re-selected the request that was just sent and steered it a
 // second time, so the entry is claimed from the live queue *before* awaiting.
-// A send that throws puts its request back at the front and stops, so a failed
-// release never silently loses the user's text.
+// A rejected send does not prove that the runtime never accepted it. Preserve its
+// text but block further releases until the user reviews/removes the request.
 export async function releaseRequests(queue: {
+  canSend: () => boolean;
   read: () => readonly PendingRequest[];
   write: (pending: PendingRequest[]) => void;
   send: (request: PendingRequest) => Promise<unknown>;
 }): Promise<void> {
   for (;;) {
+    if (!queue.canSend()) return;
     const next = nextRequestToRelease(queue.read());
     if (!next) return;
     queue.write(withoutReleasedRequest(queue.read(), next.id));
     try {
       await queue.send(next);
     } catch {
-      queue.write([next, ...queue.read()]);
+      queue.write([{ ...next, blocked: true }, ...queue.read()]);
       return;
     }
   }
