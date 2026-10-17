@@ -1178,6 +1178,7 @@ export default function App() {
     const navigationGeneration = ++navigationGenerationRef.current;
     setResumingId(sessionId);
     setHistoryError("");
+    setAppError("");
     // The picker's job ends once a session is chosen. Keeping it open over the
     // session it just opened hid the result, and the row exists either way --
     // openHistorySession creates it before attaching -- so a refused attach is

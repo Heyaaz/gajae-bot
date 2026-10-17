@@ -179,6 +179,12 @@ If a shared route is unavailable, the transcript remains readable. The internal
 `terminal-only` state means an unavailable control route, not proof of exclusive
 terminal ownership. Fresh positive endpoint evidence is checked with a public
 metadata query so a recovered route is not permanently stuck read-only.
+Opening history with a stale/unavailable endpoint succeeds only when the saved
+transcript can actually be read, and explicitly displays
+`기록 보기 전용 · 실행 연결 없음`. This does not claim that execution resumed;
+permission failures and missing/unreadable history are not replaced with an empty
+successful conversation. Repeated transcript refreshes retain the warning until
+control is restored.
 `세션 이어서 진행` also retries attachment on user action; only a non-live session
 is re-hosted. Creating a different session or exiting a reachable terminal is not
 required for ordinary shared interaction.

@@ -4330,9 +4330,9 @@ export class GjcSdkController {
       id: `terminal-only-${sessionId}`,
       kind: "notice",
       sessionId,
-      title: "Terminal session is active",
+      title: "기록 보기 전용 · 실행 연결 없음",
       content:
-        "This direct terminal session is visible here but does not expose an attachable SDK endpoint. Continue it in the terminal.",
+        "저장된 대화는 열었지만 실행 제어 연결은 복구되지 않았습니다. 기록 조회는 계속 사용할 수 있습니다. 이어서 작업하려면 해당 CLI에서 세션을 다시 열거나 앱의 세션 이어서 진행을 다시 시도하세요. 앱은 기존 CLI를 종료하거나 새 세션으로 대체하지 않습니다.",
       tone: "neutral",
       createdAt: nowLabel(),
     };
@@ -6782,11 +6782,11 @@ export class GjcSdkController {
   }
 
   /**
-   * Open a past session as a row in this window, the way `gjc --resume <id>` does
-   * in a terminal. A session already listed is simply re-attached.
+   * Open saved history and try to restore control independently. An unreachable
+   * runtime must not make a readable transcript fail to open.
    */
   async openHistorySession(sessionId: string): Promise<AgentSession> {
-    if (this.sessions.has(sessionId)) return this.resumeSession(sessionId);
+    if (this.sessions.has(sessionId)) return this.openHistoryWithControl(sessionId);
     const filePath = await this.locateSharedTranscriptFile(sessionId);
     if (!filePath)
       throw new Error(`세션 기록을 찾지 못했습니다: ${sessionId}`);
@@ -6810,26 +6810,36 @@ export class GjcSdkController {
       pinned: false,
       unread: false,
       accent: GJC_ACCENT,
-      ownership: "gajae",
+      ownership: this.sessionMetadata?.getOwnership(sessionId) ?? "external",
       attachment: "recovering",
     };
     this.sessions.set(sessionId, session);
     this.sessionCwds.set(sessionId, workspace);
     this.sessionMetadata?.setWorkspace(sessionId, workspace);
-    this.sessionMetadata?.setOwnership(sessionId, "gajae");
     this.emitEvent({ type: "session.created", session: { ...session } });
+    return this.openHistoryWithControl(sessionId);
+  }
+
+  private async openHistoryWithControl(sessionId: string): Promise<AgentSession> {
+    const generation = this.generation;
     try {
       return await this.resumeSession(sessionId);
     } catch (error) {
-      // The row stays so its transcript remains readable, which is what the
-      // persisted file supports even when the agent refuses to attach.
-      const items = await this.getTranscript(sessionId).catch(() => []);
+      if (!isSessionUnreachable(error)) throw error;
+      // Only a real persisted read authorizes history-only opening. Never
+      // fabricate an empty conversation or re-host a live CLI after this refusal.
+      const items = await this.readPersistedTranscript(sessionId);
+      if (items === undefined) throw error;
+      if (this.disposed || generation !== this.generation || !this.sessions.has(sessionId))
+        throw new Error("GJC session history opening was cancelled");
+      this.markTerminalOnly(sessionId);
+      const installed = this.installTranscript(sessionId, items);
       this.emitEvent({
         type: "transcript.synced",
         sessionId,
-        items: items.map(cloneTranscriptItem),
+        items: installed.map(cloneTranscriptItem),
       });
-      throw error;
+      return { ...this.sessions.get(sessionId)! };
     }
   }
 
@@ -6976,6 +6986,10 @@ export class GjcSdkController {
     if (watched) this.watchSharedTranscript(sessionId, watched);
     const session = this.sessions.get(sessionId);
     if (session) {
+      if (rehosted) {
+        session.ownership = "gajae";
+        this.sessionMetadata?.setOwnership(sessionId, "gajae");
+      }
       session.attachment = "attached";
       // A successful attach clears the failure this window recorded, but it does not
       // observe the turn. Opening a session someone else is driving must not report
@@ -7376,6 +7390,8 @@ export class GjcSdkController {
       retained.push({ row, afterId: anchor?.id });
     }
     const composed = composeTranscriptRows(items, retained);
+    if (this.terminalOnlySessions.has(sessionId) && !composed.some((item) => item.id === `terminal-only-${sessionId}`))
+      composed.push(this.terminalOnlyNotice(sessionId));
     this.transcripts.set(sessionId, composed);
     return composed;
   }

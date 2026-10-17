@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, stat, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, stat, writeFile, readFile, rm } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { tmpdir } from "node:os";
@@ -62,6 +62,93 @@ async function transcriptFile(
     "utf8",
   );
 }
+
+describe("history opening with an unavailable endpoint", () => {
+  it.each([true, false])("opens real saved history without rehosting the CLI when already listed=%s", async (listed) => {
+    const root = await mkdtemp(path.join(tmpdir(), "gajae-history-open-"));
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      await transcriptFile(root, "s1", [
+        { type: "session", id: "s1", cwd: "/repo", timestamp: "2026-01-01T00:00:00Z" },
+        { type: "message", id: "saved", timestamp: "2026-01-01T00:00:01Z", message: { role: "user", content: [{ type: "text", text: "saved history" }] } },
+      ]);
+      const file = path.join(root, "sessions", "v2-bucket", "2026-01-01T00-00-00-000Z_s1.jsonl");
+      await writeFile(file, `${await readFile(file, "utf8")}\n`);
+      internals.locateSharedTranscriptFile = vi.fn(async () => file);
+      internals.refreshSdkCommands = vi.fn(async () => undefined);
+      internals.readTodoRecords = vi.fn(async () => undefined);
+      internals.refreshSessionSettings = vi.fn(async () => undefined);
+      if (listed) internals.sessions.set("s1", { ...session(), ownership: "external" });
+      cli.queryItems.mockRejectedValue(new SdkCliError("endpoint_stale", "The SDK endpoint is stale or unavailable."));
+      const opened = await controller.openHistorySession("s1");
+      expect(opened).toMatchObject({ id: "s1", attachment: "terminal-only", ownership: "external" });
+      expect(internals.attachedSessions.has("s1")).toBe(false);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
+      expect(cli.rawControl).not.toHaveBeenCalled();
+      const synced = emit.mock.calls.map(([event]) => event).filter((event) => event.type === "transcript.synced").at(-1);
+      expect(synced.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "message", role: "user", content: "saved history" }),
+        expect.objectContaining({ kind: "notice", title: "기록 보기 전용 · 실행 연결 없음" }),
+      ]));
+      const calls = cli.queryItems.mock.calls.length;
+      const refreshed = await controller.getTranscript("s1");
+      expect(refreshed).toEqual(expect.arrayContaining([
+        expect.objectContaining({ content: "saved history" }),
+        expect.objectContaining({ id: "terminal-only-s1" }),
+      ]));
+      expect(cli.queryItems).toHaveBeenCalledTimes(calls);
+
+      // Explicit recovery still works and removes the read-only warning.
+      cli.queryItems.mockResolvedValue([]);
+      internals.startTailFollower = vi.fn();
+      const resumed = await controller.resumeSession("s1");
+      expect(resumed.attachment).toBe("attached");
+      expect((await controller.getTranscript("s1")).some((item) => item.id === "terminal-only-s1")).toBe(false);
+    } finally {
+      const writes = [...internals.artifactWrites.values()];
+      controller.dispose();
+      await Promise.allSettled(writes);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not turn missing persisted history into an empty successful open", async () => {
+    const { controller, internals } = harness();
+    const failure = new SdkCliError("endpoint_stale", "unavailable");
+    internals.sessions.set("s1", session());
+    internals.resumeSession = vi.fn(async () => { throw failure; });
+    internals.readPersistedTranscript = vi.fn(async () => undefined);
+    await expect(controller.openHistorySession("s1")).rejects.toBe(failure);
+    expect(internals.terminalOnlySessions.has("s1")).toBe(false);
+    controller.dispose();
+  });
+
+  it("does not swallow permission errors or fabricate history", async () => {
+    const { controller, internals } = harness();
+    const failure = new SdkCliError("authorization_denied", "permission denied");
+    internals.sessions.set("s1", session());
+    internals.resumeSession = vi.fn(async () => { throw failure; });
+    internals.readPersistedTranscript = vi.fn();
+    await expect(controller.openHistorySession("s1")).rejects.toBe(failure);
+    expect(internals.readPersistedTranscript).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("does not resurrect a disposed controller after a delayed history read", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.resumeSession = vi.fn(async () => { throw new SdkCliError("endpoint_stale", "unavailable"); });
+    let release!: (items: unknown[]) => void;
+    internals.readPersistedTranscript = vi.fn(() => new Promise((resolve) => { release = resolve; }));
+    const opening = controller.openHistorySession("s1");
+    await vi.waitFor(() => expect(internals.readPersistedTranscript).toHaveBeenCalled());
+    controller.dispose();
+    release([]);
+    await expect(opening).rejects.toThrow("history opening was cancelled");
+    expect(internals.sessions.has("s1")).toBe(false);
+  });
+});
 
 describe("parentSessionOf", () => {
   const envelope = (row: unknown): string => JSON.stringify(row);
