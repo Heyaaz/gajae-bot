@@ -123,4 +123,56 @@ describe("preload SSE event handling", () => {
     vi.useRealTimers();
   });
 
+  it("rebuilds sessions and transcripts after a replay gap, exposing resync failure", async () => {
+    vi.useFakeTimers();
+    const stream = responseStream();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: stream.body,
+    } as Response);
+    const session = { id: "session-1", title: "one" };
+    const transcript = [{ id: "item-1", type: "message" }];
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === GJC_IPC.eventStream) return { port: 4321, token: "secret", seq: 0 };
+      if (channel === GJC_IPC.listSessions) return [session];
+      if (channel === GJC_IPC.getTranscript) return transcript;
+      if (channel === GJC_IPC.getConnection) return { state: "connected", backend: "gjc" };
+      throw new Error(`Unexpected IPC: ${channel}`);
+    });
+    const bridge = createHarness(invoke, fetchMock);
+    const received: AgentEvent[] = [];
+    const unsubscribe = bridge.gjc.onEvent((event) => received.push(event));
+    await waitFor(() => fetchMock.mock.calls.length === 1);
+    stream.controller.enqueue(bytes('id: 9\nevent: resync\ndata: {"resync":true}\n\n'));
+    await waitFor(() => received.length === 2);
+    expect(invoke.mock.calls.map(([channel]) => channel)).toContain(GJC_IPC.listSessions);
+    expect(invoke).toHaveBeenCalledWith(GJC_IPC.getTranscript, "session-1");
+    expect(received).toEqual([
+      { type: "session.updated", session },
+      { type: "transcript.synced", sessionId: "session-1", items: transcript },
+    ]);
+
+    received.length = 0;
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === GJC_IPC.eventStream) return { port: 4321, token: "secret", seq: 0 };
+      if (channel === GJC_IPC.listSessions) throw new Error("session read failed");
+      if (channel === GJC_IPC.getConnection) return { state: "connected", backend: "gjc" };
+      throw new Error(`Unexpected IPC: ${channel}`);
+    });
+    stream.controller.enqueue(bytes('id: 10\nevent: resync\ndata: {"resync":true}\n\n'));
+    await waitFor(() => received.length === 1);
+    expect(received).toEqual([{
+      type: "connection.updated",
+      connection: {
+        state: "error",
+        backend: "gjc",
+        detail: "Unable to resynchronize desktop events: Error: session read failed",
+      },
+    }]);
+    unsubscribe();
+    stream.controller.close();
+    vi.useRealTimers();
+  });
+
 });

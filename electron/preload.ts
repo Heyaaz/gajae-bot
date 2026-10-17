@@ -1,6 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentEvent,
+  AgentSession,
+  BackendConnection,
+  TranscriptItem,
   AgentControlPreferences,
   CreateSessionInput,
   ForkSessionInput,
@@ -192,10 +195,7 @@ function handleEventFrame(frame: string): void {
   if (id !== undefined) eventStreamLastId = id;
   if (data.length === 0) return;
   if (name === "resync") {
-    console.warn(
-      "Desktop event stream fell behind its replay buffer",
-      data.join("\n"),
-    );
+    void resyncAfterReplayGap();
     return;
   }
   let event: AgentEvent;
@@ -211,6 +211,61 @@ function handleEventFrame(frame: string): void {
     } catch (error) {
       // One broken listener must not end the stream for the others.
       console.error("Desktop event listener failed", error);
+    }
+  }
+}
+
+async function resyncAfterReplayGap(): Promise<void> {
+  try {
+    const sessions = (await ipcRenderer.invoke(GJC_IPC.listSessions)) as AgentSession[];
+    for (const session of sessions) {
+      for (const listener of [...eventListeners]) {
+        try {
+          listener({ type: "session.updated", session });
+        } catch (error) {
+          console.error("Desktop event listener failed during resync", error);
+        }
+      }
+      const items = (await ipcRenderer.invoke(
+        GJC_IPC.getTranscript,
+        session.id,
+      )) as TranscriptItem[];
+      for (const listener of [...eventListeners]) {
+        try {
+          listener({ type: "transcript.synced", sessionId: session.id, items });
+        } catch (error) {
+          console.error("Desktop event listener failed during resync", error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Desktop event stream resync failed", error);
+    let connection: BackendConnection;
+    try {
+      connection = (await ipcRenderer.invoke(
+        GJC_IPC.getConnection,
+      )) as BackendConnection;
+    } catch (connectionError) {
+      console.error("Unable to read connection state after event resync failure", connectionError);
+      connection = {
+        state: "error",
+        backend: "gjc",
+        label: "Gajae Code",
+        detail: "Unable to resynchronize desktop events",
+        workspace: "",
+      };
+    }
+    const failed: BackendConnection = {
+      ...connection,
+      state: "error",
+      detail: `Unable to resynchronize desktop events: ${String(error)}`,
+    };
+    for (const listener of [...eventListeners]) {
+      try {
+        listener({ type: "connection.updated", connection: failed });
+      } catch (listenerError) {
+        console.error("Desktop event listener failed during resync", listenerError);
+      }
     }
   }
 }
