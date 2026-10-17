@@ -598,7 +598,6 @@ export default function App() {
       })
       .catch((error) => {
         if (!active) return;
-        setTranscripts((current) => current[selectedId] ? current : cacheTranscript(current, selectedId, []));
         setAppError(humanErrorMessage(error));
       });
     return () => {
