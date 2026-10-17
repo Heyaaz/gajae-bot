@@ -334,19 +334,34 @@ describe("GjcSdkController CLI seam", () => {
     internals.ensureAttached = vi.fn(async () => undefined);
     internals.executeSdkSlashCommand = vi.fn(async () => false);
     let finishOld!: (result: { status: string }) => void;
+    let finishNew!: (result: { status: string }) => void;
     (cli.send as any)
       .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
-      .mockResolvedValue({ status: "accepted" });
+      .mockImplementationOnce(() => new Promise((resolve) => { finishNew = resolve; }));
     internals.awaitPromptSettlement = vi.fn(async () => "unknown");
     (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
     const oldSend = controller.sendMessage("s1", { text: "old", images: [], files: [] });
     while (!finishOld) await Promise.resolve();
     await controller.cancelRun("s1");
-    await controller.sendMessage("s1", { text: "new", images: [], files: [] });
+    const newSend = controller.sendMessage("s1", { text: "new", images: [], files: [] });
+    while (!finishNew) await Promise.resolve();
     const newAdmission = internals.activePromptAdmissions.get("s1");
+    expect(typeof newAdmission).toBe("symbol");
     finishOld({ status: "accepted" });
     await oldSend;
     expect(internals.activePromptAdmissions.get("s1")).toBe(newAdmission);
+    expect(internals.activePromptSessions.has("s1")).toBe(true);
+    expect(cli.send).toHaveBeenCalledTimes(2);
+    finishNew({ status: "accepted" });
+    await newSend;
+    controller.dispose();
+  });
+
+  it("does not send a follow-up after permission application fails", async () => {
+    const { controller, cli, internals } = harness();
+    internals.ensureAttached = vi.fn(async () => { throw new Error("permission_mode.set rejected"); });
+    await expect(controller.queueFollowUp("s1", { text: "follow up", images: [], files: [] } as never)).rejects.toThrow("세션 제어 상태");
+    expect(cli.rawControl).not.toHaveBeenCalledWith("s1", "turn.follow_up", expect.anything(), expect.anything());
     controller.dispose();
   });
 
