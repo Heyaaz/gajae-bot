@@ -453,6 +453,19 @@ describe("GjcSdkController CLI seam", () => {
   });
 
 
+  it("does not close or delete a live generation-zero CLI session", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    (cli.listSessions as any).mockResolvedValue([
+      { sessionId: "s1", repo: "/repo", live: true, deleted: false, endpointGeneration: 0 },
+    ]);
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/upstream lifecycle 지원/u);
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    expect(internals.sessions.has("s1")).toBe(true);
+    controller.dispose();
+  });
+
+
   it("closes then deletes through lifecycle globals", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
@@ -491,7 +504,7 @@ describe("GjcSdkController CLI seam", () => {
         throw new SdkCliError("terminal_uncertain", "retained artifacts require reconciliation");
       return {};
     });
-    await controller.deleteSession("s1");
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/삭제 결과가 확인되지/u);
     expect(internals.sessions.get("s1")?.attachment).toBe("recovering");
     expect(internals.sessions.has("s1")).toBe(true);
   });
@@ -532,7 +545,7 @@ describe("GjcSdkController CLI seam", () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     (cli.listSessions as any).mockRejectedValue(new Error("index unavailable"));
-    await controller.deleteSession("s1");
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/삭제 결과가 확인되지/u);
     // No row is no evidence: without the index nothing may be closed or deleted.
     expect(cli.rawGlobal).not.toHaveBeenCalled();
     expect(internals.sessions.get("s1")?.attachment).toBe("recovering");

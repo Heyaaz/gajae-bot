@@ -6189,7 +6189,7 @@ export class GjcSdkController {
           this.stopTailFollower(sessionId);
           this.emitEvent({ type: "session.updated", session: { ...session } });
         }
-        return;
+        throw new Error("세션 삭제 결과가 확인되지 않았습니다. 로컬 기록을 보존했습니다. live 제어 연결 또는 broker 상태를 확인해야 하며, generation-zero 세션은 upstream lifecycle 지원이 필요합니다. 자동으로 재시도하지 않습니다.");
       }
       await this.removeSessionArtifacts(sessionId);
       this.removeLocalSession(sessionId, false);
@@ -6211,7 +6211,7 @@ export class GjcSdkController {
           this.stopTailFollower(sessionId);
           this.emitEvent({ type: "session.updated", session: { ...session } });
         }
-        return;
+        throw new Error("세션 삭제 결과가 확인되지 않아 로컬 기록을 보존했습니다. broker 상태를 확인한 뒤 다시 시도하세요.");
       }
       throw error;
     } finally {
@@ -6234,6 +6234,9 @@ export class GjcSdkController {
     // An unreadable index is not an absent session: with no row there is no evidence
     // that a live endpoint is gone, so the session stays for reconciliation.
     if (row === undefined) return "recovering";
+    // Generation-zero rows identify legacy/live CLI-owned hosts without a
+    // generation-scoped control endpoint. Never close/delete them from the app.
+    if (row?.live === true && row.endpointGeneration === 0) return "recovering";
     let closeUncertain = false;
     if (row?.live === true) {
       try {
