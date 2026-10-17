@@ -272,18 +272,6 @@ describe("GjcSdkCli.listSessions", () => {
 });
 
 describe("GjcSdkCli.send", () => {
-  it("submits a fresh op-ref and reports acceptance, not completion", async () => {
-    const { client, calls } = cli([
-      JSON.stringify({
-        ok: true,
-        result: {
-          version: 1,
-          operationRef: "01m199cqagzwqz7mck26zbsk7j",
-          status: "accepted",
-          receipt: {
-            commandId: "c1",
-            turnId: "t1",
-            accepted: true,
   it("classifies a local send transport timeout as unknown, without retrying", async () => {
     const directory = await mkdtemp(join(tmpdir(), "gjc-sdk-send-timeout-"));
     const executable = join(directory, "gjc");
@@ -339,6 +327,18 @@ describe("GjcSdkCli.send", () => {
     }
   });
 
+  it("submits a fresh op-ref and reports acceptance, not completion", async () => {
+    const { client, calls } = cli([
+      JSON.stringify({
+        ok: true,
+        result: {
+          version: 1,
+          operationRef: "01m199cqagzwqz7mck26zbsk7j",
+          status: "accepted",
+          receipt: {
+            commandId: "c1",
+            turnId: "t1",
+            accepted: true,
             clientRef: "01m199cqagzwqz7mck26zbsk7j",
           },
         },
