@@ -1350,7 +1350,9 @@ describe("live rows across a durable rebuild", () => {
       ...app,
       root,
       cleanup: async () => {
+        const writes = [...app.internals.artifactWrites.values()];
         app.controller.dispose();
+        await Promise.allSettled(writes);
         if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
         else process.env.GJC_CODING_AGENT_DIR = previous;
         await rm(root, { recursive: true, force: true });
