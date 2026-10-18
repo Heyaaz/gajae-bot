@@ -174,6 +174,92 @@ describe("pairing", () => {
     client.dispose();
   });
 
+  it("refuses a pairing response that arrives after forget", async () => {
+    const storage = memoryStorage();
+    let release!: (response: Response) => void;
+    const pending = new Promise<Response>((resolve) => {
+      release = resolve;
+    });
+    let signal: AbortSignal | undefined;
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage,
+      fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        signal = init?.signal ?? undefined;
+        return pending;
+      }) as typeof fetch,
+    });
+    const pairing = client.pair("ABCD2345").then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    client.forget();
+    expect(signal?.aborted).toBe(true);
+    release(
+      jsonResponse(200, {
+        token: TOKEN,
+        device: { id: "d-1", name: "iPhone", permission: "control" },
+      }),
+    );
+    const failure = await Promise.race([
+      pairing,
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+    ]);
+    expect(failure).toBeInstanceOf(RemoteRequestError);
+    expect((failure as RemoteRequestError).code).toBe("stale-auth");
+    expect(storage.value).toBeNull();
+    expect(client.getStatus().state).toBe("pairing");
+    client.dispose();
+  });
+
+  it("keeps the newest pairing when two answers arrive in reverse order", async () => {
+    const storage = memoryStorage();
+    const pending: Array<(response: Response) => void> = [];
+    const signals: AbortSignal[] = [];
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage,
+      fetchImpl: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        if (init?.signal) signals.push(init.signal);
+        return new Promise<Response>((resolve) => pending.push(resolve));
+      }) as typeof fetch,
+    });
+    const first = client.pair("ABCD2345").then(
+      () => "resolved",
+      (error: unknown) => error,
+    );
+    await vi.waitFor(() => expect(pending).toHaveLength(1));
+    const second = client.pair("WXYZ6789");
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    expect(signals[0]?.aborted).toBe(true);
+
+    const newest = "n".repeat(43);
+    pending[1]!(
+      jsonResponse(200, {
+        token: newest,
+        device: { id: "d-2", name: "New phone", permission: "control" },
+      }),
+    );
+    await expect(second).resolves.toBeUndefined();
+    expect(storage.value).toBe(newest);
+
+    // The first answer lands after the newest credential is established. It has no
+    // authority to replace it.
+    pending[0]!(
+      jsonResponse(200, {
+        token: "o".repeat(43),
+        device: { id: "d-1", name: "Old phone", permission: "control" },
+      }),
+    );
+    const failure = await first;
+    expect(failure).toBeInstanceOf(RemoteRequestError);
+    expect((failure as RemoteRequestError).code).toBe("stale-auth");
+    expect(storage.value).toBe(newest);
+    expect(client.getStatus()).toMatchObject({ state: "connected", deviceName: "New phone" });
+    client.dispose();
+  });
+
   it("times out a pairing that stalls before headers or in either body", async () => {
     const never = () => new Promise<never>(() => undefined);
     const scenarios: Array<{ name: string; fetchImpl: typeof fetch }> = [

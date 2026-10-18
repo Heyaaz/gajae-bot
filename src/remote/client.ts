@@ -212,6 +212,8 @@ export class RemoteClient {
   private authGeneration = 0;
   /** Ordinary requests in flight; a credential change aborts all of them. */
   private readonly requestControllers = new Set<AbortController>();
+  /** The pairing transport that is allowed to apply its result. */
+  private pairingController?: AbortController;
 
   private readonly options: RemoteClientOptions;
 
@@ -258,10 +260,16 @@ export class RemoteClient {
   /** Consumes a pairing code and stores the device token. */
   async pair(rawCode: string): Promise<void> {
     const code = rawCode.replace(/[\s-]/gu, "").toUpperCase();
+    // A pairing answer is only authority for the auth state it started in. Forget
+    // and a newer pairing both replace that state, so this transport is aborted and
+    // its late answer is refused rather than restoring a credential the user removed.
+    const authGeneration = this.authGeneration;
+    this.pairingController?.abort();
     // Pairing has no token to authorize with, but it is still an HTTP request: a
     // host that stalls before headers, or mid-body, must not leave the pairing
     // screen pending forever.
     const controller = new AbortController();
+    this.pairingController = controller;
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -277,10 +285,18 @@ export class RemoteClient {
       new RemoteRequestError("호스트 응답 시간이 초과되었습니다.", {
         uncertain: true,
       });
+    const superseded = (): boolean =>
+      authGeneration !== this.authGeneration ||
+      this.pairingController !== controller;
+    const stalePairing = (): RemoteRequestError =>
+      new RemoteRequestError("이전 페어링 요청은 적용하지 않았습니다.", {
+        code: "stale-auth",
+      });
     const readBody = async <U>(read: () => Promise<U>): Promise<U> => {
       try {
         return await withinDeadline(read());
       } catch (error) {
+        if (superseded()) throw stalePairing();
         if (timedOut || error instanceof RemoteRequestTimeout)
           throw timeoutError();
         throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", {
@@ -300,6 +316,7 @@ export class RemoteClient {
           }),
         );
       } catch (error) {
+        if (superseded()) throw stalePairing();
         if (timedOut || error instanceof RemoteRequestTimeout)
           throw timeoutError();
         throw new RemoteRequestError("호스트에 연결할 수 없습니다.", {
@@ -316,6 +333,7 @@ export class RemoteClient {
       const body = await readBody(
         () => response.json() as Promise<RemotePairingBody>,
       );
+      if (superseded()) throw stalePairing();
       if (
         typeof body.token !== "string" ||
         !isRemotePermission(body.device?.permission)
@@ -342,11 +360,15 @@ export class RemoteClient {
       });
     } finally {
       if (timer) clearTimeout(timer);
+      if (this.pairingController === controller)
+        this.pairingController = undefined;
     }
   }
 
   /** Forgets this device's token locally. The host keeps its record until revoked there. */
   forget(): void {
+    this.pairingController?.abort();
+    this.pairingController = undefined;
     this.token = null;
     this.via = undefined;
     this.storage.clear();
@@ -792,6 +814,8 @@ export class RemoteClient {
 
   dispose(): void {
     this.closed = true;
+    this.pairingController?.abort();
+    this.pairingController = undefined;
     this.closeRealtime();
     this.listeners.clear();
   }
