@@ -594,6 +594,20 @@ describe("groupTranscriptItems", () => {
     ).toEqual(["a", "b", "c"]);
   });
 
+  it("caps how many tool cards one virtual row renders", () => {
+    const blocks = groupTranscriptItems(
+      Array.from({ length: 61 }, (_value, index) => tool(`t${index}`)),
+    );
+    expect(blocks.map((block) => block.kind === "tools" && block.items.length)).toEqual([
+      20, 20, 20, 1,
+    ]);
+    // The block boundary is a chunk, not a new run: the cards remain in source order.
+    const ids = blocks.flatMap((block) =>
+      block.kind === "tools" ? block.items.map((entry) => entry.id) : [],
+    );
+    expect(ids).toEqual(Array.from({ length: 61 }, (_value, index) => `t${index}`));
+  });
+
   it("starts a new run after a non-tool item interrupts it", () => {
     const blocks = groupTranscriptItems([tool("a"), message, tool("b")]);
     expect(blocks.map((block) => block.kind)).toEqual([

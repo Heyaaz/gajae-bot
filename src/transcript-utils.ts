@@ -77,9 +77,20 @@ export type TranscriptBlock =
     };
 
 /**
- * Consecutive tool calls collapse into one block so a long bash/read run costs one
- * card instead of one card per call. Any other item (message, thought, plan, notice)
- * closes the run, which keeps reasoning boundaries visible.
+ * The most tool cards one virtual row may render.
+ *
+ * Collapsing a run into a single block saved card overhead but made a long run one
+ * row: the virtualizer rendered every call inside it, so the number of mounted cards
+ * no longer followed the viewport. A bounded chunk keeps the grouping and restores
+ * that bound; a run of hundreds of calls becomes several measurable rows.
+ */
+export const TOOL_GROUP_LIMIT = 20;
+
+/**
+ * Consecutive tool calls collapse into blocks of at most TOOL_GROUP_LIMIT so a long
+ * bash/read run costs one row per chunk instead of one row per call. Any other item
+ * (message, thought, plan, notice) closes the run, which keeps reasoning boundaries
+ * visible.
  */
 export function groupTranscriptItems(
   items: readonly TranscriptItem[],
@@ -91,7 +102,8 @@ export function groupTranscriptItems(
       continue;
     }
     const last = blocks.at(-1);
-    if (last?.kind === "tools") last.items.push(item);
+    if (last?.kind === "tools" && last.items.length < TOOL_GROUP_LIMIT)
+      last.items.push(item);
     else blocks.push({ kind: "tools", id: `tools-${item.id}`, items: [item] });
   }
   return blocks;
