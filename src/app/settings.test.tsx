@@ -3,6 +3,7 @@ import type { AgentControlPreferences } from "../backend/types";
 import {
   canSavePreferences,
   mergeInitialPreferences,
+  resolvePreferenceSave,
   settingsErrorMessage,
 } from "./settings";
 
@@ -73,6 +74,69 @@ describe("settings save gate", () => {
     expect(canSavePreferences(false, false, true, true)).toBe(false);
     expect(canSavePreferences(true, true, true, true)).toBe(false);
     expect(canSavePreferences(true, false, false, true)).toBe(false);
+  });
+});
+
+describe("settings save completion", () => {
+  const saved: AgentControlPreferences = {
+    ...loaded,
+    modelPreset: "saved-profile",
+    gjcExecutable: "",
+  };
+  const newer: AgentControlPreferences = {
+    ...loaded,
+    modelPreset: "edited-while-saving",
+  };
+
+  it("adopts the saved values and closes only for the same draft", () => {
+    expect(
+      resolvePreferenceSave({
+        mounted: true,
+        revisionAtSave: 3,
+        revisionNow: 3,
+        current: loaded,
+        saved,
+      }),
+    ).toEqual({
+      notify: true,
+      close: true,
+      preferences: saved,
+      original: saved,
+    });
+  });
+
+  it("keeps an edit made while the save was pending and stays open", () => {
+    expect(
+      resolvePreferenceSave({
+        mounted: true,
+        revisionAtSave: 3,
+        revisionNow: 4,
+        current: newer,
+        saved,
+      }),
+    ).toEqual({
+      notify: true,
+      close: false,
+      preferences: newer,
+      original: saved,
+    });
+  });
+
+  it("lets no response from an unmounted dialog touch the active one", () => {
+    expect(
+      resolvePreferenceSave({
+        mounted: false,
+        revisionAtSave: 7,
+        revisionNow: 7,
+        current: newer,
+        saved,
+      }),
+    ).toEqual({
+      notify: false,
+      close: false,
+      preferences: newer,
+      original: newer,
+    });
   });
 });
 

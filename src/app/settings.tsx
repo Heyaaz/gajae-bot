@@ -50,6 +50,44 @@ export function mergeInitialPreferences(
 }
 
 /**
+ * What a completed save may do to the dialog that asked for it.
+ *
+ * A save is asynchronous and the user can keep editing or close and reopen the
+ * dialog while it runs. The response must not replace those newer edits, and a
+ * response owned by an unmounted dialog must not close the one now on screen.
+ */
+export function resolvePreferenceSave(input: {
+  mounted: boolean;
+  revisionAtSave: number;
+  revisionNow: number;
+  current: AgentControlPreferences;
+  saved: AgentControlPreferences;
+}): {
+  notify: boolean;
+  close: boolean;
+  preferences: AgentControlPreferences;
+  original: AgentControlPreferences;
+} {
+  if (!input.mounted) {
+    return {
+      notify: false,
+      close: false,
+      preferences: input.current,
+      original: input.current,
+    };
+  }
+  const sameDraft = input.revisionAtSave === input.revisionNow;
+  return {
+    notify: true,
+    close: sameDraft,
+    // A newer edit is the draft now; adopting the older save response would
+    // silently discard it. The saved values still become the compare baseline.
+    preferences: sameDraft ? input.saved : input.current,
+    original: input.saved,
+  };
+}
+
+/**
  * Saving is only allowed against a completed read.
  *
  * The fallback-loaded draft is not the stored configuration. Saving it after a
@@ -106,6 +144,8 @@ export function SettingsDialog({
   const [workspaceError, setWorkspaceError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
   const editedBeforeLoad = useRef(new Set<keyof AgentControlPreferences>());
+  const editRevision = useRef(0);
+  const mounted = useRef(true);
   const preferencesRef = useRef(preferences);
   const settingsBridge = window.agentControlDesktop?.settings;
   const managementBridge = window.agentControlDesktop?.management;
@@ -132,6 +172,13 @@ export function SettingsDialog({
     usage: "모델별 토큰, 캐시율, 비용을 확인합니다.",
     automations: "앱이 닫혀 있어도 GJC 작업을 정해진 시간에 실행합니다.",
   }[tab];
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!settingsBridge) return;
@@ -162,6 +209,7 @@ export function SettingsDialog({
   function editPreferences(
     update: (current: AgentControlPreferences) => AgentControlPreferences,
   ): void {
+    editRevision.current += 1;
     const current = preferencesRef.current;
     const next = update(current);
     if (!loaded) {
@@ -224,19 +272,28 @@ export function SettingsDialog({
 
   async function saveSettings(): Promise<void> {
     if (!settingsBridge || !canSavePreferences(dirty, saving, true, loaded)) return;
+    const revisionAtSave = editRevision.current;
     setSaving(true);
     setSaveError("");
     try {
       const saved = await settingsBridge.savePreferences(preferences);
-      preferencesRef.current = saved.preferences;
-      setPreferences(saved.preferences);
-      setOriginal(saved.preferences);
-      onSaved(saved.preferences);
-      onClose();
+      const outcome = resolvePreferenceSave({
+        mounted: mounted.current,
+        revisionAtSave,
+        revisionNow: editRevision.current,
+        current: preferencesRef.current,
+        saved: saved.preferences,
+      });
+      if (!outcome.notify) return;
+      preferencesRef.current = outcome.preferences;
+      setPreferences(outcome.preferences);
+      setOriginal(outcome.original);
+      onSaved(outcome.original);
+      if (outcome.close) onClose();
     } catch (error) {
-      setSaveError(settingsErrorMessage(error));
+      if (mounted.current) setSaveError(settingsErrorMessage(error));
     } finally {
-      setSaving(false);
+      if (mounted.current) setSaving(false);
     }
   }
 
