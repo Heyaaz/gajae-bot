@@ -618,6 +618,36 @@ describe("remote server event stream", () => {
     resumed.close();
   });
 
+  it("drops a device that stops reading instead of buffering without bound", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const response = await new Promise<import("node:http").IncomingMessage>(
+      (resolve, reject) => {
+        const request = httpRequest(
+          {
+            host: "127.0.0.1",
+            port: base.port,
+            path: REMOTE_API.events,
+            headers: { Authorization: `Bearer ${device.token}` },
+          },
+          resolve,
+        );
+        request.on("error", reject);
+        request.end();
+      },
+    );
+    response.on("error", () => undefined);
+    response.pause();
+    for (let attempt = 0; attempt < 100 && base.server.streamCount === 0; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(base.server.streamCount).toBe(1);
+    const large = updated("x".repeat(64 * 1024));
+    for (let index = 0; index < 100 && base.server.streamCount > 0; index += 1)
+      base.server.publish(large);
+    expect(base.server.streamCount).toBe(0);
+    response.destroy();
+  });
+
   it("asks for a resync when the cursor is older than the buffer", async () => {
     const base = await harness();
     const device = await base.pair("view");

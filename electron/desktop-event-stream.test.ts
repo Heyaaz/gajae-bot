@@ -341,6 +341,49 @@ describe("the desktop event stream", () => {
     kept.close();
   });
 
+/** Attaches a raw socket that never reads, the way a stuck window would. */
+function openSilentStream(
+  stream: DesktopEventStream,
+): Promise<ReturnType<typeof createConnection>> {
+  const descriptor = stream.descriptor;
+  if (!descriptor) return Promise.reject(new Error("The event stream is not listening"));
+  return new Promise((resolve, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port: descriptor.port });
+    socket.on("error", reject);
+    socket.on("connect", () => {
+      socket.write(
+        `GET /events HTTP/1.1\r\nHost: 127.0.0.1:${descriptor.port}\r\nAuthorization: Bearer ${descriptor.token}\r\n\r\n`,
+      );
+      // No data handler: the receive buffer fills and the server must not queue
+      // frames for it forever.
+      socket.pause();
+      resolve(socket);
+    });
+  });
+}
+
+  it("drops a client that stops reading instead of buffering without bound", async () => {
+    const stream = createStream();
+    await stream.start("window:1");
+    const stalled = await openSilentStream(stream);
+    const tracker = new StopTracker();
+    await tracker.waitUntil(
+      () => stream.clientCount === 1,
+      "the silent client to attach",
+    );
+    const large = event("x".repeat(64 * 1024));
+    for (let index = 0; index < 100 && stream.clientCount > 0; index += 1)
+      stream.publish(large);
+    await tracker.waitUntil(
+      () => stream.clientCount === 0,
+      "the stalled client to be dropped",
+    );
+    // The frames stay in the replay buffer, so the client's reconnect can resume
+    // from its cursor instead of losing the work.
+    expect(stream.bufferedFrameCount).toBeGreaterThan(0);
+    stalled.destroy();
+  });
+
   it("replays exactly the frames after ?since=", async () => {
     const stream = createStream();
     await stream.start("window:1");

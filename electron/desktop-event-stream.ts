@@ -36,6 +36,12 @@ import type { GjcEventStreamDescriptor } from "../shared/gjc-ipc.js";
 
 export const EVENT_BUFFER_LIMIT = 1000;
 const STREAM_HEARTBEAT_MS = 15_000;
+/**
+ * How much unwritten frame data one stream may hold. A client that stops reading
+ * is dropped instead of growing this queue for the life of the process; it can
+ * reconnect with its cursor and replay from the buffer.
+ */
+const MAX_STREAM_BUFFER_BYTES = 1024 * 1024;
 const AUTHORIZATION_SCHEME = "Bearer";
 
 /**
@@ -200,7 +206,9 @@ export class DesktopEventStream {
     for (const client of [...this.clients.values()]) {
       if (this.writeFrame(client.response, frame)) continue;
       this.clients.delete(client.id);
-      client.response.end();
+      // Dropping the queue is what keeps a stalled window bounded; the frame stays
+      // in the replay buffer for its reconnect.
+      client.response.destroy();
     }
   }
 
@@ -319,6 +327,10 @@ export class DesktopEventStream {
       // The buffer no longer reaches back to the requested position. Saying so beats
       // silence: the client learns that a gap it cannot replay exists, and its own
       // cursor still moves to the newest frame.
+      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) {
+        response.destroy();
+        return;
+      }
       response.write(
         `id: ${this.sequence}\nevent: resync\ndata: ${JSON.stringify({
           seq: this.sequence,
@@ -337,8 +349,9 @@ export class DesktopEventStream {
   private writeFrame(response: ServerResponse, frame: BufferedFrame): boolean {
     try {
       if (response.writableEnded || response.destroyed) return false;
+      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) return false;
       response.write(`id: ${frame.seq}\ndata: ${JSON.stringify(frame.event)}\n\n`);
-      return true;
+      return response.writableLength <= MAX_STREAM_BUFFER_BYTES;
     } catch {
       // A window that vanished mid-write is dropped from the fan-out; the event stays
       // in the buffer for whoever reads it back.
@@ -349,10 +362,15 @@ export class DesktopEventStream {
   private beat(): void {
     for (const client of [...this.clients.values()]) {
       try {
+        if (client.response.writableLength > MAX_STREAM_BUFFER_BYTES) {
+          this.clients.delete(client.id);
+          client.response.destroy();
+          continue;
+        }
         client.response.write(": ping\n\n");
       } catch {
         this.clients.delete(client.id);
-        client.response.end();
+        client.response.destroy();
       }
     }
   }

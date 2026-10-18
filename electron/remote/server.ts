@@ -188,6 +188,11 @@ export class RemoteServer {
     return Boolean(this.server?.listening);
   }
 
+  /** Attached event streams; exposed so tests can observe a stalled client leaving. */
+  get streamCount(): number {
+    return this.streams.size;
+  }
+
   start(): Promise<RemoteServerAddress> {
     if (this.starting) return this.starting;
     this.starting = new Promise<RemoteServerAddress>((resolve, reject) => {
@@ -259,7 +264,7 @@ export class RemoteServer {
     for (const client of [...this.streams.values()]) {
       if (!this.writeFrame(client.response, "agent", frame)) {
         this.streams.delete(client.id);
-        client.response.end();
+        client.response.destroy();
       }
     }
   }
@@ -267,19 +272,26 @@ export class RemoteServer {
   private beat(): void {
     for (const client of [...this.streams.values()]) {
       try {
+        if (client.response.writableLength > MAX_STREAM_BUFFER_BYTES) {
+          this.streams.delete(client.id);
+          client.response.destroy();
+          continue;
+        }
         client.response.write(": ping\n\n");
       } catch {
         this.streams.delete(client.id);
-        client.response.end();
+        client.response.destroy();
       }
     }
   }
 
   private writeFrame(response: ServerResponse, name: string, payload: unknown): boolean {
     try {
+      if (response.writableEnded || response.destroyed) return false;
+      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) return false;
       const body = JSON.stringify(payload);
       response.write(`id: ${this.sequence}\nevent: ${name}\ndata: ${body}\n\n`);
-      return true;
+      return response.writableLength <= MAX_STREAM_BUFFER_BYTES;
     } catch {
       return false;
     }
@@ -553,11 +565,19 @@ export class RemoteServer {
           resync: true,
           reason: "the event buffer no longer covers the requested position",
         };
-        this.writeFrame(response, "resync", notice);
+        if (!this.writeFrame(response, "resync", notice)) {
+          this.streams.delete(client.id);
+          response.destroy();
+          return;
+        }
       } else {
         for (const frame of this.buffer) {
           if (frame.seq <= since) continue;
-          this.writeFrame(response, "agent", frame);
+          if (!this.writeFrame(response, "agent", frame)) {
+            this.streams.delete(client.id);
+            response.destroy();
+            return;
+          }
         }
       }
     }
@@ -786,6 +806,9 @@ export class RemoteServer {
     this.sendJson(response, status, { error: { code, message } });
   }
 }
+
+/** One stalled device may not grow its write queue without bound. */
+const MAX_STREAM_BUFFER_BYTES = 1024 * 1024;
 
 const READ_OPERATIONS = new Set<RemoteOperationName>([
   "state",
