@@ -51,7 +51,8 @@ export class RemoteAccessService {
   private readonly log: (message: string) => void;
   private readonly webRoot: string;
   private server?: RemoteServer;
-  private serveManagedByApp = false;
+  /** The port whose Serve mapping this app created and still owns. */
+  private serveManagedPort?: number;
   private lastError = "";
   private lastTailscale = UNKNOWN_TAILSCALE;
   private identityCache?: { at: number; login?: string };
@@ -195,23 +196,28 @@ export class RemoteAccessService {
     if (this.disposed || !settings.enabled) {
       await this.server?.stop();
       this.server = undefined;
-      if (this.serveManagedByApp) {
-        const entries = await this.tailscale.serveEntries().catch(() => []);
-        await this.tailscale
-          .disableServe(settings.port, entries)
-          .then((result) => {
-            if (result.code === 0) {
-              this.serveManagedByApp = false;
-              this.log("tailscale serve mapping removed");
-            } else this.log(`tailscale serve was left in place: ${result.stderr.trim()}`);
-          })
-          .catch(() => undefined);
-      }
-      this.lastError = "";
+      if (this.serveManagedPort !== undefined)
+        await this.disableManagedServe(this.serveManagedPort);
+      if (this.serveManagedPort === undefined) this.lastError = "";
       return;
     }
+    // A previous cleanup may have been skipped because the setting changed again
+    // while its enable was in flight. Retry it against the port actually owned
+    // before setting up the new port.
+    let cleanupBlocked = false;
+    let cleanupError = "";
+    if (
+      this.serveManagedPort !== undefined &&
+      this.serveManagedPort !== settings.port
+    ) {
+      cleanupBlocked = !(await this.disableManagedServe(
+        this.serveManagedPort,
+      ));
+      if (cleanupBlocked) cleanupError = this.lastError;
+    }
     await this.ensureServer(settings.port);
-    if (!this.lastError) await this.ensureServe(settings.port);
+    if (cleanupBlocked) this.lastError = cleanupError;
+    if (!cleanupBlocked && !this.lastError) await this.ensureServe(settings.port);
   }
 
   /**
@@ -278,12 +284,12 @@ export class RemoteAccessService {
     const result = await this.tailscale.enableServe(port).catch(() => undefined);
     if (!result) return;
     if (result.code === 0) {
-      this.serveManagedByApp = true;
+      this.serveManagedPort = port;
       const latest = this.settings.get();
       if (this.disposed || !latest.enabled || latest.port !== port) {
-        const entries = await this.tailscale.serveEntries().catch(() => []);
-        await this.tailscale.disableServe(port, entries).catch(() => undefined);
-        this.serveManagedByApp = false;
+        // Only a confirmed removal releases ownership. If cleanup fails, the
+        // mapping still exists and the next transition has to retry this exact port.
+        await this.disableManagedServe(port);
         return;
       }
       this.log(`tailscale serve mapped https://${summary.dnsName ?? "this machine"}/ to 127.0.0.1:${port}`);
@@ -291,6 +297,27 @@ export class RemoteAccessService {
     } else {
       this.lastError = result.stderr.trim() || "Tailscale Serve 설정에 실패했습니다.";
     }
+  }
+
+  /** Removes the Serve mapping this app created, preserving ownership on failure. */
+  private async disableManagedServe(port: number): Promise<boolean> {
+    const entries = await this.tailscale.serveEntries().catch(() => []);
+    try {
+      const result = await this.tailscale.disableServe(port, entries);
+      if (result.code === 0) {
+        if (this.serveManagedPort === port) this.serveManagedPort = undefined;
+        this.lastError = "";
+        this.log("tailscale serve mapping removed");
+        return true;
+      }
+      this.lastError =
+        result.stderr.trim() || "Tailscale Serve 매핑을 해제하지 못했습니다.";
+      this.log(`tailscale serve was left in place: ${this.lastError}`);
+    } catch (error) {
+      this.lastError = describe(error);
+      this.log(`tailscale serve cleanup failed: ${this.lastError}`);
+    }
+    return false;
   }
 
   private allowedHosts(): string[] {

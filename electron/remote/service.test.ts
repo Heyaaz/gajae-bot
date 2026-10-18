@@ -11,7 +11,7 @@ import {
 import type { RemoteOperationsHost } from "./operations.js";
 import { remoteMessageInput, runRemoteOperation } from "./operations.js";
 import { RemoteAccessService } from "./service.js";
-import { TailscaleClient } from "./tailscale.js";
+import { TailscaleClient, type CommandRunner } from "./tailscale.js";
 
 const directories: string[] = [];
 const services: RemoteAccessService[] = [];
@@ -185,7 +185,12 @@ function nextTestPort(): number {
 
 describe("remote access service", () => {
   async function service(
-    options: { port?: number; ownerLogin?: string; calls?: string[] } = {},
+    options: {
+      port?: number;
+      ownerLogin?: string;
+      calls?: string[];
+      runner?: CommandRunner;
+    } = {},
   ) {
     const directory = mkdtempSync(path.join(tmpdir(), "gajae-remote-service-"));
     directories.push(directory);
@@ -200,21 +205,23 @@ describe("remote access service", () => {
       workspace: () => "/tmp/ws",
       host: fakeHost(),
       tailscale: new TailscaleClient({
-        runner: async (_file, args) => {
-          options.calls?.push(args.join(" "));
-          if (args[0] === "status" && options.ownerLogin) {
-            return {
-              stdout: JSON.stringify({
-                BackendState: "Running",
-                Self: { UserID: 1 },
-                User: { "1": { LoginName: options.ownerLogin } },
-              }),
-              stderr: "",
-              code: 0,
-            };
-          }
-          return { stdout: "", stderr: "not found", code: 1 };
-        },
+        runner:
+          options.runner ??
+          (async (_file, args) => {
+            options.calls?.push(args.join(" "));
+            if (args[0] === "status" && options.ownerLogin) {
+              return {
+                stdout: JSON.stringify({
+                  BackendState: "Running",
+                  Self: { UserID: 1 },
+                  User: { "1": { LoginName: options.ownerLogin } },
+                }),
+                stderr: "",
+                code: 0,
+              };
+            }
+            return { stdout: "", stderr: "not found", code: 1 };
+          }),
       }),
       log: (message) => logs.push(message),
     });
@@ -317,6 +324,85 @@ describe("remote access service", () => {
         fetch(`http://127.0.0.1:${enabled.port}${REMOTE_API.state}`),
       ).rejects.toThrow();
     }
+  });
+
+  it("keeps Serve ownership and retries the managed port after failed cleanup", async () => {
+    const initialPort = nextTestPort();
+    const movedPort = nextTestPort();
+    let mapped: number | undefined;
+    let releaseEnable!: () => void;
+    const enabling = new Promise<void>((resolve) => {
+      releaseEnable = resolve;
+    });
+    let enableStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      enableStarted = resolve;
+    });
+    const cleanupModes: Array<"nonzero" | "reject" | "ok"> = [
+      "nonzero",
+      "reject",
+      "ok",
+    ];
+    let cleanupCalls = 0;
+    const serveStatus = () =>
+      mapped === undefined
+        ? { Web: {} }
+        : {
+            Web: {
+              "mac.tailnet.ts.net:443": {
+                Handlers: { "/": { Proxy: `http://127.0.0.1:${mapped}` } },
+              },
+            },
+          };
+    const runner: CommandRunner = async (_file, args) => {
+      const command = args.join(" ");
+      if (command === "version") return { stdout: "1.74.0\n", stderr: "", code: 0 };
+      if (command === "status --json")
+        return {
+          stdout: JSON.stringify({
+            BackendState: "Running",
+            Self: { DNSName: "mac.tailnet.ts.net." },
+          }),
+          stderr: "",
+          code: 0,
+        };
+      if (command === "serve status --json")
+        return { stdout: JSON.stringify(serveStatus()), stderr: "", code: 0 };
+      if (args[0] === "serve" && args[1] === "--bg") {
+        enableStarted();
+        await enabling;
+        mapped = initialPort;
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (command === "serve --https=443 off") {
+        cleanupCalls += 1;
+        const mode = cleanupModes.shift() ?? "ok";
+        if (mode === "reject") throw new Error("cleanup rejected");
+        if (mode === "nonzero")
+          return { stdout: "", stderr: "cleanup failed", code: 1 };
+        mapped = undefined;
+        return { stdout: "", stderr: "", code: 0 };
+      }
+      if (command === "serve reset")
+        return { stdout: "", stderr: "reset failed", code: 1 };
+      return { stdout: "", stderr: "unexpected", code: 1 };
+    };
+    const { instance } = await service({ runner });
+    await instance.setPort(initialPort);
+    const turnOn = instance.setEnabled(true);
+    await started;
+    // The setting changes while enableServe is still awaiting Tailscale.
+    const move = instance.setPort(movedPort);
+    releaseEnable();
+    await turnOn;
+    const moved = await move;
+    expect(moved.port).toBe(movedPort);
+    expect(moved.error).toContain("cleanup rejected");
+
+    // Disabling retries against the port the app actually owns, not the new one.
+    const stopped = await instance.setEnabled(false);
+    expect(stopped.error).toBeUndefined();
+    expect(cleanupCalls).toBe(3);
   });
 
   it("refuses to pair while remote access is off", async () => {
