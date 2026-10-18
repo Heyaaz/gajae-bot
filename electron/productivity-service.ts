@@ -246,12 +246,10 @@ export class ProductivityService {
   }
 
   async searchTranscripts(query: string, limit = 50): Promise<GlobalSearchResult[]> {
-    if (this.searchStale) {
-      // A failed rebuild must not turn search into an error: the previous complete
-      // index is still in the table and is better than no results. The stale flag
-      // stays set, so the next search retries the rebuild.
-      try { await this.rebuildSearch() } catch { /* keep the last complete index */ }
-    }
+    // A failed rebuild leaves the stale flag set and propagates the error. Reporting
+    // an empty or old index as a successful search would make a broken source look
+    // like "no matches"; the caller must be able to distinguish the two.
+    if (this.searchStale) await this.rebuildSearch()
     const bounded = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 50)); const terms = (String(query).toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) || []).slice(0, 12)
     if (!terms.length) return []
     const where = terms.map(() => 'instr(searchText, ?) > 0').join(' AND ')

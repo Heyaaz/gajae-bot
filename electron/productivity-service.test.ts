@@ -132,7 +132,7 @@ describe('ProductivityService', () => {
     await expect(service.searchTranscripts("alpha", 5)).resolves.toHaveLength(5);
   });
 
-  it("serves the last complete index when a rebuild fails", async () => {
+  it("reports a failed rebuild instead of serving the stale index", async () => {
     let failing = false;
     const rebuildSource: ProductivitySource = {
       listSessions: async () => [session("s1", "First")],
@@ -147,11 +147,28 @@ describe('ProductivityService', () => {
 
     failing = true;
     service.invalidateSearch();
-    // The rollback keeps the previous rows; search must use them rather than turn
-    // the failed refresh into an empty or rejected search.
+    // A stale complete index is not a successful answer to this search: the failed
+    // refresh is reported, and the next search retries it.
+    await expect(service.searchTranscripts("alpha", 10)).rejects.toThrow(
+      "transcript read failed",
+    );
+    failing = false;
     await expect(service.searchTranscripts("alpha", 10)).resolves.toEqual([
       expect.objectContaining({ itemId: "m1" }),
     ]);
+  });
+
+  it("reports a first-index failure instead of resolving with no results", async () => {
+    const failingSource: ProductivitySource = {
+      listSessions: async () => {
+        throw new Error("session list failed");
+      },
+      getTranscript: async () => [],
+    };
+    const service = new ProductivityService(failingSource, ":memory:");
+    await expect(service.searchTranscripts("alpha", 10)).rejects.toThrow(
+      "session list failed",
+    );
   });
 
   it('rebuilds an unreadable index instead of taking the app down with it', async () => {
