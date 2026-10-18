@@ -398,6 +398,50 @@ describe("event stream", () => {
     client.dispose();
   });
 
+  it("adopts a restarted host's sequence instead of keeping the old cursor", async () => {
+    const urls: string[] = [];
+    let resyncs = 0;
+    const { fetchImpl } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        urls.push(call.url);
+        if (urls.length === 1)
+          return streamResponse([
+            `event: hello\ndata: ${JSON.stringify({ seq: 5, instance: "old-host" })}\n\n`,
+            `event: agent\ndata: ${JSON.stringify({
+              seq: 6,
+              event: { type: "session.deleted", sessionId: "s-1" },
+            })}\n\n`,
+          ]);
+        if (urls.length === 2)
+          return streamResponse(
+            [`event: hello\ndata: ${JSON.stringify({ seq: 0, instance: "new-host" })}\n\n`],
+            { keepOpen: true },
+          );
+        return streamResponse([], { keepOpen: true });
+      }
+      if (call.url.includes(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+      onResync: () => {
+        resyncs += 1;
+      },
+      reconnect: { minDelayMs: 1, maxDelayMs: 2, jitter: () => 0 },
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(urls).toHaveLength(2), { timeout: 2000 });
+    expect(urls[1]).toContain("since=6");
+    await vi.waitFor(() => expect(resyncs).toBe(1));
+    // The old cursor (6) is gone: a reconnect now resumes from the new host's 0.
+    await client.resume();
+    await vi.waitFor(() => expect(urls).toHaveLength(3), { timeout: 2000 });
+    expect(urls[2]).toContain("since=0");
+    client.dispose();
+  });
+
   it("stops reconnecting after the host says the device was revoked", async () => {
     let streamCalls = 0;
     const { fetchImpl } = recorder((call) => {

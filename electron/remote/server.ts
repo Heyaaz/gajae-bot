@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createReadStream, statSync } from "node:fs";
 import {
   createServer,
@@ -156,6 +157,8 @@ export class RemoteServer {
   private server?: Server;
   private port: number;
   private sequence = 0;
+  /** Identifies this process's event log, so clients can tell a restart from a gap. */
+  private readonly instance = randomUUID();
   private buffer: RemoteEventFrame[] = [];
   private streams = new Map<number, StreamClient>();
   private nextStreamId = 1;
@@ -541,7 +544,10 @@ export class RemoteServer {
     response.on("error", cleanup);
     if (wantsReplay) {
       const oldest = this.buffer[0]?.seq ?? this.sequence + 1;
-      if (since + 1 < oldest) {
+      // A cursor beyond this process's head can only come from an earlier server
+      // instance. Its event log is gone, so replay is impossible -- tell the client
+      // to take a fresh snapshot instead of silently sending nothing.
+      if (since > this.sequence || since + 1 < oldest) {
         const notice: RemoteResyncFrame = {
           seq: this.sequence,
           resync: true,
@@ -561,6 +567,7 @@ export class RemoteServer {
   private sendHello(response: ServerResponse, access: RemoteAccess): void {
     const body = JSON.stringify({
       seq: this.sequence,
+      instance: this.instance,
       device: identityOf(access),
       server: {
         version: this.options.version,

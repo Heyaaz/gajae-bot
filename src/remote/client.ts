@@ -187,6 +187,8 @@ export class RemoteClient {
   private status: RemoteClientStatus;
   /** The last sequence actually observed; undefined until the host reports one. */
   private lastSeq: number | undefined = undefined;
+  /** The host process that produced the cursor; a new instance resets the log. */
+  private serverInstance: string | undefined = undefined;
   private attempt = 0;
   private stream?: AbortController;
   private streamGeneration = 0;
@@ -526,14 +528,33 @@ export class RemoteClient {
 
   private handleFrame(frame: SseFrame): void {
     if (frame.event === "hello") {
-      const hello = frame.data as { seq?: number; device?: { permission?: unknown; name?: string } };
-      if (
-        typeof hello.seq === "number" &&
-        (this.lastSeq === undefined || hello.seq > this.lastSeq)
+      const hello = frame.data as {
+        seq?: number;
+        instance?: string;
+        device?: { permission?: unknown; name?: string };
+      };
+      const sequence = typeof hello.seq === "number" ? hello.seq : undefined;
+      const restarted =
+        (typeof hello.instance === "string" &&
+          this.serverInstance !== undefined &&
+          hello.instance !== this.serverInstance) ||
+        (sequence !== undefined &&
+          this.lastSeq !== undefined &&
+          sequence < this.lastSeq);
+      if (typeof hello.instance === "string") this.serverInstance = hello.instance;
+      if (restarted) {
+        // A new host instance restarts its sequence at zero. Keeping the old, larger
+        // cursor would ask for events the new log cannot have and skip its first
+        // window; adopt its sequence and repair state with a snapshot instead.
+        if (sequence !== undefined) this.lastSeq = sequence;
+        this.requestResync();
+      } else if (
+        sequence !== undefined &&
+        (this.lastSeq === undefined || sequence > this.lastSeq)
       ) {
         // The host is ahead of us: this is a fresh stream, and the snapshot call
         // in openStream already covered anything before it.
-        this.lastSeq = hello.seq;
+        this.lastSeq = sequence;
       }
       if (isRemotePermission(hello.device?.permission))
         this.setStatus({

@@ -567,7 +567,10 @@ describe("remote server revocation", () => {
     const base = await harness();
     const device = await base.pair("control");
     const stream = await SseReader.open(base.url(REMOTE_API.events), device.token, base.origin);
-    expect((await stream.next()).event).toBe("hello");
+    const hello = await stream.next();
+    expect(hello.event).toBe("hello");
+    // The instance lets a client distinguish a gap from a restarted event log.
+    expect(typeof hello.data.instance).toBe("string");
     base.devices.revoke(device.deviceId);
     const revoked = await stream.next();
     expect(revoked.event).toBe("revoked");
@@ -628,6 +631,21 @@ describe("remote server event stream", () => {
     const frame = await stream.next(6000);
     expect(frame.event).toBe("resync");
     expect(frame.data.resync).toBe(true);
+    stream.close();
+  });
+
+  it("asks for a resync when the cursor is ahead of this server instance", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const stream = await SseReader.open(
+      base.url(REMOTE_API.events),
+      device.token,
+      base.origin,
+      999,
+    );
+    const frame = await stream.next();
+    expect(frame.event).toBe("resync");
+    expect(frame.data).toMatchObject({ resync: true, seq: 0 });
     stream.close();
   });
 
