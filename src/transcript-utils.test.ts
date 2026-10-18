@@ -108,6 +108,32 @@ describe("recentUserRequests", () => {
     ]);
   });
 
+  it("stops after the newest requests instead of parsing the whole history", () => {
+    const user = (id: string, content: string): TranscriptItem => ({
+      id,
+      sessionId: "session-1",
+      kind: "message",
+      role: "user",
+      content,
+      createdAt: id,
+    });
+    const old = user("old", "old request");
+    Object.defineProperty(old, "content", {
+      enumerable: true,
+      get() {
+        throw new Error("parsed a request outside the limit");
+      },
+    });
+    const items: TranscriptItem[] = [old];
+    for (let index = 0; index < 500; index += 1) items.push({ ...message, id: `m${index}` });
+    items.push(user("2", "second"), user("3", "third"), user("4", "fourth"));
+    let requests: ReturnType<typeof recentUserRequests> | undefined;
+    expect(() => {
+      requests = recentUserRequests(items);
+    }).not.toThrow();
+    expect(requests?.map((request) => request.id)).toEqual(["4", "3", "2"]);
+  });
+
   it("uses attachment names when the request has no text", () => {
     const item: TranscriptItem = {
       id: "1",

@@ -14,42 +14,61 @@ export interface RecentUserRequest {
   createdAt: string;
 }
 
-/** Compact user-only history for quickly recovering a session's recent intent. */
+// A user row is immutable once it lands, so its compact text is derived once even
+// while assistant deltas keep replacing the array around it.
+const recentRequestCache = new WeakMap<TranscriptItem, RecentUserRequest | null>();
+
+function recentUserRequest(
+  item: Extract<TranscriptItem, { kind: "message" }>,
+): RecentUserRequest | undefined {
+  const cached = recentRequestCache.get(item);
+  if (cached !== undefined) return cached ?? undefined;
+  const paths = [...item.content.matchAll(/^\s*-\s+"([^"]+)"\s*$/gmu)].map(
+    (match) => match[1]!.split("/").at(-1)!,
+  );
+  const body = item.content
+    .replace(
+      /<local-(?:attachments|files|images)>[\s\S]*?<\/local-(?:attachments|files|images)>/gu,
+      "",
+    )
+    .replace(
+      /Use the read tool on these local (?:paths|files) when their contents are needed\./gu,
+      "",
+    )
+    .replace(
+      /The user attached these images\. You MUST inspect every image with the read tool before responding\./gu,
+      "",
+    )
+    .replace(/\s+/gu, " ")
+    .trim();
+  const text =
+    body || (paths.length > 0 ? `첨부: ${paths.join(", ")}` : "첨부 요청");
+  const request = text.length > 0 ? { id: item.id, text, createdAt: item.createdAt } : null;
+  recentRequestCache.set(item, request);
+  return request ?? undefined;
+}
+
+/**
+ * Compact user-only history for quickly recovering a session's recent intent.
+ *
+ * Reads backwards and stops once `limit` requests are found. The previous
+ * filter/map walked and parsed every user row in the conversation on each
+ * streamed chunk, which made the strip's cost grow with the session length.
+ */
 export function recentUserRequests(
   items: readonly TranscriptItem[],
   limit = 3,
 ): RecentUserRequest[] {
-  return items
-    .filter(
-      (item): item is Extract<TranscriptItem, { kind: "message" }> =>
-        item.kind === "message" && item.role === "user",
-    )
-    .map((item) => {
-      const paths = [...item.content.matchAll(/^\s*-\s+"([^"]+)"\s*$/gmu)].map(
-        (match) => match[1]!.split("/").at(-1)!,
-      );
-      const body = item.content
-        .replace(
-          /<local-(?:attachments|files|images)>[\s\S]*?<\/local-(?:attachments|files|images)>/gu,
-          "",
-        )
-        .replace(
-          /Use the read tool on these local (?:paths|files) when their contents are needed\./gu,
-          "",
-        )
-        .replace(
-          /The user attached these images\. You MUST inspect every image with the read tool before responding\./gu,
-          "",
-        )
-        .replace(/\s+/gu, " ")
-        .trim();
-      const text =
-        body || (paths.length > 0 ? `첨부: ${paths.join(", ")}` : "첨부 요청");
-      return { id: item.id, text, createdAt: item.createdAt };
-    })
-    .filter((item) => item.text.length > 0)
-    .slice(-Math.max(0, limit))
-    .reverse();
+  const wanted = Math.max(0, limit);
+  if (wanted === 0) return [];
+  const requests: RecentUserRequest[] = [];
+  for (let index = items.length - 1; index >= 0 && requests.length < wanted; index -= 1) {
+    const item = items[index];
+    if (item.kind !== "message" || item.role !== "user") continue;
+    const request = recentUserRequest(item);
+    if (request) requests.push(request);
+  }
+  return requests;
 }
 
 export function initialSessionId(
