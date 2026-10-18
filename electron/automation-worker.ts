@@ -10,7 +10,9 @@ export async function runAutomationWorker(configPath: string): Promise<void> {
   const config = JSON.parse(await readFile(configPath, 'utf8')) as AutomationWorkerConfig
   if (!config || !config.automation || !config.directory || !config.gjcExecutable) throw new Error('invalid worker config')
   const service = new AutomationService({ directory: config.directory, gjcExecutable: config.gjcExecutable, platform: 'none' })
-  await service.runNow(config.automation.id)
+  // launchd supplies the wake, not the occurrence. The service derives the most
+  // recent scheduled occurrence and applies the catch-up policy from it.
+  await service.runScheduled(config.automation.id)
 }
 
 if (process.argv[1]?.endsWith('automation-worker.js')) {

@@ -50,6 +50,88 @@ function lockOwnerAlive(owner: AutomationLockOwner): boolean {
 
 const MAX_NAME = 200, MAX_PROMPT = 20_000, MAX_OUTPUT = 32_000
 const validTime = /^([01]\d|2[0-3]):[0-5]\d$/
+
+/** A launchd wake after this much delay is treated as a missed run, not an on-time one. */
+export const AUTOMATION_CATCH_UP_GRACE_MS = 5 * 60_000
+/** Only the most recent missed occurrence inside this window is made up. */
+export const AUTOMATION_CATCH_UP_WINDOW_MS = 7 * 24 * 60 * 60_000
+
+export type AutomationRunPlan =
+  | { kind: 'scheduled' | 'catch-up'; scheduledFor: string; reason?: string }
+  | { kind: 'missed-window'; scheduledFor: string; reason: string }
+
+export type AutomationCatchUpDecision =
+  | { kind: 'scheduled' }
+  | { kind: 'catch-up'; reason: string }
+  | { kind: 'missed-window'; reason: string }
+
+/** Applies the age policy to one occurrence, independent of how it was found. */
+export function catchUpDecision(
+  scheduledFor: Date,
+  now: Date,
+): AutomationCatchUpDecision {
+  const lateMs = now.getTime() - scheduledFor.getTime()
+  if (lateMs > AUTOMATION_CATCH_UP_WINDOW_MS)
+    return { kind: 'missed-window', reason: '7일이 지난 놓친 실행은 보충하지 않습니다.' }
+  if (lateMs <= AUTOMATION_CATCH_UP_GRACE_MS) return { kind: 'scheduled' }
+  return {
+    kind: 'catch-up',
+    reason: '잠자기 등으로 예약 시각보다 늦게 보충 실행했습니다.',
+  }
+}
+
+/**
+ * The most recent scheduled occurrence at or before `now`.
+ *
+ * launchd does not hand the worker the occurrence that woke it, so the worker
+ * derives it from the same schedule the plist carries. Walking backwards over
+ * local dates keeps daily, weekday, and weekly rules on the user's own calendar
+ * across daylight-saving changes.
+ */
+export function latestScheduledOccurrence(
+  schedule: AutomationSchedule,
+  now: Date,
+): Date {
+  const [hour, minute] = schedule.time.split(':').map(Number)
+  const occurrence = new Date(now)
+  occurrence.setSeconds(0, 0)
+  occurrence.setHours(hour, minute)
+  const allowed = (date: Date): boolean =>
+    schedule.kind !== 'weekdays' ||
+    (date.getDay() !== 0 && date.getDay() !== 6)
+  while (
+    occurrence > now ||
+    !allowed(occurrence) ||
+    (schedule.kind === 'weekly' && occurrence.getDay() !== schedule.weekday)
+  )
+    occurrence.setDate(occurrence.getDate() - 1)
+  return occurrence
+}
+
+/**
+ * Applies the missed-run policy to the occurrence launchd just woke for.
+ *
+ * The most recent missed occurrence is made up once when it is at most a week
+ * old. Anything older is recorded as skipped with its reason instead of being
+ * run: catching up a week of daily prompts in one burst was never the promise,
+ * and the history has to say why the gap stayed empty.
+ */
+export function automationRunPlan(
+  schedule: AutomationSchedule,
+  now: Date,
+): AutomationRunPlan {
+  const occurrence = latestScheduledOccurrence(schedule, now)
+  const scheduledFor = occurrence.toISOString()
+  const decision = catchUpDecision(occurrence, now)
+  if (decision.kind === 'scheduled')
+    return { kind: 'scheduled', scheduledFor }
+  return {
+    kind: decision.kind,
+    scheduledFor,
+    reason: decision.reason,
+  }
+}
+
 const validThinking = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
 
 export function validateAutomationInput(input: unknown): AutomationInput {
@@ -154,7 +236,75 @@ export class AutomationService {
     return this.serialize(async () => { const all = await this.defs(); const item = all.find((a) => a.id === id); if (!item) return; await this.unload(item); await atomicJson(this.defsFile(), all.filter((a) => a.id !== id)); await rm(this.plistPath(id), { force: true }) })
   }
   async listRuns(automationId?: string): Promise<AutomationRun[]> { const runs = await this.runs(); return automationId ? runs.filter((r) => r.automationId === automationId) : runs }
-  async runNow(id: string): Promise<AutomationRun> { const item = (await this.defs()).find((a) => a.id === id); if (!item) throw new Error('automation not found'); return this.execute(item) }
+  async runNow(id: string): Promise<AutomationRun> { const item = (await this.defs()).find((a) => a.id === id); if (!item) throw new Error('automation not found'); return this.execute(item, { trigger: 'manual' }) }
+
+  /**
+   * Runs the occurrence launchd woke for, applying the catch-up policy.
+   *
+   * `now` is injectable so the wake-after-sleep behavior is a test, not an
+   * assumption about how launchd coalesces missed calendar intervals.
+   */
+  async runScheduled(id: string, now = this.now()): Promise<AutomationRun> {
+    const item = (await this.defs()).find((a) => a.id === id)
+    if (!item) throw new Error('automation not found')
+    if (!item.enabled)
+      return this.skipRun(item, {
+        trigger: 'scheduled',
+        reason: '자동화가 비활성화되어 있습니다.',
+      })
+    const plan = automationRunPlan(item.schedule, now)
+    if (plan.kind === 'missed-window')
+      return this.skipRun(item, {
+        trigger: 'catch-up',
+        scheduledFor: plan.scheduledFor,
+        reason: plan.reason,
+      })
+    if (plan.kind === 'catch-up') {
+      const alreadyCovered = (await this.runs()).some(
+        (run) =>
+          run.automationId === item.id &&
+          run.scheduledFor === plan.scheduledFor &&
+          run.status !== 'skipped',
+      )
+      if (alreadyCovered)
+        return this.skipRun(item, {
+          trigger: 'catch-up',
+          scheduledFor: plan.scheduledFor,
+          reason: '이미 보충 실행된 예약입니다.',
+        })
+    }
+    return this.execute(item, {
+      trigger: plan.kind,
+      scheduledFor: plan.scheduledFor,
+      ...(plan.reason ? { reason: plan.reason } : {}),
+    })
+  }
+
+  private async skipRun(
+    item: Automation,
+    options: {
+      trigger: 'scheduled' | 'catch-up' | 'manual'
+      scheduledFor?: string
+      reason: string
+    },
+  ): Promise<AutomationRun> {
+    const at = this.now().toISOString()
+    const skipped: AutomationRun = {
+      id: randomUUID(),
+      automationId: item.id,
+      status: 'skipped',
+      trigger: options.trigger,
+      ...(options.scheduledFor ? { scheduledFor: options.scheduledFor } : {}),
+      reason: options.reason,
+      startedAt: at,
+      finishedAt: at,
+      exitCode: null,
+      output: '',
+      error: options.reason,
+    }
+    await this.writeRun(skipped)
+    return skipped
+  }
   private async sync(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { if (item.enabled) { const config = path.join(this.dir, `config-${item.id}.json`); await atomicJson(config, { automation: item, directory: this.dir, gjcExecutable: this.opts.gjcExecutable }); await mkdir(path.dirname(this.plistPath(item.id)), { recursive: true }); try { await this.launchctl(['unload', this.plistPath(item.id)]) } catch { /* A new schedule has nothing to unload. */ } await writeFile(this.plistPath(item.id), automationPlist(`com.gajae.automation.${item.id}`, this.opts.electronPath ?? process.execPath, this.opts.workerPath ?? '', config, item.schedule)); await this.launchctl(['load', this.plistPath(item.id)]) } else await this.unload(item) } }
   private async unload(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { await this.launchctl(['unload', this.plistPath(item.id)]); await rm(this.plistPath(item.id), { force: true }) } }
   private next(schedule: AutomationSchedule, from: Date): string { const d = new Date(from); const [h, m] = schedule.time.split(':').map(Number); d.setSeconds(0, 0); d.setHours(h, m); if (schedule.kind === 'weekly') { let delta = (schedule.weekday! - d.getDay() + 7) % 7; if (!delta && d <= from) delta = 7; d.setDate(d.getDate() + delta) } else if (schedule.kind === 'weekdays') { while (d <= from || d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1) } else if (d <= from) d.setDate(d.getDate() + 1); return d.toISOString() }
@@ -302,28 +452,30 @@ export class AutomationService {
     }
   }
 
-  private async execute(item: Automation): Promise<AutomationRun> {
+  private async execute(
+    item: Automation,
+    options: {
+      trigger: 'scheduled' | 'catch-up' | 'manual'
+      scheduledFor?: string
+      reason?: string
+    },
+  ): Promise<AutomationRun> {
     await mkdir(this.dir, { recursive: true })
     const lock = path.join(this.dir, `.run-${item.id}.lock`)
     const owner = await this.acquireLock(lock, item.id)
-    if (!owner) {
-      const skipped = {
-        id: randomUUID(),
-        automationId: item.id,
-        status: 'skipped' as const,
-        startedAt: this.now().toISOString(),
-        finishedAt: this.now().toISOString(),
-        exitCode: null,
-        output: '',
-        error: 'run already in progress',
-      }
-      await this.writeRun(skipped)
-      return skipped
-    }
+    if (!owner)
+      return this.skipRun(item, {
+        trigger: options.trigger,
+        ...(options.scheduledFor ? { scheduledFor: options.scheduledFor } : {}),
+        reason: '이전 실행이 아직 진행 중입니다.',
+      })
     const run: AutomationRun = {
       id: randomUUID(),
       automationId: item.id,
       status: 'running',
+      trigger: options.trigger,
+      ...(options.scheduledFor ? { scheduledFor: options.scheduledFor } : {}),
+      ...(options.reason ? { reason: options.reason } : {}),
       startedAt: this.now().toISOString(),
       finishedAt: null,
       exitCode: null,

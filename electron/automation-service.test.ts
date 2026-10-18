@@ -4,7 +4,15 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { AutomationService, automationPlist, launchCalendarInterval, validateAutomationInput } from './automation-service.js'
+import {
+  AutomationService,
+  automationPlist,
+  automationRunPlan,
+  catchUpDecision,
+  latestScheduledOccurrence,
+  launchCalendarInterval,
+  validateAutomationInput,
+} from './automation-service.js'
 
 describe('automation service contracts', () => {
   it('validates absolute workspace and bounded schedule', () => {
@@ -329,6 +337,63 @@ describe('automation service contracts', () => {
     }
     await internals.releaseLock(lock, { pid: process.pid, token: 'old-owner', startedAt: new Date().toISOString(), automationId: 'automation-1' })
     expect(await readFile(path.join(lock, 'owner.json'), 'utf8')).toContain('new-owner')
+  })
+
+  it('derives the most recent occurrence from each schedule kind', () => {
+    const monday930 = new Date(2026, 9, 19, 9, 30, 0)
+    const daily = latestScheduledOccurrence({ kind: 'daily', time: '09:00' }, monday930)
+    expect([daily.getMonth(), daily.getDate(), daily.getHours(), daily.getMinutes()]).toEqual([9, 19, 9, 0])
+    const weekly = latestScheduledOccurrence({ kind: 'weekly', time: '09:00', weekday: 1 }, new Date(2026, 9, 19, 8, 0, 0))
+    expect([weekly.getMonth(), weekly.getDate()]).toEqual([9, 12])
+    const weekdays = latestScheduledOccurrence({ kind: 'weekdays', time: '09:00' }, new Date(2026, 9, 17, 10, 0, 0))
+    expect([weekdays.getMonth(), weekdays.getDate()]).toEqual([9, 16])
+  })
+
+  it('treats a late wake as one catch-up and refuses an occurrence older than a week', () => {
+    const schedule = { kind: 'daily' as const, time: '09:00' as const }
+    expect(automationRunPlan(schedule, new Date(2026, 9, 19, 9, 4, 0))).toMatchObject({ kind: 'scheduled' })
+    expect(automationRunPlan(schedule, new Date(2026, 9, 19, 9, 30, 0))).toMatchObject({
+      kind: 'catch-up',
+      reason: expect.stringContaining('잠자기'),
+    })
+    expect(catchUpDecision(new Date(2026, 9, 19, 9, 0, 0), new Date(2026, 9, 27, 10, 0, 0))).toMatchObject({
+      kind: 'missed-window',
+      reason: expect.stringContaining('7일'),
+    })
+  })
+
+  it('records a catch-up run, skips an already covered occurrence, and never runs a stale one', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-catch-up-'))
+    let now = new Date(2026, 9, 19, 9, 30, 0)
+    const spawnProcess = (() => {
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill(): boolean }
+      child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.kill = () => true
+      setTimeout(() => child.emit('close', 0), 5)
+      return child
+    }) as never
+    const service = new AutomationService({
+      directory,
+      gjcExecutable: '/usr/local/bin/gjc',
+      platform: 'none',
+      spawnProcess,
+      now: () => now,
+    })
+    const created = await service.create({ name: 'Morning', prompt: 'Review', workspace: '/tmp', schedule: { kind: 'daily', time: '09:00' }, enabled: true, worktree: false })
+
+    const catchUp = await service.runScheduled(created.id)
+    expect(catchUp).toMatchObject({ status: 'completed', trigger: 'catch-up', reason: expect.stringContaining('잠자기') })
+    expect(catchUp.scheduledFor).toBe(new Date(2026, 9, 19, 9, 0, 0).toISOString())
+
+    const duplicate = await service.runScheduled(created.id)
+    expect(duplicate).toMatchObject({ status: 'skipped', trigger: 'catch-up', reason: '이미 보충 실행된 예약입니다.' })
+
+    // A lock held by another live worker is recorded as a skipped run with its
+    // reason instead of disappearing from the history.
+    const lockItem = await service.create({ name: 'Locked', prompt: 'Review', workspace: '/tmp', schedule: { kind: 'daily', time: '08:00' }, enabled: true, worktree: false })
+    await mkdir(path.join(directory, `.run-${lockItem.id}.lock`), { recursive: true })
+    await writeFile(path.join(directory, `.run-${lockItem.id}.lock`, 'owner.json'), JSON.stringify({ pid: process.pid, token: 'held', startedAt: now.toISOString(), automationId: lockItem.id }))
+    const locked = await service.runScheduled(lockItem.id, new Date(2026, 9, 20, 8, 1, 0))
+    expect(locked).toMatchObject({ status: 'skipped', reason: '이전 실행이 아직 진행 중입니다.' })
   })
 
   it('schedules the automations around a record it cannot read', async () => {

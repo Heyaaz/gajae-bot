@@ -28,10 +28,18 @@ export type Automation = {
   nextRunAt: string | null
 }
 
+export type AutomationRunTrigger = 'scheduled' | 'catch-up' | 'manual'
+
 export type AutomationRun = {
   id: string
   automationId: string
   status: 'running' | 'completed' | 'failed' | 'skipped'
+  /** How this run was started. Older records lack the field and are manual. */
+  trigger?: AutomationRunTrigger
+  /** The scheduled occurrence this run covers, for scheduled and catch-up runs. */
+  scheduledFor?: string
+  /** Human-readable explanation on skipped and catch-up runs. */
+  reason?: string
   startedAt: string
   finishedAt: string | null
   exitCode: number | null
