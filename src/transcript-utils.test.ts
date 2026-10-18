@@ -569,6 +569,83 @@ describe("cacheTranscript", () => {
     ]);
   });
 
+  it("keeps a local echo's images on the persisted row that confirms it", () => {
+    const images = [
+      { id: "img-1", name: "shot.png", mimeType: "image/png", data: "abc" },
+    ];
+    const echo = {
+      ...message,
+      id: "local-prompt-1",
+      role: "user" as const,
+      content: "이거 봐줘",
+      images,
+    };
+    const settled = cacheTranscript({ "session-1": [echo] }, "session-1", [
+      {
+        ...message,
+        id: "shared-message-1",
+        role: "user" as const,
+        content:
+          '이거 봐줘\n\n<local-images>\n- "/tmp/shot.png"\n</local-images>\nThe user attached these images. You MUST inspect every image with the read tool before responding.',
+      },
+    ]);
+    expect(settled["session-1"].map((item) => item.id)).toEqual([
+      "shared-message-1",
+    ]);
+    const [row] = settled["session-1"];
+    expect(row?.kind === "message" ? row.images : undefined).toEqual(images);
+  });
+
+  it("keeps images on a same-id row when a full sync rebuilds it", () => {
+    const images = [
+      { id: "img-9", name: "chart.png", mimeType: "image/png", data: "xyz" },
+    ];
+    const durable = {
+      ...message,
+      id: "shared-message-9",
+      role: "user" as const,
+      content: "차트 봐줘",
+      images,
+    };
+    const settled = cacheTranscript({ "session-1": [durable] }, "session-1", [
+      { ...durable, images: undefined },
+    ]);
+    const [row] = settled["session-1"];
+    expect(row?.kind === "message" ? row.images : undefined).toEqual(images);
+  });
+
+  it("gives each of two identical requests its own images", () => {
+    const first = { id: "img-1", name: "one.png", mimeType: "image/png", data: "1" };
+    const second = { id: "img-2", name: "two.png", mimeType: "image/png", data: "2" };
+    const echo = (id: string, image: typeof first) => ({
+      ...message,
+      id,
+      role: "user" as const,
+      content: "다시 해",
+      images: [image],
+    });
+    const remote = (id: string) => ({
+      ...message,
+      id,
+      role: "user" as const,
+      content:
+        '다시 해\n\n<local-images>\n- "/tmp/shot.png"\n</local-images>\nThe user attached these images. You MUST inspect every image with the read tool before responding.',
+    });
+    const settled = cacheTranscript(
+      { "session-1": [echo("local-prompt-1", first), echo("local-prompt-2", second)] },
+      "session-1",
+      [remote("shared-message-1"), remote("shared-message-2")],
+    );
+    expect(settled["session-1"].map((item) => item.id)).toEqual([
+      "shared-message-1",
+      "shared-message-2",
+    ]);
+    const images = settled["session-1"].map((item) =>
+      item.kind === "message" ? item.images?.[0]?.name : undefined,
+    );
+    expect(images).toEqual(["one.png", "two.png"]);
+  });
+
   it("keeps an unmatched image or steer request at the end until it is confirmed", () => {
     const optimistic = {
       ...message,

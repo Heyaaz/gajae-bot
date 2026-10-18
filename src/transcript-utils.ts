@@ -295,6 +295,27 @@ export function cacheTranscript(
 ): Record<string, TranscriptItem[]> {
   const previous = transcripts[sessionId];
   if (previous) {
+    // A full sync rebuilds every row from the persisted transcript, which never
+    // stores the inline image bytes. Carry them from the row this window already
+    // shows with the same id, or a refresh would blank every thumbnail.
+    const earlierMessages = new Map(
+      previous
+        .filter(
+          (item): item is Extract<TranscriptItem, { kind: "message" }> =>
+            item.kind === "message" && item.role === "user",
+        )
+        .map((item) => [item.id, item]),
+    );
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      if (item.kind !== "message" || item.role !== "user" || item.images?.length)
+        continue;
+      const earlier = earlierMessages.get(item.id);
+      const carried = earlier ? withLocalImages(item, earlier) : item;
+      if (carried === item) continue;
+      items = items.slice();
+      items[index] = carried;
+    }
     const optimistic = previous.filter(
       (item): item is Extract<TranscriptItem, { kind: "message" }> =>
         item.kind === "message" && isLocalEcho(item.id),
@@ -305,16 +326,26 @@ export function cacheTranscript(
     // echo pinned forever and rendered the request twice. Consuming candidates
     // instead keeps two identical requests independent while guaranteeing every
     // confirmed echo is dropped.
-    const unconsumed = items.filter(
-      (item): item is Extract<TranscriptItem, { kind: "message" }> =>
-        item.kind === "message" && item.role === "user",
-    );
+    const consumed = new Set<number>();
     for (const local of optimistic) {
-      const match = unconsumed.findIndex((item) =>
-        sameUserRequest(item, local),
+      const match = items.findIndex(
+        (item, index) =>
+          !consumed.has(index) &&
+          item.kind === "message" &&
+          item.role === "user" &&
+          sameUserRequest(item, local),
       );
-      if (match >= 0) unconsumed.splice(match, 1);
-      else items = [...items, local];
+      if (match < 0) {
+        items = [...items, local];
+        continue;
+      }
+      consumed.add(match);
+      // The persisted row is the only one left, and it arrives without the
+      // images this window rendered. Confirm the echo by retiring it, but keep
+      // what it displayed on the row that replaces it. Consuming matches one by
+      // one also keeps two identical requests from sharing one request's images.
+      items = items.slice();
+      items[match] = withLocalImages(items[match], local);
     }
   }
   if (previous && previous !== items) {
