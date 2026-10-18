@@ -166,6 +166,22 @@ export function restoreRejectedDraft(
   return null;
 }
 
+/**
+ * Whether a release loop may hand over another request.
+ *
+ * Ownership alone is not enough: the composer that started the loop can unmount
+ * while its awaited send is still in flight, and its refs still name the session.
+ * A remounted instance restores the same queue from the snapshot, so without the
+ * mount check both loops would send the next request twice.
+ */
+export function canReleaseQueue(
+  mounted: boolean,
+  draftOwner: string,
+  owner: string,
+): boolean {
+  return mounted && draftOwner === owner;
+}
+
 /** Whether this session's runtime advertises the Fast service-tier control. */
 export function advertisesFast(
   commands: readonly { name: string }[],
@@ -912,6 +928,21 @@ export function Composer({
     const write = (pending: PendingRequest[]): void => {
       if (pending.length > 0) pendingQueuesRef.current.set(owner, pending);
       else pendingQueuesRef.current.delete(owner);
+      if (!mountedRef.current) {
+        // The loop outlived its composer. Keep the queue it still owns in the
+        // shared snapshot, but never replace a newer instance's draft with this
+        // instance's stale values.
+        const snapshot = composerSnapshots.get(owner);
+        saveComposerSnapshot(composerSnapshots, owner, {
+          ...(snapshot ?? {
+            value: valueRef.current,
+            images: imagesRef.current,
+            files: filesRef.current,
+          }),
+          pendingQueue: pending,
+        });
+        return;
+      }
       const draft = draftSessionRef.current === owner
         ? { value: valueRef.current, images: imagesRef.current, files: filesRef.current }
         : draftsRef.current.get(owner) ?? composerSnapshots.get(owner);
@@ -928,7 +959,12 @@ export function Composer({
       // cancel nothing and emit a spurious cancellation notice.
       if (running) await onFlushQueued();
       await releaseRequests({
-        canSend: () => draftSessionRef.current === owner,
+        canSend: () =>
+          canReleaseQueue(
+            mountedRef.current,
+            draftSessionRef.current,
+            owner,
+          ),
         read,
         write,
         send: (request) =>

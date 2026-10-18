@@ -18,6 +18,7 @@ import {
   fastTierBusy,
   handleComposerEnter,
   QueueChip,
+  canReleaseQueue,
   cancelBeforeQueueDiscard,
   mergePreparedAttachments,
   requestFastTier,
@@ -680,6 +681,16 @@ describe("rejected submission recovery", () => {
       files: [],
     });
     expect(drafts.size).toBe(0);
+  });
+});
+
+describe("queue release ownership", () => {
+  it("stops an unmounted composer from sending the remounted instance's queue", () => {
+    // The old instance's refs still name the session after unmount; only the mount
+    // flag separates it from the instance that restored the same queue.
+    expect(canReleaseQueue(false, "session-a", "session-a")).toBe(false);
+    expect(canReleaseQueue(true, "session-b", "session-a")).toBe(false);
+    expect(canReleaseQueue(true, "session-a", "session-a")).toBe(true);
   });
 });
 
