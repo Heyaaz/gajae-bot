@@ -5325,9 +5325,15 @@ export class GjcSdkController {
       if (settlement === "unknown") {
         // Poll exhaustion or unavailable evidence is not a terminal event. The
         // file watcher and tail follower remain responsible for the later state.
-        this.updateSessionStatus(sessionId, "running");
+        if (this.activePromptAdmissions.get(sessionId) === admission)
+          this.updateSessionStatus(sessionId, "running");
         return "prompt";
       }
+      // A cancel or a newer prompt may have replaced this run while its
+      // settlement was being read. Finalizing now would close the thought and
+      // stream of the run that owns the row instead.
+      if (this.activePromptAdmissions.get(sessionId) !== admission)
+        return "prompt";
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
       await this.refreshContextUsage(sessionId);
@@ -5339,12 +5345,14 @@ export class GjcSdkController {
       // no-op on a Set.
       const settlementGeneration = this.generation;
       const settlementRevision = this.currentRunRevision(sessionId);
-      if (this.activePromptAdmissions.get(sessionId) === admission) {
+      const ownsRow = this.activePromptAdmissions.get(sessionId) === admission;
+      if (ownsRow) {
         this.activePromptAdmissions.delete(sessionId);
         this.activePromptSessions.delete(sessionId);
       }
       const stillRunning = await this.discoveredRunState(sessionId);
       if (
+        ownsRow &&
         settlementGeneration === this.generation &&
         settlementRevision === this.currentRunRevision(sessionId)
       )
@@ -5354,6 +5362,13 @@ export class GjcSdkController {
         );
     } catch (caught) {
       let error: unknown = caught;
+      // The user cancelled this send, or a newer prompt took the row while this
+      // one was in flight. Its late failure belongs to a run that no longer
+      // owns the window: settling here finalized the newer run's streaming
+      // message, published idle over it, and appended a failure notice for the
+      // prompt that was already cancelled.
+      if (this.activePromptAdmissions.get(sessionId) !== admission)
+        return "prompt";
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
         await this.steerSession(

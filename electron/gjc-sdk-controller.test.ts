@@ -591,6 +591,72 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("ignores a late failure from the send a cancel replaced", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.ensureAttached = vi.fn(async () => undefined);
+    internals.executeSdkSlashCommand = vi.fn(async () => false);
+    let failOld!: (error: unknown) => void;
+    let finishNew!: (result: { status: string }) => void;
+    (cli.send as any)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            failOld = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishNew = resolve;
+          }),
+      );
+    internals.awaitPromptSettlement = vi.fn(async () => "unknown");
+    (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
+    const oldSend = controller.sendMessage("s1", {
+      text: "old",
+      images: [],
+      files: [],
+    });
+    while (!failOld) await Promise.resolve();
+    await controller.cancelRun("s1");
+    const newSend = controller.sendMessage("s1", {
+      text: "new",
+      images: [],
+      files: [],
+    });
+    while (!finishNew) await Promise.resolve();
+    const newAdmission = internals.activePromptAdmissions.get("s1");
+    const streaming = {
+      id: "assistant-new",
+      kind: "message",
+      sessionId: "s1",
+      role: "assistant",
+      content: "working",
+      createdAt: "now",
+      streaming: true,
+    };
+    internals.transcripts.set("s1", [streaming]);
+    internals.activeAssistantMessages.set("s1", streaming.id);
+
+    failOld(new Error("send failed after the cancel"));
+
+    await expect(oldSend).resolves.toBe("prompt");
+    expect(internals.activePromptAdmissions.get("s1")).toBe(newAdmission);
+    expect(internals.activePromptSessions.has("s1")).toBe(true);
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    // The newer run keeps streaming: its message was not finalized, its active
+    // id survived, and no failure notice was appended for the cancelled send.
+    expect(streaming.streaming).toBe(true);
+    expect(internals.activeAssistantMessages.get("s1")).toBe("assistant-new");
+    expect(internals.transcripts.get("s1")).toHaveLength(1);
+
+    finishNew({ status: "accepted" });
+    await newSend;
+    controller.dispose();
+  });
+
   it("does not send a follow-up after permission application fails", async () => {
     const { controller, cli, internals } = harness();
     internals.ensureAttached = vi.fn(async () => { throw new Error("permission_mode.set rejected"); });
