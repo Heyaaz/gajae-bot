@@ -102,6 +102,13 @@
 .transcript-slot {
   padding-bottom: 18px;
 }
+/* A user request opens a new turn: extra space above it separates "the previous
+   answer" from "this request" so consecutive turns do not read as one continuous
+   block. The first slot is exempt -- there is no previous turn above it to separate
+   from, and the extra gap would only widen the existing top padding. */
+.transcript-slot[data-turn-start="true"]:not([data-index="0"]) {
+  padding-top: 22px;
+}
 /* Nothing follows the final block, so its padding would only push the newest message away
    from the composer. Keyed off an explicit attribute, not `:last-child`: mounted slots are
    in arbitrary DOM order, so `:last-child` stripped the padding from a random middle row. */
@@ -1850,7 +1857,10 @@
   display: block;
   padding: 6px 9px 0;
   color: #686870;
-  font-size: 8.5px;
+  /* Below 10px a secondary label stops reading as text and starts reading as
+     decoration; this line carries the "beginning omitted" fact a user needs to
+     notice, so it stays above that floor rather than the 8.5px badge size. */
+  font-size: 10px;
 }
 .tool-output-preview > pre {
   max-height: 184px;

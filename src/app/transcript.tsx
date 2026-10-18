@@ -16,6 +16,7 @@ import {
   recentUserRequests,
   summarizeToolRun,
   transcriptBlockIndexForItem,
+  turnStartBlockIds,
 } from "../transcript-utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
@@ -360,6 +361,7 @@ export function Transcript({
   const answeredSendRef = useRef(sentRequestToken);
 
   const blocks = useMemo(() => groupTranscriptItems(items), [items]);
+  const turnStarts = useMemo(() => turnStartBlockIds(blocks), [blocks]);
   // The restoration runs across frames and has to name the anchored block, so it reads the
   // current blocks rather than the ones its effect closed over.
   const blocksRef = useRef(blocks);
@@ -1057,6 +1059,7 @@ export function Transcript({
                 className="transcript-slot"
                 data-index={virtualRow.index}
                 data-last={virtualRow.index === blocks.length - 1 ? "true" : undefined}
+                data-turn-start={turnStarts.has(block.id) ? "true" : undefined}
                 key={virtualRow.key}
                 ref={virtualizer.measureElement}
                 style={{ transform: `translateY(${virtualRow.start}px)` }}

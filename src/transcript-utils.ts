@@ -193,6 +193,31 @@ export function summarizeToolRun(
 }
 
 /**
+ * Which blocks open a new turn, for a wider visual gap between a user's request and
+ * the previous turn's response.
+ *
+ * A block opens a turn when it is a user message. A block right after a non-tool,
+ * non-message item (a notice, for instance) is deliberately not marked: only a user
+ * request is a turn boundary, so a run of system furniture between two assistant
+ * replies does not read as one.
+ */
+export function turnStartBlockIds(
+  blocks: readonly TranscriptBlock[],
+): ReadonlySet<string> {
+  const starts = new Set<string>();
+  for (const block of blocks) {
+    if (
+      block.kind === "item" &&
+      block.item.kind === "message" &&
+      block.item.role === "user"
+    ) {
+      starts.add(block.id);
+    }
+  }
+  return starts;
+}
+
+/**
  * Locates the block holding an item so the transcript can scroll to a search hit.
  *
  * Only a window of blocks is mounted, so a hit is usually not in the DOM and cannot be

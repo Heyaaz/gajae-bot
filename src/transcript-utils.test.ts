@@ -14,6 +14,7 @@ import {
   mergeTranscriptItem,
   recentUserRequests,
   summarizeToolRun,
+  turnStartBlockIds,
   updateTranscriptItem,
 } from "./transcript-utils";
 
@@ -841,6 +842,23 @@ describe("groupTranscriptItems", () => {
       { kind: "item", id: message.id, item: message },
       { kind: "item", id: notice.id, item: notice },
     ]);
+  });
+});
+
+describe("turnStartBlockIds", () => {
+  const userMessage: TranscriptItem = { ...message, id: "user-1", role: "user" };
+
+  it("marks a user message block as a turn start", () => {
+    const blocks = groupTranscriptItems([userMessage, message, tool("a")]);
+    const starts = turnStartBlockIds(blocks);
+    expect(starts.has(blocks[0]!.id)).toBe(true);
+    expect(starts.has(blocks[1]!.id)).toBe(false);
+    expect(starts.has(blocks[2]!.id)).toBe(false);
+  });
+
+  it("does not mark an assistant message, notice, or tool-run block", () => {
+    const blocks = groupTranscriptItems([message, notice, tool("a")]);
+    expect(turnStartBlockIds(blocks).size).toBe(0);
   });
 });
 
