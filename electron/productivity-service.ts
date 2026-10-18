@@ -230,9 +230,15 @@ export class ProductivityService {
     this.db.exec('BEGIN'); try {
       this.db.exec('DELETE FROM productivity_search')
       const insert = this.db.prepare('INSERT INTO productivity_search (itemId,sessionId,sessionTitle,workspace,kind,displayText,searchText) VALUES (?,?,?,?,?,?,?)')
+      let inserted = 0
       for (const session of sessions) for (const item of await this.source.getTranscript(session.id)) {
         const text = displayText(item)
         insert.run(item.id, session.id, session.title, session.workspace, item.kind, text, `${session.title} ${session.workspace} ${item.kind} ${text}`.toLocaleLowerCase())
+        // A large history used to be inserted in one synchronous pass, blocking the
+        // Electron main thread for the whole rebuild. Yielding between bounded
+        // chunks keeps typing and streaming responsive; the transaction still makes
+        // the index swap atomic.
+        if (++inserted % 200 === 0) await new Promise<void>((resolve) => setImmediate(resolve))
       }
       this.db.exec('COMMIT')
       this.searchStale = this.searchGeneration !== generation
@@ -240,7 +246,13 @@ export class ProductivityService {
   }
 
   async searchTranscripts(query: string, limit = 50): Promise<GlobalSearchResult[]> {
-    if (this.searchStale) await this.rebuildSearch(); const bounded = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 50)); const terms = (String(query).toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) || []).slice(0, 12)
+    if (this.searchStale) {
+      // A failed rebuild must not turn search into an error: the previous complete
+      // index is still in the table and is better than no results. The stale flag
+      // stays set, so the next search retries the rebuild.
+      try { await this.rebuildSearch() } catch { /* keep the last complete index */ }
+    }
+    const bounded = Math.max(1, Math.min(100, Number.isFinite(limit) ? Math.floor(limit) : 50)); const terms = (String(query).toLocaleLowerCase().match(/[\p{L}\p{N}_-]+/gu) || []).slice(0, 12)
     if (!terms.length) return []
     const where = terms.map(() => 'instr(searchText, ?) > 0').join(' AND ')
     const rows = this.db.prepare(`SELECT itemId,sessionId,sessionTitle,workspace,kind,displayText FROM productivity_search WHERE ${where} ORDER BY rowid DESC LIMIT ?`).all(...terms, bounded) as Array<Record<string, string>>

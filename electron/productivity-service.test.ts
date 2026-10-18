@@ -115,6 +115,45 @@ describe('ProductivityService', () => {
     expect(transcriptCalls).toBe(2)
   })
 
+  it("yields the main thread while rebuilding a large index", async () => {
+    const items = Array.from({ length: 1200 }, (_value, index) =>
+      item(`m${index}`, "message", `alpha ${index}`),
+    );
+    const service = new ProductivityService(source(items), ":memory:");
+    let yielded = false;
+    const timer = setTimeout(() => {
+      yielded = true;
+    }, 0);
+    await service.rebuildSearch();
+    clearTimeout(timer);
+    // The rebuild used to insert every row in one synchronous pass, so no timer
+    // could run until it had finished.
+    expect(yielded).toBe(true);
+    await expect(service.searchTranscripts("alpha", 5)).resolves.toHaveLength(5);
+  });
+
+  it("serves the last complete index when a rebuild fails", async () => {
+    let failing = false;
+    const rebuildSource: ProductivitySource = {
+      listSessions: async () => [session("s1", "First")],
+      getTranscript: async () => {
+        if (failing) throw new Error("transcript read failed");
+        return [item("m1", "message", "alpha searchable")];
+      },
+    };
+    const service = new ProductivityService(rebuildSource, ":memory:");
+    await service.rebuildSearch();
+    await expect(service.searchTranscripts("alpha", 10)).resolves.toHaveLength(1);
+
+    failing = true;
+    service.invalidateSearch();
+    // The rollback keeps the previous rows; search must use them rather than turn
+    // the failed refresh into an empty or rejected search.
+    await expect(service.searchTranscripts("alpha", 10)).resolves.toEqual([
+      expect.objectContaining({ itemId: "m1" }),
+    ]);
+  });
+
   it('rebuilds an unreadable index instead of taking the app down with it', async () => {
     // The search index is derived data -- every row is reconstructed from the
     // transcripts. It used to throw straight out of the constructor, which runs at
