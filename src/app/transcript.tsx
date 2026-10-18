@@ -14,6 +14,7 @@ import {
   parseSkillInvocation,
   shouldFollowTranscript,
   recentUserRequests,
+  summarizeToolRun,
   transcriptBlockIndexForItem,
 } from "../transcript-utils";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -270,6 +271,16 @@ export interface TranscriptProps {
   /** The persisted, window-wide reasoning-card preference. */
   thoughtsExpanded?: boolean;
   onToggleThoughtsExpanded?: () => void;
+  /**
+   * Tool-run display density.
+   *
+   * `basic` collapses a tool-run block to a one-line summary (expanding only on
+   * demand, or automatically when the run holds a failure or a pending approval).
+   * `reasoning` and `detailed` both render every tool card; `detailed` additionally
+   * forces reasoning cards open regardless of `thoughtsExpanded`, absorbing that
+   * global toggle rather than requiring a second one.
+   */
+  toolViewMode?: "basic" | "reasoning" | "detailed";
   revealItemId?: string;
   onRevealComplete?: (itemId: string) => void;
   onResolveTool: (toolId: string, optionId: string) => void;
@@ -283,11 +294,15 @@ export function Transcript({
   compacting = false,
   thoughtsExpanded = false,
   onToggleThoughtsExpanded,
+  toolViewMode = "reasoning",
   revealItemId,
   onRevealComplete,
   onResolveTool,
   onReadArtifact,
 }: TranscriptProps) {
+  // `detailed` absorbs the reasoning toggle: it always shows thought cards open
+  // regardless of the persisted preference, rather than requiring a second control.
+  const effectiveThoughtsExpanded = toolViewMode === "detailed" || thoughtsExpanded;
   const transcriptRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   // Set while the code below is correcting the scroll position. Those writes fire the
@@ -1053,30 +1068,21 @@ export function Transcript({
                   >
                     <TranscriptItemView
                       item={block.item}
-                      thoughtsExpanded={thoughtsExpanded}
+                      thoughtsExpanded={effectiveThoughtsExpanded}
                       onToggleThoughtsExpanded={onToggleThoughtsExpanded}
                       onResolveTool={onResolveTool}
                       onReadArtifact={onReadArtifact}
                     />
                   </div>
                 ) : (
-                  <div className="transcript-entry tool-run">
-                    {block.items.map((tool) => (
-                      <div
-                        className="tool-run-entry"
-                        id={`transcript-${encodeURIComponent(tool.id)}`}
-                        key={tool.id}
-                      >
-                        <TranscriptItemView
-                          item={tool}
-                          thoughtsExpanded={thoughtsExpanded}
-                          onToggleThoughtsExpanded={onToggleThoughtsExpanded}
-                          onResolveTool={onResolveTool}
-                          onReadArtifact={onReadArtifact}
-                        />
-                      </div>
-                    ))}
-                  </div>
+                  <ToolRunBlockView
+                    items={block.items}
+                    toolViewMode={toolViewMode}
+                    thoughtsExpanded={effectiveThoughtsExpanded}
+                    onToggleThoughtsExpanded={onToggleThoughtsExpanded}
+                    onResolveTool={onResolveTool}
+                    onReadArtifact={onReadArtifact}
+                  />
                 )}
               </div>
             );
@@ -1433,6 +1439,82 @@ export function TodoCard({
         {observed ? `observed ${observed} · ${source}` : source}
       </footer>
     </article>
+  );
+}
+
+/**
+ * A tool-run block, collapsed to a one-line summary in `basic` view mode.
+ *
+ * The summary itself expands on demand, but a run containing a failure or a
+ * pending approval is never left collapsed: those need to be seen without an
+ * extra click, so the component ignores the collapse preference for them.
+ */
+function ToolRunBlockView({
+  items,
+  toolViewMode,
+  thoughtsExpanded,
+  onToggleThoughtsExpanded,
+  onResolveTool,
+  onReadArtifact,
+}: {
+  items: Extract<TranscriptItem, { kind: "tool" }>[];
+  toolViewMode: "basic" | "reasoning" | "detailed";
+  thoughtsExpanded: boolean;
+  onToggleThoughtsExpanded?: () => void;
+  onResolveTool: TranscriptProps["onResolveTool"];
+  onReadArtifact: TranscriptProps["onReadArtifact"];
+}) {
+  const summary = useMemo(() => summarizeToolRun(items), [items]);
+  const needsAttention = !summary.allCompleted;
+  const [manuallyExpanded, setManuallyExpanded] = useState(false);
+  const collapsed = toolViewMode === "basic" && !needsAttention && !manuallyExpanded;
+  if (!collapsed) {
+    return (
+      <div className="transcript-entry tool-run">
+        {toolViewMode === "basic" && (
+          <button
+            type="button"
+            className="tool-run-collapse"
+            onClick={() => setManuallyExpanded(false)}
+          >
+            접기
+          </button>
+        )}
+        {items.map((tool) => (
+          <div
+            className="tool-run-entry"
+            id={`transcript-${encodeURIComponent(tool.id)}`}
+            key={tool.id}
+          >
+            <TranscriptItemView
+              item={tool}
+              thoughtsExpanded={thoughtsExpanded}
+              onToggleThoughtsExpanded={onToggleThoughtsExpanded}
+              onResolveTool={onResolveTool}
+              onReadArtifact={onReadArtifact}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  const parts: string[] = [];
+  if (summary.commandCount > 0) parts.push(`명령 ${summary.commandCount}개 실행`);
+  if (summary.fileCount > 0)
+    parts.push(
+      `파일 ${summary.fileCount}개 수정 (+${summary.added} \u2212${summary.removed})`,
+    );
+  return (
+    <div className="transcript-entry tool-run tool-run--collapsed">
+      <button
+        type="button"
+        className="tool-run-summary"
+        onClick={() => setManuallyExpanded(true)}
+      >
+        <TerminalSquare size={14} />
+        <span>{parts.join(" \u00b7 ") || `도구 ${items.length}개 실행`}</span>
+      </button>
+    </div>
   );
 }
 

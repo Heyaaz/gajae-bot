@@ -13,6 +13,7 @@ import {
   attachmentSummaryText,
   mergeTranscriptItem,
   recentUserRequests,
+  summarizeToolRun,
   updateTranscriptItem,
 } from "./transcript-utils";
 
@@ -754,6 +755,51 @@ describe("cacheTranscript", () => {
     expect(
       confirmed["session-1"].some((item) => item.id === optimistic.id),
     ).toBe(false);
+  });
+});
+
+describe("summarizeToolRun", () => {
+  type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;
+  const toolOf = (id: string): ToolItem => tool(id) as ToolItem;
+  const diffTool = (id: string, diff: string, targetPath: string): ToolItem => ({
+    ...toolOf(id),
+    diff,
+    targetPath,
+  });
+
+  it("counts commands and files separately, excluding +++/--- headers from added/removed", () => {
+    const summary = summarizeToolRun([
+      toolOf("bash-1"),
+      toolOf("bash-2"),
+      diffTool(
+        "edit-1",
+        "--- a/src/App.tsx\n+++ b/src/App.tsx\n@@ -1,1 +1,2 @@\n-old\n+new\n+another",
+        "src/App.tsx",
+      ),
+    ]);
+    expect(summary.commandCount).toBe(2);
+    expect(summary.fileCount).toBe(1);
+    expect(summary.added).toBe(2);
+    expect(summary.removed).toBe(1);
+    expect(summary.allCompleted).toBe(true);
+  });
+
+  it("flags a run with any failed or approval-required call as needing attention", () => {
+    const failed = summarizeToolRun([
+      toolOf("a"),
+      { ...toolOf("b"), status: "failed" },
+    ]);
+    expect(failed.failedCount).toBe(1);
+    expect(failed.allCompleted).toBe(false);
+
+    const pending = summarizeToolRun([
+      { ...toolOf("c"), status: "approval-required" },
+    ]);
+    expect(pending.approvalRequiredCount).toBe(1);
+    expect(pending.allCompleted).toBe(false);
+
+    const clean = summarizeToolRun([toolOf("d"), toolOf("e")]);
+    expect(clean.allCompleted).toBe(true);
   });
 });
 

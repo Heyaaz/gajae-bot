@@ -128,6 +128,70 @@ export function groupTranscriptItems(
   return blocks;
 }
 
+export interface ToolRunSummary {
+  /** Number of command (bash-like) tool calls in the run. */
+  commandCount: number;
+  /** Number of distinct files touched by an edit/write tool carrying a diff. */
+  fileCount: number;
+  added: number;
+  removed: number;
+  failedCount: number;
+  approvalRequiredCount: number;
+  /** True when every call in the run finished without failure or denial. */
+  allCompleted: boolean;
+}
+
+function toolDiffCounts(diff: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed };
+}
+
+/**
+ * One-line summary for a collapsed tool-run block, e.g. "명령 3개 실행 · 파일 2개
+ * 수정 (+12 −3) · 1개 실패".
+ *
+ * A run with any failed or approval-required call is reported distinctly so the
+ * collapsed summary itself tells the user something needs attention, without
+ * requiring the block to expand first.
+ */
+export function summarizeToolRun(
+  items: readonly Extract<TranscriptItem, { kind: "tool" }>[],
+): ToolRunSummary {
+  const files = new Set<string>();
+  let added = 0;
+  let removed = 0;
+  let commandCount = 0;
+  let failedCount = 0;
+  let approvalRequiredCount = 0;
+  for (const item of items) {
+    if (item.diff && item.targetPath) {
+      files.add(item.targetPath);
+      const counts = toolDiffCounts(item.diff);
+      added += counts.added;
+      removed += counts.removed;
+    } else {
+      commandCount += 1;
+    }
+    if (item.status === "failed" || item.status === "denied") failedCount += 1;
+    if (item.status === "approval-required") approvalRequiredCount += 1;
+  }
+  return {
+    commandCount,
+    fileCount: files.size,
+    added,
+    removed,
+    failedCount,
+    approvalRequiredCount,
+    allCompleted: failedCount === 0 && approvalRequiredCount === 0,
+  };
+}
+
 /**
  * Locates the block holding an item so the transcript can scroll to a search hit.
  *

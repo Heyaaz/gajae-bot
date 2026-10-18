@@ -2446,6 +2446,49 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.tool-view-mode-toggle {
+  width: auto;
+  padding: 0 8px;
+  gap: 4px;
+  grid-auto-flow: column;
+  align-items: center;
+}
+.tool-view-mode-toggle small {
+  font-size: 10px;
+  color: inherit;
+}
+.tool-run--collapsed {
+  padding: 0;
+}
+.tool-run-summary {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 7px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-run-summary:hover {
+  background: var(--bg-hover);
+}
+.tool-run-collapse {
+  align-self: flex-end;
+  margin: 2px 8px 0 0;
+  padding: 1px 7px;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  cursor: pointer;
+}
+.tool-run-collapse:hover {
+  color: var(--text-secondary);
+}
 .tool-run {
   display: flex;
   flex-direction: column;

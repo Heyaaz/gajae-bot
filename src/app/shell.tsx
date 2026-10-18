@@ -28,7 +28,7 @@ import {
   mergeTranscriptItem,
   updateTranscriptItem,
 } from "../transcript-utils";
-import { FolderGit2, GitBranch, Menu, PanelRight, Plus, X } from "lucide-react";
+import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
@@ -241,6 +241,13 @@ export default function App() {
   const [updateError, setUpdateError] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [resumingId, setResumingId] = useState<string | null>(null);
+  // Not persisted: a per-window reading preference, cycled with a header button.
+  // basic -> tool-run blocks collapse to a summary; reasoning -> every tool card
+  // shown, thought cards follow the saved preference; detailed -> every tool card
+  // shown and thought cards forced open, absorbing that saved toggle.
+  const [toolViewMode, setToolViewMode] = useState<"basic" | "reasoning" | "detailed">(
+    "reasoning",
+  );
   const [diffOpen, setDiffOpen] = useState(false);
   const [diff, setDiff] = useState<DiffSnapshot | null>(null);
   const [selectedGit, setSelectedGit] = useState<GitStatusSnapshot | null>(
@@ -1671,9 +1678,24 @@ export default function App() {
             </div>
             <div className="chat-header__actions">
               <button
+                className="icon-button tool-view-mode-toggle"
+                type="button"
+                title={`표시 모드: ${toolViewMode === "basic" ? "기미" : toolViewMode === "reasoning" ? "추맠" : "상세"} (클릭하여 전환)`}
+                onClick={() =>
+                  setToolViewMode((mode) =>
+                    mode === "basic" ? "reasoning" : mode === "reasoning" ? "detailed" : "basic",
+                  )
+                }
+              >
+                <Layers size={18} />
+                <small>
+                  {toolViewMode === "basic" ? "기미" : toolViewMode === "reasoning" ? "추맠" : "상세"}
+                </small>
+              </button>
+              <button
                 className={`icon-button ${diffOpen ? "is-active" : ""}`}
                 type="button"
-                title="변경 파일"
+                title="변개료 랡"
                 onClick={() => {
                   setDiffOpen((open) => !open);
                   if (!diffOpen) void refreshDiff();
@@ -1709,6 +1731,7 @@ export default function App() {
                 compacting={selectedSession.phase === "compacting"}
                 thoughtsExpanded={preferences.thoughtsExpanded}
                 onToggleThoughtsExpanded={toggleThoughtsExpanded}
+                toolViewMode={toolViewMode}
                 revealItemId={
                   revealTarget?.sessionId === selectedSession.id
                     ? revealTarget.itemId
