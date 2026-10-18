@@ -650,6 +650,27 @@ describe("rejected submission recovery", () => {
     expect(drafts.has("session-b")).toBe(false);
   });
 
+  it("merges a late failure with a draft written after leaving the session", () => {
+    const drafts = new Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>();
+    drafts.set("session-a", {
+      value: "new draft",
+      images: [{ id: "image-new", name: "new.png", mimeType: "image/png", data: "bmV3" }],
+      files: [{ id: "file-new", name: "notes.txt", mimeType: "text/plain", size: 5, token: "b".repeat(43) }],
+    });
+    const input: MessageInput = {
+      text: "review this",
+      images: [{ id: "image-1", name: "proof.png", mimeType: "image/png", data: "aW1hZ2U=" }],
+      files: [],
+    };
+    expect(restoreRejectedDraft("session-b", drafts, "session-a", input)).toBeNull();
+    expect(drafts.get("session-a")).toEqual({
+      value: "review this\nnew draft",
+      images: [input.images[0], { id: "image-new", name: "new.png", mimeType: "image/png", data: "bmV3" }],
+      files: [{ id: "file-new", name: "notes.txt", mimeType: "text/plain", size: 5, token: "b".repeat(43) }],
+    });
+    expect(drafts.has("session-b")).toBe(false);
+  });
+
   it("returns rejected content for immediate restoration in its own session", () => {
     const input: MessageInput = { text: "inspect", images: [], files: [] };
     const drafts = new Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>();

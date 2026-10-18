@@ -148,9 +148,21 @@ export function restoreRejectedDraft(
   owner: string,
   input: MessageInput,
 ): { value: string; images: ImageAttachment[]; files: FileAttachment[] } | null {
-  const draft = { value: input.text, images: input.images, files: input.files };
-  if (currentOwner === owner) return draft;
-  drafts.set(owner, draft);
+  const failed = { value: input.text, images: input.images, files: input.files };
+  if (currentOwner === owner) return failed;
+  // The user moved on and may have written a new draft in that session meanwhile.
+  // Replacing it with the rejected input lost everything typed after the send.
+  const parked = drafts.get(owner);
+  drafts.set(
+    owner,
+    parked
+      ? {
+          value: [failed.value, parked.value].filter(Boolean).join("\n"),
+          images: [...failed.images, ...parked.images],
+          files: [...failed.files, ...parked.files],
+        }
+      : failed,
+  );
   return null;
 }
 
@@ -559,6 +571,21 @@ export function Composer({
       setImages(restored.images);
       setFiles(restored.files);
       setAttachmentError("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요.");
+      return;
+    }
+    // The rejected input belongs to a session this composer is not showing. Its
+    // merged draft is mirrored into the module snapshot so it survives an unmount
+    // before the user returns to that session.
+    const parked = draftsRef.current.get(owner);
+    if (parked) {
+      const snapshot = composerSnapshots.get(owner);
+      saveComposerSnapshot(composerSnapshots, owner, {
+        ...parked,
+        pendingQueue:
+          snapshot?.pendingQueue ??
+          pendingQueuesRef.current.get(owner) ??
+          [],
+      });
     }
   }
 
