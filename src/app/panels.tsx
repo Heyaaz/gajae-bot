@@ -333,6 +333,34 @@ export function ManagementPanel({
   );
 }
 
+export function automationRunStatusLabel(
+  status: AutomationRun["status"],
+): string {
+  switch (status) {
+    case "completed":
+      return "완료";
+    case "failed":
+      return "실패";
+    case "skipped":
+      return "건너뜀";
+    default:
+      return "실행 중";
+  }
+}
+
+export function automationRunTriggerLabel(
+  trigger: AutomationRun["trigger"],
+): string {
+  switch (trigger) {
+    case "scheduled":
+      return "예약";
+    case "catch-up":
+      return "보충";
+    default:
+      return "수동";
+  }
+}
+
 export function AutomationPanel({
   defaultWorkspace,
   defaultModel,
@@ -519,9 +547,16 @@ export function AutomationPanel({
       {error && <p className="diff-error">{error}</p>}
       <section className="automation-list">
         <h3>등록된 자동화</h3>
+        <p className="automation-policy">
+          잠자는 동안 놓친 실행은 7일 이내의 가장 최근 1회만 보충하고,
+          그보다 오래된 실행은 건너뛴 사유와 함께 기록합니다.
+        </p>
         {automations.length === 0 && <p>등록된 자동화가 없습니다.</p>}
         {automations.map((automation) => {
-          const latest = runs.find((run) => run.automationId === automation.id);
+          const history = runs
+            .filter((run) => run.automationId === automation.id)
+            .slice(0, 8);
+          const latest = history[0];
           return (
             <article key={automation.id}>
               <header>
@@ -554,8 +589,16 @@ export function AutomationPanel({
                 {automation.nextRunAt
                   ? `다음 실행 ${new Date(automation.nextRunAt).toLocaleString("ko-KR")}`
                   : "예약 중지됨"}
-                {latest ? ` · 최근 ${latest.status}` : ""}
+                {latest
+                  ? ` · 최근 ${automationRunStatusLabel(latest.status)}`
+                  : ""}
               </small>
+              {automation.enabled && history.length === 0 && (
+                <p className="automation-hint">
+                  아직 실행 전입니다. ‘지금 실행’으로 권한과 도구 설정을 먼저
+                  확인하세요.
+                </p>
+              )}
               <footer>
                 <button
                   className="button-secondary"
@@ -587,10 +630,32 @@ export function AutomationPanel({
                   <Trash2 size={12} /> 삭제
                 </button>
               </footer>
-              {latest && (latest.output || latest.error) && (
-                <details>
-                  <summary>최근 실행 결과</summary>
-                  <pre>{latest.output || latest.error}</pre>
+              {history.length > 0 && (
+                <details className="automation-history">
+                  <summary>실행 이력 {history.length}건</summary>
+                  <ul>
+                    {history.map((run) => {
+                      const detail = run.reason || run.error || run.output;
+                      return (
+                        <li key={run.id}>
+                          <span
+                            className={`automation-run-status is-${run.status}`}
+                          >
+                            {automationRunStatusLabel(run.status)}
+                          </span>
+                          <small>
+                            {new Date(run.startedAt).toLocaleString("ko-KR")}
+                            {" · "}
+                            {automationRunTriggerLabel(run.trigger)}
+                            {run.scheduledFor
+                              ? ` · 예약 ${new Date(run.scheduledFor).toLocaleString("ko-KR")}`
+                              : ""}
+                          </small>
+                          {detail && <pre>{detail}</pre>}
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </details>
               )}
             </article>
