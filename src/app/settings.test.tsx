@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AgentControlPreferences } from "../backend/types";
-import { mergeInitialPreferences, settingsErrorMessage } from "./settings";
+import {
+  canSavePreferences,
+  mergeInitialPreferences,
+  settingsErrorMessage,
+} from "./settings";
 
 const fallback: AgentControlPreferences = {
   workspace: "/fallback",
@@ -15,23 +19,60 @@ const loaded: AgentControlPreferences = {
   ...fallback,
   workspace: "/loaded",
   modelPreset: "codex-pro",
+  gjcExecutable: "/opt/gjc",
+  permissionHandling: "always-allow",
 };
 
 describe("settings preference loading", () => {
-  it("keeps edits made while the initial preference read is pending", () => {
+  it("keeps only the fields edited while the initial read was pending", () => {
     const edited = { ...fallback, modelPreset: "custom-profile" };
 
-    expect(mergeInitialPreferences(edited, loaded, true)).toEqual({
-      preferences: edited,
+    expect(mergeInitialPreferences(edited, loaded, ["modelPreset"])).toEqual({
+      // The stored workspace, executable and permission mode survive an edit to
+      // an unrelated field instead of being replaced by the fallback draft.
+      preferences: { ...loaded, modelPreset: "custom-profile" },
+      original: loaded,
+    });
+  });
+
+  it("merges several edited fields over the loaded preferences", () => {
+    const edited = {
+      ...fallback,
+      workspace: "/picked",
+      thoughtsExpanded: true,
+    };
+    expect(
+      mergeInitialPreferences(edited, loaded, ["workspace", "thoughtsExpanded"]),
+    ).toEqual({
+      preferences: {
+        ...loaded,
+        workspace: "/picked",
+        thoughtsExpanded: true,
+      },
       original: loaded,
     });
   });
 
   it("uses the loaded preferences when no edit preceded the response", () => {
-    expect(mergeInitialPreferences(fallback, loaded, false)).toEqual({
+    expect(mergeInitialPreferences(fallback, loaded, [])).toEqual({
       preferences: loaded,
       original: loaded,
     });
+  });
+});
+
+describe("settings save gate", () => {
+  it("does not save before the initial read succeeds", () => {
+    // A failed or pending read leaves the draft on fallback values; saving it
+    // would overwrite every stored setting the user did not touch.
+    expect(canSavePreferences(true, false, true, false)).toBe(false);
+    expect(canSavePreferences(true, false, true, true)).toBe(true);
+  });
+
+  it("still requires a change, an idle save, and a bridge", () => {
+    expect(canSavePreferences(false, false, true, true)).toBe(false);
+    expect(canSavePreferences(true, true, true, true)).toBe(false);
+    expect(canSavePreferences(true, false, false, true)).toBe(false);
   });
 });
 

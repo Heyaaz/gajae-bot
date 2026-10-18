@@ -27,14 +27,42 @@ export interface SettingsDialogProps {
   onInstallUpdate: () => void;
 }
 
+/**
+ * The preferences to show once the first read lands.
+ *
+ * A draft built from the fallback values is only authoritative for the fields the
+ * user actually touched. Keeping the whole draft (the old behavior) saved those
+ * fallbacks over every other stored setting -- a custom executable, workspace and
+ * permission mode were replaced because one field was edited during the read.
+ */
 export function mergeInitialPreferences(
   current: AgentControlPreferences,
   loaded: AgentControlPreferences,
-  edited: boolean,
+  editedFields: readonly (keyof AgentControlPreferences)[],
 ): { preferences: AgentControlPreferences; original: AgentControlPreferences } {
-  return edited
-    ? { preferences: current, original: loaded }
-    : { preferences: loaded, original: loaded };
+  if (editedFields.length === 0) return { preferences: loaded, original: loaded };
+  const preferences: AgentControlPreferences = { ...loaded };
+  for (const field of editedFields) {
+    (preferences as Record<keyof AgentControlPreferences, unknown>)[field] =
+      current[field];
+  }
+  return { preferences, original: loaded };
+}
+
+/**
+ * Saving is only allowed against a completed read.
+ *
+ * The fallback-loaded draft is not the stored configuration. Saving it after a
+ * failed read would replace every untouched setting with a default, so the dialog
+ * waits for the read instead.
+ */
+export function canSavePreferences(
+  dirty: boolean,
+  saving: boolean,
+  hasBridge: boolean,
+  loaded: boolean,
+): boolean {
+  return dirty && !saving && hasBridge && loaded;
 }
 
 export function settingsErrorMessage(error: unknown): string {
@@ -73,10 +101,11 @@ export function SettingsDialog({
     useState<AgentControlPreferences>(fallbackPreferences);
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [loaded, setLoaded] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [workspaceError, setWorkspaceError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
-  const editedBeforeLoad = useRef(false);
+  const editedBeforeLoad = useRef(new Set<keyof AgentControlPreferences>());
   const preferencesRef = useRef(preferences);
   const settingsBridge = window.agentControlDesktop?.settings;
   const managementBridge = window.agentControlDesktop?.management;
@@ -114,12 +143,13 @@ export function SettingsDialog({
         const result = mergeInitialPreferences(
           preferencesRef.current,
           loaded,
-          editedBeforeLoad.current,
+          [...editedBeforeLoad.current],
         );
         preferencesRef.current = result.preferences;
         setPreferences(result.preferences);
         setOriginal(result.original);
         setLoadError("");
+        setLoaded(true);
       })
       .catch((error: unknown) => {
         if (active) setLoadError(settingsErrorMessage(error));
@@ -132,8 +162,13 @@ export function SettingsDialog({
   function editPreferences(
     update: (current: AgentControlPreferences) => AgentControlPreferences,
   ): void {
-    editedBeforeLoad.current = true;
-    const next = update(preferencesRef.current);
+    const current = preferencesRef.current;
+    const next = update(current);
+    if (!loaded) {
+      for (const field of Object.keys(next) as (keyof AgentControlPreferences)[]) {
+        if (next[field] !== current[field]) editedBeforeLoad.current.add(field);
+      }
+    }
     preferencesRef.current = next;
     setPreferences(next);
     setSaveError("");
@@ -188,7 +223,7 @@ export function SettingsDialog({
   }
 
   async function saveSettings(): Promise<void> {
-    if (!settingsBridge || !dirty) return;
+    if (!settingsBridge || !canSavePreferences(dirty, saving, true, loaded)) return;
     setSaving(true);
     setSaveError("");
     try {
@@ -500,16 +535,25 @@ export function SettingsDialog({
           {tab !== "automations" && tab !== "remote" && (
             <footer className="settings-footer">
               <span>
-                {dirty
-                  ? runtimeDirty
-                    ? "저장하면 GJC runtime만 다시 연결됩니다."
-                    : "앱 재실행 없이 바로 적용됩니다."
-                  : "설정이 최신 상태입니다."}
+                {!loaded
+                  ? "설정을 불러온 뒤 저장할 수 있습니다."
+                  : dirty
+                    ? runtimeDirty
+                      ? "저장하면 GJC runtime만 다시 연결됩니다."
+                      : "앱 재실행 없이 바로 적용됩니다."
+                    : "설정이 최신 상태입니다."}
               </span>
               <button
                 type="button"
                 className="button-primary"
-                disabled={!dirty || saving || !settingsBridge}
+                disabled={
+                  !canSavePreferences(
+                    dirty,
+                    saving,
+                    Boolean(settingsBridge),
+                    loaded,
+                  )
+                }
                 onClick={() => void saveSettings()}
               >
                 {saving
