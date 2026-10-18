@@ -17,6 +17,7 @@ import type {
 
 const execFileAsync = promisify(execFile)
 const MAX_OUTPUT = 4 * 1024 * 1024
+const MAX_STATS_OUTPUT = 16 * 1024 * 1024
 const MAX_ARGUMENTS = 64
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -31,12 +32,21 @@ function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0
 }
 
-function parseJsonOutput(text: string): unknown {
-  const bounded = text.slice(-MAX_OUTPUT)
-  const candidates = [...bounded.matchAll(/[[{]/gu)].map((match) => match.index)
+/**
+ * Parses a GJC JSON document that may be preceded by a synchronization preamble.
+ *
+ * The whole document is parsed within `limit`; slicing the tail would discard the
+ * beginning of a valid payload and make the caller fail on a document it accepted.
+ * The limit is the caller's output contract, so it is checked here as well as when
+ * the bytes are produced.
+ */
+export function parseJsonOutput(text: string, limit = MAX_OUTPUT): unknown {
+  if (Buffer.byteLength(text) > limit)
+    throw new Error(`GJC output exceeds the ${Math.floor(limit / (1024 * 1024))} MiB limit`)
+  const candidates = [...text.matchAll(/[[{]/gu)].map((match) => match.index)
   for (const index of candidates) {
     try {
-      return JSON.parse(bounded.slice(index)) as unknown
+      return JSON.parse(text.slice(index)) as unknown
     } catch {
       // GJC may print a bounded synchronization preamble before its JSON payload.
     }
@@ -141,9 +151,13 @@ export class ManagementService {
           else reject(new Error(`GJC stats failed (${signal ?? code ?? 'unknown'}): ${stderr.trim()}`))
         })
       })
+      // Check the produced size before reading it, so an oversized document is never
+      // loaded or partially parsed.
+      const info = await output.stat()
+      if (info.size > MAX_STATS_OUTPUT)
+        throw new Error('GJC stats output exceeds the 16 MiB limit')
       const text = await readFile(outputPath, 'utf8')
-      if (Buffer.byteLength(text) > 16 * 1024 * 1024) throw new Error('GJC stats output exceeds the 16 MiB limit')
-      return parseJsonOutput(text)
+      return parseJsonOutput(text, MAX_STATS_OUTPUT)
     } finally {
       await output.close()
       await unlink(outputPath).catch(() => undefined)

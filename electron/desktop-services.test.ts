@@ -1,5 +1,8 @@
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { ManagementService } from './desktop-services.js'
+import { ManagementService, parseJsonOutput } from './desktop-services.js'
 
 describe('ManagementService', () => {
   it('normalizes redacted GJC management JSON across every source', async () => {
@@ -22,6 +25,43 @@ describe('ManagementService', () => {
       plugins: [{ name: 'plugin-a', enabled: true }],
       usage: { requests: 10, inputTokens: 100, outputTokens: 20, cacheRate: 0.5, cost: 1.25 },
     })
+  })
+
+  it('keeps the whole stats document within the 16 MiB contract', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-stats-size-'))
+    try {
+      const executable = path.join(directory, 'gjc')
+      // Real executable path: runStatsJson streams stats to a file and accepts up to
+      // 16 MiB, while the other commands stay on the 4 MiB JSON path.
+      await writeFile(executable, `#!/usr/bin/env node
+const args = process.argv.slice(2)
+if (args[0] === 'stats') {
+  process.stdout.write(JSON.stringify({ overall: { totalRequests: 7 }, byModel: [], pad: 'x'.repeat(5 * 1024 * 1024) }))
+} else if (args[0] === 'mcp') {
+  process.stdout.write('{"servers":[]}')
+} else if (args[0] === 'skills') {
+  process.stdout.write('{"candidates":[]}')
+} else if (args[0] === 'plugin') {
+  process.stdout.write('{"npm":[],"marketplace":[],"gjc":[]}')
+} else {
+  process.stdout.write('{"ok":true}')
+}
+`, { mode: 0o755 })
+      await chmod(executable, 0o755)
+      const service = new ManagementService(executable)
+      await expect(service.getSnapshot('/tmp')).resolves.toMatchObject({ usage: { requests: 7 } })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('checks the stats document size before parsing and keeps the 4 MiB boundary', () => {
+    const document = JSON.stringify({ overall: { totalRequests: 1 }, byModel: [] })
+    const exact = 'x'.repeat(4 * 1024 * 1024 - document.length) + document
+    expect(Buffer.byteLength(exact)).toBe(4 * 1024 * 1024)
+    expect(parseJsonOutput(exact)).toMatchObject({ overall: { totalRequests: 1 } })
+    expect(() => parseJsonOutput('x' + exact)).toThrow('4 MiB limit')
+    expect(() => parseJsonOutput(exact, 16 * 1024 * 1024)).not.toThrow()
   })
 
   it('uses project-scoped MCP arguments and rejects secret-prone endpoints', async () => {
