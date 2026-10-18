@@ -43,6 +43,68 @@ describe('automation service contracts', () => {
     expect(await service.list()).toEqual([])
   })
 
+  it('keeps the lock until a timed-out child confirms it exited', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-timeout-'))
+    const signals: string[] = []
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid?: number; kill(signal: string): boolean }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.pid = 4321
+      // The first child ignores both signals and never emits close. The second
+      // completes normally once the retry is allowed to start.
+      child.kill = (signal: string) => {
+        signals.push(signal)
+        if (spawned > 1) setTimeout(() => child.emit('close', 0), 5)
+        return true
+      }
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess, timeoutMs: 10, killGraceMs: 20 })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    const timedOut = await service.runNow(created.id)
+    expect(timedOut.status).toBe('failed')
+    expect(timedOut.error).toContain('exceeded 10ms')
+    expect(timedOut.error).toContain('did not confirm termination')
+    expect(signals).toEqual(['SIGTERM', 'SIGKILL'])
+
+    // The first process never proved it exited, so the workspace lock stays and a
+    // second run must not start while the old process may still be alive.
+    const blocked = await service.runNow(created.id)
+    expect(blocked.status).toBe('skipped')
+    expect(spawned).toBe(1)
+  })
+
+  it('releases the lock when a timed-out child exits during the grace period', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-grace-'))
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid?: number; kill(): boolean }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.pid = 4321
+      child.kill = () => {
+        setTimeout(() => child.emit('close', null), 5)
+        return true
+      }
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess, timeoutMs: 10, killGraceMs: 50 })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    const timedOut = await service.runNow(created.id)
+    expect(timedOut.status).toBe('failed')
+    expect(timedOut.error).toContain('was terminated')
+
+    const retried = await service.runNow(created.id)
+    expect(retried.status).toBe('failed')
+    expect(spawned).toBe(2)
+  })
+
   it('records a child process error event instead of crashing the worker', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-error-'))
     let spawned = 0

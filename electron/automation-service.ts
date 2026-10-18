@@ -18,6 +18,8 @@ export type AutomationServiceOptions = {
   platform?: string
   spawnProcess?: typeof spawn
   timeoutMs?: number
+  /** How long to wait after SIGTERM before SIGKILL, and after SIGKILL before giving up. */
+  killGraceMs?: number
 }
 
 const MAX_NAME = 200, MAX_PROMPT = 20_000, MAX_OUTPUT = 32_000
@@ -85,7 +87,155 @@ export class AutomationService {
   private async sync(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { if (item.enabled) { const config = path.join(this.dir, `config-${item.id}.json`); await atomicJson(config, { automation: item, directory: this.dir, gjcExecutable: this.opts.gjcExecutable }); await mkdir(path.dirname(this.plistPath(item.id)), { recursive: true }); try { await this.launchctl(['unload', this.plistPath(item.id)]) } catch { /* A new schedule has nothing to unload. */ } await writeFile(this.plistPath(item.id), automationPlist(`com.gajae.automation.${item.id}`, this.opts.electronPath ?? process.execPath, this.opts.workerPath ?? '', config, item.schedule)); await this.launchctl(['load', this.plistPath(item.id)]) } else await this.unload(item) } }
   private async unload(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { await this.launchctl(['unload', this.plistPath(item.id)]); await rm(this.plistPath(item.id), { force: true }) } }
   private next(schedule: AutomationSchedule, from: Date): string { const d = new Date(from); const [h, m] = schedule.time.split(':').map(Number); d.setSeconds(0, 0); d.setHours(h, m); if (schedule.kind === 'weekly') { let delta = (schedule.weekday! - d.getDay() + 7) % 7; if (!delta && d <= from) delta = 7; d.setDate(d.getDate() + delta) } else if (schedule.kind === 'weekdays') { while (d <= from || d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1) } else if (d <= from) d.setDate(d.getDate() + 1); return d.toISOString() }
-  private async execute(item: Automation): Promise<AutomationRun> { await mkdir(this.dir, { recursive: true }); const lock = path.join(this.dir, `.run-${item.id}.lock`); try { await mkdir(lock) } catch { const skipped = { id: randomUUID(), automationId: item.id, status: 'skipped' as const, startedAt: this.now().toISOString(), finishedAt: this.now().toISOString(), exitCode: null, output: '', error: 'run already in progress' }; await this.writeRun(skipped); return skipped }
-    const run: AutomationRun = { id: randomUUID(), automationId: item.id, status: 'running', startedAt: this.now().toISOString(), finishedAt: null, exitCode: null, output: '', error: '' }; await this.writeRun(run)
-    try { const args = ['--print']; if (item.modelProfile) args.push('--mpreset', item.modelProfile); if (item.thinking) args.push('--thinking', item.thinking); if (item.worktree) args.push('--worktree'); args.push(item.prompt); const runtimePath = [path.dirname(this.opts.gjcExecutable), path.join(homedir(), '.bun/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'].filter((entry, index, values) => values.indexOf(entry) === index).join(path.delimiter); const child = (this.opts.spawnProcess ?? spawn)(this.opts.gjcExecutable, args, { cwd: item.workspace, shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, PATH: runtimePath } }); let out = '', err = ''; child.stdout?.on('data', (b) => { out = (out + b.toString()).slice(-MAX_OUTPUT) }); child.stderr?.on('data', (b) => { err = (err + b.toString()).slice(-MAX_OUTPUT) }); const completion = await new Promise<{ code: number | null; error?: string }>((resolve) => { let settled = false; let spawnError: string | undefined; const finish = (code: number | null) => { if (settled) return; settled = true; clearTimeout(timer); resolve({ code, ...(spawnError === undefined ? {} : { error: spawnError }) }) }; const timer = setTimeout(() => { try { child.kill('SIGTERM') } catch { /* The close event below still reports the exit. */ } finish(-1) }, this.opts.timeoutMs ?? 1_800_000); /* A spawn failure arrives asynchronously; without this listener it is an unhandled 'error' event that takes the worker down instead of recording a failed run. */ child.on('error', (error) => { spawnError = String(error); /* No pid means the process never started, so no close event is guaranteed. */ if (child.pid === undefined) finish(null) }); child.on('close', (c) => finish(c)) }); run.exitCode = completion.code; run.output = out; run.error = completion.error ?? err; run.status = completion.error === undefined && completion.code === 0 ? 'completed' : 'failed' } catch (error) { run.status = 'failed'; run.error = String(error) } finally { run.finishedAt = this.now().toISOString(); await this.writeRun(run); await rm(lock, { recursive: true, force: true }) } return run }
+  private async execute(item: Automation): Promise<AutomationRun> {
+    await mkdir(this.dir, { recursive: true })
+    const lock = path.join(this.dir, `.run-${item.id}.lock`)
+    try {
+      await mkdir(lock)
+    } catch {
+      const skipped = {
+        id: randomUUID(),
+        automationId: item.id,
+        status: 'skipped' as const,
+        startedAt: this.now().toISOString(),
+        finishedAt: this.now().toISOString(),
+        exitCode: null,
+        output: '',
+        error: 'run already in progress',
+      }
+      await this.writeRun(skipped)
+      return skipped
+    }
+    const run: AutomationRun = {
+      id: randomUUID(),
+      automationId: item.id,
+      status: 'running',
+      startedAt: this.now().toISOString(),
+      finishedAt: null,
+      exitCode: null,
+      output: '',
+      error: '',
+    }
+    await this.writeRun(run)
+    let releaseLock = true
+    try {
+      const args = ['--print']
+      if (item.modelProfile) args.push('--mpreset', item.modelProfile)
+      if (item.thinking) args.push('--thinking', item.thinking)
+      if (item.worktree) args.push('--worktree')
+      args.push(item.prompt)
+      const runtimePath = [
+        path.dirname(this.opts.gjcExecutable),
+        path.join(homedir(), '.bun/bin'),
+        '/opt/homebrew/bin',
+        '/usr/local/bin',
+        '/usr/bin',
+        '/bin',
+      ]
+        .filter((entry, index, values) => values.indexOf(entry) === index)
+        .join(path.delimiter)
+      const child = (this.opts.spawnProcess ?? spawn)(this.opts.gjcExecutable, args, {
+        cwd: item.workspace,
+        shell: false,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, PATH: runtimePath },
+      })
+      let out = ''
+      let err = ''
+      child.stdout?.on('data', (b) => {
+        out = (out + b.toString()).slice(-MAX_OUTPUT)
+      })
+      child.stderr?.on('data', (b) => {
+        err = (err + b.toString()).slice(-MAX_OUTPUT)
+      })
+      const completion = await this.completeChild(
+        child,
+        this.opts.timeoutMs ?? 1_800_000,
+      )
+      releaseLock = completion.confirmed
+      run.exitCode = completion.code
+      run.output = out
+      run.error = completion.error ?? err
+      run.status =
+        completion.error === undefined && completion.code === 0
+          ? 'completed'
+          : 'failed'
+    } catch (error) {
+      run.status = 'failed'
+      run.error = String(error)
+    } finally {
+      run.finishedAt = this.now().toISOString()
+      await this.writeRun(run)
+      // A process that never confirmed its exit keeps the lock: releasing it would
+      // let a second run write the same workspace while the first may still be alive.
+      if (releaseLock) await rm(lock, { recursive: true, force: true })
+    }
+    return run
+  }
+
+  /**
+   * Waits for the child to actually exit.
+   *
+   * A timeout sends SIGTERM and waits a bounded grace period before SIGKILL. The
+   * promise resolves with `confirmed: false` only when even the forced kill produced
+   * no close event, which is the one case where the caller must keep the lock.
+   */
+  private completeChild(
+    child: ReturnType<typeof spawn>,
+    timeoutMs: number,
+  ): Promise<{ code: number | null; error?: string; confirmed: boolean }> {
+    const graceMs = this.opts.killGraceMs ?? 5_000
+    return new Promise((resolve) => {
+      let settled = false
+      let childError: string | undefined
+      let timedOut = false
+      let timeoutTimer: ReturnType<typeof setTimeout> | undefined
+      let graceTimer: ReturnType<typeof setTimeout> | undefined
+      let forcedTimer: ReturnType<typeof setTimeout> | undefined
+      const clearTimers = () => {
+        clearTimeout(timeoutTimer)
+        clearTimeout(graceTimer)
+        clearTimeout(forcedTimer)
+      }
+      const finish = (code: number | null, confirmed: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimers()
+        const timeoutError = timedOut
+          ? `automation exceeded ${timeoutMs}ms and ${confirmed ? 'was terminated' : 'did not confirm termination'}`
+          : undefined
+        resolve({
+          code,
+          ...(childError === undefined && timeoutError === undefined
+            ? {}
+            : { error: childError ?? timeoutError }),
+          confirmed,
+        })
+      }
+      const signal = (name: NodeJS.Signals) => {
+        try {
+          child.kill(name)
+        } catch (error) {
+          childError ??= String(error)
+        }
+      }
+      timeoutTimer = setTimeout(() => {
+        timedOut = true
+        signal('SIGTERM')
+        graceTimer = setTimeout(() => {
+          signal('SIGKILL')
+          // SIGKILL also completes asynchronously; hold the lock until close proves
+          // the process is gone instead of trusting the kill call's return value.
+          forcedTimer = setTimeout(() => finish(null, false), graceMs)
+        }, graceMs)
+      }, timeoutMs)
+      child.on('error', (error) => {
+        childError = String(error)
+        // No pid means the process never started, so no close event is guaranteed.
+        if (child.pid === undefined) finish(null, true)
+      })
+      child.on('close', (code) => finish(code, true))
+    })
+  }
+
 }
