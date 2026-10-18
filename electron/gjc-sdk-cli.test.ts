@@ -299,7 +299,9 @@ describe("GjcSdkCli.listSessions", () => {
         executable,
         repo: directory,
         env: process.env,
-        timeoutMs: 1_000,
+        // The child exits immediately, but a loaded parallel suite can take longer
+        // than one second to schedule it; the assertion is about stderr, not timing.
+        timeoutMs: 3_000,
       });
       await expect(client.listSessions()).rejects.toThrowError(
         /Unknown option '--scope'/u,
