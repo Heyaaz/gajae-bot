@@ -43,6 +43,38 @@ describe('automation service contracts', () => {
     expect(await service.list()).toEqual([])
   })
 
+  it('records a child process error event instead of crashing the worker', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-error-'))
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid?: number; kill(): boolean }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.kill = () => true
+      if (spawned === 1) {
+        // A missing executable reports asynchronously; close is not guaranteed.
+        child.pid = undefined
+        setTimeout(() => child.emit('error', Object.assign(new Error('spawn gjc ENOENT'), { code: 'ENOENT' })), 10)
+      } else {
+        child.pid = 1234
+        setTimeout(() => child.emit('close', 0), 10)
+      }
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    const failed = await service.runNow(created.id)
+    expect(failed.status).toBe('failed')
+    expect(failed.error).toContain('ENOENT')
+
+    // The completion path released the lock: the next attempt really runs.
+    const retried = await service.runNow(created.id)
+    expect(retried.status).toBe('completed')
+    expect(spawned).toBe(2)
+  })
+
   it('schedules the automations around a record it cannot read', async () => {
     // `defs()` only guards against the file failing to parse. A record written by an
     // older schema -- a daily schedule with no time -- threw out of the loop, so every
