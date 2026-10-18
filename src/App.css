@@ -2803,6 +2803,41 @@
   margin: 0 auto;
   padding: 0 0 13px;
 }
+.approval-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin-bottom: 6px;
+  padding: 5px 7px 5px 10px;
+  color: var(--warning);
+  background: rgba(227, 179, 106, 0.1);
+  border: 1px solid rgba(227, 179, 106, 0.32);
+  border-radius: 8px;
+}
+.approval-banner > span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.approval-banner-jump,
+.approval-banner-next {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  color: inherit;
+  font-size: 11px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(227, 179, 106, 0.4);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.approval-banner-jump:hover,
+.approval-banner-next:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
 .goal-progress-row {
   display: grid;
   min-height: 34px;

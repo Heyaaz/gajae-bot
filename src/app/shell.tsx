@@ -26,6 +26,7 @@ import {
   discoveryRevisionIsFresh,
   mergeDiscoveredSessions,
   mergeTranscriptItem,
+  pendingToolApprovals,
   updateTranscriptItem,
 } from "../transcript-utils";
 import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
@@ -64,7 +65,7 @@ import {
 } from "./project-model";
 import type { RepoDesktopBridge } from "../../shared/repo-ipc";
 import type { ProjectPathResolution } from "../../shared/repo-ipc";
-import { RecentRequestStrip, Transcript } from "./transcript";
+import { ApprovalBanner, RecentRequestStrip, Transcript } from "./transcript";
 import {
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
@@ -247,6 +248,9 @@ export default function App() {
   // shown and thought cards forced open, absorbing that saved toggle.
   const [toolViewMode, setToolViewMode] = useState<"basic" | "reasoning" | "detailed">(
     "reasoning",
+  );
+  const [focusedApprovalId, setFocusedApprovalId] = useState<string | undefined>(
+    undefined,
   );
   const [diffOpen, setDiffOpen] = useState(false);
   const [diff, setDiff] = useState<DiffSnapshot | null>(null);
@@ -936,6 +940,10 @@ export default function App() {
     },
     [backend],
   );
+  const pendingApprovals = useMemo(
+    () => pendingToolApprovals(selectedTranscript),
+    [selectedTranscript],
+  );
   const readArtifact = useCallback(
     (artifactId: string) => {
       if (!selectedId)
@@ -1166,6 +1174,30 @@ export default function App() {
     shortcutSessions,
     cancelRun,
   ]);
+
+  // ⌘↵/⌘⌫ approve or reject the currently focused pending approval. MetaKey-gated
+  // so it never fights the composer's own Enter handling, and ignored while a
+  // dismissible surface is open for the same reason abortWithEscape is.
+  useEffect(() => {
+    function onApprovalShortcut(event: globalThis.KeyboardEvent): void {
+      if (!event.metaKey || dismissibleSurfaceOpen) return;
+      if (event.key !== "Enter" && event.key !== "Backspace") return;
+      const pending = pendingApprovals;
+      if (pending.length === 0) return;
+      const focused =
+        pending.find((tool) => tool.id === focusedApprovalId) ?? pending[0]!;
+      const option = focused.permissionOptions?.find((candidate) =>
+        event.key === "Enter"
+          ? candidate.kind.startsWith("allow")
+          : candidate.kind.startsWith("reject"),
+      );
+      if (!option) return;
+      event.preventDefault();
+      resolveToolCall(focused.id, option.optionId);
+    }
+    window.addEventListener("keydown", onApprovalShortcut);
+    return () => window.removeEventListener("keydown", onApprovalShortcut);
+  }, [dismissibleSurfaceOpen, pendingApprovals, focusedApprovalId, resolveToolCall]);
 
   async function sendMessage(
     sessionId: string,
@@ -1742,6 +1774,15 @@ export default function App() {
                 onReadArtifact={readArtifact}
               />
               <div className="composer-wrap">
+                <ApprovalBanner
+                  pending={pendingApprovals}
+                  focusedId={focusedApprovalId}
+                  onReveal={(toolId) => {
+                    setFocusedApprovalId(toolId);
+                    setRevealTarget({ sessionId: selectedSession.id, itemId: toolId });
+                  }}
+                  onFocusChange={setFocusedApprovalId}
+                />
                 <GoalProgressRow
                   goal={goal}
                   busy={goalBusySessionId === selectedSession.id}

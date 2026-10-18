@@ -12,6 +12,7 @@ import {
   mergeDiscoveredSessions,
   attachmentSummaryText,
   mergeTranscriptItem,
+  pendingToolApprovals,
   recentUserRequests,
   summarizeToolRun,
   turnStartBlockIds,
@@ -842,6 +843,19 @@ describe("groupTranscriptItems", () => {
       { kind: "item", id: message.id, item: message },
       { kind: "item", id: notice.id, item: notice },
     ]);
+  });
+});
+
+describe("pendingToolApprovals", () => {
+  it("keeps only approval-required tool calls, in transcript order", () => {
+    const approvalA = { ...tool("a"), status: "approval-required" as const };
+    const approvalB = { ...tool("b"), status: "approval-required" as const };
+    const items = [tool("running"), approvalA, message, approvalB];
+    expect(pendingToolApprovals(items).map((item) => item.id)).toEqual(["a", "b"]);
+  });
+
+  it("returns an empty list when nothing is waiting", () => {
+    expect(pendingToolApprovals([tool("a"), message])).toEqual([]);
   });
 });
 

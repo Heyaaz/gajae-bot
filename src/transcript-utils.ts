@@ -193,6 +193,22 @@ export function summarizeToolRun(
 }
 
 /**
+ * Tool calls currently waiting on an approval decision, in transcript order.
+ *
+ * The sticky approval banner needs this independent of whichever blocks the
+ * virtualizer happens to have mounted: a card the user scrolled away from is still
+ * waiting, and the banner is what keeps it reachable.
+ */
+export function pendingToolApprovals(
+  items: readonly TranscriptItem[],
+): Extract<TranscriptItem, { kind: "tool" }>[] {
+  return items.filter(
+    (item): item is Extract<TranscriptItem, { kind: "tool" }> =>
+      item.kind === "tool" && item.status === "approval-required",
+  );
+}
+
+/**
  * Which blocks open a new turn, for a wider visual gap between a user's request and
  * the previous turn's response.
  *

@@ -1933,10 +1933,10 @@ export function RecentRequestStrip({
   const requests = useMemo(() => recentUserRequests(items), [items]);
   if (requests.length === 0) return null;
   return (
-    <section className="recent-requests" aria-label="최근 요청">
+    <section className="recent-requests" aria-label="최신 요정">
       <header>
         <Clock3 size={11} />
-        <strong>최근 요청</strong>
+        <strong>최신 요정</strong>
       </header>
       <div>
         {requests.map((request, index) => (
@@ -1953,5 +1953,63 @@ export function RecentRequestStrip({
         ))}
       </div>
     </section>
+  );
+}
+
+export interface ApprovalBannerProps {
+  pending: Extract<TranscriptItem, { kind: "tool" }>[];
+  /** Which pending approval the ⌘↵/⌘⌫ shortcuts and "다음" button target. */
+  focusedId?: string;
+  onReveal: (toolId: string) => void;
+  onFocusChange: (toolId: string) => void;
+}
+
+/**
+ * A sticky banner above the composer naming how many tool calls are waiting on an
+ * approval decision, so a reader who scrolled up (or who is deep in a long tool
+ * run) does not lose track of one.
+ *
+ * It surfaces only the *location*: approving or rejecting still happens on the card
+ * itself (via its own permissionOptions), once the banner or ⌘↵/⌘⌫ has brought it
+ * on screen. A richer approval card that can decide from the banner directly needs
+ * the reverse GJC approval channel this app does not have (see README, Permission
+ * handling) and is out of scope here.
+ */
+export function ApprovalBanner({
+  pending,
+  focusedId,
+  onReveal,
+  onFocusChange,
+}: ApprovalBannerProps) {
+  if (pending.length === 0) return null;
+  const focused = pending.find((tool) => tool.id === focusedId) ?? pending[0]!;
+  return (
+    <div className="approval-banner" role="status">
+      <ShieldCheck size={14} />
+      <span>
+        승인 대기 {pending.length}건 · {toolDisplayName(focused.name)}
+      </span>
+      <button
+        type="button"
+        className="approval-banner-jump"
+        onClick={() => onReveal(focused.id)}
+      >
+        해당 위치로 이동
+      </button>
+      {pending.length > 1 && (
+        <button
+          type="button"
+          className="approval-banner-next"
+          onClick={() => {
+            const index = pending.findIndex((tool) => tool.id === focused.id);
+            const next = pending[(index + 1) % pending.length]!;
+            onFocusChange(next.id);
+            onReveal(next.id);
+          }}
+        >
+          다음 대기 ({pending.length})
+        </button>
+      )}
+    </div>
   );
 }
