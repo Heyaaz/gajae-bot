@@ -185,7 +185,8 @@ export class RemoteClient {
    */
   private via?: RemoteDeviceIdentity["via"];
   private status: RemoteClientStatus;
-  private lastSeq = 0;
+  /** The last sequence actually observed; undefined until the host reports one. */
+  private lastSeq: number | undefined = undefined;
   private attempt = 0;
   private stream?: AbortController;
   private streamGeneration = 0;
@@ -474,7 +475,7 @@ export class RemoteClient {
     const generation = ++this.streamGeneration;
     this.stream = controller;
     const presented = this.token;
-    const since = this.lastSeq > 0 ? this.lastSeq : undefined;
+    const since = this.lastSeq;
     try {
       const response = await this.fetchImpl(
         this.url(`${REMOTE_API.events}${since === undefined ? "" : `?since=${since}`}`),
@@ -526,7 +527,10 @@ export class RemoteClient {
   private handleFrame(frame: SseFrame): void {
     if (frame.event === "hello") {
       const hello = frame.data as { seq?: number; device?: { permission?: unknown; name?: string } };
-      if (typeof hello.seq === "number" && hello.seq > this.lastSeq) {
+      if (
+        typeof hello.seq === "number" &&
+        (this.lastSeq === undefined || hello.seq > this.lastSeq)
+      ) {
         // The host is ahead of us: this is a fresh stream, and the snapshot call
         // in openStream already covered anything before it.
         this.lastSeq = hello.seq;
@@ -556,7 +560,11 @@ export class RemoteClient {
     }
     if (frame.event === "agent") {
       const payload = frame.data as RemoteEventFrame;
-      if (typeof payload?.seq === "number") this.lastSeq = Math.max(this.lastSeq, payload.seq);
+      if (typeof payload?.seq === "number")
+        this.lastSeq =
+          this.lastSeq === undefined
+            ? payload.seq
+            : Math.max(this.lastSeq, payload.seq);
       if (payload?.event) this.options.onEvent?.(payload.event);
     }
   }

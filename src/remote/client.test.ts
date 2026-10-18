@@ -369,6 +369,35 @@ describe("event stream", () => {
     client.dispose();
   });
 
+  it("resumes from sequence zero instead of dropping the first events", async () => {
+    const urls: string[] = [];
+    const { fetchImpl } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        urls.push(call.url);
+        const frame = `event: agent\ndata: ${JSON.stringify({
+          seq: 0,
+          event: { type: "session.deleted", sessionId: "s-0" },
+        })}\n\n`;
+        return urls.length === 1
+          ? streamResponse([frame])
+          : streamResponse([frame], { keepOpen: true });
+      }
+      if (call.url.includes(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+      reconnect: { minDelayMs: 1, maxDelayMs: 2, jitter: () => 0 },
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(urls).toHaveLength(2), { timeout: 2000 });
+    expect(urls[0]).not.toContain("?since=");
+    expect(urls[1]).toContain("since=0");
+    client.dispose();
+  });
+
   it("stops reconnecting after the host says the device was revoked", async () => {
     let streamCalls = 0;
     const { fetchImpl } = recorder((call) => {
