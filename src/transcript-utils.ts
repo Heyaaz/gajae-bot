@@ -374,22 +374,27 @@ export function cacheTranscript(
   if (previous && previous !== items) {
     // Appending a row leaves every earlier row reference-identical. Walking that
     // prefix without serialising each one keeps the cost of a streamed chunk
-    // proportional to the new row, not to the whole conversation.
+    // proportional to the new row, not to the whole conversation. A full sync can
+    // rebuild rows as new objects; each content-equal row independently keeps its
+    // previous identity so one changed row does not invalidate every memoised row.
     const shared = Math.min(previous.length, items.length);
     let prefixSame = true;
+    let reused: TranscriptItem[] | undefined;
     for (let index = 0; index < shared; index += 1) {
       const current = previous[index];
       const item = items[index];
-      if (current === item) continue;
-      // A full sync rebuilds the rows as new objects; content equality is what
-      // decides whether they can keep their previous identity.
-      if (
-        current?.id === item.id &&
-        JSON.stringify(current) === JSON.stringify(item)
-      )
-        continue;
-      prefixSame = false;
-      break;
+      const same = current === item;
+      const equivalent =
+        same ||
+        (current?.id === item.id &&
+          JSON.stringify(current) === JSON.stringify(item));
+      if (!equivalent) prefixSame = false;
+      if (reused) {
+        reused.push(equivalent ? current : item);
+      } else if (equivalent && !same) {
+        reused = items.slice(0, index);
+        reused.push(current);
+      }
     }
     if (prefixSame) {
       if (previous.length === items.length) items = previous;
@@ -397,6 +402,13 @@ export function cacheTranscript(
       // resurrect them from the previous array.
       else if (items.length > previous.length)
         items = [...previous, ...items.slice(shared)];
+      else if (reused) {
+        reused.push(...items.slice(shared));
+        items = reused;
+      }
+    } else if (reused) {
+      reused.push(...items.slice(shared));
+      items = reused;
     }
   }
   const keys = Object.keys(transcripts);

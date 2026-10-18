@@ -615,6 +615,37 @@ describe("cacheTranscript", () => {
     expect(row?.kind === "message" ? row.images : undefined).toEqual(images);
   });
 
+  it("reuses each unchanged row independently when another row changes", () => {
+    const first = {
+      ...message,
+      id: "shared-message-1",
+      role: "user" as const,
+      content: "첫 번째",
+    };
+    const second = {
+      ...message,
+      id: "shared-message-2",
+      role: "user" as const,
+      content: "두 번째",
+    };
+    const changedSecond = { ...second, content: "바뀐 두 번째" };
+    const firstChanged = cacheTranscript({ "session-1": [first, second] }, "session-1", [
+      { ...first },
+      changedSecond,
+    ]);
+    expect(firstChanged["session-1"][0]).toBe(first);
+    expect(firstChanged["session-1"][1]).toBe(changedSecond);
+
+    const changedFirst = { ...first, content: "바뀐 첫 번째" };
+    const secondUnchanged = cacheTranscript(
+      { "session-1": [first, second] },
+      "session-1",
+      [changedFirst, { ...second }],
+    );
+    expect(secondUnchanged["session-1"][0]).toBe(changedFirst);
+    expect(secondUnchanged["session-1"][1]).toBe(second);
+  });
+
   it("gives each of two identical requests its own images", () => {
     const first = { id: "img-1", name: "one.png", mimeType: "image/png", data: "1" };
     const second = { id: "img-2", name: "two.png", mimeType: "image/png", data: "2" };
