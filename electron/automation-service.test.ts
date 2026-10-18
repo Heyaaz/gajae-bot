@@ -289,6 +289,35 @@ describe('automation service contracts', () => {
     expect(run.exitCode).toBe(0)
   })
 
+  it('does not recover a stale lock while another worker owns the recovery guard', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-recover-guard-'))
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess: (() => { throw new Error('must not spawn') }) as never })
+    const lock = path.join(directory, '.run-automation-1.lock')
+    await mkdir(lock)
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: 999999, token: 'stale', startedAt: new Date().toISOString(), automationId: 'automation-1' }))
+    await writeFile(`${lock}.recover`, 'another worker is recovering')
+
+    const internals = service as unknown as {
+      acquireLock: (lock: string, automationId: string) => Promise<unknown>
+    }
+    expect(await internals.acquireLock(lock, 'automation-1')).toBeUndefined()
+    // The stale directory was not moved or deleted by the losing recoverer.
+    expect(await readFile(path.join(lock, 'owner.json'), 'utf8')).toContain('stale')
+  })
+
+  it('releases only the lock owned by the finishing run', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-release-token-'))
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none' })
+    const lock = path.join(directory, '.run-automation-1.lock')
+    await mkdir(lock)
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, token: 'new-owner', startedAt: new Date().toISOString(), automationId: 'automation-1' }))
+    const internals = service as unknown as {
+      releaseLock: (lock: string, owner: { pid: number; token: string; startedAt: string; automationId: string }) => Promise<void>
+    }
+    await internals.releaseLock(lock, { pid: process.pid, token: 'old-owner', startedAt: new Date().toISOString(), automationId: 'automation-1' })
+    expect(await readFile(path.join(lock, 'owner.json'), 'utf8')).toContain('new-owner')
+  })
+
   it('schedules the automations around a record it cannot read', async () => {
     // `defs()` only guards against the file failing to parse. A record written by an
     // older schema -- a daily schedule with no time -- threw out of the loop, so every

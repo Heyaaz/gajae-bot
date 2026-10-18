@@ -1,10 +1,13 @@
-import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { platform } from 'node:os'
 import { homedir } from 'node:os'
 import type { Automation, AutomationInput, AutomationRun, AutomationSchedule } from '../shared/automation-ipc.js'
+
+/** A recovery guard this old belongs to a worker that died mid-recovery. */
+const LOCK_RECOVERY_STALE_MS = 30_000
 
 export type LaunchctlRunner = (args: string[]) => Promise<void> | void
 export type AutomationServiceOptions = {
@@ -177,22 +180,73 @@ export class AutomationService {
     // An unreadable owner is not proof that nothing is running; leave it alone.
     if (!inspected || lockOwnerAlive(inspected)) return undefined
 
-    // Move the exact stale directory aside before deleting it. A concurrent
-    // recovery can then replace the lock only once, and a directory created after
-    // inspection is detected by its token and put back.
-    const tombstone = `${lock}.stale-${randomUUID()}`
+    // Serialize recovery with a guard. Two recoverers that read the same stale
+    // token must not both rename: the second can otherwise move the first
+    // recoverer's brand-new live lock out of the way, and a third run can then
+    // start beside it. Holding the guard across the whole replace transaction
+    // makes only one process move the stale directory.
+    const guard = `${lock}.recover`
+    const guardFile = await this.claimRecovery(guard)
+    if (!guardFile) return undefined
     try {
-      await rename(lock, tombstone)
-    } catch {
-      return undefined
+      // Re-read under the guard. The directory may have changed between the
+      // first inspection and this claim.
+      const current = await this.readLockOwner(lock)
+      if (
+        !current ||
+        current.token !== inspected.token ||
+        lockOwnerAlive(current)
+      )
+        return undefined
+      const tombstone = `${lock}.stale-${randomUUID()}`
+      try {
+        await rename(lock, tombstone)
+      } catch {
+        return undefined
+      }
+      const moved = await this.readLockOwner(tombstone)
+      if (!moved || moved.token !== inspected.token || lockOwnerAlive(moved)) {
+        await rename(tombstone, lock).catch(() => undefined)
+        return undefined
+      }
+      await rm(tombstone, { recursive: true, force: true })
+      return (await this.createLock(lock, owner)) ? owner : undefined
+    } finally {
+      await guardFile.close().catch(() => undefined)
+      await rm(guard, { force: true }).catch(() => undefined)
     }
-    const moved = await this.readLockOwner(tombstone)
-    if (!moved || moved.token !== inspected.token || lockOwnerAlive(moved)) {
-      await rename(tombstone, lock).catch(() => undefined)
-      return undefined
+  }
+
+  /**
+   * Claims the recovery guard, cleaning one left by a worker that died mid-way.
+   * Losing the claim means another worker is already recovering, so this run
+   * skips instead of racing it.
+   */
+  private async claimRecovery(
+    guard: string,
+  ): Promise<Awaited<ReturnType<typeof open>> | undefined> {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        return await open(guard, 'wx', 0o600)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
+        const info = await stat(guard).catch(() => undefined)
+        if (!info || Date.now() - info.mtimeMs < LOCK_RECOVERY_STALE_MS)
+          return undefined
+        await rm(guard, { force: true }).catch(() => undefined)
+      }
     }
-    await rm(tombstone, { recursive: true, force: true })
-    return (await this.createLock(lock, owner)) ? owner : undefined
+    return undefined
+  }
+
+  /** Removes the lock only while it still belongs to this run. */
+  private async releaseLock(
+    lock: string,
+    owner: AutomationLockOwner,
+  ): Promise<void> {
+    const current = await this.readLockOwner(lock)
+    if (!current || current.token !== owner.token) return
+    await rm(lock, { recursive: true, force: true })
   }
 
   private async createLock(
@@ -281,7 +335,7 @@ export class AutomationService {
     } catch (error) {
       // Starting history is part of claiming the run. A run that was never
       // recorded must not leave its lock behind.
-      await rm(lock, { recursive: true, force: true })
+      await this.releaseLock(lock, owner)
       throw error
     }
     let releaseLock = true
@@ -347,7 +401,7 @@ export class AutomationService {
       } finally {
         // A process that never confirmed its exit keeps the lock: releasing it would
         // let a second run write the same workspace while the first may still be alive.
-        if (releaseLock) await rm(lock, { recursive: true, force: true })
+        if (releaseLock) await this.releaseLock(lock, owner)
       }
     }
     return run
