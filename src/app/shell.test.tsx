@@ -14,6 +14,8 @@ import App, {
   composerTurnLive,
   escapeCancelsRun,
   isTextEntryTarget,
+  syncAppBadge,
+  unreadBadgeCount,
 } from "./shell";
 
 /**
@@ -290,6 +292,23 @@ function sessionState(
 ): { status: SessionStatus | undefined; phase: string | undefined } {
   return { status, phase };
 }
+
+describe("remote PWA badge", () => {
+  it("counts unread sessions and mirrors the count onto the app icon", () => {
+    const sessions = [
+      { unread: true },
+      { unread: false },
+      { unread: true },
+    ];
+    expect(unreadBadgeCount(sessions)).toBe(2);
+    const setAppBadge = vi.fn(async () => undefined);
+    const clearAppBadge = vi.fn(async () => undefined);
+    syncAppBadge(2, { setAppBadge, clearAppBadge } as never);
+    expect(setAppBadge).toHaveBeenCalledWith(2);
+    syncAppBadge(0, { setAppBadge, clearAppBadge } as never);
+    expect(clearAppBadge).toHaveBeenCalledOnce();
+  });
+});
 
 describe("composer turn state", () => {
   it("settles an idle row whose transcript still shows an unfinished turn", () => {

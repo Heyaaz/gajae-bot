@@ -65,7 +65,10 @@ import {
 import type { RepoDesktopBridge } from "../../shared/repo-ipc";
 import type { ProjectPathResolution } from "../../shared/repo-ipc";
 import { RecentRequestStrip, Transcript } from "./transcript";
-import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
+import {
+  DEFAULT_MODEL_PRESET,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+} from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
 /**
@@ -176,6 +179,34 @@ export function composerTurnLive(
   return transcriptHasLiveWork(transcript);
 }
 
+export function unreadBadgeCount(
+  sessions: ReadonlyArray<Pick<AgentSession, "unread">>,
+): number {
+  return sessions.filter((session) => session.unread).length;
+}
+
+type BadgingNavigator = Navigator & {
+  setAppBadge?: (contents?: number) => Promise<void>;
+  clearAppBadge?: () => Promise<void>;
+};
+
+/**
+ * Mirrors unread sessions onto the installed PWA icon.
+ *
+ * The desktop window keeps its own sidebar count; the badge is what a phone can
+ * see without opening the app. Rejection is non-fatal: a browser without the
+ * Badging API simply has no icon badge.
+ */
+export function syncAppBadge(
+  count: number,
+  nav: BadgingNavigator | undefined =
+    typeof navigator === "undefined" ? undefined : navigator,
+): void {
+  if (!nav) return;
+  if (count > 0) void nav.setAppBadge?.(count).catch(() => undefined);
+  else void nav.clearAppBadge?.().catch(() => undefined);
+}
+
 export default function App() {
   const backend = useAgentBackend();
   const [connection, setConnection] = useState<BackendConnection>({
@@ -266,6 +297,8 @@ export default function App() {
     permissionHandling: "prompt",
     gjcExecutable: "",
     thoughtsExpanded: false,
+    notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+    runningSubmission: "queue",
   });
   const preferencesRef = useRef(preferences);
   // The card toggle is a stable callback so the memo'd transcript rows keep their
@@ -739,6 +772,29 @@ export default function App() {
     if (!selectedId) return;
     void backend.markSessionRead(selectedId);
   }, [backend, selectedId]);
+
+  // The main process cannot infer which session a focused window is showing from
+  // focus alone. Naming it lets notifications skip the turn being watched instead
+  // of pinging the user about their own screen.
+  useEffect(() => {
+    const bridge = window.agentControlDesktop?.settings;
+    if (!bridge) return;
+    void bridge.setViewedSession(selectedId).catch(() => undefined);
+  }, [selectedId]);
+
+  useEffect(
+    () => () => {
+      void window.agentControlDesktop?.settings
+        .setViewedSession(null)
+        .catch(() => undefined);
+    },
+    [],
+  );
+
+  const unreadCount = unreadBadgeCount(sessions);
+  useEffect(() => {
+    syncAppBadge(unreadCount);
+  }, [unreadCount]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -1683,6 +1739,7 @@ export default function App() {
                   thinking={selectedSession.thinking}
                   usagePercent={selectedSession.usagePercent}
                   serviceTier={selectedSession.serviceTier}
+                  runningSubmission={preferences.runningSubmission}
                   onSend={(input) => sendMessage(selectedSession.id, input)}
                   onCancel={() => cancelRun(selectedSession.id)}
                   onFlushQueued={() => flushQueuedNow(selectedSession.id)}

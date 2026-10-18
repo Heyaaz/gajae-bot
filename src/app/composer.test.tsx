@@ -278,6 +278,7 @@ function composerProps(overrides: Partial<ComposerProps> = {}): ComposerProps {
     workspaces: ["/repo"],
     commands: [],
     configOptions: [],
+    runningSubmission: "queue",
     onSend: async () => undefined,
     onCancel: async () => undefined,
     onFlushQueued: async () => undefined,

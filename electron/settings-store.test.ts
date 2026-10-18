@@ -2,7 +2,10 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { DEFAULT_MODEL_PRESET } from '../shared/agent-contract.js'
+import {
+  DEFAULT_MODEL_PRESET,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+} from '../shared/agent-contract.js'
 import { SettingsStore, parsePreferences, validDirectory } from './settings-store.js'
 import { SessionMetadataStore } from './session-metadata-store.js'
 import { fileAttachment, fileMimeType, pickerDirectory } from './settings-ipc-handlers.js'
@@ -75,6 +78,8 @@ describe('SettingsStore', () => {
       permissionHandling: 'prompt',
       gjcExecutable: '',
       thoughtsExpanded: false,
+      notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+      runningSubmission: 'queue',
     })
   })
 
@@ -124,10 +129,22 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, runningSubmission: 'queue' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
+  })
+
+  it('persists notification preferences alone without a whole-object save', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+    const saved = store.setNotificationPreferences({
+      completed: { enabled: false, sound: 'Glass' },
+    })
+    expect(saved.completed).toEqual({ enabled: false, sound: 'Glass' })
+    expect(saved.failed).toEqual(DEFAULT_NOTIFICATION_PREFERENCES.failed)
+    expect(new SettingsStore(userData, root).get().notificationPreferences).toEqual(saved)
   })
 
   it('keeps accepted settings unchanged when persistence fails', () => {

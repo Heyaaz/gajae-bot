@@ -16,6 +16,7 @@ import type {
   TranscriptItem,
   ManagementDesktopBridge,
   McpServerInput,
+  NotificationPreferences,
 } from "../shared/agent-contract.js";
 import type { ProductivityDesktopBridge } from "../shared/productivity-ipc.js";
 import type {
@@ -380,6 +381,15 @@ const settings: SettingsDesktopBridge = Object.freeze({
     ipcRenderer.invoke(SETTINGS_IPC.setWorkspaceLabel, label),
   setThoughtsExpanded: (expanded: boolean) =>
     ipcRenderer.invoke(SETTINGS_IPC.setThoughtsExpanded, expanded),
+  setNotificationPreferences: (preferences: NotificationPreferences) =>
+    ipcRenderer.invoke(
+      SETTINGS_IPC.setNotificationPreferences,
+      preferences,
+    ),
+  setViewedSession: (sessionId: string | null) =>
+    ipcRenderer.invoke(SETTINGS_IPC.setViewedSession, sessionId),
+  setRunningSubmission: (value: "queue" | "steer") =>
+    ipcRenderer.invoke(SETTINGS_IPC.setRunningSubmission, value),
   savePreferences: (preferences: AgentControlPreferences) =>
     ipcRenderer.invoke(SETTINGS_IPC.savePreferences, preferences),
   checkGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkGjcUpdate),

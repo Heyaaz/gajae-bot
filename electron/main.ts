@@ -17,6 +17,7 @@ import path from "node:path";
 import {
   type AgentEvent,
   announcesSessionActivity,
+  notificationDelivery,
   sessionActivityBody,
 } from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
@@ -93,6 +94,10 @@ const desktopEvents = new DesktopEventStream((message) =>
 // The most recent notification this process handed to macOS. The smoke run
 // asserts against it so "the app sends the notification" is a checked fact.
 let lastNotification: { body: string; at: number } | undefined;
+// Each window names the session it is showing. Main uses it to suppress the
+// notification for a turn the user is already watching, which window focus
+// alone cannot tell: a focused window may be showing a different session.
+const viewedSessions = new Map<number, string>();
 
 function eventSessionId(event: AgentEvent): string | undefined {
   if ("sessionId" in event && typeof event.sessionId === "string")
@@ -124,18 +129,28 @@ function broadcastAgentEvent(event: AgentEvent): void {
   // desktop windows do rather than a separately polled view.
   remoteAccess?.publish(event);
   if (event.type !== "session.activity") return;
-  if (
-    !announcesSessionActivity(
-      event.category,
-      windows.some((window) => window.isFocused()),
-    )
-  )
+  const focused = windows.some((window) => window.isFocused());
+  const viewingSession = windows.some(
+    (window) =>
+      window.isFocused() &&
+      viewedSessions.get(window.webContents.id) === event.sessionId,
+  );
+  if (!announcesSessionActivity(event.category, focused, viewingSession))
     return;
+  // A recovered connection has no toggle of its own; it is the same incidental
+  // "there is new activity" ping as a message.
+  const preference =
+    settingsStore.get().notificationPreferences[
+      event.category === "recovered" ? "message" : event.category
+    ];
+  if (!preference.enabled) return;
   if (!Notification.isSupported()) return;
+  const delivery = notificationDelivery(preference);
   const notification = new Notification({
     title: "Gajae",
     body: sessionActivityBody(event),
-    silent: event.category === "message",
+    silent: delivery.silent,
+    ...(delivery.sound ? { sound: delivery.sound } : {}),
   });
   notification.on("click", () => {
     const window = BrowserWindow.getAllWindows()[0];
@@ -261,6 +276,10 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
   },
   async () => {
     await gjcController.reconnect();
+  },
+  (senderId, sessionId) => {
+    if (sessionId === null) viewedSessions.delete(senderId);
+    else viewedSessions.set(senderId, sessionId);
   },
 );
 const unregisterDesktopServicesIpc =

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../shared/agent-contract";
 import type { AgentControlPreferences } from "../backend/types";
 import {
   canSavePreferences,
@@ -14,6 +15,8 @@ const fallback: AgentControlPreferences = {
   permissionHandling: "prompt",
   gjcExecutable: "",
   thoughtsExpanded: false,
+  notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+  runningSubmission: "queue",
 };
 
 const loaded: AgentControlPreferences = {
