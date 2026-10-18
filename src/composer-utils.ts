@@ -25,6 +25,27 @@ export function isImmediateSdkCommandSubmission(
   );
 }
 
+export type LiveTurnSubmissionMode = "queue" | "steer";
+
+/**
+ * Chooses queue or steer for a submission made while a turn is live.
+ *
+ * Explicit prefixes always win. Once something is held, a plain submission
+ * joins the same queue so the order the user built is preserved; only an empty
+ * queue lets the configured default take effect.
+ */
+export function liveTurnSubmissionMode(
+  content: string,
+  runningSubmission: LiveTurnSubmissionMode,
+  hasPending: boolean,
+): LiveTurnSubmissionMode {
+  const text = content.trim();
+  if (/^\/queue(?:\s+|$)/u.test(text)) return "queue";
+  if (/^\/steer(?:\s+|$)/u.test(text)) return "steer";
+  if (hasPending) return "queue";
+  return runningSubmission;
+}
+
 export interface CompactText {
   text: string;
   omittedLines: number;

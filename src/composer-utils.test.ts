@@ -9,6 +9,7 @@ import {
   appendPendingRequest,
   isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
+  liveTurnSubmissionMode,
   SUBMISSION_DEDUPE_MS,
   IME_COMMIT_WINDOW_MS,
   imeCommitSubmits,
@@ -50,6 +51,20 @@ describe("composer utilities", () => {
     expect(isImmediateSdkCommandSubmission("/context", commands, true)).toBe(
       false,
     );
+  });
+
+  it("keeps explicit queue/steer wins over the running-turn default", () => {
+    expect(liveTurnSubmissionMode("next", "queue", false)).toBe("queue");
+    expect(liveTurnSubmissionMode("next", "steer", false)).toBe("steer");
+    expect(liveTurnSubmissionMode("/queue next", "steer", false)).toBe(
+      "queue",
+    );
+    expect(liveTurnSubmissionMode("/steer next", "queue", false)).toBe(
+      "steer",
+    );
+    // Once anything is held, a plain submission joins that queue so an earlier
+    // request is not overtaken merely because the default is steer.
+    expect(liveTurnSubmissionMode("next", "steer", true)).toBe("queue");
   });
 
   it("extracts text from structured tool output and keeps a bounded tail preview", () => {

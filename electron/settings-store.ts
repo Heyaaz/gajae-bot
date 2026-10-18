@@ -10,8 +10,15 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
-import type { AgentControlPreferences, GjcPermissionHandling } from '../shared/agent-contract.js'
-import { DEFAULT_MODEL_PRESET } from '../shared/agent-contract.js'
+import type {
+  AgentControlPreferences,
+  GjcPermissionHandling,
+  NotificationPreferences,
+} from '../shared/agent-contract.js'
+import {
+  DEFAULT_MODEL_PRESET,
+  parseNotificationPreferences,
+} from '../shared/agent-contract.js'
 
 const PERMISSION_MODES = new Set<GjcPermissionHandling>(['prompt', 'auto', 'always-allow'])
 
@@ -69,6 +76,11 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
     // Junk in a stored file reads as collapsed. Only a stored `true` opens the cards,
     // so a hand-edited or older value cannot leave the preference stuck open.
     thoughtsExpanded: candidate.thoughtsExpanded === true,
+    notificationPreferences: parseNotificationPreferences(
+      candidate.notificationPreferences,
+    ),
+    runningSubmission:
+      candidate.runningSubmission === "steer" ? "steer" : "queue",
   }
 }
 
@@ -131,6 +143,28 @@ export class SettingsStore {
     this.persist(preferences)
     this.preferences = preferences
     return this.preferences.thoughtsExpanded
+  }
+
+  /** Enter behavior while a turn runs, saved without the runtime confirmation. */
+  setRunningSubmission(value: unknown): "queue" | "steer" {
+    if (value !== "queue" && value !== "steer")
+      throw new Error("Running submission must be queue or steer")
+    const runningSubmission: "queue" | "steer" = value
+    const preferences = { ...this.preferences, runningSubmission }
+    this.persist(preferences)
+    this.preferences = preferences
+    return this.preferences.runningSubmission
+  }
+
+  /** Display-only notification settings, saved without the runtime confirmation. */
+  setNotificationPreferences(value: unknown): NotificationPreferences {
+    const preferences = {
+      ...this.preferences,
+      notificationPreferences: parseNotificationPreferences(value),
+    }
+    this.persist(preferences)
+    this.preferences = preferences
+    return this.preferences.notificationPreferences
   }
 
   private persist(preferences: AgentControlPreferences): void {

@@ -8,12 +8,107 @@ export type ConnectionState =
 
 export type GjcPermissionHandling = "prompt" | "auto" | "always-allow";
 
+export type NotificationCategory =
+  | "completed"
+  | "permission"
+  | "failed"
+  | "message";
+
+/** macOS built-in notification sounds; `default` uses the system sound. */
+export const NOTIFICATION_SOUNDS = [
+  "default",
+  "none",
+  "Glass",
+  "Ping",
+  "Pop",
+  "Submarine",
+] as const;
+
+export type NotificationSound = (typeof NOTIFICATION_SOUNDS)[number];
+
+export interface NotificationEventPreference {
+  enabled: boolean;
+  sound: NotificationSound;
+}
+
+export type NotificationPreferences = Record<
+  NotificationCategory,
+  NotificationEventPreference
+>;
+
+export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
+  completed: { enabled: true, sound: "default" },
+  permission: { enabled: true, sound: "default" },
+  failed: { enabled: true, sound: "default" },
+  // The incidental per-message ping stays quiet by default; it was already
+  // suppressed while the window had focus.
+  message: { enabled: true, sound: "none" },
+};
+
+const NOTIFICATION_KEYS: readonly NotificationCategory[] = [
+  "completed",
+  "permission",
+  "failed",
+  "message",
+];
+
+/**
+ * Fills a missing or malformed event setting from the defaults.
+ *
+ * Display-only preferences are persisted field by field, so an older settings
+ * file has no key at all. Missing means default; only a present non-object is
+ * discarded rather than failing the whole settings load.
+ */
+export function parseNotificationPreferences(
+  value: unknown,
+): NotificationPreferences {
+  const candidate =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const parsed = {} as NotificationPreferences;
+  for (const key of NOTIFICATION_KEYS) {
+    const raw =
+      candidate[key] && typeof candidate[key] === "object"
+        ? (candidate[key] as Record<string, unknown>)
+        : {};
+    const sound = NOTIFICATION_SOUNDS.includes(raw.sound as NotificationSound)
+      ? (raw.sound as NotificationSound)
+      : DEFAULT_NOTIFICATION_PREFERENCES[key].sound;
+    parsed[key] = {
+      enabled:
+        typeof raw.enabled === "boolean"
+          ? raw.enabled
+          : DEFAULT_NOTIFICATION_PREFERENCES[key].enabled,
+      sound,
+    };
+  }
+  return parsed;
+}
+
+export function notificationDelivery(
+  preference: NotificationEventPreference,
+): { silent: boolean; sound?: string } {
+  if (preference.sound === "none") return { silent: true };
+  if (preference.sound === "default") return { silent: false };
+  return { silent: false, sound: preference.sound };
+}
+
 export interface AgentControlPreferences {
   workspace: string;
   workspaceLabel: string;
   modelPreset: string;
   permissionHandling: GjcPermissionHandling;
   gjcExecutable: string;
+  notificationPreferences: NotificationPreferences;
+  /**
+   * What Enter does while a turn is running and nothing is held yet.
+   *
+   * `queue` preserves the existing behavior: hold the text and release it when
+   * the turn ends. `steer` hands it to the runtime as a steer at the next turn
+   * boundary. Explicit `/queue` and `/steer` prefixes always win.
+   */
+  runningSubmission: "queue" | "steer";
   /**
    * Whether reasoning (thought) cards render expanded.
    *
@@ -614,6 +709,19 @@ export interface SettingsDesktopBridge {
    * reading preference gets its own non-destructive channel.
    */
   setThoughtsExpanded(expanded: boolean): Promise<boolean>;
+  /**
+   * Persists the notification toggles and sounds alone.
+   *
+   * They change window behavior, not runtime wiring, so they must not trigger the
+   * whole-settings confirmation or reconnect the GJC runtime.
+   */
+  setNotificationPreferences(
+    preferences: NotificationPreferences,
+  ): Promise<NotificationPreferences>;
+  /** Persists the running-turn Enter behavior alone. */
+  setRunningSubmission(value: "queue" | "steer"): Promise<"queue" | "steer">;
+  /** Names the session a window is currently showing, for notification suppression. */
+  setViewedSession(sessionId: string | null): Promise<void>;
   savePreferences(preferences: AgentControlPreferences): Promise<{
     preferences: AgentControlPreferences;
     runtimeReconnected: boolean;
@@ -663,13 +771,14 @@ export interface ManagementDesktopBridge {
 export function announcesSessionActivity(
   category: "completed" | "failed" | "permission" | "message" | "recovered",
   windowFocused: boolean,
+  viewingSession = false,
 ): boolean {
   if (
     category === "completed" ||
     category === "failed" ||
     category === "permission"
   )
-    return true;
+    return !viewingSession;
   return !windowFocused;
 }
 
@@ -684,7 +793,7 @@ export function sessionActivityBody(event: {
   const name = event.title.trim() || "세션";
   switch (event.category) {
     case "permission":
-      return `${name} 승인이 필요합니다.`;
+      return `${name} 승인 또는 질문을 기다립니다.`;
     case "failed":
       return `${name} 작업이 실패했습니다.`;
     case "recovered":

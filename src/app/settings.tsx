@@ -1,8 +1,17 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
-import { DEFAULT_MODEL_PRESET } from "../../shared/agent-contract";
-import type { GjcUpdateStatus, ManagementSnapshot } from "../../shared/agent-contract";
+import {
+  DEFAULT_MODEL_PRESET,
+  DEFAULT_NOTIFICATION_PREFERENCES,
+  NOTIFICATION_SOUNDS,
+} from "../../shared/agent-contract";
+import type {
+  GjcUpdateStatus,
+  ManagementSnapshot,
+  NotificationCategory,
+  NotificationPreferences,
+} from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { CalendarClock, Check, Command, FolderOpen, ShieldCheck, Smartphone, X } from "lucide-react";
+import { Bell, CalendarClock, Check, Command, FolderOpen, ShieldCheck, Smartphone, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { AutomationPanel, ManagementPanel } from "./panels";
@@ -107,6 +116,45 @@ export function settingsErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+const NOTIFICATION_ROWS: ReadonlyArray<{
+  key: NotificationCategory;
+  label: string;
+  detail: string;
+}> = [
+  {
+    key: "completed",
+    label: "작업 완료",
+    detail: "실행 중인 턴이 정상적으로 끝났을 때",
+  },
+  {
+    key: "permission",
+    label: "승인·질문 대기",
+    detail: "도구 승인이나 사용자의 답변을 기다릴 때",
+  },
+  {
+    key: "failed",
+    label: "실패",
+    detail: "턴이 오류로 끝났을 때",
+  },
+  {
+    key: "message",
+    label: "새 응답",
+    detail: "턴 밖의 보조 메시지와 연결 복구",
+  },
+];
+
+const NOTIFICATION_SOUND_LABELS: Record<
+  (typeof NOTIFICATION_SOUNDS)[number],
+  string
+> = {
+  default: "기본",
+  none: "없음",
+  Glass: "Glass",
+  Ping: "Ping",
+  Pop: "Pop",
+  Submarine: "Submarine",
+};
+
 export function SettingsDialog({
   connection,
   thoughtsExpanded,
@@ -126,9 +174,18 @@ export function SettingsDialog({
     permissionHandling: "prompt",
     gjcExecutable: "",
     thoughtsExpanded,
+    notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+    runningSubmission: "queue",
   };
   const [tab, setTab] = useState<
-    "gjc" | "workspace" | "remote" | "mcp" | "skills" | "usage" | "automations"
+    | "gjc"
+    | "workspace"
+    | "remote"
+    | "mcp"
+    | "skills"
+    | "usage"
+    | "notifications"
+    | "automations"
   >("gjc");
   const [management, setManagement] = useState<ManagementSnapshot | null>(null);
   const [managementError, setManagementError] = useState("");
@@ -161,6 +218,7 @@ export function SettingsDialog({
     mcp: "MCP 서버",
     skills: "Skills & Plugins",
     usage: "Usage",
+    notifications: "알림",
     automations: "Automations",
   }[tab];
   const tabDescription = {
@@ -170,6 +228,8 @@ export function SettingsDialog({
     mcp: "GJC가 자동으로 로드할 MCP 서버를 관리합니다.",
     skills: "발견된 스킬과 설치된 플러그인을 확인합니다.",
     usage: "모델별 토큰, 캐시율, 비용을 확인합니다.",
+    notifications:
+      "완료·승인/질문 대기·실패를 이벤트별로 알리고 소리를 고릅니다.",
     automations: "앱이 닫혀 있어도 GJC 작업을 정해진 시간에 실행합니다.",
   }[tab];
 
@@ -205,6 +265,70 @@ export function SettingsDialog({
       active = false;
     };
   }, [loadAttempt, settingsBridge]);
+
+  async function persistRunningSubmission(
+    value: "queue" | "steer",
+  ): Promise<void> {
+    if (!settingsBridge) return;
+    const previous = preferencesRef.current.runningSubmission;
+    const optimistic = { ...preferencesRef.current, runningSubmission: value };
+    preferencesRef.current = optimistic;
+    setPreferences(optimistic);
+    setSaveError("");
+    try {
+      const saved = await settingsBridge.setRunningSubmission(value);
+      const current = { ...preferencesRef.current, runningSubmission: saved };
+      preferencesRef.current = current;
+      setPreferences(current);
+      setOriginal((original) => ({
+        ...original,
+        runningSubmission: saved,
+      }));
+    } catch (error) {
+      const restored = {
+        ...preferencesRef.current,
+        runningSubmission: previous,
+      };
+      preferencesRef.current = restored;
+      setPreferences(restored);
+      setSaveError(settingsErrorMessage(error));
+    }
+  }
+
+  async function persistNotifications(
+    next: NotificationPreferences,
+  ): Promise<void> {
+    if (!settingsBridge) return;
+    const previous = preferencesRef.current.notificationPreferences;
+    const optimistic = {
+      ...preferencesRef.current,
+      notificationPreferences: next,
+    };
+    preferencesRef.current = optimistic;
+    setPreferences(optimistic);
+    setSaveError("");
+    try {
+      const saved = await settingsBridge.setNotificationPreferences(next);
+      const current = {
+        ...preferencesRef.current,
+        notificationPreferences: saved,
+      };
+      preferencesRef.current = current;
+      setPreferences(current);
+      setOriginal((value) => ({
+        ...value,
+        notificationPreferences: saved,
+      }));
+    } catch (error) {
+      const restored = {
+        ...preferencesRef.current,
+        notificationPreferences: previous,
+      };
+      preferencesRef.current = restored;
+      setPreferences(restored);
+      setSaveError(settingsErrorMessage(error));
+    }
+  }
 
   function editPreferences(
     update: (current: AgentControlPreferences) => AgentControlPreferences,
@@ -331,6 +455,13 @@ export function SettingsDialog({
           </button>
           <button
             type="button"
+            className={tab === "notifications" ? "is-active" : ""}
+            onClick={() => setTab("notifications")}
+          >
+            <Bell size={17} /> 알림
+          </button>
+          <button
+            type="button"
             className={tab === "mcp" ? "is-active" : ""}
             onClick={() => setTab("mcp")}
           >
@@ -386,6 +517,66 @@ export function SettingsDialog({
             <p className="diff-error" role="alert">
               설정을 저장하지 못했습니다: {saveError}
             </p>
+          )}
+
+          {tab === "notifications" && (
+            <div className="settings-stack">
+              <p className="settings-note">
+                지금 보고 있는 세션의 완료·실패·승인 알림은 생략합니다. 창이
+                앞에 있어도 다른 세션의 결과는 알립니다. 원격 PWA에는 같은
+                이벤트의 읽지 않은 세션 수가 앱 배지로 표시됩니다.
+              </p>
+              <div className="settings-panel">
+                {NOTIFICATION_ROWS.map((row) => {
+                  const preference =
+                    preferences.notificationPreferences[row.key];
+                  return (
+                    <div className="settings-toggle-row" key={row.key}>
+                      <span>
+                        <strong>{row.label}</strong>
+                        <small>{row.detail}</small>
+                      </span>
+                      <span className="notification-controls">
+                        <input
+                          type="checkbox"
+                          aria-label={`${row.label} 알림`}
+                          checked={preference.enabled}
+                          disabled={!settingsBridge}
+                          onChange={(event) =>
+                            void persistNotifications({
+                              ...preferencesRef.current
+                                .notificationPreferences,
+                              [row.key]: {
+                                ...preference,
+                                enabled: event.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <Dropdown
+                          value={preference.sound}
+                          ariaLabel={`${row.label} 알림 소리`}
+                          options={NOTIFICATION_SOUNDS.map((sound) => ({
+                            value: sound,
+                            label: NOTIFICATION_SOUND_LABELS[sound],
+                          }))}
+                          onChange={(sound) =>
+                            void persistNotifications({
+                              ...preferencesRef.current
+                                .notificationPreferences,
+                              [row.key]: {
+                                ...preference,
+                                sound: sound as (typeof NOTIFICATION_SOUNDS)[number],
+                              },
+                            })
+                          }
+                        />
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           )}
 
           {tab === "gjc" && (
@@ -462,6 +653,27 @@ export function SettingsDialog({
                         ...current,
                         thoughtsExpanded: event.target.checked,
                       }))
+                    }
+                  />
+                </label>
+                <label>
+                  <span>
+                    <strong>실행 중 Enter</strong>
+                    <small>
+                      턴이 실행 중일 때 Enter로 제출하면 보류(Queue)할지 다음
+                      경계에서 반영(Steer)할지 고릅니다. /queue·/steer는 항상 이
+                      설정보다 우선합니다.
+                    </small>
+                  </span>
+                  <Dropdown
+                    value={preferences.runningSubmission}
+                    ariaLabel="실행 중 Enter 동작"
+                    options={[
+                      { value: "queue", label: "보류 후 턴 종료 시 전송 (Queue)" },
+                      { value: "steer", label: "다음 경계에서 바로 반영 (Steer)" },
+                    ]}
+                    onChange={(value) =>
+                      void persistRunningSubmission(value as "queue" | "steer")
                     }
                   />
                 </label>

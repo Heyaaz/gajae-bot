@@ -94,6 +94,7 @@ export function registerSettingsIpcHandlers(
   security: IpcSecurity,
   onPreferencesSaved?: (preferences: AgentControlPreferences) => Promise<boolean>,
   onGjcUpdated?: () => Promise<void>,
+  onViewedSession?: (senderId: number, sessionId: string | null) => void,
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -166,6 +167,15 @@ export function registerSettingsIpcHandlers(
   ipcMain.handle(SETTINGS_IPC.setThoughtsExpanded, security.guarded((_event, expanded: unknown) => {
     if (typeof expanded !== 'boolean') throw new Error('Thought card expansion must be a boolean')
     return store.setThoughtsExpanded(expanded)
+  }))
+  ipcMain.handle(SETTINGS_IPC.setNotificationPreferences, security.guarded((_event, value: unknown) =>
+    store.setNotificationPreferences(value)))
+  ipcMain.handle(SETTINGS_IPC.setRunningSubmission, security.guarded((_event, value: unknown) =>
+    store.setRunningSubmission(value)))
+  ipcMain.handle(SETTINGS_IPC.setViewedSession, security.guarded((event, sessionId: unknown) => {
+    if (sessionId !== null && (typeof sessionId !== 'string' || !sessionId))
+      throw new Error('Viewed session must be a session ID or null')
+    onViewedSession?.(event.sender.id, sessionId)
   }))
   ipcMain.handle(SETTINGS_IPC.savePreferences, security.guarded(async (event, preferences: AgentControlPreferences) => {
     const validated = store.validate(preferences)

@@ -9,6 +9,7 @@ import {
   imeCommitSubmits,
   isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
+  liveTurnSubmissionMode,
   parkDraft,
   pullQueuedRequest,
   releaseRequests,
@@ -17,7 +18,11 @@ import {
   restorePulledDraft,
   withoutReleasedRequest,
 } from "../composer-utils";
-import type { PendingRequest, QueuePullTarget } from "../composer-utils";
+import type {
+  LiveTurnSubmissionMode,
+  PendingRequest,
+  QueuePullTarget,
+} from "../composer-utils";
 import {
   ArrowUp,
   Check,
@@ -577,6 +582,8 @@ export interface ComposerProps {
   thinking?: string;
   usagePercent?: number;
   serviceTier?: string;
+  /** What Enter does on a running turn when no explicit command is typed. */
+  runningSubmission: LiveTurnSubmissionMode;
   onSend: (input: MessageInput) => Promise<MessageDelivery | undefined>;
   onCancel: () => Promise<void>;
   onFlushQueued: () => Promise<void>;
@@ -601,6 +608,7 @@ export function Composer({
   thinking,
   usagePercent,
   serviceTier,
+  runningSubmission,
   onSend,
   onCancel,
   onFlushQueued,
@@ -1315,10 +1323,18 @@ export function Composer({
       commands,
       images.length > 0 || files.length > 0,
     );
-    if (liveTurn && !immediateSdkCommand) {
-      // Held locally, not sent. GJC consumes turn.steer into the open turn the
-      // moment it arrives, so submitting now would run the request against the
-      // turn the user is still waiting on.
+    const holdForTurn =
+      liveTurn &&
+      !immediateSdkCommand &&
+      liveTurnSubmissionMode(
+        content,
+        runningSubmission,
+        pendingQueue.length > 0,
+      ) === "queue";
+    if (holdForTurn) {
+      // Held locally, not sent. The default is queue until the user chooses
+      // steer; an explicit `/queue` still holds even after that choice, and an
+      // explicit `/steer` is handed to the runtime below.
       const preview = composerQueuePreview(content, files, images);
       setPendingQueue((current) =>
         appendPendingRequest(current, {
@@ -1995,6 +2011,18 @@ export function Composer({
           )}
         </div>
         <div className="composer-submit-actions">
+          {running && (
+            <small
+              className={`composer-enter-mode is-${runningSubmission}`}
+              title={
+                runningSubmission === "steer"
+                  ? "실행 중 Enter는 다음 경계에서 바로 반영됩니다. /queue로 보류할 수 있습니다."
+                  : "실행 중 Enter는 턴이 끝날 때까지 보류됩니다. /steer로 바로 반영할 수 있습니다."
+              }
+            >
+              실행 중 Enter · {runningSubmission === "steer" ? "Steer" : "Queue"}
+            </small>
+          )}
           {/* One button, two states. Something to submit always wins: while a turn
               runs, typed text is queued or steered, so the arrow has to stay
               reachable. With an empty composer during a turn the same slot stops
