@@ -131,6 +131,102 @@ describe("resolveProjects", () => {
     expect(calls).toEqual([WORKTREE_LIST]);
   });
 
+  it("shares a lookup that is already in flight", async () => {
+    let release: (() => void) | undefined;
+    let started = 0;
+    const run: CommandRunner = async () => {
+      started += 1;
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return ok(WORKTREES);
+    };
+    const service = new RepoService({ run });
+    const first = service.resolveProjects([MAIN]);
+    const second = service.resolveProjects([MAIN]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const observed = started;
+    release?.();
+    await Promise.all([first, second]);
+    expect(observed).toBe(1);
+  });
+
+  it("bounds how many Git processes a large fan-out runs at once", async () => {
+    let active = 0;
+    let peak = 0;
+    const run: CommandRunner = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return ok(WORKTREES);
+    };
+    const paths = Array.from({ length: 32 }, (_value, index) => `/projects/repo-${index}`);
+    const resolved = await new RepoService({ run }).resolveProjects(paths);
+    expect(resolved.every((entry) => entry.repository)).toBe(true);
+    // The fan-out is still parallel, just never unbounded.
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(8);
+  });
+
+  it("retries a transient resource failure instead of answering outside Git", async () => {
+    let attempts = 0;
+    const run: CommandRunner = async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error("spawn git EAGAIN"), { code: "EAGAIN" });
+      }
+      return ok(WORKTREES);
+    };
+    await expect(new RepoService({ run }).resolveProjects([MAIN])).resolves.toEqual([
+      { path: MAIN, root: MAIN, repository: true },
+    ]);
+    expect(attempts).toBe(2);
+  });
+
+  it("does not cache a resource failure that outlasts the retry", async () => {
+    let attempts = 0;
+    const run: CommandRunner = async () => {
+      attempts += 1;
+      if (attempts <= 2) {
+        throw Object.assign(new Error("spawn git EMFILE"), { code: "EMFILE" });
+      }
+      return ok(WORKTREES);
+    };
+    const service = new RepoService({ run, now: () => 1_000, resolveCacheMs: 60_000 });
+    await expect(service.resolveProjects([MAIN])).resolves.toEqual([
+      { path: MAIN, root: MAIN, repository: false },
+    ]);
+    // Outside Git would have been cached for a minute; a resource failure must
+    // be asked again, and the retry inside the second lookup finds the answer.
+    await expect(service.resolveProjects([MAIN])).resolves.toEqual([
+      { path: MAIN, root: MAIN, repository: true },
+    ]);
+  });
+
+  it("shares a repository read that is already in flight", async () => {
+    const base = fakeRunner(repositoryRoutes());
+    let release: (() => void) | undefined;
+    let lists = 0;
+    const run: CommandRunner = async (file, args) => {
+      if ([file, ...args].join(" ") === WORKTREE_LIST) {
+        lists += 1;
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return base.run(file, args);
+    };
+    const service = new RepoService({ run });
+    const reads = [service.readRepository(MAIN), service.readRepository(MAIN)];
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const observed = lists;
+    release?.();
+    const [first, second] = await Promise.all(reads);
+    expect(observed).toBe(1);
+    expect(second).toBe(first);
+  });
+
   it("caches answers, failures included, for resolveCacheMs", async () => {
     let clock = 1_000;
     const { run, calls } = fakeRunner({

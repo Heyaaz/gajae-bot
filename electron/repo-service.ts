@@ -54,6 +54,18 @@ const GIT_TIMEOUT = 10_000;
 const GH_TIMEOUT = 25_000;
 const MAX_BUFFER = 4 * 1024 * 1024;
 const DEFAULT_RESOLVE_CACHE_MS = 5000;
+/**
+ * Git processes one RepoService may run at once.
+ *
+ * The rail asks about as many paths as it has workspaces, and a refresh can run
+ * while the previous one is still going. Without a gate that became one process
+ * per worktree per refresh; a repository with many linked worktrees could starve
+ * the app of file descriptors and processes. Eight keeps the fan-out useful while
+ * bounding it.
+ */
+const MAX_GIT_PROCESSES = 8;
+/** A retry is only for a failure the machine can recover from by itself. */
+const TRANSIENT_GIT_FAILURE = /\b(?:EAGAIN|EMFILE|ENFILE|ENOMEM|EBUSY|ETIMEDOUT)\b/u;
 const DETAIL_LIMIT = 200;
 const GITHUB_HOST = "github.com";
 
@@ -69,6 +81,21 @@ const CREDENTIAL =
  * thing to report.
  */
 const NOT_A_REPOSITORY = /not a git repository|not a working tree|must be run in a work tree/iu;
+
+/**
+ * Whether a Git failure is about resources rather than the path.
+ *
+ * A spawn that ran out of file descriptors or memory says nothing about whether
+ * the path is a repository, so caching it as "outside Git" would hide the project
+ * for the whole cache window and repeat the same starvation.
+ */
+function isTransientGitFailure(error: unknown): boolean {
+  const code = (error as { code?: unknown } | undefined)?.code;
+  return (
+    (typeof code === "string" && TRANSIENT_GIT_FAILURE.test(code)) ||
+    TRANSIENT_GIT_FAILURE.test(errorText(error))
+  );
+}
 
 /**
  * The shipped runner.
@@ -518,6 +545,10 @@ export class RepoService {
   private readonly now: () => number;
   private readonly resolveCacheMs: number;
   private readonly resolutions = new Map<string, CachedResolution>();
+  private readonly pendingResolutions = new Map<string, Promise<ProjectPathResolution>>();
+  private readonly pendingReads = new Map<string, Promise<RepositorySnapshot>>();
+  private gitActive = 0;
+  private readonly gitQueue: Array<() => void> = [];
 
   constructor(options: RepoServiceOptions = {}) {
     this.gitExecutable = options.gitExecutable ?? "git";
@@ -555,23 +586,50 @@ export class RepoService {
   private async resolveProject(trimmed: string): Promise<ProjectPathResolution> {
     const cached = this.resolutions.get(trimmed);
     if (cached && this.now() - cached.at < this.resolveCacheMs) return cached.resolution;
-    const resolution = await this.lookupProject(trimmed);
-    // Failures are cached as well: a workspace outside Git is asked about on
-    // every rail refresh, and hearing "not a repository" again is not worth a
-    // process spawn.
-    this.resolutions.set(trimmed, { at: this.now(), resolution });
-    return resolution;
+    // A rail refresh and the refresh that follows it can ask about the same
+    // workspace before the first answer lands. Both share one lookup instead of
+    // spawning the same Git twice.
+    const pending = this.pendingResolutions.get(trimmed);
+    if (pending) return pending;
+    const lookup = this.lookupProject(trimmed).then(({ resolution, cacheable }) => {
+      if (cacheable) this.resolutions.set(trimmed, { at: this.now(), resolution });
+      return resolution;
+    });
+    this.pendingResolutions.set(trimmed, lookup);
+    try {
+      return await lookup;
+    } finally {
+      this.pendingResolutions.delete(trimmed);
+    }
   }
 
-  private async lookupProject(trimmed: string): Promise<ProjectPathResolution> {
+  private async lookupProject(
+    trimmed: string,
+  ): Promise<{ resolution: ProjectPathResolution; cacheable: boolean }> {
     const outside = { path: trimmed, root: trimmed, repository: false };
-    if (!trimmed || !path.isAbsolute(trimmed)) return outside;
-    try {
-      const listed = await this.git(["worktree", "list", "--porcelain"], trimmed);
-      const [main] = parseWorktreeList(listed.stdout);
-      return main ? { path: trimmed, root: main.path, repository: true } : outside;
-    } catch {
-      return outside;
+    if (!trimmed || !path.isAbsolute(trimmed)) return { resolution: outside, cacheable: true };
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const listed = await this.git(["worktree", "list", "--porcelain"], trimmed);
+        const [main] = parseWorktreeList(listed.stdout);
+        return {
+          resolution: main ? { path: trimmed, root: main.path, repository: true } : outside,
+          cacheable: true,
+        };
+      } catch (error) {
+        // Resource exhaustion is not an answer about the path. Give the machine
+        // one chance to recover under the process gate, and never persist the
+        // failure: a temporary EMFILE must not read as "outside Git" for the
+        // cache window.
+        if (attempt === 0 && isTransientGitFailure(error)) {
+          await new Promise((resolve) => setTimeout(resolve, 25));
+          continue;
+        }
+        // Other failures are cached: a workspace outside Git is asked about on
+        // every rail refresh, and hearing "not a repository" again is not worth
+        // a process spawn.
+        return { resolution: outside, cacheable: !isTransientGitFailure(error) };
+      }
     }
   }
 
@@ -584,6 +642,20 @@ export class RepoService {
    * not show a half-read repository as if it were the whole truth.
    */
   async readRepository(root: string): Promise<RepositorySnapshot> {
+    // Opening and refreshing the repository panel can overlap. A shared read
+    // keeps one worktree fan-out per root in flight at a time.
+    const pending = this.pendingReads.get(root);
+    if (pending) return pending;
+    const read = this.readRepositoryNow(root);
+    this.pendingReads.set(root, read);
+    try {
+      return await read;
+    } finally {
+      this.pendingReads.delete(root);
+    }
+  }
+
+  private async readRepositoryNow(root: string): Promise<RepositorySnapshot> {
     const name = path.basename(root);
     const refreshedAt = new Date(this.now()).toISOString();
     let worktrees: RepoWorktree[];
@@ -827,8 +899,17 @@ export class RepoService {
     );
   }
 
-  private git(args: readonly string[], cwd: string): Promise<CommandResult> {
-    return this.run(this.gitExecutable, ["-C", cwd, ...args]);
+  private async git(args: readonly string[], cwd: string): Promise<CommandResult> {
+    if (this.gitActive >= MAX_GIT_PROCESSES) {
+      await new Promise<void>((resolve) => this.gitQueue.push(resolve));
+    }
+    this.gitActive += 1;
+    try {
+      return await this.run(this.gitExecutable, ["-C", cwd, ...args]);
+    } finally {
+      this.gitActive -= 1;
+      this.gitQueue.shift()?.();
+    }
   }
 
   /**
