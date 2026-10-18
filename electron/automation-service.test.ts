@@ -105,6 +105,31 @@ describe('automation service contracts', () => {
     expect(spawned).toBe(2)
   })
 
+  it('serializes concurrent definition changes instead of losing a save', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-concurrent-'))
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none' })
+    const created = await Promise.all(
+      Array.from({ length: 10 }, (_value, index) =>
+        service.create({ name: `Review ${index}`, prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: index % 2 === 0, worktree: false }),
+      ),
+    )
+    const persisted = await service.list()
+    expect(persisted).toHaveLength(10)
+    expect(new Set(persisted.map((item) => item.id))).toEqual(new Set(created.map((item) => item.id)))
+    expect(new Set(persisted.map((item) => item.name)).size).toBe(10)
+
+    // A disabled update racing a delete must not resurrect the deleted record.
+    const [keep] = created
+    await Promise.all([
+      service.updateEnabled(keep.id, false),
+      service.delete(created[1].id),
+      service.delete(created[2].id),
+    ])
+    const after = await service.list()
+    expect(after).toHaveLength(8)
+    expect(after.find((item) => item.id === keep.id)?.enabled).toBe(false)
+  })
+
   it('releases the lock when the starting history write fails', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-history-'))
     let spawned = 0

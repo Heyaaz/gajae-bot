@@ -87,7 +87,18 @@ export class AutomationService {
   private readonly opts: AutomationServiceOptions
   private readonly launchctl: LaunchctlRunner
   private readonly now: () => Date
+  /** Serializes definition read-modify-write and launchd reflection across callers. */
+  private mutations: Promise<unknown> = Promise.resolve()
   constructor(options: AutomationServiceOptions) { if (!path.isAbsolute(options.directory) || !path.isAbsolute(options.gjcExecutable)) throw new Error('automation paths must be absolute'); this.opts = options; this.dir = options.directory; this.launchctl = options.launchctl ?? (() => {}); this.now = options.now ?? (() => new Date()) }
+  private serialize<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.mutations.then(task, task)
+    this.mutations = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    return result
+  }
+
   private defsFile() { return path.join(this.dir, 'automations.json') }
   private runsDirectory() { return path.join(this.dir, 'runs') }
   private plistPath(id: string) { return path.join(this.opts.launchAgentsDirectory ?? this.dir, `com.gajae.automation.${id}.plist`) }
@@ -99,12 +110,22 @@ export class AutomationService {
   // schedule with no time, say -- threw out of the loop and every automation after
   // it was left unregistered with launchd. The caller logs and moves on, so the user
   // saw no error at all, just scheduled work that never ran.
-  async initialize(): Promise<void> { await mkdir(this.dir, { recursive: true, mode: 0o700 }); if (this.opts.launchAgentsDirectory) await mkdir(this.opts.launchAgentsDirectory, { recursive: true }); for (const item of await this.defs()) { try { await this.sync(item) } catch (error) { console.error(`Automation ${item?.id ?? '(unknown)'} could not be scheduled and was skipped`, error) } } }
-  async setGjcExecutable(executable: string): Promise<void> { if (!path.isAbsolute(executable)) throw new Error('GJC executable must be absolute'); this.opts.gjcExecutable = executable; for (const item of await this.defs()) if (item.enabled) await this.sync(item) }
+  initialize(): Promise<void> {
+    return this.serialize(async () => { await mkdir(this.dir, { recursive: true, mode: 0o700 }); if (this.opts.launchAgentsDirectory) await mkdir(this.opts.launchAgentsDirectory, { recursive: true }); for (const item of await this.defs()) { try { await this.sync(item) } catch (error) { console.error(`Automation ${item?.id ?? '(unknown)'} could not be scheduled and was skipped`, error) } } })
+  }
+  setGjcExecutable(executable: string): Promise<void> {
+    return this.serialize(async () => { if (!path.isAbsolute(executable)) throw new Error('GJC executable must be absolute'); this.opts.gjcExecutable = executable; for (const item of await this.defs()) if (item.enabled) await this.sync(item) })
+  }
   async list(): Promise<Automation[]> { return (await this.defs()).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)) }
-  async create(input: unknown): Promise<Automation> { const valid = validateAutomationInput(input); const now = this.now().toISOString(); const item: Automation = { ...valid, id: randomUUID(), createdAt: now, updatedAt: now, nextRunAt: this.next(valid.schedule, this.now()) }; const all = await this.defs(); all.push(item); await mkdir(this.dir, { recursive: true }); await atomicJson(this.defsFile(), all); try { await this.sync(item) } catch (error) { await atomicJson(this.defsFile(), all.filter((candidate) => candidate.id !== item.id)); throw error } return item }
-  async updateEnabled(id: string, enabled: boolean): Promise<Automation> { if (typeof id !== 'string' || typeof enabled !== 'boolean') throw new Error('invalid input'); const all = await this.defs(); const item = all.find((a) => a.id === id); if (!item) throw new Error('automation not found'); const previous = { enabled: item.enabled, updatedAt: item.updatedAt, nextRunAt: item.nextRunAt }; item.enabled = enabled; item.updatedAt = this.now().toISOString(); item.nextRunAt = enabled ? this.next(item.schedule, this.now()) : null; await atomicJson(this.defsFile(), all); try { await this.sync(item) } catch (error) { Object.assign(item, previous); await atomicJson(this.defsFile(), all); throw error } return item }
-  async delete(id: string): Promise<void> { const all = await this.defs(); const item = all.find((a) => a.id === id); if (!item) return; await this.unload(item); await atomicJson(this.defsFile(), all.filter((a) => a.id !== id)); await rm(this.plistPath(id), { force: true }) }
+  create(input: unknown): Promise<Automation> {
+    return this.serialize(async () => { const valid = validateAutomationInput(input); const now = this.now().toISOString(); const item: Automation = { ...valid, id: randomUUID(), createdAt: now, updatedAt: now, nextRunAt: this.next(valid.schedule, this.now()) }; const all = await this.defs(); all.push(item); await mkdir(this.dir, { recursive: true }); await atomicJson(this.defsFile(), all); try { await this.sync(item) } catch (error) { await atomicJson(this.defsFile(), all.filter((candidate) => candidate.id !== item.id)); throw error } return item })
+  }
+  updateEnabled(id: string, enabled: boolean): Promise<Automation> {
+    return this.serialize(async () => { if (typeof id !== 'string' || typeof enabled !== 'boolean') throw new Error('invalid input'); const all = await this.defs(); const item = all.find((a) => a.id === id); if (!item) throw new Error('automation not found'); const previous = { enabled: item.enabled, updatedAt: item.updatedAt, nextRunAt: item.nextRunAt }; item.enabled = enabled; item.updatedAt = this.now().toISOString(); item.nextRunAt = enabled ? this.next(item.schedule, this.now()) : null; await atomicJson(this.defsFile(), all); try { await this.sync(item) } catch (error) { Object.assign(item, previous); await atomicJson(this.defsFile(), all); throw error } return item })
+  }
+  delete(id: string): Promise<void> {
+    return this.serialize(async () => { const all = await this.defs(); const item = all.find((a) => a.id === id); if (!item) return; await this.unload(item); await atomicJson(this.defsFile(), all.filter((a) => a.id !== id)); await rm(this.plistPath(id), { force: true }) })
+  }
   async listRuns(automationId?: string): Promise<AutomationRun[]> { const runs = await this.runs(); return automationId ? runs.filter((r) => r.automationId === automationId) : runs }
   async runNow(id: string): Promise<AutomationRun> { const item = (await this.defs()).find((a) => a.id === id); if (!item) throw new Error('automation not found'); return this.execute(item) }
   private async sync(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { if (item.enabled) { const config = path.join(this.dir, `config-${item.id}.json`); await atomicJson(config, { automation: item, directory: this.dir, gjcExecutable: this.opts.gjcExecutable }); await mkdir(path.dirname(this.plistPath(item.id)), { recursive: true }); try { await this.launchctl(['unload', this.plistPath(item.id)]) } catch { /* A new schedule has nothing to unload. */ } await writeFile(this.plistPath(item.id), automationPlist(`com.gajae.automation.${item.id}`, this.opts.electronPath ?? process.execPath, this.opts.workerPath ?? '', config, item.schedule)); await this.launchctl(['load', this.plistPath(item.id)]) } else await this.unload(item) } }
