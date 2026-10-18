@@ -376,6 +376,11 @@ export class AutomationService {
       const completion = this.completeChild(
         child,
         this.opts.timeoutMs ?? 1_800_000,
+        // The response must not wait forever for a process that ignored SIGKILL, but
+        // its later exit is still proof the workspace lock is safe to release.
+        () => {
+          void this.releaseLock(lock, owner).catch(() => undefined)
+        },
       )
       // Record the process a later worker must see as alive when deciding whether
       // this lock is stale. The worker can exit while its GJC child keeps running.
@@ -417,10 +422,12 @@ export class AutomationService {
   private completeChild(
     child: ReturnType<typeof spawn>,
     timeoutMs: number,
+    onLateExit?: (code: number | null) => void,
   ): Promise<{ code: number | null; error?: string; confirmed: boolean }> {
     const graceMs = this.opts.killGraceMs ?? 5_000
     return new Promise((resolve) => {
       let settled = false
+      let lateExitReported = false
       let childError: string | undefined
       let timedOut = false
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined
@@ -468,7 +475,19 @@ export class AutomationService {
         // No pid means the process never started, so no close event is guaranteed.
         if (child.pid === undefined) finish(null, true)
       })
-      child.on('close', (code) => finish(code, true))
+      child.on('close', (code) => {
+        if (settled) {
+          // Completion already resolved as unconfirmed. A later close is still the
+          // only proof the process is gone, so hand it to the owner instead of
+          // dropping it on the floor.
+          if (!lateExitReported) {
+            lateExitReported = true
+            onLateExit?.(code)
+          }
+          return
+        }
+        finish(code, true)
+      })
     })
   }
 

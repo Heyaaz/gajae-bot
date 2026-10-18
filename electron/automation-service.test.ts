@@ -46,6 +46,7 @@ describe('automation service contracts', () => {
   it('keeps the lock until a timed-out child confirms it exited', async () => {
     const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-timeout-'))
     const signals: string[] = []
+    const children: EventEmitter[] = []
     let spawned = 0
     const spawnProcess = (() => {
       spawned += 1
@@ -53,13 +54,14 @@ describe('automation service contracts', () => {
       child.stdout = new PassThrough()
       child.stderr = new PassThrough()
       child.pid = 4321
+      children.push(child)
       // The first child ignores both signals and never emits close. The second
       // completes normally once the retry is allowed to start.
       child.kill = (signal: string) => {
         signals.push(signal)
-        if (spawned > 1) setTimeout(() => child.emit('close', 0), 5)
         return true
       }
+      if (spawned > 1) setTimeout(() => child.emit('close', 0), 5)
       return child
     }) as never
     const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess, timeoutMs: 10, killGraceMs: 20 })
@@ -76,6 +78,17 @@ describe('automation service contracts', () => {
     const blocked = await service.runNow(created.id)
     expect(blocked.status).toBe('skipped')
     expect(spawned).toBe(1)
+
+    // The process exits after the response already reported an unconfirmed stop.
+    // That late close is proof the workspace is free, so the lock must be released
+    // then -- waiting for the next app restart would strand the automation.
+    children[0]!.emit('close', 0)
+    await vi.waitFor(async () => {
+      expect(await readdir(directory)).not.toContain(`.run-${created.id}.lock`)
+    }, { timeout: 2000 })
+    const retried = await service.runNow(created.id)
+    expect(retried.status).toBe('completed')
+    expect(spawned).toBe(2)
   })
 
   it('releases the lock when a timed-out child exits during the grace period', async () => {
