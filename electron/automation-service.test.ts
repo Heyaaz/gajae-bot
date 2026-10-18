@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -103,6 +103,78 @@ describe('automation service contracts', () => {
     const retried = await service.runNow(created.id)
     expect(retried.status).toBe('failed')
     expect(spawned).toBe(2)
+  })
+
+  it('releases the lock when the starting history write fails', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-history-'))
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid?: number; kill(): boolean }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.pid = 1234
+      child.kill = () => true
+      setTimeout(() => child.emit('close', 0), 5)
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    // A file where the runs directory belongs makes the initial history write fail.
+    await writeFile(path.join(directory, 'runs'), 'not a directory')
+    await expect(service.runNow(created.id)).rejects.toThrow()
+
+    // The failed start left no lock, so the next attempt can run once the history
+    // destination is usable again.
+    await rm(path.join(directory, 'runs'), { force: true })
+    const retried = await service.runNow(created.id)
+    expect(retried.status).toBe('completed')
+    expect(spawned).toBe(1)
+  })
+
+  it('recovers a lock whose owner process is dead', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-stale-'))
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid?: number; kill(): boolean }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.pid = 1234
+      child.kill = () => true
+      setTimeout(() => child.emit('close', 0), 5)
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    const lock = path.join(directory, `.run-${created.id}.lock`)
+    await mkdir(lock)
+    // 999999 is beyond the usable pid range, so no process can own it.
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: 999999, token: 'dead', startedAt: new Date().toISOString(), automationId: created.id }))
+    const recovered = await service.runNow(created.id)
+    expect(recovered.status).toBe('completed')
+    expect(spawned).toBe(1)
+  })
+
+  it('does not remove a lock held by a live process', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-live-'))
+    let spawned = 0
+    const spawnProcess = (() => {
+      spawned += 1
+      throw new Error('must not spawn while another run is live')
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    const lock = path.join(directory, `.run-${created.id}.lock`)
+    await mkdir(lock)
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify({ pid: process.pid, token: 'live', startedAt: new Date().toISOString(), automationId: created.id }))
+    const blocked = await service.runNow(created.id)
+    expect(blocked.status).toBe('skipped')
+    expect(spawned).toBe(0)
+    expect(await readFile(path.join(lock, 'owner.json'), 'utf8')).toContain('live')
   })
 
   it('records a child process error event instead of crashing the worker', async () => {

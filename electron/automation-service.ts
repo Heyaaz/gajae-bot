@@ -22,6 +22,29 @@ export type AutomationServiceOptions = {
   killGraceMs?: number
 }
 
+interface AutomationLockOwner {
+  pid: number
+  token: string
+  startedAt: string
+  automationId: string
+  childPid?: number
+}
+
+function processAlive(pid: number | undefined): boolean {
+  if (!Number.isInteger(pid) || pid === undefined || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // A process owned by another user cannot be signalled but still exists.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+function lockOwnerAlive(owner: AutomationLockOwner): boolean {
+  return processAlive(owner.pid) || processAlive(owner.childPid)
+}
+
 const MAX_NAME = 200, MAX_PROMPT = 20_000, MAX_OUTPUT = 32_000
 const validTime = /^([01]\d|2[0-3]):[0-5]\d$/
 const validThinking = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
@@ -87,12 +110,104 @@ export class AutomationService {
   private async sync(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { if (item.enabled) { const config = path.join(this.dir, `config-${item.id}.json`); await atomicJson(config, { automation: item, directory: this.dir, gjcExecutable: this.opts.gjcExecutable }); await mkdir(path.dirname(this.plistPath(item.id)), { recursive: true }); try { await this.launchctl(['unload', this.plistPath(item.id)]) } catch { /* A new schedule has nothing to unload. */ } await writeFile(this.plistPath(item.id), automationPlist(`com.gajae.automation.${item.id}`, this.opts.electronPath ?? process.execPath, this.opts.workerPath ?? '', config, item.schedule)); await this.launchctl(['load', this.plistPath(item.id)]) } else await this.unload(item) } }
   private async unload(item: Automation): Promise<void> { if (this.opts.platform === 'darwin' || (this.opts.platform === undefined && platform() === 'darwin')) { await this.launchctl(['unload', this.plistPath(item.id)]); await rm(this.plistPath(item.id), { force: true }) } }
   private next(schedule: AutomationSchedule, from: Date): string { const d = new Date(from); const [h, m] = schedule.time.split(':').map(Number); d.setSeconds(0, 0); d.setHours(h, m); if (schedule.kind === 'weekly') { let delta = (schedule.weekday! - d.getDay() + 7) % 7; if (!delta && d <= from) delta = 7; d.setDate(d.getDate() + delta) } else if (schedule.kind === 'weekdays') { while (d <= from || d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1) } else if (d <= from) d.setDate(d.getDate() + 1); return d.toISOString() }
+  /**
+   * Claims the per-automation run lock.
+   *
+   * The lock names its owner so a lock left by a dead worker can be recovered,
+   * and one held by a live worker or its GJC child is never removed.
+   */
+  private async acquireLock(
+    lock: string,
+    automationId: string,
+  ): Promise<AutomationLockOwner | undefined> {
+    const owner: AutomationLockOwner = {
+      pid: process.pid,
+      token: randomUUID(),
+      startedAt: this.now().toISOString(),
+      automationId,
+    }
+    if (await this.createLock(lock, owner)) return owner
+
+    const inspected = await this.readLockOwner(lock)
+    // An unreadable owner is not proof that nothing is running; leave it alone.
+    if (!inspected || lockOwnerAlive(inspected)) return undefined
+
+    // Move the exact stale directory aside before deleting it. A concurrent
+    // recovery can then replace the lock only once, and a directory created after
+    // inspection is detected by its token and put back.
+    const tombstone = `${lock}.stale-${randomUUID()}`
+    try {
+      await rename(lock, tombstone)
+    } catch {
+      return undefined
+    }
+    const moved = await this.readLockOwner(tombstone)
+    if (!moved || moved.token !== inspected.token || lockOwnerAlive(moved)) {
+      await rename(tombstone, lock).catch(() => undefined)
+      return undefined
+    }
+    await rm(tombstone, { recursive: true, force: true })
+    return (await this.createLock(lock, owner)) ? owner : undefined
+  }
+
+  private async createLock(
+    lock: string,
+    owner: AutomationLockOwner,
+  ): Promise<boolean> {
+    try {
+      await mkdir(lock)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false
+      throw error
+    }
+    try {
+      await this.writeLockOwner(lock, owner)
+    } catch (error) {
+      await rm(lock, { recursive: true, force: true })
+      throw error
+    }
+    return true
+  }
+
+  private async writeLockOwner(
+    lock: string,
+    owner: AutomationLockOwner,
+  ): Promise<void> {
+    await writeFile(path.join(lock, 'owner.json'), JSON.stringify(owner), {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
+  }
+
+  private async recordLockChild(
+    lock: string,
+    owner: AutomationLockOwner,
+    childPid: number | undefined,
+  ): Promise<void> {
+    if (childPid === undefined) return
+    await this.writeLockOwner(lock, { ...owner, childPid })
+  }
+
+  private async readLockOwner(
+    lock: string,
+  ): Promise<AutomationLockOwner | undefined> {
+    try {
+      const value = JSON.parse(
+        await readFile(path.join(lock, 'owner.json'), 'utf8'),
+      ) as Partial<AutomationLockOwner>
+      return Number.isInteger(value.pid) && typeof value.token === 'string'
+        ? (value as AutomationLockOwner)
+        : undefined
+    } catch {
+      return undefined
+    }
+  }
+
   private async execute(item: Automation): Promise<AutomationRun> {
     await mkdir(this.dir, { recursive: true })
     const lock = path.join(this.dir, `.run-${item.id}.lock`)
-    try {
-      await mkdir(lock)
-    } catch {
+    const owner = await this.acquireLock(lock, item.id)
+    if (!owner) {
       const skipped = {
         id: randomUUID(),
         automationId: item.id,
@@ -116,7 +231,14 @@ export class AutomationService {
       output: '',
       error: '',
     }
-    await this.writeRun(run)
+    try {
+      await this.writeRun(run)
+    } catch (error) {
+      // Starting history is part of claiming the run. A run that was never
+      // recorded must not leave its lock behind.
+      await rm(lock, { recursive: true, force: true })
+      throw error
+    }
     let releaseLock = true
     try {
       const args = ['--print']
@@ -140,6 +262,9 @@ export class AutomationService {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PATH: runtimePath },
       })
+      // Record the process a later worker must see as alive when deciding whether
+      // this lock is stale. The worker can exit while its GJC child keeps running.
+      await this.recordLockChild(lock, owner, child.pid).catch(() => undefined)
       let out = ''
       let err = ''
       child.stdout?.on('data', (b) => {
@@ -165,10 +290,15 @@ export class AutomationService {
       run.error = String(error)
     } finally {
       run.finishedAt = this.now().toISOString()
-      await this.writeRun(run)
-      // A process that never confirmed its exit keeps the lock: releasing it would
-      // let a second run write the same workspace while the first may still be alive.
-      if (releaseLock) await rm(lock, { recursive: true, force: true })
+      // History persistence and lock cleanup are separate obligations: a failure
+      // to write the run must not turn into a permanently held lock.
+      try {
+        await this.writeRun(run)
+      } finally {
+        // A process that never confirmed its exit keeps the lock: releasing it would
+        // let a second run write the same workspace while the first may still be alive.
+        if (releaseLock) await rm(lock, { recursive: true, force: true })
+      }
     }
     return run
   }
