@@ -243,6 +243,106 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
+  it("retries a replay repair before giving up", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    let transcripts = 0;
+    const { instance } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
+      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
+        transcripts += 1;
+        if (transcripts === 1)
+          return new Response(JSON.stringify({ error: { code: "unavailable" } }), { status: 502 });
+        return new Response(JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: "repaired" }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return undefined;
+    });
+    const synchronized: unknown[][] = [];
+    const connections: string[] = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") synchronized.push(event.items);
+      if (event.type === "connection.updated") connections.push(event.connection.detail);
+    });
+    await vi.waitFor(() => expect(synchronized).toHaveLength(1), { timeout: 2000 });
+    expect(transcripts).toBe(2);
+    expect(connections).toEqual([]);
+    instance.dispose();
+  });
+
+  it("reports an incomplete cache when the repair keeps failing", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const { instance } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
+      if (call.url.includes(REMOTE_API.transcript("s-1")))
+        return new Response(JSON.stringify({ error: { code: "unavailable" } }), { status: 502 });
+      return undefined;
+    });
+    await instance.getConnection();
+    const synchronized: unknown[] = [];
+    const connections: Array<{ state: string; detail: string }> = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") synchronized.push(event);
+      if (event.type === "connection.updated")
+        connections.push({ state: event.connection.state, detail: event.connection.detail });
+    });
+    await vi.waitFor(
+      () => expect(connections).toHaveLength(1),
+      { timeout: 3000 },
+    );
+    expect(synchronized).toEqual([]);
+    expect(connections[0]).toMatchObject({ state: "error" });
+    expect(connections[0]?.detail).toContain("동기화에 실패");
+    instance.dispose();
+  });
+
+  it("repairs again when another gap arrives during a repair", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const encoder = new TextEncoder();
+    let pushGap!: () => void;
+    const live = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(gap));
+          pushGap = () => controller.enqueue(encoder.encode(gap));
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+    let releaseFirst!: (response: Response) => void;
+    const firstTranscript = new Promise<Response>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let transcripts = 0;
+    const { instance } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return live;
+      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
+        transcripts += 1;
+        if (transcripts === 1) return firstTranscript as unknown as Response;
+        return new Response(JSON.stringify({ result: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return undefined;
+    });
+    const synchronized: unknown[] = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") synchronized.push(event);
+    });
+    await vi.waitFor(() => expect(transcripts).toBe(1));
+    pushGap();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseFirst(new Response(JSON.stringify({ result: [] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    await vi.waitFor(() => expect(transcripts).toBe(2), { timeout: 2000 });
+    await vi.waitFor(() => expect(synchronized).toHaveLength(2), { timeout: 2000 });
+    instance.dispose();
+  });
+
   it("refuses desktop-only work with a reason instead of an empty success", async () => {
     const { instance, calls } = backend(() => undefined);
     const desktopOnly = [

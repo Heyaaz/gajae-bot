@@ -65,13 +65,15 @@ export class RemoteAgentBackend implements AgentBackend {
   readonly remoteAccess: RemoteAccessBridge;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
 
+  private lastConnection?: BackendConnection;
+  private replayRepair?: Promise<void>;
+  private repairRequested = false;
+
   constructor(options: RemoteClientOptions = {}) {
     this.client = new RemoteClient({
       ...options,
       onEvent: (event) => this.emit(event),
-      onResync: () => {
-        void this.reconcileReplayGap();
-      },
+      onResync: () => this.requestReplayRepair(),
     });
     this.remoteAccess = {
       getStatus: async () => this.client.getStatus(),
@@ -110,25 +112,82 @@ export class RemoteAgentBackend implements AgentBackend {
     await this.client.snapshot().catch(() => undefined);
   }
 
+  /**
+   * Repairs replay gaps one at a time.
+   *
+   * A gap that arrives while a repair is already reading marks another round
+   * instead of being ignored, and a failed round is retried before the incomplete
+   * cache is reported: a host that is merely busy should not look disconnected.
+   */
+  private requestReplayRepair(): void {
+    this.repairRequested = true;
+    if (this.replayRepair) return;
+    this.replayRepair = this.reconcileReplayGap().finally(() => {
+      this.replayRepair = undefined;
+      if (this.repairRequested) this.requestReplayRepair();
+    });
+  }
+
   private async reconcileReplayGap(): Promise<void> {
-    const snapshot = await this.client.snapshot().catch(() => undefined);
-    if (!snapshot) return;
-    await Promise.all(snapshot.sessions.map(async (session) => {
-      // A transcript read can take long enough for the live stream to deliver newer
-      // deltas. Replacing the cache with that older read erased them, so a read is
-      // only applied when its session saw no live event while it was in flight.
-      const version = this.eventVersions.get(session.id) ?? 0;
-      const items = await this.client.transcript(session.id).catch(() => undefined);
-      if (!items) return;
-      if ((this.eventVersions.get(session.id) ?? 0) !== version) return;
-      this.emit({ type: "transcript.synced", sessionId: session.id, items: items as TranscriptItem[] });
-    }));
+    while (this.repairRequested) {
+      this.repairRequested = false;
+      if (await this.repairReplayOnce()) continue;
+      // The live stream may still be delivering events, but the cache cannot be
+      // trusted to contain the missed window. Say so instead of reporting success.
+      this.reportIncompleteRepair();
+      return;
+    }
+  }
+
+  private async repairReplayOnce(): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const snapshot = await this.client.snapshot().catch(() => undefined);
+      if (snapshot) {
+        this.lastConnection = snapshot.connection;
+        const applied = await Promise.all(
+          snapshot.sessions.map(async (session) => {
+            // A transcript read can take long enough for the live stream to deliver
+            // newer deltas. Replacing the cache with that older read erased them, so
+            // a read is only applied when its session saw no live event meanwhile.
+            const version = this.eventVersions.get(session.id) ?? 0;
+            const items = await this.client.transcript(session.id).catch(() => undefined);
+            if (!items) return false;
+            if ((this.eventVersions.get(session.id) ?? 0) !== version) return true;
+            this.emit({
+              type: "transcript.synced",
+              sessionId: session.id,
+              items: items as TranscriptItem[],
+            });
+            return true;
+          }),
+        );
+        if (applied.every(Boolean)) return true;
+      }
+      if (attempt < 2)
+        await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+    return false;
+  }
+
+  private reportIncompleteRepair(): void {
+    const connection = this.lastConnection;
+    if (!connection) return;
+    this.emit({
+      type: "connection.updated",
+      connection: {
+        ...connection,
+        state: "error",
+        detail:
+          "원격 대화 동기화에 실패했습니다. 다시 연결한 뒤 대화를 확인해 주세요.",
+      },
+    });
   }
 
   async getConnection(): Promise<BackendConnection> {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
         const snapshot = await this.client.snapshot();
+        this.lastConnection = snapshot.connection;
         return snapshot.connection;
       } catch (error) {
         if (attempt === 1) throw error;
@@ -139,6 +198,7 @@ export class RemoteAgentBackend implements AgentBackend {
 
   async listSessions(): Promise<AgentSession[]> {
     const snapshot = await this.client.snapshot();
+    this.lastConnection = snapshot.connection;
     return snapshot.sessions;
   }
 
