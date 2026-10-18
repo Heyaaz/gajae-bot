@@ -3119,7 +3119,10 @@ export class GjcSdkController {
           operationRef,
         );
         if (outcome === "unknown") {
-          this.updateSessionStatus(sessionId, "running");
+          // This send may have been cancelled and replaced while its settlement
+          // was being read. Only the original admission may publish the run state.
+          if (this.activePromptAdmissions.get(sessionId) === admission)
+            this.updateSessionStatus(sessionId, "running");
           return "prompt";
         }
         alreadySettled = true;

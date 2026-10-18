@@ -657,6 +657,68 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("does not publish running when a replaced uncertain send later returns unknown", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.ensureAttached = vi.fn(async () => undefined);
+    internals.executeSdkSlashCommand = vi.fn(async () => false);
+    let failOld!: (error: unknown) => void;
+    let finishNew!: (result: { status: string }) => void;
+    let settleOld!: (outcome: "unknown") => void;
+    (cli.send as any)
+      .mockImplementationOnce(
+        () =>
+          new Promise((_resolve, reject) => {
+            failOld = reject;
+          }),
+      )
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finishNew = resolve;
+          }),
+      );
+    internals.awaitPromptSettlement = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise((resolve) => { settleOld = resolve; }),
+      )
+      .mockResolvedValue(undefined);
+    internals.discoveredRunState = vi.fn(async () => "idle");
+    (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
+
+    const oldSend = controller.sendMessage("s1", {
+      text: "old",
+      images: [],
+      files: [],
+    });
+    while (!failOld) await Promise.resolve();
+    failOld(
+      new SdkCliError("uncertain_after_send", "outcome is uncertain after send"),
+    );
+    while (!settleOld) await Promise.resolve();
+    await controller.cancelRun("s1");
+    const newSend = controller.sendMessage("s1", {
+      text: "new",
+      images: [],
+      files: [],
+    });
+    while (!finishNew) await Promise.resolve();
+    finishNew({ status: "accepted" });
+    await newSend;
+    expect(internals.sessions.get("s1")?.status).toBe("idle");
+    expect(internals.activePromptAdmissions.has("s1")).toBe(false);
+
+    // The cancelled send finally learns that its outcome is unknown. That is not
+    // authority to reopen the completed session or its admission.
+    settleOld("unknown");
+    await expect(oldSend).resolves.toBe("prompt");
+    expect(internals.sessions.get("s1")?.status).toBe("idle");
+    expect(internals.activePromptAdmissions.has("s1")).toBe(false);
+    controller.dispose();
+  });
+
   it("publishes a changed row followed by an unchanged parallel call", () => {
     const emit = vi.fn();
     const { controller, internals } = harness({ emit });
