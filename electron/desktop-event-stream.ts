@@ -342,7 +342,14 @@ export class DesktopEventStream {
     }
     for (const frame of this.buffer) {
       if (frame.seq <= since) continue;
-      this.writeFrame(response, frame);
+      // A replay that fills the socket queue would otherwise skip the frames it
+      // could not write and keep the stream open, so the client's cursor moves past
+      // output it never received. End the connection instead: its reconnect resumes
+      // from the last delivered frame, while the skipped frames are still buffered.
+      if (this.writeFrame(response, frame)) continue;
+      this.clients.delete(client.id);
+      response.destroy();
+      return;
     }
   }
 

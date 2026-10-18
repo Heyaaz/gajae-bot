@@ -407,6 +407,56 @@ function openSilentStream(
     client.close();
   });
 
+  it("ends a replay that exceeds the output cap instead of skipping frames", async () => {
+    const stream = createStream();
+    await stream.start("window:1");
+    // 600 KiB each: the second frame pushes the response queue past the 1 MiB cap.
+    for (const id of ["one", "two", "three", "four"])
+      stream.publish(event("x".repeat(600 * 1024)));
+
+    let bytes = 0;
+    const written: number[] = [];
+    const response = {
+      writableEnded: false,
+      destroyed: false,
+      get writableLength() {
+        return bytes;
+      },
+      writeHead: () => undefined,
+      flushHeaders: () => undefined,
+      on: () => undefined,
+      write(chunk: string) {
+        const id = /^id: (\d+)/u.exec(chunk)?.[1];
+        if (id) written.push(Number(id));
+        bytes += Buffer.byteLength(chunk);
+        return true;
+      },
+      destroy() {
+        response.destroyed = true;
+      },
+    };
+    const internals = stream as unknown as {
+      openStream: (
+        request: unknown,
+        response: unknown,
+        url: URL,
+      ) => void;
+    };
+    internals.openStream(
+      { on: () => undefined },
+      response,
+      new URL("http://127.0.0.1/events?since=0"),
+    );
+
+    // The frames after the first two were never written, so the stream must end
+    // rather than stay open past a gap.
+    expect(written).toEqual([1, 2]);
+    expect(response.destroyed).toBe(true);
+    expect(stream.clientCount).toBe(0);
+    stream.publish(event("five"));
+    expect(written).toEqual([1, 2]);
+  });
+
   it("answers a resync frame when ?since= is older than the buffer", async () => {
     const stream = createStream();
     await stream.start("window:1");
