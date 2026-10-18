@@ -1,5 +1,5 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
 import { platform } from 'node:os'
@@ -102,7 +102,31 @@ export class AutomationService {
   private defsFile() { return path.join(this.dir, 'automations.json') }
   private runsDirectory() { return path.join(this.dir, 'runs') }
   private plistPath(id: string) { return path.join(this.opts.launchAgentsDirectory ?? this.dir, `com.gajae.automation.${id}.plist`) }
-  private async defs(): Promise<Automation[]> { try { return JSON.parse(await readFile(this.defsFile(), 'utf8')) } catch { return [] } }
+  private async defs(): Promise<Automation[]> {
+    let raw: string
+    try {
+      raw = await readFile(this.defsFile(), 'utf8')
+    } catch (error) {
+      // Only a missing file is an empty definition set. A permission or I/O
+      // failure must not be presented as "no automations", because the next save
+      // would then overwrite definitions that are still there.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw new Error(`자동화 정의를 읽을 수 없습니다. 기존 설정을 덮어쓰지 않았습니다: ${String(error)}`)
+    }
+    try {
+      const value: unknown = JSON.parse(raw)
+      if (!Array.isArray(value)) throw new Error('the definition file is not a list')
+      return value as Automation[]
+    } catch (error) {
+      // Keep the unreadable document next to the original so the user can inspect
+      // or recover it; the original is never rewritten by this path.
+      // A content-addressed name keeps one copy per damaged revision instead of a
+      // new file for every failed read.
+      const evidence = `${this.defsFile()}.corrupt-${createHash('sha256').update(raw).digest('hex').slice(0, 12)}`
+      await writeFile(evidence, raw, { encoding: 'utf8', mode: 0o600 }).catch(() => undefined)
+      throw new Error(`자동화 정의 파일이 손상되어 읽을 수 없습니다. 원본과 복구 사본을 보존했습니다: ${evidence}. ${String(error)}`)
+    }
+  }
   private async runs(): Promise<AutomationRun[]> { try { const directory = this.runsDirectory(); const names = await readdir(directory); const records = await Promise.all(names.filter((name) => /^[0-9a-f-]+\.json$/iu.test(name)).map(async (name) => JSON.parse(await readFile(path.join(directory, name), 'utf8')) as AutomationRun)); return records.sort((left, right) => right.startedAt.localeCompare(left.startedAt)).slice(0, 500) } catch { return [] } }
   private async writeRun(run: AutomationRun): Promise<void> { await mkdir(this.runsDirectory(), { recursive: true, mode: 0o700 }); await atomicJson(path.join(this.runsDirectory(), `${run.id}.json`), run) }
   // One unusable record must not silence the rest. `defs()` only guards against the

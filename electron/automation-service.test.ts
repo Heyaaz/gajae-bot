@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -103,6 +103,25 @@ describe('automation service contracts', () => {
     const retried = await service.runNow(created.id)
     expect(retried.status).toBe('failed')
     expect(spawned).toBe(2)
+  })
+
+  it('refuses to treat an unreadable definition file as empty', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-corrupt-'))
+    const file = path.join(directory, 'automations.json')
+    const corrupt = '{"name":"kept but unfinished"'
+    await writeFile(file, corrupt)
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none' })
+
+    await expect(service.list()).rejects.toThrow(/손상/u)
+    await expect(
+      service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false }),
+    ).rejects.toThrow(/손상/u)
+
+    // The unreadable document was neither overwritten nor silently discarded.
+    expect(await readFile(file, 'utf8')).toBe(corrupt)
+    const evidence = (await readdir(directory)).filter((name) => name.startsWith('automations.json.corrupt-'))
+    expect(evidence).toHaveLength(1)
+    expect(await readFile(path.join(directory, evidence[0]), 'utf8')).toBe(corrupt)
   })
 
   it('serializes concurrent definition changes instead of losing a save', async () => {
