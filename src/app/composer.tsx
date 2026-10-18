@@ -62,6 +62,74 @@ export function saveComposerSnapshot(
   snapshots.set(sessionId, snapshot);
 }
 
+// A release belongs to the session, not to the composer instance that started it.
+// The shell and a mounted composer both observe the end of a turn, and a request
+// may only be handed over once.
+const releasingQueues = new Set<string>();
+const queueListeners = new Map<string, Set<() => void>>();
+
+/** Watch a session's held queue even when this composer is not the one sending. */
+export function subscribeComposerQueue(
+  sessionId: string,
+  listener: () => void,
+): () => void {
+  const listeners = queueListeners.get(sessionId) ?? new Set();
+  listeners.add(listener);
+  queueListeners.set(sessionId, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) queueListeners.delete(sessionId);
+  };
+}
+
+/** The queue the shell may release while the composer is showing another screen. */
+export function composerQueue(sessionId: string): PendingRequest[] {
+  return composerSnapshots.get(sessionId)?.pendingQueue ?? [];
+}
+
+export function saveComposerQueue(
+  sessionId: string,
+  pending: PendingRequest[],
+): void {
+  const snapshot = composerSnapshots.get(sessionId);
+  saveComposerSnapshot(composerSnapshots, sessionId, {
+    ...(snapshot ?? { value: "", images: [], files: [] }),
+    pendingQueue: pending,
+  });
+  for (const listener of queueListeners.get(sessionId) ?? []) listener();
+}
+
+/**
+ * Hand over a session's held requests without a mounted composer.
+ *
+ * The shell calls this when a run ends while another screen is open. Ownership is
+ * keyed by session so this loop and a mounted composer's own release can never
+ * both send the same request.
+ */
+export async function releaseQueuedSession(
+  sessionId: string,
+  send: (request: PendingRequest) => Promise<unknown>,
+): Promise<void> {
+  if (releasingQueues.has(sessionId) || composerQueue(sessionId).length === 0)
+    return;
+  releasingQueues.add(sessionId);
+  try {
+    await releaseRequests({
+      canSend: () => true,
+      read: () => composerQueue(sessionId),
+      write: (pending) => saveComposerQueue(sessionId, pending),
+      send: (request) => send(request),
+    });
+  } finally {
+    releasingQueues.delete(sessionId);
+  }
+}
+
+/** Whether any release for this session is already handing requests over. */
+export function queueReleaseInFlight(sessionId: string): boolean {
+  return releasingQueues.has(sessionId);
+}
+
 /**
  * Apply a Fast tier change through the runtime's own service-tier control.
  *
@@ -769,6 +837,29 @@ export function Composer({
     });
   }, [sessionId]);
 
+  // Keep the module snapshot current while this composer is mounted. The shell
+  // releases queues for sessions whose screen is gone, and the chips must reflect
+  // a release that started elsewhere.
+  useEffect(() => {
+    saveComposerSnapshot(composerSnapshots, sessionId, {
+      value: valueRef.current,
+      images: imagesRef.current,
+      files: filesRef.current,
+      pendingQueue,
+    });
+    saveComposerQueue(sessionId, pendingQueue);
+  }, [pendingQueue, sessionId]);
+
+  useEffect(
+    () =>
+      subscribeComposerQueue(sessionId, () => {
+        const pending = composerQueue(sessionId);
+        pendingQueueRef.current = pending;
+        setPendingQueue(pending);
+      }),
+    [sessionId],
+  );
+
   useEffect(() => {
     function applyEffortCycle(): void {
       setConfigMenu(null);
@@ -913,13 +1004,12 @@ export function Composer({
     };
   }, [addDroppedAttachments]);
 
-  const releasingSessionsRef = useRef(new Set<string>());
 
   // Interrupt the open turn, then hand the held requests over in order. Each entry
   // leaves the queue only after onSend resolves for it, so a failed release keeps
   // the request visible instead of losing the user's text.
   const releasePendingQueue = useCallback(async (): Promise<void> => {
-    if (readOnly || releasingSessionsRef.current.has(sessionId) || draftSessionRef.current !== sessionId) return;
+    if (readOnly || releasingQueues.has(sessionId) || draftSessionRef.current !== sessionId) return;
     const owner = sessionId;
     const read = (): PendingRequest[] =>
       draftSessionRef.current === owner
@@ -953,7 +1043,7 @@ export function Composer({
       setPendingQueue(pending);
     };
     if (read()[0]?.blocked) return;
-    releasingSessionsRef.current.add(owner);
+    releasingQueues.add(owner);
     try {
       // Only an open turn needs interrupting. Aborting an idle session would
       // cancel nothing and emit a spurious cancellation notice.
@@ -980,7 +1070,7 @@ export function Composer({
       if (pending[0]) write([{ ...pending[0], blocked: true }, ...pending.slice(1)]);
       if (draftSessionRef.current === owner) setAttachmentError(humanErrorMessage(error));
     } finally {
-      releasingSessionsRef.current.delete(owner);
+      releasingQueues.delete(owner);
     }
   }, [onFlushQueued, onSend, running, readOnly, sessionId]);
 
@@ -990,7 +1080,7 @@ export function Composer({
   function pullQueuedEntry(target: QueuePullTarget): void {
     // A release in flight is handing entries over one at a time from this same
     // queue, so a pull beside it would race that loop for the entry it claimed.
-    if (releasingSessionsRef.current.has(sessionId)) return;
+    if (releasingQueues.has(sessionId)) return;
     const pulled = pullQueuedRequest(pendingQueueRef.current, target);
     if (!pulled) return;
     pendingQueueRef.current = pulled.pending;
@@ -1024,7 +1114,7 @@ export function Composer({
   // A chip's × discards exactly that entry. Same guard as a pull: the release
   // loop may be awaiting a send for an entry it has already claimed.
   function discardQueuedEntry(id: string): void {
-    if (releasingSessionsRef.current.has(sessionId)) return;
+    if (releasingQueues.has(sessionId)) return;
     const remaining = withoutReleasedRequest(pendingQueueRef.current, id);
     pendingQueueRef.current = remaining;
     setPendingQueue(remaining);
@@ -1317,7 +1407,7 @@ export function Composer({
     // arrow keys, and only consumes the keydown when a pull can actually happen.
     const pull = consumeQueuePullKey(event, {
       pending: pendingQueueRef.current,
-      releasing: releasingSessionsRef.current.has(sessionId),
+      releasing: releasingQueues.has(sessionId),
     });
     if (pull) {
       pullQueuedEntry(pull);

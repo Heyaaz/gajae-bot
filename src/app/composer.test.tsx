@@ -23,7 +23,10 @@ import {
   mergePreparedAttachments,
   requestFastTier,
   restoreRejectedDraft,
+  saveComposerQueue,
   saveComposerSnapshot,
+  composerQueue,
+  releaseQueuedSession,
   selectedCommandDraft,
   storePreparedAttachments,
 } from "./composer";
@@ -691,6 +694,57 @@ describe("queue release ownership", () => {
     expect(canReleaseQueue(false, "session-a", "session-a")).toBe(false);
     expect(canReleaseQueue(true, "session-b", "session-a")).toBe(false);
     expect(canReleaseQueue(true, "session-a", "session-a")).toBe(true);
+  });
+});
+
+describe("session-level queue release", () => {
+  it("hands a session's queue over without a mounted composer", async () => {
+    saveComposerQueue("session-unmounted", [
+      heldRequest("queued-1", "first follow up"),
+      heldRequest("queued-2", "second follow up"),
+    ]);
+    const sent: string[] = [];
+    await releaseQueuedSession("session-unmounted", async (request) => {
+      sent.push(request.text);
+    });
+    expect(sent).toEqual(["first follow up", "second follow up"]);
+    expect(composerQueue("session-unmounted")).toEqual([]);
+  });
+
+  it("lets only one observer release the same queue", async () => {
+    saveComposerQueue("session-once", [
+      heldRequest("queued-1", "first"),
+      heldRequest("queued-2", "second"),
+    ]);
+    const sent: string[] = [];
+    let releaseFirst!: () => void;
+    const send = vi.fn(async (request: PendingRequest) => {
+      sent.push(request.text);
+      if (request.id === "queued-1")
+        await new Promise<void>((resolve) => { releaseFirst = resolve; });
+    });
+    const first = releaseQueuedSession("session-once", send);
+    const second = releaseQueuedSession("session-once", send);
+    await Promise.resolve();
+    expect(send).toHaveBeenCalledTimes(1);
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(sent).toEqual(["first", "second"]);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a failed request in the shared queue as blocked", async () => {
+    saveComposerQueue("session-failed", [
+      heldRequest("queued-1", "uncertain"),
+      heldRequest("queued-2", "later"),
+    ]);
+    await releaseQueuedSession("session-failed", async () => {
+      throw new Error("send uncertain");
+    });
+    expect(composerQueue("session-failed")).toEqual([
+      expect.objectContaining({ id: "queued-1", blocked: true }),
+      expect.objectContaining({ id: "queued-2" }),
+    ]);
   });
 });
 

@@ -29,7 +29,7 @@ import {
 } from "../transcript-utils";
 import { FolderGit2, GitBranch, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Composer } from "./composer";
+import { Composer, releaseQueuedSession } from "./composer";
 import {
   DeleteSessionDialog,
   GlobalSearchDialog,
@@ -397,6 +397,28 @@ export default function App() {
     void backend.getConnection().then((currentConnection) => {
       if (active) setConnection(currentConnection);
     });
+    // Run ends can happen while another screen is open and no composer exists.
+    // This tracker lives for the shell's lifetime, so a queue restored from a
+    // snapshot is still released when its session reports idle. A running report
+    // must have been seen first: an idle row right after a send, before the turn
+    // starts, is not evidence that queued work can be handed over.
+    const runStates = new Map<string, AgentSession["status"]>();
+    const observeSessionRun = (session: AgentSession): void => {
+      const previous = runStates.get(session.id);
+      runStates.set(session.id, session.status);
+      if (previous !== "running" || session.status !== "idle") return;
+      void releaseQueuedSession(session.id, async (request) => {
+        // Send directly: this request belongs to the session whose run ended, which
+        // may not be the one on screen. The composer's sent-request token would
+        // scroll an unrelated transcript.
+        await backend.sendMessage(await resolveSessionId(session.id), {
+          text: request.text,
+          images: request.images,
+          files: request.files,
+        });
+      }).catch((error: unknown) => setAppError(humanErrorMessage(error)));
+    };
+
     // A GJC session started from the CLI after this window opened only shows up if
     // discovery runs again, so the list refreshes instead of loading once.
     let listing = false;
@@ -407,6 +429,7 @@ export default function App() {
         .listSessions()
         .then((loadedSessions) => {
           if (!active) return;
+          for (const session of loadedSessions) observeSessionRun(session);
           setSessions((current) =>
             mergeDiscoveredSessions(
               current,
@@ -448,11 +471,13 @@ export default function App() {
       if (event.type === "connection.updated") {
         setConnection(event.connection);
       } else if (event.type === "session.created") {
+        observeSessionRun(event.session);
         setSessions((current) => [
           event.session,
           ...current.filter((session) => session.id !== event.session.id),
         ]);
       } else if (event.type === "session.updated") {
+        observeSessionRun(event.session);
         setSessions((current) =>
           current.map((session) =>
             session.id === event.session.id ? event.session : session,
