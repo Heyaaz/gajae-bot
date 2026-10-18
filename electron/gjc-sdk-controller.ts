@@ -2124,16 +2124,23 @@ export class GjcSdkController {
     // the first row that happens to still match.
     const shared = Math.min(previous.length, items.length);
     const windowStart = Math.max(0, shared - TRANSCRIPT_RESCAN_WINDOW);
-    // Outside the window only identity has to line up. An insert, reorder or
-    // replacement shifts every following row and cannot be described as appended
-    // items, so it takes the full-history route.
+    const changedIndices: number[] = [];
+    // The bounded window only limits how many changed rows are shipped in one
+    // batch. Content still has to be compared across the whole shared prefix:
+    // a parallel tool can settle on its original row long after 32 newer rows
+    // were appended, and an id-only check left that card running here while the
+    // installed history already had its result. Identity changes cannot be
+    // expressed as appended items, so those still take the full-history route.
     for (let index = 0; index < windowStart; index += 1) {
-      if (previous[index]?.id !== items[index]?.id) {
+      const before = previous[index];
+      const after = items[index];
+      if (!before || !after) break;
+      if (before.id !== after.id) {
         syncWholeHistory();
         return;
       }
+      if (!sameTranscriptItem(before, after)) changedIndices.push(index);
     }
-    const changedIndices: number[] = [];
     let reachedWindowStart = false;
     for (let index = shared - 1; index >= windowStart; index -= 1) {
       const before = previous[index];

@@ -719,6 +719,43 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("publishes an out-of-window same-id tool completion", () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    const toolRow = (index: number, status: string, output?: string) =>
+      ({
+        id: `call-${index}`,
+        kind: "tool",
+        sessionId: "s1",
+        name: "bash",
+        description: "bash",
+        status,
+        createdAt: "now",
+        ...(output ? { output } : {}),
+      }) as any;
+    const previous = Array.from({ length: 40 }, (_value, index) =>
+      toolRow(index, index === 0 ? "running" : "completed"),
+    );
+    const next = previous.map((row, index) =>
+      index === 0 ? toolRow(0, "completed", "late output") : row,
+    );
+    internals.publishTranscriptSync("s1", previous, next);
+    const events = emit.mock.calls.map(([event]) => event);
+    expect(events.some((event) => event.type === "transcript.synced")).toBe(
+      false,
+    );
+    const appended = events.filter(
+      (event) => event.type === "transcript.appended",
+    );
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.item).toMatchObject({
+      id: "call-0",
+      status: "completed",
+      output: "late output",
+    });
+    controller.dispose();
+  });
+
   it("publishes a changed row followed by an unchanged parallel call", () => {
     const emit = vi.fn();
     const { controller, internals } = harness({ emit });
