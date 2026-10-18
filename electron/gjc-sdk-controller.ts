@@ -146,6 +146,8 @@ import {
   inferToolName,
   isLiveOnlyRow,
   lastReportedModel,
+  lifecycleInputRefused,
+  lifecycleLegacyHistoryAmbiguous,
   lifecycleUncertainError,
   liveSessionDeleteError,
   markUpdated,
@@ -427,6 +429,10 @@ export class GjcSdkController {
   private readonly tailControllers = new Map<string, AbortController>();
   /** Latest tail checkpoint claim per session, so a re-read resumes rather than rewinds. */
   private readonly tailCheckpoints = new Map<string, string>();
+  /** Public observer connections that replace tool output with the newest snapshot. */
+  private readonly toolObservers = new Map<string, AbortController>();
+  /** The latest streamed tool rows, kept over a stale durable read. */
+  private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
@@ -490,6 +496,8 @@ export class GjcSdkController {
     this.startup = undefined;
     this.routeProbes.clear();
     this.permissionModeApplied.clear();
+    for (const sessionId of this.toolObservers.keys())
+      this.stopTailFollower(sessionId);
     for (const sessionId of this.tailControllers.keys())
       this.stopTailFollower(sessionId);
     this.attachedSessions.clear();
@@ -523,13 +531,10 @@ export class GjcSdkController {
   }
 
   async listSessions(): Promise<AgentSession[]> {
-    // Discovery is a background refresh that spawns broker CLI requests. Running
-    // it while a prompt, steer, or abort is in flight adds avoidable process and
-    // broker work, so it yields and the caller keeps the list it already has.
-    if (
-      this.lastDiscovered.length > 0 &&
-      (this.activePromptSessions.size > 0 || this.pendingSteers.size > 0)
-    )
+    // Yield during the short steering request, not the whole prompt lifetime.
+    // A prompt can run for minutes; freezing discovery for that entire interval
+    // hides every CLI session opened while the desktop is working.
+    if (this.lastDiscovered.length > 0 && this.pendingSteers.size > 0)
       return this.lastDiscovered.map((session) => ({ ...session }));
     if (this.discoveryInFlight) return this.discoveryInFlight;
     const discovery = this.discoverSessions().finally(() => {
@@ -783,7 +788,9 @@ export class GjcSdkController {
       );
       const discoveredStatus = quietSettle
         ? "idle"
-        : revisionChanged && currentSession
+        : this.locallyAbortedSessions.has(info.sessionId)
+          ? "idle"
+          : revisionChanged && currentSession
           ? currentSession.status
           : this.activePromptSessions.has(info.sessionId) ||
               this.liveRunningSessions.has(info.sessionId)
@@ -1526,6 +1533,9 @@ export class GjcSdkController {
       if (!response) throw error;
     }
     if (!response) throw new Error("GJC did not report a new session id");
+    // The startup scan predates this mutation and would hide the new session on
+    // the first list call, even though create already announced it to the UI.
+    this.startupSessionRows = undefined;
     const createdSessionId = response.sessionId;
     const session: AgentSession = {
       id: createdSessionId,
@@ -2555,7 +2565,8 @@ export class GjcSdkController {
       | "retry.last"
       | "bash.background"
       | "runtime.reload"
-      | "auth.login",
+      | "auth.login"
+      | "btw.ask",
     input: Record<string, unknown>,
     options?: { confirm?: boolean; idempotencyKey?: string },
   ): Promise<Record<string, unknown> | undefined> {
@@ -2769,7 +2780,8 @@ export class GjcSdkController {
         | "bash.background"
         | "runtime.reload"
         | "mode.plan.set"
-        | "auth.login",
+        | "auth.login"
+        | "btw.ask",
       controlInput: Record<string, unknown> = {},
       options?: { confirm?: boolean },
     ): Promise<Record<string, unknown> | undefined> => {
@@ -2783,6 +2795,21 @@ export class GjcSdkController {
     };
 
     switch (name) {
+      case "btw": {
+        if (!args) throw new Error("Usage: /btw <question>");
+        const result = await control("btw.ask", { question: args });
+        const reply =
+          typeof result?.reply === "string" ? result.reply.trim() : "";
+        if (!reply) throw new Error("GJC returned no /btw answer");
+        // The runtime answers from this session's own context and keeps nothing:
+        // the reply is an app-owned row like every other SDK command output, so
+        // the GJC transcript this window mirrors never gains the side question.
+        const question = args
+          .split("\n")
+          .map((line) => `> ${line}`)
+          .join("\n");
+        return output(["## Side question", question, "", reply].join("\n"));
+      }
       case "context": {
         if (args) throw new Error("Usage: /context");
         const rows = await query("context.get");
@@ -3320,6 +3347,7 @@ export class GjcSdkController {
         this.finalizeThought(sessionId);
         this.finalizeAssistantMessage(sessionId);
         this.finalizeAllMessages(sessionId);
+        this.toolSnapshots.delete(sessionId);
         this.cancelOpenTools(sessionId);
         this.cancelPermissionsForSession(sessionId);
         this.appendCancelledNotice(sessionId, stop === "plain");
@@ -3474,8 +3502,8 @@ export class GjcSdkController {
    * gjc/0.18.11: adding a `clientRef` or `turnId` field to the terminal payload is
    * rejected before dispatch.
    *
-   * Only `turn: "stopped"` is a confirmation. gjc/0.18.11 answers the typed
-   * disposition `{turn:"no_active_turn", terminal:"terminal_no_effect"}` when the
+   * Only `turn: "stopped"` is a confirmation. The historical gjc/0.18.11 bug
+   * (fixed in 0.18.12) answered the typed disposition `{turn:"no_active_turn", terminal:"terminal_no_effect"}` when the
    * broker route cannot see the host's active prompt -- reproducible while a turn is
    * verifiably running (`status` in_flight and `turn.steer` accepted on the same
    * session) -- and the turn keeps running. Reporting that as a cancellation would
@@ -4065,6 +4093,8 @@ export class GjcSdkController {
     this.startup = undefined;
     this.routeProbes.clear();
     this.permissionModeApplied.clear();
+    for (const sessionId of this.toolObservers.keys())
+      this.stopTailFollower(sessionId);
     for (const sessionId of this.tailControllers.keys())
       this.stopTailFollower(sessionId);
     this.attachedSessions.clear();
@@ -4110,6 +4140,20 @@ export class GjcSdkController {
       await this.removeSessionArtifacts(sessionId);
       this.removeLocalSession(sessionId, false);
     } catch (error) {
+      if (lifecycleInputRefused(error) || lifecycleLegacyHistoryAmbiguous(error)) {
+        // Neither admission refusal settles earlier effects. Preserve every
+        // artifact and require reconciliation before another attempt.
+        if (session) {
+          session.attachment = "recovering";
+          this.attachedSessions.delete(sessionId);
+          this.stopTailFollower(sessionId);
+          this.emitEvent({ type: "session.updated", session: { ...session } });
+        }
+        if (lifecycleLegacyHistoryAmbiguous(error)) {
+          throw new Error("이전 GJC 수명주기 기록의 영향 범위를 확인할 수 없어 삭제 요청이 실행되지 않았습니다 (lifecycle_legacy_history_ambiguous). 이전 작업의 결과는 여전히 미확정입니다. 원본 작업·요청 키·대상과 ledger를 보존하고 확인해야 합니다. ledger 수정, 강제 삭제, 새 키로 재시도하지 마세요.");
+        }
+        throw new Error("GJC가 세션 삭제 요청의 입력을 거부했습니다 (lifecycle_input_refused). 요청 정보를 수정하고 기존 세션 상태를 확인해야 합니다. 자동으로 재시도하지 않습니다.");
+      }
       if (missingSessionError(error) || missingLifecycleSessionError(error)) {
         await this.removeSessionArtifacts(sessionId);
         this.removeLocalSession(sessionId, false);
@@ -4173,6 +4217,7 @@ export class GjcSdkController {
         // transcript, artifacts, metadata, and worktree for reconciliation.
         const afterDelete = await this.sessionBrokerRow(sessionId);
         if (afterDelete === null || afterDelete?.deleted === true) return "deleted";
+        if (lifecycleInputRefused(error) || lifecycleLegacyHistoryAmbiguous(error)) throw error;
         return "recovering";
       }
       throw error;
@@ -4350,6 +4395,9 @@ export class GjcSdkController {
     // No agent process is owned here, so disposal never kills a running session.
     for (const controller of this.tailControllers.values()) controller.abort();
     this.tailControllers.clear();
+    for (const observer of this.toolObservers.values()) observer.abort();
+    this.toolObservers.clear();
+    this.toolSnapshots.clear();
     this.cli = undefined;
     this.startup = undefined;
     this.startupSessionRows = undefined;
@@ -4989,15 +5037,79 @@ export class GjcSdkController {
     );
     this.tailReads.set(sessionId, follow);
     void follow.catch(() => undefined);
+    this.startToolObserver(sessionId);
   }
 
   private stopTailFollower(sessionId: string): void {
+    this.toolObservers.get(sessionId)?.abort();
+    this.toolObservers.delete(sessionId);
+    this.toolSnapshots.delete(sessionId);
     this.tailControllers.get(sessionId)?.abort();
     this.tailControllers.delete(sessionId);
     // Ownership of the slot ends synchronously. The old promise's `finally`
     // checks identity before cleanup, so it cannot remove a replacement follower.
     this.tailReads.delete(sessionId);
     this.tailCheckpoints.delete(sessionId);
+  }
+
+  private startToolObserver(sessionId: string): void {
+    if (this.toolObservers.has(sessionId) || this.disposed) return;
+    const controller = new AbortController();
+    this.toolObservers.set(sessionId, controller);
+    const detached = new Promise<void>((resolve) => {
+      controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
+    void (async () => {
+      while (!this.disposed && !controller.signal.aborted && this.attachedSessions.has(sessionId)) {
+        try {
+          const cli = await this.requireCli();
+          if (controller.signal.aborted) return;
+          await cli.observeTools(sessionId, (kind, payload) => {
+            if (!controller.signal.aborted && !this.disposed)
+              this.projectToolStream(sessionId, kind, payload);
+          }, controller.signal, this.repoFor(sessionId));
+        } catch {
+          // The observer has no lifecycle authority. Durable tail/file reads still
+          // work during relay failure, and a fresh connection accepts snapshots.
+        }
+        if (!controller.signal.aborted) await tailReadPause(detached);
+      }
+    })().finally(() => {
+      if (this.toolObservers.get(sessionId) === controller) this.toolObservers.delete(sessionId);
+    });
+  }
+
+  private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
+    const event = payload.event;
+    if (!event || typeof event !== "object" || Array.isArray(event)) return;
+    const value = event as Record<string, unknown>;
+    if (value.type !== kind || typeof value.toolCallId !== "string" || typeof value.toolName !== "string") return;
+    if (!["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(kind)) return;
+    const existing = this.transcripts.get(sessionId)?.find((item) => item.kind === "tool" && item.id === value.toolCallId);
+    if (existing?.kind === "tool" && !LIVE_TOOL_STATUSES.has(existing.status)) return;
+    const ended = kind === "tool_execution_end";
+    const result = ended ? value.result : value.partialResult;
+    const record = result && typeof result === "object" && !Array.isArray(result)
+      ? result as Record<string, unknown> : undefined;
+    const text = record ? toolResultText(record) ?? "" : undefined;
+    this.upsertTool(sessionId, {
+      sessionUpdate: kind === "tool_execution_start" ? "tool_call" : "tool_call_update",
+      toolCallId: value.toolCallId,
+      title: value.toolName,
+      rawInput: value.args,
+      status: ended ? value.isError === true ? "failed" : "completed" : "in_progress",
+      ...(record ? {
+        rawOutput: !ended && value.toolName === "bash"
+          ? `[실시간 출력 스냅샷 · 앞부분이 생략될 수 있음]\n${text}` : text,
+        content: Array.isArray(record.content) ? record.content : undefined,
+      } : {}),
+    });
+    const tool = this.transcripts.get(sessionId)?.find((item): item is ToolActivity => item.kind === "tool" && item.id === value.toolCallId);
+    if (!tool) return;
+    let snapshots = this.toolSnapshots.get(sessionId);
+    if (!snapshots) this.toolSnapshots.set(sessionId, snapshots = new Map());
+    snapshots.set(tool.id, { ...tool });
+    if (snapshots.size > 256) snapshots.delete(snapshots.keys().next().value!);
   }
 
   private async followSessionTail(
@@ -5311,6 +5423,25 @@ export class GjcSdkController {
     sessionId: string,
     items: TranscriptItem[],
   ): TranscriptItem[] {
+    const snapshots = this.toolSnapshots.get(sessionId);
+    if (snapshots) {
+      items = items.map((item) => {
+        const snapshot = snapshots.get(item.id);
+        if (item.kind !== "tool" || !snapshot) return item;
+        if (
+          !LIVE_TOOL_STATUSES.has(item.status) &&
+          !(item.status === "cancelled" && !item.output)
+        ) {
+          snapshots.delete(item.id);
+          return item;
+        }
+        return { ...item, ...snapshot };
+      });
+      for (const snapshot of snapshots.values()) {
+        if (!items.some((item) => item.id === snapshot.id))
+          items.push({ ...snapshot });
+      }
+    }
     const previous = this.transcripts.get(sessionId) ?? [];
     const ids = new Set(items.map((item) => item.id));
     // App-owned views the durable read never carries: the plan the runtime reported
@@ -5325,9 +5456,11 @@ export class GjcSdkController {
     }> = [];
     for (let index = 0; index < previous.length; index += 1) {
       const row = previous[index]!;
-      const isAppOwned = appOwned.some(
-        (view) => view !== undefined && view.id === row.id,
-      );
+      const isAppOwned =
+        (row.kind === "notice" && row.id.startsWith("gjc-cancelled-")) ||
+        appOwned.some(
+          (view) => view !== undefined && view.id === row.id,
+        );
       if (isAppOwned) {
         if (!ids.has(row.id))
           retained.push({

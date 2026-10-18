@@ -330,3 +330,59 @@ describe("attachment IPC validation", () => {
     expect(operation).not.toHaveBeenCalled();
   });
 });
+
+describe("explicit compaction action", () => {
+  function setup() {
+    const compact = vi.fn().mockResolvedValue(undefined);
+    const remove = vi.fn().mockResolvedValue(undefined);
+    const confirm = vi.fn().mockResolvedValue(undefined);
+    const guarded = vi.fn((handler: (...args: unknown[]) => unknown) => async (...args: unknown[]) => handler(...args));
+    registerGjcIpcHandlers(
+      { compactSession: compact, deleteSession: remove } as unknown as GjcSdkController,
+      new AttachmentStore(),
+      { guarded, authorizeDestructive: confirm } as unknown as IpcSecurity,
+    );
+    return { compact, remove, confirm, guarded };
+  }
+
+  it("compacts without opening a native confirmation dialog", async () => {
+    const { compact, confirm } = setup();
+    await handled.get(GJC_IPC.compactSession)!({}, "session-a");
+    expect(compact).toHaveBeenCalledExactlyOnceWith("session-a");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid targets before calling the controller", async () => {
+    const { compact, confirm } = setup();
+    await expect(handled.get(GJC_IPC.compactSession)!({}, "")).rejects.toThrow("Session ID");
+    expect(compact).not.toHaveBeenCalled();
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("keeps sender authorization on the compaction handler", async () => {
+    const compact = vi.fn();
+    const guarded = vi.fn(() => async () => { throw new Error("Untrusted sender"); });
+    registerGjcIpcHandlers(
+      { compactSession: compact } as unknown as GjcSdkController,
+      new AttachmentStore(),
+      { guarded } as unknown as IpcSecurity,
+    );
+    await expect(handled.get(GJC_IPC.compactSession)!({}, "session-a")).rejects.toThrow("Untrusted sender");
+    expect(compact).not.toHaveBeenCalled();
+  });
+
+  it("propagates runtime errors without adding another confirmation", async () => {
+    const { compact, confirm } = setup();
+    compact.mockRejectedValueOnce(new Error("Runtime refused compaction"));
+    await expect(handled.get(GJC_IPC.compactSession)!({}, "session-a")).rejects.toThrow("Runtime refused compaction");
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("still confirms session deletion", async () => {
+    const { remove, confirm } = setup();
+    const event = {};
+    await handled.get(GJC_IPC.deleteSession)!(event, "session-a");
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(event, { message: "세션을 삭제할까요?" });
+    expect(remove).toHaveBeenCalledExactlyOnceWith("session-a");
+  });
+});

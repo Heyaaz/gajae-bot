@@ -5,8 +5,9 @@ import { randomBytes, randomUUID } from "node:crypto";
  * The `gjc sdk session` CLI client.
  *
  * Gajae is an external controller: it never hosts a session runtime and never
- * keeps a resident agent process. Every operation is one short-lived
- * `gjc sdk session ...` invocation whose JSON response is the whole contract.
+ * keeps a resident agent process. Control/query operations are short-lived
+ * `gjc sdk session ...` invocations. A supplemental read-only `sdk serve` relay
+ * observes tool snapshots without taking ownership of the session runtime.
  * That keeps the desktop process-isolated from the agent -- a crashed or
  * upgraded runtime cannot take the window down with it.
  */
@@ -196,7 +197,13 @@ export function parseEnvelope(stdout: string, label: string): Record<string, unk
       typeof error?.message === "string"
         ? error.message
         : `GJC ${label} failed`;
-    throw new SdkCliError(code, message, asRecord(error?.details), [],
+    const diagnostics = Array.isArray(record.diagnostics)
+      ? record.diagnostics.flatMap((value) => {
+          const diagnostic = asRecord(value);
+          return typeof diagnostic?.code === "string" ? [{ code: diagnostic.code }] : [];
+        })
+      : [];
+    throw new SdkCliError(code, message, asRecord(error?.details), diagnostics,
       typeof error?.outcomeCertainty === "string" ? error.outcomeCertainty : undefined);
   }
   return record;
@@ -393,6 +400,72 @@ export class GjcSdkCli {
   exec = brokerExec;
 
   constructor(private readonly options: SdkCliOptions) {}
+
+  /** A credential-free, read-only observer of non-replayable tool snapshots. */
+  async observeTools(
+    sessionId: string,
+    onEvent: (kind: string, payload: Record<string, unknown>) => void,
+    signal: AbortSignal,
+    repo = this.options.repo,
+  ): Promise<void> {
+    if (signal.aborted) return;
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(this.options.executable,
+        ["sdk", "serve", "--stdio", "--session", sessionId],
+        { cwd: repo, env: this.options.env, stdio: ["pipe", "pipe", "pipe"] });
+      let buffer = "";
+      let settled = false;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(handshake);
+        signal.removeEventListener("abort", abort);
+        // Only the relay is ours; never signal the broker's session host.
+        child.kill("SIGTERM");
+        if (error) reject(error); else resolve();
+      };
+      const abort = (): void => finish();
+      const handshake = setTimeout(() => finish(new Error("GJC tool observer handshake timed out")), 12_000);
+      signal.addEventListener("abort", abort, { once: true });
+      child.stdin.on("error", (error) => finish(error));
+      child.stderr.resume();
+      child.stdout.setEncoding("utf8");
+      child.stdout.on("data", (chunk: string) => {
+        if (settled) return;
+        buffer += chunk;
+        // GJC tool results can be large, but a broken relay must not grow forever.
+        if (Buffer.byteLength(buffer) > 16 * 1024 * 1024) {
+          finish(new Error("GJC tool observer frame exceeded 16 MiB"));
+          return;
+        }
+        let boundary: number;
+        while ((boundary = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, boundary).trim();
+          buffer = buffer.slice(boundary + 1);
+          if (!line) continue;
+          try {
+            const frame = asRecord(JSON.parse(line));
+            if (frame?.type === "hello") {
+              child.stdin.write(`${JSON.stringify({ type: "event_replay", id: "gajae-tool-observer", capabilities: ["turn_stream", "session_host_observer_v1"] })}\n`);
+            } else if (frame?.type === "event_replay_result" && frame.id === "gajae-tool-observer") {
+              if (frame.ok !== true) throw new Error("GJC refused tool observer capabilities");
+              clearTimeout(handshake);
+            } else if (frame?.type === "event" && typeof frame.kind === "string") {
+              const payload = asRecord(frame.payload);
+              if (payload && ["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
+                onEvent(frame.kind, payload);
+            }
+          } catch (error) {
+            finish(error instanceof Error ? error : new Error(String(error)));
+            return;
+          }
+        }
+      });
+      child.once("error", (error) => finish(error));
+      child.once("close", () => finish());
+      if (signal.aborted) finish();
+    });
+  }
 
   /** Seam over the resolved workspace so every `--repo` value is explicit. */
   private repoFor(repo?: string): string {

@@ -220,14 +220,9 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.cycleThinking, (_event, sessionId: unknown) =>
     controller.cycleThinking(requiredId(sessionId, "Session ID")),
   );
-  handle(GJC_IPC.compactSession, async (event, sessionId: unknown) => {
-    const id = requiredId(sessionId, "Session ID");
-    await security.authorizeDestructive(event, {
-      message: "Compact this session?",
-      detail: `Session ${id} history will be rewritten.`,
-    });
-    return controller.compactSession(id);
-  });
+  handle(GJC_IPC.compactSession, (_event, sessionId: unknown) =>
+    controller.compactSession(requiredId(sessionId, "Session ID")),
+  );
   handle(
     GJC_IPC.queueFollowUp,
     (event, sessionId: unknown, input: unknown) => deliver(event, sessionId, input, "queueFollowUp"),

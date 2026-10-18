@@ -39,6 +39,9 @@ function harness(options: Record<string, unknown> = {}) {
     rawQuery: vi.fn(async () => ({ items: [] })), queryItems: vi.fn(async () => []),
     send: vi.fn(async () => ({ status: "accepted" })), promptStatus: vi.fn(async () => ({ status: "completed" })),
     tail: vi.fn(async () => ({ source: "offline", terminal: true, items: [] })),
+    observeTools: vi.fn(async (_id: string, _emit: unknown, signal: AbortSignal) => {
+      if (!signal.aborted) await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+    }),
   };
   const internals = controller as any;
   internals.cli = cli; internals.startup = Promise.resolve(); internals.generation = 1;
@@ -230,6 +233,183 @@ describe("history opening with an unavailable endpoint", () => {
   });
 });
 
+describe("0.18.12 tool stream", () => {
+  it("retains the app's confirmed cancellation notice across durable refresh", () => {
+    const { controller, internals } = harness();
+    try {
+      internals.appendCancelledNotice("s1", false);
+      const notice = internals.transcripts.get("s1")[0];
+      internals.installTranscript("s1", []);
+      expect(internals.transcripts.get("s1")).toEqual([notice]);
+      internals.installTranscript("s1", []);
+      expect(internals.transcripts.get("s1")).toHaveLength(1);
+    } finally { controller.dispose(); }
+  });
+
+  it("does not resurrect a confirmed cancelled turn from its toolUse transcript", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locallyAbortedSessions.add("s1");
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "running");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 1 }] as never);
+      expect((await controller.listSessions()).find((row) => row.id === "s1")?.status).toBe("idle");
+    } finally { controller.dispose(); }
+  });
+
+  it("discovers new CLI sessions while an app prompt is still running", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.lastDiscovered = [session("old")];
+      internals.activePromptSessions.add("old");
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "new-cli-session", live: true, deleted: false, repo: "/repo", endpointGeneration: 1 }] as never);
+      expect((await controller.listSessions()).map((row) => row.id)).toContain("new-cli-session");
+      expect(cli.listSessions).toHaveBeenCalledTimes(1);
+    } finally { controller.dispose(); }
+  });
+
+  function streamHarness() {
+    const result = harness();
+    result.internals.persistArtifact = vi.fn(async () => undefined);
+    result.internals.sessions.set("s1", session());
+    const event = (kind: string, fields: Record<string, unknown> = {}) =>
+      result.internals.projectToolStream("s1", kind, {
+        event_type: kind,
+        event: { type: kind, toolCallId: "t1", toolName: "bash", ...fields },
+      });
+    const tool = () => result.internals.transcripts.get("s1")?.find((row: any) => row.id === "t1");
+    return { ...result, event, tool };
+  }
+
+  it("replaces cumulative snapshots, survives durable refresh and finalizes from end", () => {
+    const { controller, internals, event, tool } = streamHarness();
+    try {
+      event("tool_execution_start", { args: { command: "echo line1; echo line2" } });
+      event("tool_execution_update", { partialResult: { content: [{ type: "text", text: "line1\n" }] } });
+      event("tool_execution_update", { partialResult: { content: [{ type: "text", text: "line1\nline2\n" }] } });
+      expect(tool().output.match(/line1/g)).toHaveLength(1);
+      expect(tool().output).toContain("앞부분이 생략될 수 있음");
+      internals.installTranscript("s1", [{ ...tool(), output: undefined }]);
+      expect(tool().output).toContain("line2");
+      event("tool_execution_end", { result: { content: [{ type: "text", text: "FINAL" }] }, isError: false });
+      expect(tool()).toMatchObject({ status: "completed", output: "FINAL" });
+      event("tool_execution_update", { partialResult: { content: [{ type: "text", text: "STALE" }] } });
+      expect(tool().output).toBe("FINAL");
+      internals.installTranscript("s1", [{ ...tool(), status: "running", output: undefined }]);
+      expect(tool()).toMatchObject({ status: "completed", output: "FINAL" });
+      internals.installTranscript("s1", [{ ...tool(), status: "completed", output: "DURABLE" }]);
+      expect(tool().output).toBe("DURABLE");
+      expect(internals.toolSnapshots.get("s1").size).toBe(0);
+    } finally { controller.dispose(); }
+  });
+
+  it("accepts a late snapshot without start, tail replacement and empty error result", () => {
+    const { controller, event, tool } = streamHarness();
+    try {
+      event("tool_execution_update", { partialResult: { content: [{ type: "text", text: "line1\nline2\n" }] } });
+      event("tool_execution_update", { partialResult: { content: [{ type: "text", text: "line2\nline3\n" }] } });
+      expect(tool().output).not.toContain("line1");
+      event("tool_execution_end", { result: { content: [] }, isError: true });
+      expect(tool()).toMatchObject({ status: "failed", output: "" });
+    } finally { controller.dispose(); }
+  });
+
+  it("reconnects a failed relay and aborts the replacement on detach", async () => {
+    vi.useFakeTimers();
+    const { controller, cli, internals } = streamHarness();
+    try {
+      internals.attachedSessions.add("s1");
+      cli.observeTools.mockRejectedValueOnce(new Error("relay exited"));
+      internals.startToolObserver("s1");
+      await vi.advanceTimersByTimeAsync(TAIL_WINDOW_MS);
+      expect(cli.observeTools).toHaveBeenCalledTimes(2);
+      const signal = cli.observeTools.mock.calls[1]![2];
+      internals.stopTailFollower("s1");
+      expect(signal.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(TAIL_WINDOW_MS * 2);
+      expect(cli.observeTools).toHaveBeenCalledTimes(2);
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+});
+
+describe("0.18.12 lifecycle refusal", () => {
+  it("admits newer external runtime work without reopening stale cancelled evidence", () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.locallyAbortedSessions.add("s1");
+    internals.cancellationWatermarks.set("s1", 2_000);
+    const update = (at: number) => internals.patchSessionInfo("s1", {
+      sessionUpdate: "session_info_update", updatedAt: new Date(at).toISOString(),
+      _meta: { gjcPhase: "working", gjcRunning: true },
+    });
+    update(1_000);
+    expect(internals.locallyAbortedSessions.has("s1")).toBe(true);
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    update(3_000);
+    expect(internals.locallyAbortedSessions.has("s1")).toBe(false);
+    expect(internals.sessions.get("s1").status).toBe("running");
+    controller.dispose();
+  });
+
+  it.each(["dispose", "generation", "deleted"])("does not resume after a delayed attachment becomes invalid: %s", async (cause) => {
+    const { controller, cli, internals } = harness();
+    let release!: (value: string) => void;
+    const located = new Promise<string>((resolve) => { release = resolve; });
+    internals.sessions.set("s1", session());
+    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
+    internals.locateSharedTranscriptFile = vi.fn(() => located);
+    const attaching = internals.ensureAttached("s1", false);
+    await vi.waitFor(() => expect(internals.locateSharedTranscriptFile).toHaveBeenCalled());
+    if (cause === "dispose") controller.dispose();
+    else if (cause === "generation") internals.generation += 1;
+    else internals.sessions.delete("s1");
+    release("/repo/s1.jsonl");
+    await expect(attaching).rejects.toThrow("attachment was cancelled");
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it.each([true, false])("preserves ambiguous legacy history when the broker row live=%s", async (live) => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(new SdkCliError("operation_failed", "localized refusal", undefined,
+        [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown"));
+      const remove = vi.spyOn(internals, "removeSessionArtifacts");
+      await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_legacy_history_ambiguous");
+      expect(internals.sessions.get("s1").attachment).toBe("recovering");
+      expect(remove).not.toHaveBeenCalled();
+      expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
+      expect(cli.rawGlobal).toHaveBeenCalledWith("session.delete",
+        expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+    } finally { controller.dispose(); }
+  });
+
+  it("surfaces actionable input refusal while preserving the session for reconciliation", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(new SdkCliError("operation_failed", "unknown outcome", undefined,
+        [{ code: "lifecycle_input_refused" }], "unknown"));
+      const remove = vi.spyOn(internals, "removeSessionArtifacts");
+      await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_input_refused");
+      expect(internals.sessions.get("s1").attachment).toBe("recovering");
+      expect(remove).not.toHaveBeenCalled();
+      expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
+      expect(cli.listSessions).toHaveBeenCalledTimes(2);
+    } finally { controller.dispose(); }
+  });
+});
+
 describe("parentSessionOf", () => {
   const envelope = (row: unknown): string => JSON.stringify(row);
 
@@ -372,24 +552,6 @@ describe("protocol-neutral helpers", () => {
     expect(historySessionSummary([JSON.stringify({ type: "message", message: { role: "user", content: "Hello" } })])?.title).toBe("Hello");
   });
 });
-
-  it.each(["dispose", "generation", "deleted"])("does not resume after a delayed attachment becomes invalid: %s", async (cause) => {
-    const { controller, cli, internals } = harness();
-    let release!: (value: string) => void;
-    const located = new Promise<string>((resolve) => { release = resolve; });
-    internals.sessions.set("s1", session());
-    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
-    internals.locateSharedTranscriptFile = vi.fn(() => located);
-    const attaching = internals.ensureAttached("s1", false);
-    await vi.waitFor(() => expect(internals.locateSharedTranscriptFile).toHaveBeenCalled());
-    if (cause === "dispose") controller.dispose();
-    else if (cause === "generation") internals.generation += 1;
-    else internals.sessions.delete("s1");
-    release("/repo/s1.jsonl");
-    await expect(attaching).rejects.toThrow("attachment was cancelled");
-    expect(cli.rawGlobal).not.toHaveBeenCalled();
-    controller.dispose();
-  });
 
 describe("GjcSdkController CLI seam", () => {
   it("reports the preset new sessions start from on the connection", async () => {
@@ -559,6 +721,29 @@ describe("GjcSdkController CLI seam", () => {
     await expect(controller.cancelRun("s1")).rejects.toThrow(/확정하지 못했습니다/u);
     expect(internals.sessions.get("s1")?.status).toBe("running");
     expect(internals.transcripts.get("s1")).toEqual([]);
+  });
+
+  it("does not treat no_active_turn on this connection as session-wide idle", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.liveRunningSessions.add("s1");
+    (cli.rawControl as any).mockResolvedValue({ turn: "no_active_turn" });
+    await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    expect(internals.liveRunningSessions.has("s1")).toBe(true);
+  });
+
+  it("preserves a new run when an older tail settlement returns idle", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    let settle!: (value: string) => void;
+    internals.discoveredRunState = vi.fn(() => new Promise((resolve) => { settle = resolve; }));
+    const reconcile = internals.reconcileTailTerminalState("s1");
+    internals.advanceRunRevision("s1");
+    settle("idle");
+    await reconcile;
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    controller.dispose();
   });
 
   it("keeps the new prompt admission when an aborted send settles late", async () => {
@@ -832,21 +1017,6 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
-
-  it("preserves a new run when an older tail settlement returns idle", async () => {
-    const { controller, internals } = harness();
-    internals.sessions.set("s1", { ...session(), status: "running" });
-    let settle!: (value: string) => void;
-    internals.discoveredRunState = vi.fn(() => new Promise((resolve) => { settle = resolve; }));
-    const reconcile = internals.reconcileTailTerminalState("s1");
-    internals.advanceRunRevision("s1");
-    settle("idle");
-    await reconcile;
-    expect(internals.sessions.get("s1")?.status).toBe("running");
-    controller.dispose();
-  });
-
-
   it("does not publish rejected thinking configuration", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session());
@@ -856,43 +1026,6 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.explicitSessionThinking.has("s1")).toBe(false);
     expect(internals.sessionConfig.get("s1")[0].currentValue).toBe("medium");
     expect(cli.rawControl).not.toHaveBeenCalled();
-    controller.dispose();
-  });
-
-
-  it("admits newer external runtime work without reopening stale cancelled evidence", () => {
-    const { controller, internals } = harness();
-    internals.sessions.set("s1", session());
-    internals.locallyAbortedSessions.add("s1");
-    internals.cancellationWatermarks.set("s1", 2_000);
-    const update = (at: number) => internals.patchSessionInfo("s1", {
-      sessionUpdate: "session_info_update", updatedAt: new Date(at).toISOString(),
-      _meta: { gjcPhase: "working", gjcRunning: true },
-    });
-    update(1_000);
-    expect(internals.locallyAbortedSessions.has("s1")).toBe(true);
-    expect(internals.sessions.get("s1").status).toBe("idle");
-    update(3_000);
-    expect(internals.locallyAbortedSessions.has("s1")).toBe(false);
-    expect(internals.sessions.get("s1").status).toBe("running");
-    controller.dispose();
-  });
-
-  it.each(["dispose", "generation", "deleted"])("does not resume after a delayed attachment becomes invalid: %s", async (cause) => {
-    const { controller, cli, internals } = harness();
-    let release!: (value: string) => void;
-    const located = new Promise<string>((resolve) => { release = resolve; });
-    internals.sessions.set("s1", session());
-    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
-    internals.locateSharedTranscriptFile = vi.fn(() => located);
-    const attaching = internals.ensureAttached("s1", false);
-    await vi.waitFor(() => expect(internals.locateSharedTranscriptFile).toHaveBeenCalled());
-    if (cause === "dispose") controller.dispose();
-    else if (cause === "generation") internals.generation += 1;
-    else internals.sessions.delete("s1");
-    release("/repo/s1.jsonl");
-    await expect(attaching).rejects.toThrow("attachment was cancelled");
-    expect(cli.rawGlobal).not.toHaveBeenCalled();
     controller.dispose();
   });
 
@@ -2131,20 +2264,22 @@ describe("live rows across a durable rebuild", () => {
       (cli.rawControl as any).mockResolvedValue({ turn: "stopped" });
       await controller.cancelRun("s1");
       await internals.refreshTranscriptFromFile("s1");
-      expect(ids(internals)).toEqual(["shared-message-u1"]);
+      const cancelledNotice = rows(internals).find((item) => item.kind === "notice" && item.title === "작업 취소됨");
+      expect(cancelledNotice).toBeDefined();
+      expect(ids(internals)).toEqual(["shared-message-u1", cancelledNotice.id]);
 
       // A call this window is still working is live in the same way, and the cancel
       // that cancelled it is what clears the card.
       internals.locallyAbortedSessions.delete("s1");
       internals.handleSessionUpdate(toolCall("call-4"));
       await internals.refreshTranscriptFromFile("s1");
-      expect(ids(internals)).toEqual(["shared-message-u1", "call-4"]);
+      expect(ids(internals)).toEqual(["shared-message-u1", cancelledNotice.id, "call-4"]);
       await controller.cancelRun("s1");
       expect(
         rows(internals).find((item) => item.id === "call-4")?.status,
       ).toBe("cancelled");
       await internals.refreshTranscriptFromFile("s1");
-      expect(ids(internals)).toEqual(["shared-message-u1"]);
+      expect(ids(internals)).toEqual(["shared-message-u1", cancelledNotice.id]);
 
       // A deleted session takes the transcript the rows lived in with it.
       internals.removeLocalSession("s1", false);
