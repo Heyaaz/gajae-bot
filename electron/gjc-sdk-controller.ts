@@ -6650,6 +6650,9 @@ export class GjcSdkController {
     // The broker index doubles as the reachability check: it fails closed with a
     // typed operational error when the broker cannot be started at all.
     const rows = await cli.listSessions({ scope: "all" });
+    // The version is informational: a runtime that cannot answer --version is not
+    // treated as unreachable when the broker already answered the session list.
+    const version = await cli.version().catch(() => undefined);
     if (generation !== this.generation || this.disposed) return;
     this.startupSessionRows = rows;
     this.cli = cli;
@@ -6661,6 +6664,7 @@ export class GjcSdkController {
       detail: `SDK session CLI · ${this.modelPreset}`,
       workspace: this.workspace,
       modelPreset: this.modelPreset,
+      ...(version ? { version } : {}),
       generation,
     });
     this.reconnectAttempt = 0;

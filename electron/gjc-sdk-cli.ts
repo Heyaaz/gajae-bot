@@ -435,6 +435,27 @@ export class GjcSdkCli {
   }
 
   /**
+   * The installed runtime's version, from `gjc --version`.
+   *
+   * This is the app's compatibility probe, so it is a raw invocation rather than a
+   * session command: it must work before any session or broker row exists.
+   */
+  async version(): Promise<string> {
+    const stdout = await this.exec(this.options.executable, ["--version"], {
+      cwd: this.options.repo,
+      env: this.options.env,
+      timeoutMs: 4_000,
+    });
+    const match = /(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/u.exec(stdout);
+    if (!match)
+      throw new SdkCliError(
+        "invalid_response",
+        "GJC did not report a version",
+      );
+    return match[1];
+  }
+
+  /**
    * `gjc sdk session list`.
    *
    * The scope is always stated. gjc/0.18.11 defaults it to `repo`, which fails

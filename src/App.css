@@ -940,6 +940,16 @@
   color: var(--text-tertiary);
   font-size: 10px;
 }
+.gjc-version-warning {
+  margin-top: 2px;
+  padding: 7px 8px;
+  color: #f0c48c;
+  font-size: 10px;
+  line-height: 1.45;
+  background: rgba(227, 179, 106, 0.1);
+  border: 1px solid rgba(227, 179, 106, 0.3);
+  border-radius: 7px;
+}
 .workspace-name-input {
   width: 100%;
   min-width: 0;

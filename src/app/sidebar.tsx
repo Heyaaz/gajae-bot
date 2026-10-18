@@ -19,6 +19,7 @@ import {
 import { memo, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { connectionStateLabel, statusLabel } from "./format";
+import { gjcVersionWarning } from "../../shared/gjc-version";
 import { Dropdown } from "./primitives";
 import { ALL_PROJECTS_ID } from "./project-model";
 import type { ProjectGroup } from "./project-model";
@@ -302,6 +303,7 @@ function SidebarView({
   updateBusy,
   onUpdate,
 }: SidebarProps) {
+  const versionWarning = gjcVersionWarning(connection.version);
   const [contextMenu, setContextMenu] = useState<
     | { kind: "session"; session: AgentSession; x: number; y: number }
     | { kind: "project"; x: number; y: number }
@@ -634,6 +636,11 @@ function SidebarView({
             )}
           </span>
         </div>
+        {versionWarning && (
+          <div className="gjc-version-warning" role="alert">
+            {versionWarning}
+          </div>
+        )}
       </div>
       {contextMenu && (
         <div

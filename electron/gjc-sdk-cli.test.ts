@@ -158,6 +158,19 @@ describe("error classification", () => {
   });
 });
 
+describe("GjcSdkCli.version", () => {
+  it("reads the version from a real --version line", async () => {
+    const { client, calls } = cli(["gajae-code 0.18.12\n"]);
+    await expect(client.version()).resolves.toBe("0.18.12");
+    expect(calls[0]).toEqual(["--version"]);
+  });
+
+  it("rejects output that does not name a version", async () => {
+    const { client } = cli(["command not found\n"]);
+    await expect(client.version()).rejects.toMatchObject({ code: "invalid_response" });
+  });
+});
+
 describe("GjcSdkCli.listSessions", () => {
   it("projects broker rows and always passes --repo", async () => {    const { client, calls } = cli([
       JSON.stringify({

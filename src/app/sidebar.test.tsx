@@ -142,6 +142,38 @@ function headings(markup: string): string[] {
   );
 }
 
+describe("Sidebar runtime version warning", () => {
+  it("warns about a runtime older than the minimum and stays quiet otherwise", () => {
+    const old = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([session(0)], {
+          connection: { ...connection, version: "0.18.10" },
+        }),
+      ),
+    );
+    expect(old).toContain('class="gjc-version-warning" role="alert"');
+    expect(old).toContain("older than the required 0.18.11");
+    expect(old).toContain("bun add -g gajae-code@latest");
+
+    const current = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([session(0)], {
+          connection: { ...connection, version: "0.18.12" },
+        }),
+      ),
+    );
+    expect(current).not.toContain("gjc-version-warning");
+
+    // An unknown version is not evidence of an old runtime.
+    const unknown = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)])),
+    );
+    expect(unknown).not.toContain("gjc-version-warning");
+  });
+});
+
 describe("Sidebar session groups", () => {
   it("leads with the rows that are waiting on the user", () => {
     const markup = renderToStaticMarkup(

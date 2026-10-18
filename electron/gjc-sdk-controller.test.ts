@@ -21,7 +21,7 @@ import {
   parentSessionOf,
   todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
-import { SdkCliError } from "./gjc-sdk-cli.js";
+import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
 const execFile = promisify(execFileCallback);
 
@@ -62,6 +62,57 @@ async function transcriptFile(
     "utf8",
   );
 }
+
+describe("runtime version probe", () => {
+  it("reports the installed version on a connected runtime", async () => {
+    const list = vi
+      .spyOn(GjcSdkCli.prototype, "listSessions")
+      .mockResolvedValue([]);
+    const version = vi
+      .spyOn(GjcSdkCli.prototype, "version")
+      .mockResolvedValue("0.18.12");
+    const controller = new GjcSdkController({
+      workspace: "/repo",
+      executable: "/bin/true",
+      emit: vi.fn(),
+    } as never);
+    (controller as any).recoverOwnedSessions = vi.fn(async () => undefined);
+    try {
+      await expect(controller.getConnection()).resolves.toMatchObject({
+        state: "connected",
+        version: "0.18.12",
+      });
+    } finally {
+      controller.dispose();
+      list.mockRestore();
+      version.mockRestore();
+    }
+  });
+
+  it("keeps the connection when the runtime cannot answer --version", async () => {
+    const list = vi
+      .spyOn(GjcSdkCli.prototype, "listSessions")
+      .mockResolvedValue([]);
+    const version = vi
+      .spyOn(GjcSdkCli.prototype, "version")
+      .mockRejectedValue(new Error("--version is unsupported"));
+    const controller = new GjcSdkController({
+      workspace: "/repo",
+      executable: "/bin/true",
+      emit: vi.fn(),
+    } as never);
+    (controller as any).recoverOwnedSessions = vi.fn(async () => undefined);
+    try {
+      const connection = await controller.getConnection();
+      expect(connection.state).toBe("connected");
+      expect(connection.version).toBeUndefined();
+    } finally {
+      controller.dispose();
+      list.mockRestore();
+      version.mockRestore();
+    }
+  });
+});
 
 describe("history opening with an unavailable endpoint", () => {
   it.each([true, false])("opens real saved history without rehosting the CLI when already listed=%s", async (listed) => {
