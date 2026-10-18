@@ -19,10 +19,11 @@ describe("GJC minimum version", () => {
   });
 
   it("supports the minimum and newer, and does not guess at unknown versions", () => {
-    expect(GJC_MINIMUM_VERSION).toBe("0.18.11");
-    expect(gjcVersionSupported("0.18.11")).toBe(true);
+    expect(GJC_MINIMUM_VERSION).toBe("0.18.12");
+    expect(gjcVersionSupported("0.18.12")).toBe(true);
     expect(gjcVersionSupported("0.19.0")).toBe(true);
-    expect(gjcVersionSupported("0.18.11-beta.1")).toBe(false);
+    expect(gjcVersionSupported("0.18.12-beta.1")).toBe(false);
+    expect(gjcVersionSupported("0.18.11")).toBe(false);
     expect(gjcVersionSupported("0.18.10")).toBe(false);
     expect(gjcVersionSupported(undefined)).toBe(true);
     expect(gjcVersionSupported("unknown")).toBe(true);
@@ -31,7 +32,7 @@ describe("GJC minimum version", () => {
   it("produces update guidance only for an old runtime", () => {
     expect(gjcVersionWarning("0.18.12")).toBeUndefined();
     expect(gjcVersionWarning(undefined)).toBeUndefined();
-    expect(gjcVersionWarning("0.18.10")).toContain("older than the required 0.18.11");
+    expect(gjcVersionWarning("0.18.11")).toContain("older than the required 0.18.12");
     expect(gjcVersionWarning("0.18.10")).toContain("bun add -g gajae-code@latest");
   });
 });
