@@ -137,6 +137,30 @@ export function saveComposerSnapshot(
 // may only be handed over once.
 const releasingQueues = new Set<string>();
 const queueListeners = new Map<string, Set<() => void>>();
+const queueReleaseRetryListeners = new Set<(sessionId: string) => void>();
+
+/** Watch for a release lock that ended with work still queued. */
+export function subscribeComposerReleaseRetry(
+  listener: (sessionId: string) => void,
+): () => void {
+  queueReleaseRetryListeners.add(listener);
+  return () => queueReleaseRetryListeners.delete(listener);
+}
+
+/**
+ * Hand still-releasable work back after the owning instance gives up its lock.
+ *
+ * The shell observed the idle transition while this lock was held and could not
+ * start its own release. Without this notice the retired instance's finally block
+ * only freed the lock, leaving an idle session with a queued request forever.
+ */
+export function requestQueueReleaseRetry(
+  sessionId: string,
+  pending: readonly PendingRequest[],
+): void {
+  if (pending.length === 0 || pending[0]?.blocked) return;
+  for (const listener of queueReleaseRetryListeners) listener(sessionId);
+}
 
 /** Watch a session's held queue even when this composer is not the one sending. */
 export function subscribeComposerQueue(
@@ -1161,6 +1185,7 @@ export function Composer({
       if (draftSessionRef.current === owner) setAttachmentError(humanErrorMessage(error));
     } finally {
       releasingQueues.delete(owner);
+      requestQueueReleaseRetry(owner, read());
     }
   }, [onFlushQueued, onSend, running, readOnly, sessionId]);
 

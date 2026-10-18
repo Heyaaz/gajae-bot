@@ -27,7 +27,9 @@ import {
   composerDraftRecoveries,
   mergeRecoveredDraft,
   publishComposerDraftRecovery,
+  requestQueueReleaseRetry,
   subscribeComposerDraftRecovery,
+  subscribeComposerReleaseRetry,
   parkComposerSession,
   saveComposerQueue,
   saveComposerSnapshot,
@@ -744,6 +746,46 @@ describe("rejected submission recovery", () => {
       files: [],
     });
     expect(drafts.size).toBe(0);
+  });
+});
+
+describe("queue release handoff", () => {
+  it("retries after a deferred flush outlives the composer", async () => {
+    const session = "session-deferred-release";
+    const retried: string[] = [];
+    const unsubscribe = subscribeComposerReleaseRetry((sessionId) => {
+      retried.push(sessionId);
+    });
+    let resolveFlush!: () => void;
+    const flush = new Promise<void>((resolve) => {
+      resolveFlush = resolve;
+    });
+    const release = (async () => {
+      await flush;
+      // The instance is unmounted by now; its finally hands the lock back.
+      requestQueueReleaseRetry(session, [
+        heldRequest("queued-1", "later"),
+      ]);
+    })();
+    await Promise.resolve();
+    expect(retried).toEqual([]);
+    resolveFlush();
+    await release;
+    expect(retried).toEqual([session]);
+    unsubscribe();
+  });
+
+  it("does not hand off work whose head is blocked", () => {
+    const retried: string[] = [];
+    const unsubscribe = subscribeComposerReleaseRetry((sessionId) => {
+      retried.push(sessionId);
+    });
+    requestQueueReleaseRetry("session-blocked-release", [
+      heldRequest("queued-1", "uncertain", { blocked: true }),
+      heldRequest("queued-2", "later"),
+    ]);
+    expect(retried).toEqual([]);
+    unsubscribe();
   });
 });
 

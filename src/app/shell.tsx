@@ -30,7 +30,11 @@ import {
 } from "../transcript-utils";
 import { FolderGit2, GitBranch, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Composer, releaseQueuedSession } from "./composer";
+import {
+  Composer,
+  releaseQueuedSession,
+  subscribeComposerReleaseRetry,
+} from "./composer";
 import {
   DeleteSessionDialog,
   GlobalSearchDialog,
@@ -410,6 +414,18 @@ export default function App() {
     // running -> idle transition into a queue release. Track the newest revision
     // seen so the side effect follows the same rule as the rendered row.
     const observedRevisions = new Map<string, number>();
+    const releaseSessionQueue = (sessionId: string): void => {
+      void releaseQueuedSession(sessionId, async (request) => {
+        // Send directly: this request belongs to the session whose run ended, which
+        // may not be the one on screen. The composer's sent-request token would
+        // scroll an unrelated transcript.
+        await backend.sendMessage(await resolveSessionId(sessionId), {
+          text: request.text,
+          images: request.images,
+          files: request.files,
+        });
+      }).catch((error: unknown) => setAppError(humanErrorMessage(error)));
+    };
     const observeSessionRun = (session: AgentSession): void => {
       if (
         !discoveryRevisionIsFresh(
@@ -422,17 +438,15 @@ export default function App() {
       const previous = runStates.get(session.id);
       runStates.set(session.id, session.status);
       if (previous !== "running" || session.status !== "idle") return;
-      void releaseQueuedSession(session.id, async (request) => {
-        // Send directly: this request belongs to the session whose run ended, which
-        // may not be the one on screen. The composer's sent-request token would
-        // scroll an unrelated transcript.
-        await backend.sendMessage(await resolveSessionId(session.id), {
-          text: request.text,
-          images: request.images,
-          files: request.files,
-        });
-      }).catch((error: unknown) => setAppError(humanErrorMessage(error)));
+      releaseSessionQueue(session.id);
     };
+    // A flush that was awaiting the runtime can outlive its composer. The idle
+    // event then arrived while that instance held the release lock, so retry once
+    // the retiring instance hands the lock back -- but only while the session is
+    // still idle; otherwise its later idle transition will do it.
+    const unsubscribeReleaseRetry = subscribeComposerReleaseRetry((sessionId) => {
+      if (runStates.get(sessionId) === "idle") releaseSessionQueue(sessionId);
+    });
 
     // A GJC session started from the CLI after this window opened only shows up if
     // discovery runs again, so the list refreshes instead of loading once.
@@ -603,6 +617,7 @@ export default function App() {
       window.clearInterval(discoveryTimer);
       window.removeEventListener("focus", refreshOnFocus);
       document.removeEventListener("visibilitychange", refreshOnVisible);
+      unsubscribeReleaseRetry();
       unsubscribe();
     };
   }, [backend]);
