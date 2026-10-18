@@ -152,7 +152,10 @@ export class RemoteAgentBackend implements AgentBackend {
             const version = this.eventVersions.get(session.id) ?? 0;
             const items = await this.client.transcript(session.id).catch(() => undefined);
             if (!items) return false;
-            if ((this.eventVersions.get(session.id) ?? 0) !== version) return true;
+            // Discarding the stale read is not a repair. Leave the session
+            // unrepaired so this attempt fails and retries; treating it as applied
+            // reported success while the gap's history was still missing.
+            if ((this.eventVersions.get(session.id) ?? 0) !== version) return false;
             this.emit({
               type: "transcript.synced",
               sessionId: session.id,

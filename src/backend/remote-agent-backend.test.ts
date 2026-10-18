@@ -204,14 +204,28 @@ describe("remote agent backend", () => {
     const pendingTranscript = new Promise<Response>((resolve) => {
       releaseTranscript = resolve;
     });
+    let transcripts = 0;
     const { instance, calls } = backend((call) => {
       if (call.url.includes(REMOTE_API.events)) return live;
-      if (call.url.includes(REMOTE_API.transcript("s-1")))
-        return pendingTranscript as unknown as Response;
+      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
+        transcripts += 1;
+        if (transcripts === 1) return pendingTranscript as unknown as Response;
+        return new Response(
+          JSON.stringify({
+            result: [{ id: "m-1", role: "assistant", content: "repaired" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
       return undefined;
     });
-    const received: string[] = [];
-    instance.subscribe((event) => received.push(event.type));
+    const received: unknown[][] = [];
+    const connectionDetails: string[] = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") received.push(event.items);
+      if (event.type === "connection.updated")
+        connectionDetails.push(event.connection.detail);
+    });
     await vi.waitFor(() =>
       expect(
         calls.some((call) => call.url.includes(REMOTE_API.transcript("s-1"))),
@@ -229,17 +243,87 @@ describe("remote agent backend", () => {
         },
       })}\n\n`,
     );
-    await vi.waitFor(() => expect(received).toContain("message.delta"));
+    await vi.waitFor(() => expect(received).toHaveLength(0));
     releaseTranscript(
       new Response(
         JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: "stale" }] }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    // The live delta is newer than the read that started before it, so the cache
-    // must keep the stream's content rather than replace it with the stale snapshot.
-    expect(received).not.toContain("transcript.synced");
+    // The stale read is not applied, but discarding it is not a successful repair:
+    // a later read has to fill the gap and only then publish the cache.
+    await vi.waitFor(
+      () => expect(received).toEqual([[{ id: "m-1", role: "assistant", content: "repaired" }]]),
+      { timeout: 2000 },
+    );
+    expect(transcripts).toBe(2);
+    expect(connectionDetails).toEqual([]);
+    instance.dispose();
+  });
+
+  it("reports an incomplete cache when every repair read goes stale", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const encoder = new TextEncoder();
+    let pushLive!: (chunk: string) => void;
+    const live = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(gap));
+          pushLive = (chunk) => controller.enqueue(encoder.encode(chunk));
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+    const pending: Array<(response: Response) => void> = [];
+    let transcripts = 0;
+    const { instance } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return live;
+      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
+        transcripts += 1;
+        return new Promise<Response>((resolve) => pending.push(resolve)) as unknown as Response;
+      }
+      return undefined;
+    });
+    const synchronized: unknown[] = [];
+    const connections: Array<{ state: string; detail: string }> = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") synchronized.push(event);
+      if (event.type === "connection.updated")
+        connections.push({ state: event.connection.state, detail: event.connection.detail });
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await vi.waitFor(() => expect(pending).toHaveLength(attempt + 1), {
+        timeout: 2000,
+      });
+      pushLive(
+        `event: agent\ndata: ${JSON.stringify({
+          seq: 10 + attempt,
+          event: {
+            type: "message.delta",
+            sessionId: "s-1",
+            messageId: "m-1",
+            delta: `live-${attempt}`,
+            streaming: true,
+          },
+        })}\n\n`,
+      );
+      // Wait until the live version bump is visible before releasing the read, so
+      // the snapshot is stale by the time it can be applied.
+      await vi.waitFor(() => expect(pending).toHaveLength(attempt + 1));
+      pending[attempt]!(
+        new Response(
+          JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: `stale-${attempt}` }] }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+
+    await vi.waitFor(() => expect(connections).toHaveLength(1), { timeout: 3000 });
+    expect(synchronized).toEqual([]);
+    expect(connections[0]).toMatchObject({ state: "error" });
+    expect(connections[0]?.detail).toContain("동기화에 실패");
+    expect(transcripts).toBe(3);
     instance.dispose();
   });
 
