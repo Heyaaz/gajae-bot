@@ -204,7 +204,6 @@ const STARTUP_TIMEOUT_MS = 30_000;
 // bounded head rather than the whole transcript, so the cap is about how long a
 // list stays useful to scroll rather than what it costs to build. 402 sessions
 // were on disk here; 60 hid most of them behind a search box.
-const HISTORY_SESSION_LIMIT = 250;
 // How much of a session file the picker reads to title it. The title is the first
 // user message and the envelope is the first line, so both are near the top. Real
 // transcripts here reach 43 MB, and reading them whole to find the first message
@@ -6841,31 +6840,44 @@ export class GjcSdkController {
       return [];
     }
     files.sort((left, right) => right.modified - left.modified);
-    const sessions: HistorySession[] = [];
-    for (const file of files.slice(0, HISTORY_SESSION_LIMIT)) {
-      let headLines: string[];
-      let summary: ReturnType<typeof historySessionSummary>;
-      try {
-        headLines = await transcriptHeadLines(file.path);
-        summary = historySessionSummary(headLines);
-      } catch {
-        continue;
+    // Every saved session is reachable. The head reads are bounded per file and run
+    // with a small worker pool, so a large history costs latency proportional to the
+    // files but does not open thousands of descriptors at once.
+    const sessions: Array<HistorySession | undefined> = new Array(files.length);
+    let next = 0;
+    const read = async (): Promise<void> => {
+      while (true) {
+        const index = next;
+        next += 1;
+        const file = files[index];
+        if (!file) return;
+        try {
+          const headLines = await transcriptHeadLines(file.path);
+          const summary = historySessionSummary(headLines);
+          if (!summary) continue;
+          const workspace = summary.cwd ?? "";
+          sessions[index] = {
+            id: file.id,
+            title: summary.title ?? readableSessionTitle(file.id, undefined),
+            workspace,
+            updatedAt: recentLabel(new Date(file.modified).toISOString()),
+            messageCount: summary.messageCount,
+            live: liveIds.has(file.id),
+            // The same envelope line the summary already reads, so a fork is marked
+            // by having been read rather than by a second pass over the file.
+            parentId: parentSessionOf(headLines[0], file.id),
+          };
+        } catch {
+          /* the file went away or is not a readable transcript */
+        }
       }
-      if (!summary) continue;
-      const workspace = summary.cwd ?? "";
-      sessions.push({
-        id: file.id,
-        title: summary.title ?? readableSessionTitle(file.id, undefined),
-        workspace,
-        updatedAt: recentLabel(new Date(file.modified).toISOString()),
-        messageCount: summary.messageCount,
-        live: liveIds.has(file.id),
-        // The same envelope line the summary already reads, so a fork is marked by
-        // having been read rather than by a second pass over the file.
-        parentId: parentSessionOf(headLines[0], file.id),
-      });
-    }
-    return sessions;
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(8, files.length) }, read),
+    );
+    return sessions.filter(
+      (session): session is HistorySession => session !== undefined,
+    );
   }
 
   /**

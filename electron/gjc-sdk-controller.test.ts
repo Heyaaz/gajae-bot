@@ -283,6 +283,41 @@ describe("parentSessionOf", () => {
   });
 });
 
+describe("listHistorySessions size", () => {
+  it("lists every saved session past the old 250-session cap", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "history-many-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const { controller } = harness();
+    try {
+      const total = 260;
+      for (let index = 0; index < total; index += 1) {
+        await transcriptFile(root, `many-${index}`, [
+          { type: "session", cwd: "/repo" },
+          {
+            type: "message",
+            message: {
+              role: "user",
+              content: [{ type: "text", text: `session ${index}` }],
+            },
+          },
+        ]);
+      }
+      const sessions = await controller.listHistorySessions();
+      expect(sessions).toHaveLength(total);
+      expect(new Set(sessions.map((session) => session.id)).size).toBe(total);
+      expect(sessions.map((session) => session.id)).toEqual(
+        expect.arrayContaining(["many-0", `many-${total - 1}`]),
+      );
+    } finally {
+      controller.dispose();
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("listHistorySessions lineage", () => {
   it("marks a past session that was forked from another", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "history-fork-"));

@@ -220,6 +220,8 @@ export function workspaceLabelFor(workspace: string): string {
  * The sidebar only lists sessions the broker still reports as live, so anything
  * older is unreachable from the window without this.
  */
+const HISTORY_PAGE_SIZE = 100;
+
 export function ResumeSessionDialog({
   sessions,
   loading,
@@ -236,6 +238,7 @@ export function ResumeSessionDialog({
   onOpen: (sessionId: string) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [shown, setShown] = useState(HISTORY_PAGE_SIZE);
   const value = query.trim().toLowerCase();
   // An id prefix is how the CLI addresses a session, so it is matched too.
   const visible = value
@@ -246,6 +249,13 @@ export function ResumeSessionDialog({
           session.workspace.toLowerCase().includes(value),
       )
     : sessions;
+  // The list is no longer capped, but rendering thousands of rows at once is not
+  // free. Newest rows render first and the rest arrive a page at a time; search
+  // still looks at every session, not only the rendered page.
+  useEffect(() => {
+    setShown(HISTORY_PAGE_SIZE);
+  }, [sessions, value]);
+  const rendered = visible.slice(0, shown);
   // A fork is named where it sits: the list is ordered by recency, so moving a fork
   // under a source that may be hundreds of rows down would hide it instead of
   // showing what it is. The source is named when the same window lists it.
@@ -287,7 +297,7 @@ export function ResumeSessionDialog({
               <strong>이어서 진행할 세션이 없습니다</strong>
             </div>
           )}
-          {visible.map((session) => (
+          {rendered.map((session) => (
             <button
               type="button"
               key={session.id}
@@ -322,6 +332,15 @@ export function ResumeSessionDialog({
               </span>
             </button>
           ))}
+          {visible.length > rendered.length && (
+            <button
+              type="button"
+              className="resume-session-more"
+              onClick={() => setShown((current) => current + HISTORY_PAGE_SIZE)}
+            >
+              더 보기 ({visible.length - rendered.length})
+            </button>
+          )}
         </div>
       </section>
     </div>

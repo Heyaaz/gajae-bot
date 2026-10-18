@@ -33,6 +33,20 @@ function render(sessions: HistorySession[]): string {
   );
 }
 
+describe("ResumeSessionDialog large history", () => {
+  it("renders a page of a long history and offers the remaining rows", () => {
+    const sessions = Array.from({ length: 250 }, (_value, index) =>
+      history({ id: `session-${index}`, title: `Session ${index}` }),
+    );
+    const markup = render(sessions);
+    expect(markup).toContain("Session 0");
+    expect(markup).toContain("Session 99");
+    // Rows past the first page are still reachable through the pager, not dropped.
+    expect(markup).not.toContain("Session 100<");
+    expect(markup).toContain("더 보기 (150)");
+  });
+});
+
 describe("ResumeSessionDialog lineage", () => {
   it("marks a fork and names its source when the list has it", () => {
     const markup = render([

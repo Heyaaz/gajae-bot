@@ -220,8 +220,8 @@ discovery drops non-live sessions on purpose.
 
 - Search by session id prefix, title, or workspace
 - Ids show 12 characters; 8 collide across real sessions
-- The newest `HISTORY_SESSION_LIMIT` (250) sessions are offered, since summarising
-  each row costs a file read
+- Every saved session is offered: summaries are read from a bounded head with an
+  eight-way worker pool, and the picker renders 100 rows per page on demand
 - A long first request is summarised to one line and deep paths are shortened, so
   a row cannot push the id and time out of the dialog
 

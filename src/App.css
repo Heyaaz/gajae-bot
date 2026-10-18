@@ -3425,6 +3425,17 @@
 .resume-session-list > button > * {
   min-width: 0;
 }
+.resume-session-list > .resume-session-more {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+.resume-session-list > .resume-session-more:hover {
+  color: var(--text-primary);
+}
 .resume-session-list > button:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.05);
 }
