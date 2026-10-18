@@ -1004,6 +1004,47 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.tailControllers.has("s1")).toBe(false);
   });
 
+  it("retries a transient tail failure without losing the checkpoint", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.attachedSessions.add("s1");
+    internals.tailCheckpoints.set("s1", "checkpoint-1");
+    (cli.tail as any)
+      .mockRejectedValueOnce(new Error("broker transport closed"))
+      .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
+    internals.startTailFollower("s1");
+    const follower = internals.tailReads.get("s1");
+    await follower;
+    expect(cli.tail).toHaveBeenCalledTimes(2);
+    // The session stays attached and the cursor is unchanged across the retry.
+    expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ cursor: "checkpoint-1" }),
+    );
+    expect(internals.attachedSessions.has("s1")).toBe(true);
+    controller.dispose();
+  });
+
+  it("restarts a missing follower when an attached session is used again", async () => {
+    const { controller, cli, internals } = harness();
+    internals.attachedSessions.add("s1");
+    let finish!: (value: unknown) => void;
+    (cli.tail as any).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    await internals.ensureAttached("s1", false);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const follower = internals.tailReads.get("s1");
+    expect(follower).toBeDefined();
+    expect(cli.tail).toHaveBeenCalledTimes(1);
+    finish({ source: "offline", terminal: true, items: [] });
+    await follower;
+    controller.dispose();
+  });
+
   it("resyncs the durable file when tail returns a retention gap", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");

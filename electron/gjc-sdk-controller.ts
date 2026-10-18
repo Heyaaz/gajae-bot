@@ -230,6 +230,10 @@ const TRANSCRIPT_RESCAN_WINDOW = 32;
  * result only when the call reported one, and nothing here may invent the rest.
  */
 export const TAIL_WINDOW_MS = 1_200;
+/** First delay after a transient tail transport failure; doubled per failure. */
+const TAIL_RETRY_BASE_MS = 200;
+/** A stalled broker is retried at this cadence instead of spawning readers hot. */
+const TAIL_RETRY_MAX_MS = 5_000;
 // A create or fork whose lifecycle receipt could not be verified is looked up in
 // the broker index, which only lists the new session once it settles. GJC strips
 // the caller's lifecycle request id from every public list/inspect row, so the
@@ -676,6 +680,23 @@ function precedingSharedRow(
  * `detached` is created once per follower: the loop polls for as long as the session
  * stays attached, and a listener per poll would pile them onto the same signal.
  */
+/** Capped exponential wait before re-issuing a tail read that failed transiently. */
+function tailRetryPause(
+  detached: Promise<void>,
+  failures: number,
+): Promise<void> {
+  const delay = Math.min(
+    TAIL_RETRY_MAX_MS,
+    TAIL_RETRY_BASE_MS * 2 ** Math.min(Math.max(failures - 1, 0), 5),
+  );
+  return Promise.race([
+    new Promise<void>((resolve) => {
+      setTimeout(resolve, delay);
+    }),
+    detached,
+  ]);
+}
+
 function tailReadPause(detached: Promise<void>): Promise<void> {
   return Promise.race([
     new Promise<void>((resolve) => {
@@ -7055,7 +7076,13 @@ export class GjcSdkController {
     sessionId: string,
     replay: boolean,
   ): Promise<void> {
-    if (this.attachedSessions.has(sessionId)) return;
+    if (this.attachedSessions.has(sessionId)) {
+      // Attachment and the tail reader are separate lives. A reader that died on
+      // a transient broker error left the session attached, so every later use
+      // took this early return and the follower was never restarted.
+      this.startTailFollower(sessionId);
+      return;
+    }
     const cli = await this.requireCli();
     const generation = this.generation;
     const wasListed = this.sessions.has(sessionId);
@@ -7199,6 +7226,7 @@ export class GjcSdkController {
           once: true,
         });
     });
+    let transientFailures = 0;
     while (
       !this.disposed &&
       !controller.signal.aborted &&
@@ -7215,6 +7243,7 @@ export class GjcSdkController {
           timeoutMs: TAIL_WINDOW_MS,
           signal: controller.signal,
         });
+        transientFailures = 0;
         if (tail.gap) {
           this.tailCheckpoints.delete(sessionId);
           await this.refreshTranscriptFromFile(sessionId);
@@ -7250,9 +7279,13 @@ export class GjcSdkController {
           )
             return;
         }
-        // A transient broker failure should not spin. The next user-driven attach
-        // or discovery pass restarts the follower.
-        return;
+        // The session is still attached, so a transport failure is not a reason to
+        // stop following it forever. Retry with a capped backoff, preserving the
+        // checkpoint, instead of leaving the early-returning attach path with no
+        // follower and no way to notice.
+        transientFailures += 1;
+        await tailRetryPause(detached, transientFailures);
+        continue;
       }
     }
   }
