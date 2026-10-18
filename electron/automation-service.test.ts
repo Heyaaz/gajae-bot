@@ -253,6 +253,42 @@ describe('automation service contracts', () => {
     expect(spawned).toBe(2)
   })
 
+  it('observes a child that exits while the pid record is still being written', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'gajae-automation-early-exit-'))
+    const spawnProcess = (() => {
+      const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; pid?: number; kill(): boolean }
+      child.stdout = new PassThrough()
+      child.stderr = new PassThrough()
+      child.pid = 4321
+      child.kill = () => true
+      // The process finishes before the lock's owner.json write can complete.
+      setTimeout(() => child.emit('close', 0), 0)
+      return child
+    }) as never
+    const service = new AutomationService({ directory, launchAgentsDirectory: path.join(directory, 'agents'), electronPath: '/Applications/Gajae', workerPath: '/app/automation-worker.js', gjcExecutable: '/usr/local/bin/gjc', platform: 'none', spawnProcess, timeoutMs: 40, killGraceMs: 10 })
+    const created = await service.create({ name: 'Review', prompt: 'Review changes', workspace: '/tmp', schedule: { kind: 'daily', time: '09:30' }, enabled: true, worktree: false })
+
+    let releaseRecord!: () => void
+    const recordGate = new Promise<void>((resolve) => { releaseRecord = resolve })
+    const record = (service as unknown as {
+      recordLockChild: (lock: string, owner: unknown, pid: number | undefined) => Promise<void>
+    }).recordLockChild.bind(service)
+    ;(service as unknown as {
+      recordLockChild: (lock: string, owner: unknown, pid: number | undefined) => Promise<void>
+    }).recordLockChild = async (lock, owner, pid) => {
+      await recordGate
+      return record(lock, owner, pid)
+    }
+
+    const running = service.runNow(created.id)
+    // Let close fire first, then let the pid write finish.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    releaseRecord()
+    const run = await running
+    expect(run.status).toBe('completed')
+    expect(run.exitCode).toBe(0)
+  })
+
   it('schedules the automations around a record it cannot read', async () => {
     // `defs()` only guards against the file failing to parse. A record written by an
     // older schema -- a daily schedule with no time -- threw out of the loop, so every

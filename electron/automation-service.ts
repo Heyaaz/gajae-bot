@@ -307,9 +307,10 @@ export class AutomationService {
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env, PATH: runtimePath },
       })
-      // Record the process a later worker must see as alive when deciding whether
-      // this lock is stale. The worker can exit while its GJC child keeps running.
-      await this.recordLockChild(lock, owner, child.pid).catch(() => undefined)
+      // Install the output and completion listeners synchronously after spawn.
+      // Recording the pid below is file I/O; a child that exits quickly may emit
+      // close before that write resolves, and a listener attached afterwards would
+      // never see it.
       let out = ''
       let err = ''
       child.stdout?.on('data', (b) => {
@@ -318,16 +319,20 @@ export class AutomationService {
       child.stderr?.on('data', (b) => {
         err = (err + b.toString()).slice(-MAX_OUTPUT)
       })
-      const completion = await this.completeChild(
+      const completion = this.completeChild(
         child,
         this.opts.timeoutMs ?? 1_800_000,
       )
-      releaseLock = completion.confirmed
-      run.exitCode = completion.code
+      // Record the process a later worker must see as alive when deciding whether
+      // this lock is stale. The worker can exit while its GJC child keeps running.
+      await this.recordLockChild(lock, owner, child.pid).catch(() => undefined)
+      const result = await completion
+      releaseLock = result.confirmed
+      run.exitCode = result.code
       run.output = out
-      run.error = completion.error ?? err
+      run.error = result.error ?? err
       run.status =
-        completion.error === undefined && completion.code === 0
+        result.error === undefined && result.code === 0
           ? 'completed'
           : 'failed'
     } catch (error) {
