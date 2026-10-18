@@ -187,6 +187,62 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
+  it("discards a replay repair that went stale while its transcript was read", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const encoder = new TextEncoder();
+    let pushLive!: (chunk: string) => void;
+    const live = new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(gap));
+          pushLive = (chunk) => controller.enqueue(encoder.encode(chunk));
+        },
+      }),
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+    let releaseTranscript!: (response: Response) => void;
+    const pendingTranscript = new Promise<Response>((resolve) => {
+      releaseTranscript = resolve;
+    });
+    const { instance, calls } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return live;
+      if (call.url.includes(REMOTE_API.transcript("s-1")))
+        return pendingTranscript as unknown as Response;
+      return undefined;
+    });
+    const received: string[] = [];
+    instance.subscribe((event) => received.push(event.type));
+    await vi.waitFor(() =>
+      expect(
+        calls.some((call) => call.url.includes(REMOTE_API.transcript("s-1"))),
+      ).toBe(true),
+    );
+    pushLive(
+      `event: agent\ndata: ${JSON.stringify({
+        seq: 10,
+        event: {
+          type: "message.delta",
+          sessionId: "s-1",
+          messageId: "m-1",
+          delta: "live",
+          streaming: true,
+        },
+      })}\n\n`,
+    );
+    await vi.waitFor(() => expect(received).toContain("message.delta"));
+    releaseTranscript(
+      new Response(
+        JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: "stale" }] }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    // The live delta is newer than the read that started before it, so the cache
+    // must keep the stream's content rather than replace it with the stale snapshot.
+    expect(received).not.toContain("transcript.synced");
+    instance.dispose();
+  });
+
   it("refuses desktop-only work with a reason instead of an empty success", async () => {
     const { instance, calls } = backend(() => undefined);
     const desktopOnly = [

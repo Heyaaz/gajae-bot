@@ -37,6 +37,29 @@ import { RemoteClient, type RemoteClientOptions } from "../remote/client";
 
 const DESKTOP_ONLY = "이 작업은 Gajae 데스크톱 앱에서만 할 수 있습니다.";
 
+/** The session an event belongs to, so replay repair can tell stale data from live. */
+export function eventSessionId(event: AgentEvent): string | undefined {
+  switch (event.type) {
+    case "connection.updated":
+      return undefined;
+    case "session.created":
+    case "session.updated":
+      return event.session.id;
+    case "transcript.appended":
+      return event.item.sessionId;
+    case "message.updated":
+      return event.message.sessionId;
+    case "plan.updated":
+      return event.plan.sessionId;
+    case "tool.updated":
+      return event.tool.sessionId;
+    default:
+      return "sessionId" in event && typeof event.sessionId === "string"
+        ? event.sessionId
+        : undefined;
+  }
+}
+
 export class RemoteAgentBackend implements AgentBackend {
   readonly client: RemoteClient;
   readonly remoteAccess: RemoteAccessBridge;
@@ -70,7 +93,16 @@ export class RemoteAgentBackend implements AgentBackend {
     this.client.startRealtime();
   }
 
+  /** Bumped by every live event, so a replay read can see whether it went stale. */
+  private readonly eventVersions = new Map<string, number>();
+
   private emit(event: AgentEvent): void {
+    const sessionId = eventSessionId(event);
+    if (sessionId)
+      this.eventVersions.set(
+        sessionId,
+        (this.eventVersions.get(sessionId) ?? 0) + 1,
+      );
     for (const listener of this.listeners) listener(event);
   }
 
@@ -82,8 +114,14 @@ export class RemoteAgentBackend implements AgentBackend {
     const snapshot = await this.client.snapshot().catch(() => undefined);
     if (!snapshot) return;
     await Promise.all(snapshot.sessions.map(async (session) => {
+      // A transcript read can take long enough for the live stream to deliver newer
+      // deltas. Replacing the cache with that older read erased them, so a read is
+      // only applied when its session saw no live event while it was in flight.
+      const version = this.eventVersions.get(session.id) ?? 0;
       const items = await this.client.transcript(session.id).catch(() => undefined);
-      if (items) this.emit({ type: "transcript.synced", sessionId: session.id, items: items as TranscriptItem[] });
+      if (!items) return;
+      if ((this.eventVersions.get(session.id) ?? 0) !== version) return;
+      this.emit({ type: "transcript.synced", sessionId: session.id, items: items as TranscriptItem[] });
     }));
   }
 
