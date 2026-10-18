@@ -9,7 +9,7 @@ async function source(file: string): Promise<string> {
 }
 
 describe("SDK session CLI architecture", () => {
-  it("has no resident or private attachment transport", async () => {
+  it("has no resident agent or private attachment transport", async () => {
     const files = [
       "electron/gjc-sdk-controller.ts",
       "electron/gjc-sdk-cli.ts",
@@ -25,19 +25,20 @@ describe("SDK session CLI architecture", () => {
       "_gjc/" + "sdk/",
       "GJC_" + "ACP_",
       "@agentclientprotocol/" + "sdk",
-      "sdk" + " serve",
       "createAgent" + "Session(",
     ])
       expect(text).not.toContain(forbidden);
   });
 
-  it("spawns GJC only inside the short-lived CLI runner", async () => {
+  it("keeps both short-lived operations and the public observer relay in the CLI adapter", async () => {
     const controller = await source("electron/gjc-sdk-controller.ts");
     const cli = await source("electron/gjc-sdk-cli.ts");
     expect(controller).not.toMatch(/\bspawn\s*\(/u);
     expect(cli).toMatch(/spawn\(executable, args/u);
     expect(cli).toContain('"sdk"');
     expect(cli).toContain('"session"');
+    expect(cli).toContain('["sdk", "serve", "--stdio", "--session", sessionId]');
+    expect(cli).toContain('"session_host_observer_v1"');
   });
 
   it("keeps the public product and IPC identity unchanged", async () => {

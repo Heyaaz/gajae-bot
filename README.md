@@ -12,14 +12,14 @@ files; they never share a TUI connection.
 
 - Apple-silicon macOS (arm64 only)
 - Bun 1.4 or newer for the GJC runtime
-- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.11` or newer (the current compatibility target is `gajae-code@0.18.11`)
+- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.12` or newer (the current compatibility target is `gajae-code@0.18.12`)
 - Optional: the [`gh` CLI](https://cli.github.com), signed in with `gh auth login`, for the repository screen's issues, pull requests and CI
 
 For a clean install, install GJC first, then copy the notarized Gajae release to
 `/Applications`:
 
 ```bash
-bun add -g gajae-code@0.18.11
+bun add -g gajae-code@0.18.12
 cd Gajae-0.1.0-darwin-arm64
 shasum -a 256 -c Gajae-0.1.0-darwin-arm64.zip.sha256
 ditto -x -k Gajae-0.1.0-darwin-arm64.zip .
@@ -388,8 +388,9 @@ the card's own title in a UI whose body text is 9–12px.
 
 ## GJC SDK session CLI compatibility
 
-Gajae supports installed `gajae-code` version `0.18.11` or newer, and is verified
-against that release. It uses only the credential-free public surface:
+Gajae targets installed `gajae-code` version `0.18.12` or newer. The live
+checks below distinguish confirmed behavior from remaining runtime limitations.
+It uses only the credential-free public surface:
 
 ```text
 gjc sdk session list|inspect|send|status|tail
@@ -412,8 +413,28 @@ Model, effort, commands, context, and capabilities use `raw query`. Live lifecyc
 catch-up uses bounded `tail --all-events` reads with checkpoint cursors; the
 session-file watcher remains the transcript source of truth.
 
-The desktop never starts `sdk serve`, opens a session WebSocket, reads endpoint
-credentials, or uses discovery records as an attachment mechanism.
+The desktop additionally starts a read-only `sdk serve --stdio --session <id>`
+relay for each attached session. After `hello`, it negotiates `turn_stream` and
+`session_host_observer_v1` using `event_replay`. Tool updates replace the previous
+output snapshot; `tool_execution_end` finalizes it. The relay reconnects after
+failure and is terminated on detach or shutdown, without signalling the agent.
+Durable tail/file reads remain authoritative. The app never opens a session
+WebSocket itself, reads endpoint credentials, or uses discovery records to attach.
+
+On the installed 0.18.12 build, a fresh host accepted this negotiation but emitted
+no `tool_execution_start/update/end` frames during a multi-second bash loop
+([upstream #6827](https://github.com/Yeachan-Heo/gajae-code/issues/6827)). Final
+output still arrives through the durable transcript. This is a live-verification
+blocker, not a claim that streaming works on that build. Run
+`AGENT_CONTROL_GJC_PRESET=<working-profile> node scripts/gjc-tool-stream-e2e.mjs`
+after compiling Electron sources to reproduce it. Partial bash output is labelled
+as a snapshot whose beginning may be omitted: upstream tail-only updates do not
+always carry explicit truncation metadata.
+
+Upstream [PR #6832](https://github.com/Yeachan-Heo/gajae-code/pull/6832) fixes
+broker observer delivery, but it merged after v0.18.12 and is not in that release.
+The issue being closed upstream does not establish installed-runtime support;
+repeat the live probe on the release containing that fix.
 
 Desktop Esc/Stop sends:
 
@@ -445,7 +466,11 @@ https://github.com/Yeachan-Heo/gajae-code/issues/6772): the active-submission lo
 was scoped to the aborting connection and ignored the broker-authorized `operator`
 flag, so a running turn is now fenced and stopped (`turn:"stopped"`) instead of
 reporting `no_active_turn`. Gajae already sends `operator: true` with `--confirm`, so
-Stop needs no app change once the runtime carrying the fix is installed.
+The 0.18.12 route confirms Stop once the host is actually executing; a local
+`running` event alone precedes host acceptance and is not sufficient probe evidence.
+Confirmed cancellation remains idle during discovery even when the durable file
+ends at an aborted tool result rather than a terminal assistant message. The local
+cancellation notice survives durable refreshes.
 
 **Known limitation on 0.18.11:** `session.delete` requires the durable transcript
 path, and a call that omits it is refused with `invalid_input`
@@ -459,6 +484,19 @@ and worktree and marks the session as recovering rather than reporting a deletio
 it cannot prove. Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6777
 (the disabled-outcome code stays conservative; the refusal class becomes a
 `lifecycle_input_refused` diagnostic).
+
+Gajae now preserves the public envelope's diagnostics and outcome certainty.
+`lifecycle_input_refused` produces an actionable input-refusal error, but it is not
+proof that deletion was unapplied: unless broker reconciliation proves deletion,
+the session remains recovering and all local evidence is retained. There is no
+automatic retry. The existing empty `27f32a06…` probe still failed deletion on
+0.18.12 with an unknown outcome and `deleted:false` (see
+[upstream #6828](https://github.com/Yeachan-Heo/gajae-code/issues/6828)).
+PR #6832 adds the `lifecycle_legacy_history_ambiguous` diagnostic, not permission
+to clear the admission fence. Gajae surfaces this refusal distinctly and retains
+the session and evidence: the current request was not dispatched, but earlier
+effects remain unresolved. Preserve the original operation, request key, target,
+and ledger; do not edit the ledger, force deletion, or retry under a new key.
 
 Older GJC versions are unsupported. After updating GJC, restart running `gjc` /
 `gjc --resume` session hosts because they do not hot-reload runtime code.

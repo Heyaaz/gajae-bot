@@ -67,11 +67,11 @@ function assertSupportedVersion(stdout) {
   const match = stdout.match(/(?:gjc\/)?(\d+)\.(\d+)\.(\d+)/u)
   if (!match) throw new Error(`Could not parse GJC version: ${stdout.trim()}`)
   const actual = match.slice(1).map(Number)
-  const minimum = [0, 18, 11]
+  const minimum = [0, 18, 12]
   for (let index = 0; index < minimum.length; index += 1) {
     if (actual[index] > minimum[index]) return
     if (actual[index] < minimum[index]) {
-      throw new Error(`GJC ${actual.join('.')} is unsupported; install 0.18.11 or newer`)
+      throw new Error(`GJC ${actual.join('.')} is unsupported; install 0.18.12 or newer`)
     }
   }
 }

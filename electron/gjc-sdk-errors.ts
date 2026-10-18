@@ -53,11 +53,30 @@ export function lifecycleUncertainError(error: unknown): boolean {
  * the broker row and let only that evidence decide.
  */
 export function uncertainLifecycleOutcomeError(error: unknown): boolean {
-  if (!(error instanceof SdkCliError)) return false;
+  if (!(error instanceof SdkCliError)) return false
   return (
     error.code === "operation_failed" &&
-    /outcome could not be established/iu.test(error.message)
-  );
+    (error.outcomeCertainty === "unknown" ||
+      /outcome could not be established/iu.test(error.message))
+  )
+}
+
+export function lifecycleInputRefused(error: unknown): boolean {
+  return (
+    error instanceof SdkCliError &&
+    error.diagnostics.some(
+      (diagnostic) => diagnostic.code === "lifecycle_input_refused",
+    )
+  )
+}
+
+export function lifecycleLegacyHistoryAmbiguous(error: unknown): boolean {
+  return (
+    error instanceof SdkCliError &&
+    error.diagnostics.some(
+      (diagnostic) => diagnostic.code === "lifecycle_legacy_history_ambiguous",
+    )
+  )
 }
 
 export function liveSessionDeleteError(error: unknown): boolean {

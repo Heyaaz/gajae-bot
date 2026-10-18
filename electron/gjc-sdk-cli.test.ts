@@ -40,6 +40,18 @@ function cli(
 }
 
 describe("parseEnvelope", () => {
+  it("preserves public lifecycle diagnostics and unknown certainty independently of message text", () => {
+    try {
+      parseEnvelope(JSON.stringify({ ok: false,
+        error: { code: "operation_failed", message: "localized failure", outcomeCertainty: "unknown" },
+        diagnostics: [{ code: "lifecycle_input_refused", message: "Correct input and reconcile." }, null, {}],
+      }), "session.delete");
+      throw new Error("Expected SDK refusal");
+    } catch (error) {
+      expect(error).toBeInstanceOf(SdkCliError);
+      expect(error).toMatchObject({ outcomeCertainty: "unknown", diagnostics: [{ code: "lifecycle_input_refused" }] });
+    }
+  });
   it("throws the CLI's own error code so callers can branch on it", () => {
     const stdout = JSON.stringify({
       schema: "gjc.command-error",

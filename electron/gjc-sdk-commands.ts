@@ -147,6 +147,13 @@ export function skillsDisabledByConfig(config: readonly unknown[]): boolean {
 
 export const SDK_SLASH_COMMAND_SPECS: readonly SdkSlashCommandSpec[] = [
   {
+    name: "btw",
+    description:
+      "Ask a side question with the current session context without saving it to the transcript",
+    hint: "<question>",
+    operations: ["btw.ask"],
+  },
+  {
     name: "context",
     description: "Show active context token usage",
     operations: ["context.get"],

@@ -73,8 +73,8 @@ function assertSupportedVersion(stdout) {
   const match = stdout.match(/(?:gjc\/)?(\d+)\.(\d+)\.(\d+)/u)
   if (!match) throw new Error(`Could not parse GJC version: ${stdout.trim()}`)
   const [major, minor, patch] = match.slice(1).map(Number)
-  if (major === 0 && (minor < 18 || (minor === 18 && patch < 11))) {
-    throw new Error(`GJC ${major}.${minor}.${patch} is unsupported; install 0.18.11 or newer`)
+  if (major === 0 && (minor < 18 || (minor === 18 && patch < 12))) {
+    throw new Error(`GJC ${major}.${minor}.${patch} is unsupported; install 0.18.12 or newer`)
   }
 }
 
@@ -128,14 +128,20 @@ try {
     'a running turn before abort',
   )
 
+  // The local running event precedes host acceptance. Abort only after a durable
+  // tool boundary proves the runtime is executing, not merely submitting a turn.
+  await waitFor(async () => {
+    const transcript = await controller.getTranscript(session.id)
+    return transcript.some((item) => item.kind === 'tool' && item.name === 'bash' && item.status === 'running')
+  }, 45_000, 'host executing the sleep tool')
+
   await deadline(controller.cancelRun(session.id), 30_000, 'terminal owned abort')
   await deadline(prompt.catch(() => undefined), 30_000, 'aborted prompt settlement')
 
-  const afterStatus = (await deadline(controller.listSessions(), 30_000, 'post-abort session list'))
-    .find((row) => row.id === session.id)?.status
-  if (afterStatus !== 'idle') {
-    throw new Error(`Confirmed terminal abort left status ${afterStatus}`)
-  }
+  const afterStatus = await waitFor(async () => {
+    const status = (await controller.listSessions()).find((row) => row.id === session.id)?.status
+    return status === 'idle' ? status : undefined
+  }, 15_000, 'post-abort durable idle state')
 
   const transcript = await deadline(controller.getTranscript(session.id), 30_000, 'post-abort transcript')
   const lengthAtCancel = JSON.stringify(transcript).length
