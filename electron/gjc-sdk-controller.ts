@@ -180,6 +180,15 @@ export interface SessionNotification {
   update: SessionUpdate;
 }
 
+export interface SendMessageOptions {
+  /**
+   * Only the desktop renderer's confirmed path sets this. Remote control and any
+   * other caller leave it unset, so a destructive slash command carried as message
+   * text cannot cross the same approval boundary as the explicit action.
+   */
+  allowDestructive?: boolean;
+}
+
 export interface ResolvedMessageInput {
   text: string;
   images: Array<Omit<ImageAttachment, "token"> & { nativePath?: string }>;
@@ -802,6 +811,24 @@ function attachedPathsText(
 
 export function messageTextWithFiles(input: ResolvedMessageInput): string {
   return `${input.text.trim()}${attachedPathsText(input)}`.trim();
+}
+
+/**
+ * Whether this message is the slash form of a destructive operation.
+ *
+ * The desktop IPC layer asks this before prompting, and the slash dispatcher asks
+ * again before running one. Attachments already route a message to the prompt path,
+ * so they are not a destructive command however the text reads.
+ */
+export function destructiveSlashCommand(
+  input: Pick<ResolvedMessageInput, "text" | "images" | "files">,
+): boolean {
+  if (input.images?.length || input.files?.length) return false;
+  const match = /^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/iu.exec(input.text.trim());
+  if (!match?.[1]) return false;
+  const name = match[1].toLowerCase();
+  const args = match[2]?.trim() ?? "";
+  return name === "session" && args === "delete";
 }
 
 function normalizeQueuedRequestText(text: string): string {
@@ -4864,6 +4891,7 @@ export class GjcSdkController {
   private async executeSdkSlashCommand(
     sessionId: string,
     input: ResolvedMessageInput,
+    options?: SendMessageOptions,
   ): Promise<boolean> {
     if (input.images?.length || input.files?.length) return false;
     const match = /^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/iu.exec(
@@ -4872,6 +4900,10 @@ export class GjcSdkController {
     if (!match?.[1]) return false;
     const name = match[1].toLowerCase();
     const args = match[2]?.trim() ?? "";
+    if (destructiveSlashCommand(input) && !options?.allowDestructive)
+      throw new Error(
+        "세션 삭제는 데스크톱 확인이 필요한 작업입니다. 이 경로에서는 실행하지 않았습니다.",
+      );
     const spec = SDK_SLASH_COMMAND_SPECS.find(
       (candidate) => candidate.name === name,
     );
@@ -5216,9 +5248,11 @@ export class GjcSdkController {
   async sendMessage(
     sessionId: string,
     input: ResolvedMessageInput,
+    options?: SendMessageOptions,
   ): Promise<MessageDelivery> {
     this.locallyAbortedSessions.delete(sessionId);
-    if (await this.executeSdkSlashCommand(sessionId, input)) return "prompt";
+    if (await this.executeSdkSlashCommand(sessionId, input, options))
+      return "prompt";
     const value = input.text.trim();
     if (/^\/steer(?:\s+|$)/u.test(value)) {
       await this.steerSession(sessionId, input);

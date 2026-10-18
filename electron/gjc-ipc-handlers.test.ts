@@ -2,11 +2,28 @@ import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { GjcSdkController } from "./gjc-sdk-controller.js";
+import type { IpcSecurity } from "./ipc-security.js";
+import { GJC_IPC } from "../shared/gjc-ipc.js";
 import { AttachmentStore } from "./attachment-store.js";
 import {
   messageInput,
+  registerGjcIpcHandlers,
   withResolvedMessageInput,
 } from "./gjc-ipc-handlers.js";
+
+const handled = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
+
+vi.mock("electron", () => ({
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+      handled.set(channel, handler);
+    },
+    removeHandler: (channel: string) => {
+      handled.delete(channel);
+    },
+  },
+}));
 
 const roots: string[] = [];
 
@@ -31,6 +48,78 @@ afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
   );
+});
+
+describe("destructive message policy", () => {
+  function setup(confirmation: "allow" | "deny" = "allow") {
+    const send = vi.fn().mockResolvedValue("prompt");
+    const confirm = vi
+      .fn()
+      .mockImplementation(async () => {
+        if (confirmation === "deny") throw new Error("cancelled");
+      });
+    const guarded = vi.fn(
+      (handler: (...args: unknown[]) => unknown) =>
+        async (...args: unknown[]) => handler(...args),
+    );
+    registerGjcIpcHandlers(
+      { sendMessage: send } as unknown as GjcSdkController,
+      new AttachmentStore(),
+      {
+        guarded,
+        owner: vi.fn(),
+        authorizeDestructive: confirm,
+      } as unknown as IpcSecurity,
+    );
+    return { send, confirm };
+  }
+
+  it("confirms the slash form of deletion before sending it", async () => {
+    const { send, confirm } = setup();
+    const event = { sender: { id: 7 } };
+    await handled.get(GJC_IPC.sendMessage)!(event, "session-a", {
+      text: "/session delete",
+      images: [],
+      files: [],
+    });
+    // The same question the explicit delete action asks.
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(event, {
+      message: "세션을 삭제할까요?",
+    });
+    expect(send).toHaveBeenCalledExactlyOnceWith(
+      "session-a",
+      { text: "/session delete", images: [], files: [] },
+      { allowDestructive: true },
+    );
+  });
+
+  it("does not send a destructive command whose confirmation was refused", async () => {
+    const { send, confirm } = setup("deny");
+    await expect(
+      handled.get(GJC_IPC.sendMessage)!({ sender: { id: 7 } }, "session-a", {
+        text: "/session delete",
+        images: [],
+        files: [],
+      }),
+    ).rejects.toThrow("cancelled");
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("does not ask for ordinary prompts", async () => {
+    const { send, confirm } = setup();
+    await handled.get(GJC_IPC.sendMessage)!({ sender: { id: 7 } }, "session-a", {
+      text: "/session info",
+      images: [],
+      files: [],
+    });
+    expect(confirm).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledExactlyOnceWith(
+      "session-a",
+      { text: "/session info", images: [], files: [] },
+      { allowDestructive: false },
+    );
+  });
 });
 
 describe("attachment IPC validation", () => {

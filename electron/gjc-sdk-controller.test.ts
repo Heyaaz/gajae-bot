@@ -999,6 +999,38 @@ describe("SDK slash commands", () => {
     ).not.toContain("skill:ci-green");
   });
 
+  it("refuses /session delete unless the caller confirmed it", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("session.metadata", "session.stats"),
+    );
+    const remove = vi
+      .spyOn(controller, "deleteSession")
+      .mockResolvedValue(undefined);
+
+    // This is the path a remote control device reaches: no confirmation option,
+    // so the slash form cannot delete behind the desktop's approval boundary.
+    await expect(
+      controller.sendMessage("s1", {
+        text: "/session delete",
+        images: [],
+        files: [],
+      }),
+    ).rejects.toThrow(/데스크톱 확인/u);
+    expect(remove).not.toHaveBeenCalled();
+    expect(cli.rawControl).not.toHaveBeenCalled();
+
+    // The desktop path confirms first and then passes the explicit option.
+    await controller.sendMessage(
+      "s1",
+      { text: "/session delete", images: [], files: [] },
+      { allowDestructive: true },
+    );
+    expect(remove).toHaveBeenCalledExactlyOnceWith("s1");
+  });
+
   it("refuses a recognized command the runtime does not advertise", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session());

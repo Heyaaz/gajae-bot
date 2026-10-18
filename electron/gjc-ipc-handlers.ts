@@ -12,6 +12,7 @@ import {
 // The attachment validation moved behind a shared module so the remote access
 // server applies the same rules, but this stays the name the IPC tests use.
 export { messageInput } from "./gjc-input-validation.js";
+import { destructiveSlashCommand } from "./gjc-sdk-controller.js";
 import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
 import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
@@ -130,9 +131,21 @@ export function registerGjcIpcHandlers(
       attachments,
       event.sender.id,
       raw,
-      (input) => {
+      async (input) => {
         security.owner(event);
-        if (method === "sendMessage") return controller.sendMessage(id, input);
+        if (method === "sendMessage") {
+          // A destructive slash command is the same operation as the explicit
+          // action, so it crosses the same confirmation boundary here. Remote
+          // control reaches the controller without this option and is refused.
+          const destructive = destructiveSlashCommand(input);
+          if (destructive)
+            await security.authorizeDestructive(event, {
+              message: "세션을 삭제할까요?",
+            });
+          return controller.sendMessage(id, input, {
+            allowDestructive: destructive,
+          });
+        }
         if (method === "steerSession") return controller.steerSession(id, input);
         return controller.queueFollowUp(id, input);
       },
