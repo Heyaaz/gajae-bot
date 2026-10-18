@@ -142,7 +142,7 @@ work, `/progress` reads project progress, `/reload` reloads runtime components, 
 work follows the same held-work rules as prompts; session controls execute immediately.
 
 On attachment, skills are discovered from `skill.list/state` until the runtime
-publishes its authoritative command list. GJC 0.18.11 does not expose a complete
+publishes its authoritative command list. GJC 0.18.12 does not expose a complete
 CLI slash-command registry query, and its skill rows can omit visibility metadata.
 An authoritative command update replaces that provisional skill list. TUI-only
 commands and commands without a public SDK equivalent are not claimed as supported;
@@ -397,14 +397,14 @@ gjc sdk session list|inspect|send|status|tail
 gjc sdk session raw control|query|global
 ```
 
-Two flag rules come from the 0.18.11 grammar and are load-bearing:
+Two flag rules from the 0.18.12 grammar are load-bearing:
 
 - Every invocation passes `--json`. Failures answer a `gjc.command-error` envelope
   there, and plain human text without it, which the app cannot classify.
 - Only `session list` passes `--repo`. Exact-session verbs resolve from the session
   ID and warn that the flag is ignored; `raw control` and `raw global` reject it as
   a usage error before dispatch. `session list` also states `--scope` explicitly
-  because the 0.18.11 default scope is `repo`, which fails outside a git checkout.
+  because the 0.18.12 default scope is `repo`, which fails outside a git checkout.
 
 Create, fork, resume, and delete use `raw global` with a fresh lifecycle
 idempotency key. Prompt submission uses semantic `send` with a fresh operation
@@ -453,37 +453,41 @@ Gajae requires the following behavior, shipped by the supported runtime:
 1. Forward the CLI idempotency key on control-request envelopes
 2. `turn.abort` `operator: true` — an external controller can stop owned work. Requires `--confirm`
 
-**Known limitation on 0.18.11:** the terminal abort answers
+**Resolved in 0.18.12.** 0.18.11 answered the terminal abort with
 `{turn:"no_active_turn", terminal:"terminal_no_effect"}` through this route even
-while a turn is verifiably running (`status` in_flight and `turn.steer` accepted on
-the same session), and the turn keeps running. The same payload over a live
-`sdk serve --stdio` connection is rejected with `operation_prohibited` ("Operator
+while a turn was verifiably running (`status` in_flight and `turn.steer` accepted
+on the same session), and the turn kept running. The same payload over a live
+`sdk serve --stdio` connection was rejected with `operation_prohibited` ("Operator
 terminal aborts are available only through the Broker control route"). Stop
-therefore reports that it could not confirm the abort instead of claiming the run
-stopped; the transcript stays the source of truth for whether work continued.
-Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6776 (reported as
-https://github.com/Yeachan-Heo/gajae-code/issues/6772): the active-submission lookup
-was scoped to the aborting connection and ignored the broker-authorized `operator`
-flag, so a running turn is now fenced and stopped (`turn:"stopped"`) instead of
-reporting `no_active_turn`. Gajae already sends `operator: true` with `--confirm`, so
-The 0.18.12 route confirms Stop once the host is actually executing; a local
-`running` event alone precedes host acceptance and is not sufficient probe evidence.
-Confirmed cancellation remains idle during discovery even when the durable file
-ends at an aborted tool result rather than a terminal assistant message. The local
-cancellation notice survives durable refreshes.
+therefore reported that it could not confirm the abort instead of claiming the run
+stopped; the transcript stayed the source of truth for whether work continued.
+Upstream https://github.com/Yeachan-Heo/gajae-code/pull/6776 (reported as
+https://github.com/Yeachan-Heo/gajae-code/issues/6772) scoped the active-submission
+lookup to the broker-authorized `operator` flag. On 0.18.12 the route does confirm
+`turn:"stopped"` once the host has registered the active submission, and Gajae
+re-asks briefly because a local `running` event precedes that registration. The
+0.18.12 e2e still reproduced `no_active_turn` while a 30-second bash turn was
+verifiably running, so that path remains unconfirmed and is never reported as
+stopped; upstream #6860 tracks generation-zero broker identity after resume and
+fork. Only `turn:"stopped"` is treated as a confirmation. Confirmed cancellation
+remains idle during discovery even when the durable file ends at an aborted tool
+result rather than a terminal assistant message. The local cancellation notice
+survives durable refreshes.
 
-**Known limitation on 0.18.11:** `session.delete` requires the durable transcript
-path, and a call that omits it is refused with `invalid_input`
-("session.delete requires sessionPath and its configured cwd."). 0.18.11 renders
-that refusal as `operation_failed` ("The operation failed. Its outcome could not be
-established.", `outcomeCertainty: unknown`, retryability `unknown`, guidance "do not
-blindly retry"), so a refused delete is indistinguishable from a delete that may
-have half-applied. Gajae passes the path it located and, when the call still fails,
-treats it as an unknown lifecycle outcome: it preserves the transcript, metadata,
-and worktree and marks the session as recovering rather than reporting a deletion
-it cannot prove. Fixed upstream as https://github.com/Yeachan-Heo/gajae-code/pull/6777
-(the disabled-outcome code stays conservative; the refusal class becomes a
-`lifecycle_input_refused` diagnostic).
+**Resolved in 0.18.12.** `session.delete` requires the durable transcript path,
+and a call that omits it is refused with `invalid_input` ("session.delete requires
+sessionPath and its configured cwd."). 0.18.11 rendered that refusal as
+`operation_failed` ("The operation failed. Its outcome could not be established.",
+`outcomeCertainty: unknown`, retryability `unknown`, guidance "do not blindly
+retry"), so a refused delete was indistinguishable from a delete that may have
+half-applied. Upstream https://github.com/Yeachan-Heo/gajae-code/pull/6777 adds the
+`lifecycle_input_refused` diagnostic for that admission refusal. Gajae still passes
+the path it located; an unknown outcome preserves the transcript, metadata, and
+worktree and marks the session as recovering rather than reporting a deletion it
+cannot prove. Close-then-delete succeeds for a session that only replied, but the
+0.18.12 e2e still gets an unknown outcome for a session containing tool execution
+(upstream #6828). A live host this window created, forked, or resumed is closed
+first; a terminal's host is never signalled.
 
 Gajae now preserves the public envelope's diagnostics and outcome certainty.
 `lifecycle_input_refused` produces an actionable input-refusal error, but it is not

@@ -429,6 +429,8 @@ export class GjcSdkController {
   private readonly tailControllers = new Map<string, AbortController>();
   /** Latest tail checkpoint claim per session, so a re-read resumes rather than rewinds. */
   private readonly tailCheckpoints = new Map<string, string>();
+  /** Sessions this window resumed, and therefore may close before deleting. */
+  private readonly windowHostedSessions = new Set<string>();
   /** Public observer connections that replace tool output with the newest snapshot. */
   private readonly toolObservers = new Map<string, AbortController>();
   /** The latest streamed tool rows, kept over a stale durable read. */
@@ -501,6 +503,7 @@ export class GjcSdkController {
     for (const sessionId of this.tailControllers.keys())
       this.stopTailFollower(sessionId);
     this.attachedSessions.clear();
+    this.windowHostedSessions.clear();
     // The new runtime re-attaches from scratch, so last run's throttle stamps must
     // not delay the first attempt against it.
     this.attachAttempts.clear();
@@ -1554,6 +1557,7 @@ export class GjcSdkController {
       ...(worktree ? { worktree } : {}),
     };
     this.sessions.set(session.id, session);
+    this.windowHostedSessions.add(session.id);
     this.sessionCwds.set(session.id, sessionWorkspace);
     this.transcripts.set(session.id, []);
     this.messageKeys.set(session.id, new Map());
@@ -3513,18 +3517,26 @@ export class GjcSdkController {
   private async abortOwnedThroughControl(
     sessionId: string,
   ): Promise<Record<string, unknown>> {
-    const idempotencyKey = `gajae-abort-${randomUUID()}`;
-    const result = await this.controlSession(
-      sessionId,
-      "turn.abort",
-      {
-        mode: "terminal",
-        scope: "owned",
-        operator: true,
-      },
-      { idempotencyKey, confirm: true },
-    );
-    if (result?.turn === "stopped") return result;
+    // The local running event precedes the host's broker registration. A Stop
+    // pressed in that gap answers `no_active_turn` even though the prompt is
+    // being accepted, so re-ask briefly before reporting the stop unconfirmed.
+    let result: Record<string, unknown> | undefined;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const idempotencyKey = `gajae-abort-${randomUUID()}`;
+      result = await this.controlSession(
+        sessionId,
+        "turn.abort",
+        {
+          mode: "terminal",
+          scope: "owned",
+          operator: true,
+        },
+        { idempotencyKey, confirm: true },
+      );
+      if (result?.turn === "stopped") return result;
+      if (result?.turn !== "no_active_turn" || attempt === 4) break;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
     throw new Error(
       `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(result ?? null)}`,
     );
@@ -4125,8 +4137,20 @@ export class GjcSdkController {
     const session = this.sessions.get(sessionId);
     this.deletingSessions.add(sessionId);
     try {
-      // Delete saved history, not its host process. The CLI picker likewise
-      // removes a transcript without shutting down the current CLI runtime.
+      // A session this window re-hosted is ours to close; a terminal's host is
+      // not. GJC refuses `session.delete` while a host is live, so close only the
+      // host this app attached, then delete the saved transcript.
+      if (
+        this.windowHostedSessions.has(sessionId) &&
+        (await this.sessionBrokerRow(sessionId))?.live === true
+      ) {
+        await this.brokerLifecycle("session.close", {
+          sessionId,
+          cwd: this.sessionCwds.get(sessionId) ?? this.workspace,
+        });
+        this.attachedSessions.delete(sessionId);
+        this.stopTailFollower(sessionId);
+      }
       const outcome = await this.brokerLifecycleDelete(sessionId);
       if (outcome === "recovering") {
         if (session) {
@@ -4207,9 +4231,11 @@ export class GjcSdkController {
     } catch (error) {
       if (missingLifecycleSessionError(error) || missingSessionError(error))
         return "deleted";
+      // A live-session refusal is a definite refusal, not an unknown outcome;
+      // the caller must not mark the row recovering when nothing was attempted.
+      if (liveSessionDeleteError(error)) throw error;
       if (
         lifecycleUncertainError(error) ||
-        liveSessionDeleteError(error) ||
         uncertainLifecycleOutcomeError(error)
       ) {
         // The receipt is not proof of either success or failure. Only an absent or
@@ -4266,8 +4292,15 @@ export class GjcSdkController {
         this.sharedSessionFiles.delete(sessionId);
       }
     }
-    const agentDirectory = path.resolve(
+    const configuredAgentDirectory = path.resolve(
       process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
+    );
+    // GJC canonicalizes the workspace and the transcript path before matching a
+    // resume target. `/tmp` and `/private/tmp` name one directory but compare as
+    // two, so an agent directory reached through a symlinked temp root produced
+    // `lifecycle_input_refused` for a transcript that was right there.
+    const agentDirectory = await realpath(configuredAgentDirectory).catch(
+      () => configuredAgentDirectory,
     );
     const sessionsDirectory = path.join(agentDirectory, "sessions");
     const suffix = `_${sessionId}.jsonl`;
@@ -4292,7 +4325,8 @@ export class GjcSdkController {
           })),
         );
         stamped.sort((left, right) => right.mtimeMs - left.mtimeMs);
-        filePath = stamped[0].candidate;
+        const candidate = stamped[0].candidate;
+        filePath = await realpath(candidate).catch(() => candidate);
         this.sharedSessionFiles.set(sessionId, filePath);
         return filePath;
       }
@@ -4303,7 +4337,7 @@ export class GjcSdkController {
   }
 
   private async brokerLifecycle(
-    operation: "session.delete",
+    operation: "session.delete" | "session.close",
     input: Record<string, unknown>,
   ): Promise<void> {
     const sessionId =
@@ -4320,6 +4354,7 @@ export class GjcSdkController {
 
   private removeLocalSession(sessionId: string, hide: boolean): void {
     this.stopTailFollower(sessionId);
+    this.windowHostedSessions.delete(sessionId);
     this.sessions.delete(sessionId);
     this.sessionCwds.delete(sessionId);
     this.attachedSessions.delete(sessionId);
@@ -4403,6 +4438,7 @@ export class GjcSdkController {
     this.startupSessionRows = undefined;
     this.transcriptAttachments.clear();
     this.permissionModeApplied.clear();
+    this.windowHostedSessions.clear();
     this.tailReads.clear();
     this.tailCheckpoints.clear();
     this.sessions.clear();
@@ -4958,6 +4994,7 @@ export class GjcSdkController {
         { repo: cwd },
       );
       rehosted = true;
+      this.windowHostedSessions.add(sessionId);
       // The re-host writes a new timestamped session file. Drop the path this window
       // cached, or the next lifecycle call (delete especially) hands GJC the previous
       // generation's file and the operation comes back with an unknown outcome.
@@ -6334,8 +6371,12 @@ export class GjcSdkController {
           item.kind === "tool" && item.id === toolId,
       );
       if (!tool) continue;
+      const waiting =
+        tool.status !== "approval-required" &&
+        patch.status === "approval-required";
       Object.assign(tool, patch);
       this.emitEvent({ type: "tool.updated", tool: { ...tool } });
+      if (waiting) this.emitActivity(tool.sessionId, "permission");
       return;
     }
   }
@@ -6593,6 +6634,7 @@ export class GjcSdkController {
       ...(inheritedWorktree ? { worktree: inheritedWorktree } : {}),
     };
     this.sessions.set(session.id, session);
+    this.windowHostedSessions.add(session.id);
     this.sessionCwds.set(session.id, cwd);
     this.sessionMetadata?.setAlias(session.id, session.title);
     this.sessionMetadata?.setWorkspace(session.id, cwd);

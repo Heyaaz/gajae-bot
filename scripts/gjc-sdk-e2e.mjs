@@ -257,6 +257,10 @@ try {
     10_000,
     'the abort probe to start',
   );
+  // A user sees the turn before pressing Stop. The host registers the active
+  // submission just after the local running event, so give the probe the same
+  // realistic interval instead of racing broker acceptance.
+  await wait(2_000);
   let abortConfirmed = false;
   try {
     await deadline(controller.cancelRun(session.id), 30_000, 'terminal owned abort');
