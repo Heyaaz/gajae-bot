@@ -173,6 +173,47 @@ describe("pairing", () => {
     expect(storage.value).toBeNull();
     client.dispose();
   });
+
+  it("times out a pairing that stalls before headers or in either body", async () => {
+    const never = () => new Promise<never>(() => undefined);
+    const scenarios: Array<{ name: string; fetchImpl: typeof fetch }> = [
+      {
+        name: "headers",
+        fetchImpl: (async () => never()) as typeof fetch,
+      },
+      {
+        name: "success body",
+        fetchImpl: (async () =>
+          ({ status: 200, ok: true, json: never }) as unknown as Response) as typeof fetch,
+      },
+      {
+        name: "error body",
+        fetchImpl: (async () =>
+          ({ status: 503, ok: false, json: never }) as unknown as Response) as typeof fetch,
+      },
+    ];
+    for (const scenario of scenarios) {
+      const storage = memoryStorage();
+      const client = new RemoteClient({
+        baseUrl: "https://host",
+        storage,
+        fetchImpl: scenario.fetchImpl,
+        requestTimeoutMs: 20,
+      });
+      const failure = await Promise.race([
+        client.pair("ABCD2345").then(
+          () => "resolved",
+          (error: unknown) => error,
+        ),
+        new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+      ]);
+      expect(failure, scenario.name).toBeInstanceOf(RemoteRequestError);
+      expect((failure as RemoteRequestError).uncertain, scenario.name).toBe(true);
+      expect((failure as Error).message, scenario.name).toContain("시간이 초과");
+      expect(storage.value, scenario.name).toBeNull();
+      client.dispose();
+    }
+  });
 });
 
 describe("authenticated requests", () => {

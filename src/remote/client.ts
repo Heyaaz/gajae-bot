@@ -258,40 +258,91 @@ export class RemoteClient {
   /** Consumes a pairing code and stores the device token. */
   async pair(rawCode: string): Promise<void> {
     const code = rawCode.replace(/[\s-]/gu, "").toUpperCase();
-    let response: Response;
-    try {
-      response = await this.fetchImpl(this.url(REMOTE_API.pair), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code, deviceName: this.deviceName() }),
-      });
-    } catch {
-      throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
-    }
-    if (response.status !== 200) {
-      const body = await readErrorBody(response);
-      throw new RemoteRequestError(body.message, { status: response.status, code: body.code });
-    }
-    const body = (await response.json()) as RemotePairingBody;
-    if (typeof body.token !== "string" || !isRemotePermission(body.device?.permission)) {
-      throw new RemoteRequestError("호스트가 올바른 기기 정보를 보내지 않았습니다.");
-    }
-    // A new credential starts a new auth channel: drop the old stream, its
-    // cursor, and any response whose request predates this pairing.
-    this.closeRealtime();
-    this.authGeneration += 1;
-    this.abortRequests();
-    this.lastSeq = undefined;
-    this.serverInstance = undefined;
-    this.attempt = 0;
-    this.token = body.token;
-    this.via = body.device.via ?? "device";
-    this.storage.write(body.token);
-    this.setStatus({
-      state: "connected",
-      permission: body.device.permission,
-      deviceName: body.device.name,
+    // Pairing has no token to authorize with, but it is still an HTTP request: a
+    // host that stalls before headers, or mid-body, must not leave the pairing
+    // screen pending forever.
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new RemoteRequestTimeout());
+      }, this.requestTimeoutMs);
     });
+    const withinDeadline = <U>(work: Promise<U>): Promise<U> =>
+      Promise.race([work, deadline]);
+    const timeoutError = (): RemoteRequestError =>
+      new RemoteRequestError("호스트 응답 시간이 초과되었습니다.", {
+        uncertain: true,
+      });
+    const readBody = async <U>(read: () => Promise<U>): Promise<U> => {
+      try {
+        return await withinDeadline(read());
+      } catch (error) {
+        if (timedOut || error instanceof RemoteRequestTimeout)
+          throw timeoutError();
+        throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", {
+          uncertain: true,
+        });
+      }
+    };
+    try {
+      let response: Response;
+      try {
+        response = await withinDeadline(
+          this.fetchImpl(this.url(REMOTE_API.pair), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, deviceName: this.deviceName() }),
+            signal: controller.signal,
+          }),
+        );
+      } catch (error) {
+        if (timedOut || error instanceof RemoteRequestTimeout)
+          throw timeoutError();
+        throw new RemoteRequestError("호스트에 연결할 수 없습니다.", {
+          uncertain: true,
+        });
+      }
+      if (response.status !== 200) {
+        const body = await readBody(() => readErrorBody(response));
+        throw new RemoteRequestError(body.message, {
+          status: response.status,
+          code: body.code,
+        });
+      }
+      const body = await readBody(
+        () => response.json() as Promise<RemotePairingBody>,
+      );
+      if (
+        typeof body.token !== "string" ||
+        !isRemotePermission(body.device?.permission)
+      ) {
+        throw new RemoteRequestError(
+          "호스트가 올바른 기기 정보를 보내지 않았습니다.",
+        );
+      }
+      // A new credential starts a new auth channel: drop the old stream, its
+      // cursor, and any response whose request predates this pairing.
+      this.closeRealtime();
+      this.authGeneration += 1;
+      this.abortRequests();
+      this.lastSeq = undefined;
+      this.serverInstance = undefined;
+      this.attempt = 0;
+      this.token = body.token;
+      this.via = body.device.via ?? "device";
+      this.storage.write(body.token);
+      this.setStatus({
+        state: "connected",
+        permission: body.device.permission,
+        deviceName: body.device.name,
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /** Forgets this device's token locally. The host keeps its record until revoked there. */
