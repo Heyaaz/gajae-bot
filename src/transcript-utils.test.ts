@@ -8,6 +8,7 @@ import {
   isNearTranscriptBottom,
   transcriptScrollIntent,
   shouldFollowTranscript,
+  discoveryRevisionIsFresh,
   mergeDiscoveredSessions,
   attachmentSummaryText,
   mergeTranscriptItem,
@@ -918,6 +919,16 @@ describe("mergeDiscoveredSessions", () => {
         [{ ...session("open", "running"), runRevision: 2 }],
       )[0],
     ).toMatchObject({ status: "running", runRevision: 2 });
+  });
+
+  it("refuses a discovered run state older than the live revision", () => {
+    // listSessions can answer with idle N after a live running N+1 already
+    // arrived. The rendered row rejects it; the queue release must use the same
+    // freshness rule instead of observing the stale idle.
+    expect(discoveryRevisionIsFresh(2, 1)).toBe(false);
+    expect(discoveryRevisionIsFresh(2, 2)).toBe(true);
+    expect(discoveryRevisionIsFresh(2, 3)).toBe(true);
+    expect(discoveryRevisionIsFresh(undefined, 0)).toBe(true);
   });
 
   it("takes a settled status over a stale running row", () => {

@@ -541,6 +541,14 @@ export function updateTranscriptItem(
  * state it happened to be listed in, so an agent working in another process stayed
  * on 완료 for its whole run.
  */
+/** Whether a discovered row's run revision may drive run-state observation. */
+export function discoveryRevisionIsFresh(
+  knownRevision: number | undefined,
+  discoveredRevision: number | undefined,
+): boolean {
+  return (discoveredRevision ?? 0) >= (knownRevision ?? 0);
+}
+
 export function mergeDiscoveredSessions<
   T extends {
     id: string;

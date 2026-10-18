@@ -23,6 +23,7 @@ import { useAgentBackend } from "../backend/use-agent-backend";
 import {
   cacheTranscript,
   initialSessionId,
+  discoveryRevisionIsFresh,
   mergeDiscoveredSessions,
   mergeTranscriptItem,
   updateTranscriptItem,
@@ -403,7 +404,21 @@ export default function App() {
     // must have been seen first: an idle row right after a send, before the turn
     // starts, is not evidence that queued work can be handed over.
     const runStates = new Map<string, AgentSession["status"]>();
+    // Discovery is a slow read. A live update that advances the revision while
+    // the list request is in flight makes the older response stale: merging it
+    // already refuses to overwrite the row, but observing it would still turn a
+    // running -> idle transition into a queue release. Track the newest revision
+    // seen so the side effect follows the same rule as the rendered row.
+    const observedRevisions = new Map<string, number>();
     const observeSessionRun = (session: AgentSession): void => {
+      if (
+        !discoveryRevisionIsFresh(
+          observedRevisions.get(session.id),
+          session.runRevision,
+        )
+      )
+        return;
+      observedRevisions.set(session.id, session.runRevision ?? 0);
       const previous = runStates.get(session.id);
       runStates.set(session.id, session.status);
       if (previous !== "running" || session.status !== "idle") return;
