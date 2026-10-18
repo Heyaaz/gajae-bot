@@ -23,6 +23,7 @@ import {
   mergePreparedAttachments,
   requestFastTier,
   restoreRejectedDraft,
+  parkComposerSession,
   saveComposerQueue,
   saveComposerSnapshot,
   composerQueue,
@@ -731,6 +732,18 @@ describe("session-level queue release", () => {
     await Promise.all([first, second]);
     expect(sent).toEqual(["first", "second"]);
     expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not restore a queue the shell released while another session was shown", async () => {
+    const request = heldRequest("queued-1", "only once");
+    saveComposerQueue("session-a", [request]);
+    // A -> B parks A in the shared snapshot, not in a component-local map.
+    expect(parkComposerSession("session-a", [request], "session-b")).toEqual([]);
+    await releaseQueuedSession("session-a", async () => undefined);
+    // The shell released A while B was on screen.
+    expect(composerQueue("session-a")).toEqual([]);
+    // B -> A restores the authoritative queue, so the completed request stays gone.
+    expect(parkComposerSession("session-b", [], "session-a")).toEqual([]);
   });
 
   it("keeps a failed request in the shared queue as blocked", async () => {

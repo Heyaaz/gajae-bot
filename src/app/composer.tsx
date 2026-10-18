@@ -100,6 +100,22 @@ export function saveComposerQueue(
 }
 
 /**
+ * Park the queue of the session being left and load the next session's queue.
+ *
+ * The module snapshot is authoritative for a session this composer is not
+ * showing. Keeping a component-local copy here is what let a queue released by
+ * the shell reappear when the user navigated back.
+ */
+export function parkComposerSession(
+  previous: string,
+  activeQueue: PendingRequest[],
+  next: string,
+): PendingRequest[] {
+  saveComposerQueue(previous, activeQueue);
+  return composerQueue(next);
+}
+
+/**
  * Hand over a session's held requests without a mounted composer.
  *
  * The shell calls this when a run ends while another screen is open. Ownership is
@@ -540,9 +556,6 @@ export function Composer({
   const pendingPreparedRef = useRef(
     new Map<string, { images: ImageAttachment[]; files: FileAttachment[] }>(),
   );
-  const pendingQueuesRef = useRef(new Map<string, PendingRequest[]>(
-    [...composerSnapshots].map(([id, snapshot]) => [id, snapshot.pendingQueue]),
-  ));
   const mountedRef = useRef(false);
   // Anything the user could submit right now. This decides which single action the
   // submit slot exposes, so send and stop can never render together.
@@ -614,14 +627,11 @@ export function Composer({
   function discardQueueAfterCancel(owner: string): void {
     void cancelBeforeQueueDiscard(onCancel, () => {
       if (draftSessionRef.current !== owner) {
-        pendingQueuesRef.current.delete(owner);
-        const snapshot = composerSnapshots.get(owner);
-        if (snapshot)
-          saveComposerSnapshot(composerSnapshots, owner, { ...snapshot, pendingQueue: [] });
+        saveComposerQueue(owner, []);
         return;
       }
       pendingQueueRef.current = [];
-      pendingQueuesRef.current.delete(owner);
+      saveComposerQueue(owner, []);
       setPendingQueue([]);
       saveComposerSnapshot(composerSnapshots, owner, {
         value: valueRef.current,
@@ -665,10 +675,7 @@ export function Composer({
       const snapshot = composerSnapshots.get(owner);
       saveComposerSnapshot(composerSnapshots, owner, {
         ...parked,
-        pendingQueue:
-          snapshot?.pendingQueue ??
-          pendingQueuesRef.current.get(owner) ??
-          [],
+        pendingQueue: snapshot?.pendingQueue ?? composerQueue(owner),
       });
     }
   }
@@ -806,15 +813,17 @@ export function Composer({
       draft.files = mergePreparedAttachments(draft.files, prepared.files, 5);
       pendingPreparedRef.current.delete(previous);
     }
-    if (pendingQueueRef.current.length > 0)
-      pendingQueuesRef.current.set(previous, pendingQueueRef.current);
-    else pendingQueuesRef.current.delete(previous);
+    const nextQueue = parkComposerSession(
+      previous,
+      pendingQueueRef.current,
+      sessionId,
+    );
 
     const restored = restoreDraft(draftsRef.current, sessionId);
     setValue(restored.value);
     setImages(restored.images);
     setFiles(restored.files);
-    setPendingQueue(pendingQueuesRef.current.get(sessionId) ?? []);
+    setPendingQueue(nextQueue);
     setAttachmentError("");
     queueMicrotask(() => {
       setHistoryCursor(-1);
@@ -826,7 +835,7 @@ export function Composer({
     for (const [owner, draft] of draftsRef.current) {
       saveComposerSnapshot(composerSnapshots, owner, {
         ...draft,
-        pendingQueue: pendingQueuesRef.current.get(owner) ?? [],
+        pendingQueue: composerQueue(owner),
       });
     }
     saveComposerSnapshot(composerSnapshots, sessionId, {
@@ -1014,33 +1023,15 @@ export function Composer({
     const read = (): PendingRequest[] =>
       draftSessionRef.current === owner
         ? pendingQueueRef.current
-        : pendingQueuesRef.current.get(owner) ?? [];
+        : composerQueue(owner);
     const write = (pending: PendingRequest[]): void => {
-      if (pending.length > 0) pendingQueuesRef.current.set(owner, pending);
-      else pendingQueuesRef.current.delete(owner);
-      if (!mountedRef.current) {
-        // The loop outlived its composer. Keep the queue it still owns in the
-        // shared snapshot, but never replace a newer instance's draft with this
-        // instance's stale values.
-        const snapshot = composerSnapshots.get(owner);
-        saveComposerSnapshot(composerSnapshots, owner, {
-          ...(snapshot ?? {
-            value: valueRef.current,
-            images: imagesRef.current,
-            files: filesRef.current,
-          }),
-          pendingQueue: pending,
-        });
-        return;
-      }
-      const draft = draftSessionRef.current === owner
-        ? { value: valueRef.current, images: imagesRef.current, files: filesRef.current }
-        : draftsRef.current.get(owner) ?? composerSnapshots.get(owner);
-      if (draft)
-        saveComposerSnapshot(composerSnapshots, owner, { ...draft, pendingQueue: pending });
+      // The session's module snapshot is the one queue every observer shares.
+      // Never write from an instance-local copy: this loop may outlive the
+      // composer that started it, and a later switch would republish that copy.
+      saveComposerQueue(owner, pending);
       if (draftSessionRef.current !== owner) return;
       pendingQueueRef.current = pending;
-      setPendingQueue(pending);
+      if (mountedRef.current) setPendingQueue(pending);
     };
     if (read()[0]?.blocked) return;
     releasingQueues.add(owner);
