@@ -305,6 +305,20 @@ describe("remote access service", () => {
     await expect(fetch(`http://127.0.0.1:${moved.port}${REMOTE_API.state}`)).rejects.toThrow();
   });
 
+  it("stops a listener whose start raced a disable", async () => {
+    const { instance } = await service();
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const enabling = instance.setEnabled(true);
+      const disabling = instance.setEnabled(false);
+      const [enabled] = await Promise.all([enabling, disabling]);
+      const final = await instance.state();
+      expect(final).toMatchObject({ enabled: false, running: false });
+      await expect(
+        fetch(`http://127.0.0.1:${enabled.port}${REMOTE_API.state}`),
+      ).rejects.toThrow();
+    }
+  });
+
   it("refuses to pair while remote access is off", async () => {
     const { instance } = await service();
     await expect(instance.issuePairingCode("view")).rejects.toThrow("Turn remote access on first");

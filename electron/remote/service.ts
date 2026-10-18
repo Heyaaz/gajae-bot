@@ -43,6 +43,8 @@ const UNKNOWN_TAILSCALE: TailscaleSummary = {
 const IDENTITY_TTL_MS = 30_000;
 
 export class RemoteAccessService {
+  private applying: Promise<void> = Promise.resolve();
+  private disposed = false;
   private readonly settings: RemoteSettingsStore;
   private readonly devices: DeviceStore;
   private readonly tailscale: TailscaleClient;
@@ -167,13 +169,30 @@ export class RemoteAccessService {
   }
 
   async dispose(): Promise<void> {
+    this.disposed = true;
+    await this.applying.catch(() => undefined);
     await this.server?.stop();
     this.server = undefined;
   }
 
-  private async apply(): Promise<void> {
+  /**
+   * Serializes settings transitions.
+   *
+   * Starting a listener and disabling remote access are both asynchronous, and
+   * running them side by side let a slow start assign its server after the stop
+   * had already found nothing to stop. Each apply reads the settings when it runs,
+   * so a queued disable always sees the latest desired state.
+   */
+  private apply(): Promise<void> {
+    const run = (): Promise<void> => this.applyNow();
+    const next = this.applying.then(run, run);
+    this.applying = next.catch(() => undefined);
+    return next;
+  }
+
+  private async applyNow(): Promise<void> {
     const settings = this.settings.get();
-    if (!settings.enabled) {
+    if (this.disposed || !settings.enabled) {
       await this.server?.stop();
       this.server = undefined;
       if (this.serveManagedByApp) {
@@ -213,6 +232,8 @@ export class RemoteAccessService {
   }
 
   private async ensureServer(port: number): Promise<void> {
+    const desired = this.settings.get();
+    if (this.disposed || !desired.enabled || desired.port !== port) return;
     if (this.server?.running && this.server.address.port === port) return;
     await this.server?.stop();
     const server = new RemoteServer({
@@ -229,6 +250,14 @@ export class RemoteAccessService {
     });
     try {
       await server.start();
+      // The user may have disabled remote access (or moved the port) while the
+      // listener was starting. Publishing it then would leave the listener alive
+      // under a disabled setting, so a stale start stops itself.
+      const latest = this.settings.get();
+      if (this.disposed || !latest.enabled || latest.port !== port) {
+        await server.stop().catch(() => undefined);
+        return;
+      }
       this.server = server;
       this.lastError = "";
       this.log(`remote access server listening on 127.0.0.1:${server.address.port}`);
@@ -244,10 +273,19 @@ export class RemoteAccessService {
     if (summary) this.lastTailscale = summary;
     if (!summary?.installed || !summary.connected) return;
     if (summary.serveEnabled) return;
+    const beforeEnable = this.settings.get();
+    if (this.disposed || !beforeEnable.enabled || beforeEnable.port !== port) return;
     const result = await this.tailscale.enableServe(port).catch(() => undefined);
     if (!result) return;
     if (result.code === 0) {
       this.serveManagedByApp = true;
+      const latest = this.settings.get();
+      if (this.disposed || !latest.enabled || latest.port !== port) {
+        const entries = await this.tailscale.serveEntries().catch(() => []);
+        await this.tailscale.disableServe(port, entries).catch(() => undefined);
+        this.serveManagedByApp = false;
+        return;
+      }
       this.log(`tailscale serve mapped https://${summary.dnsName ?? "this machine"}/ to 127.0.0.1:${port}`);
       this.lastTailscale = await this.tailscale.summary(port).catch(() => summary);
     } else {
