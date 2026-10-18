@@ -287,18 +287,32 @@ export function cacheTranscript(
     }
   }
   if (previous && previous !== items) {
-    let changed = previous.length !== items.length;
-    items = items.map((item, index) => {
+    // Appending a row leaves every earlier row reference-identical. Walking that
+    // prefix without serialising each one keeps the cost of a streamed chunk
+    // proportional to the new row, not to the whole conversation.
+    const shared = Math.min(previous.length, items.length);
+    let prefixSame = true;
+    for (let index = 0; index < shared; index += 1) {
       const current = previous[index];
+      const item = items[index];
+      if (current === item) continue;
+      // A full sync rebuilds the rows as new objects; content equality is what
+      // decides whether they can keep their previous identity.
       if (
         current?.id === item.id &&
         JSON.stringify(current) === JSON.stringify(item)
       )
-        return current;
-      changed = true;
-      return item;
-    });
-    if (!changed) items = previous;
+        continue;
+      prefixSame = false;
+      break;
+    }
+    if (prefixSame) {
+      if (previous.length === items.length) items = previous;
+      // Only a longer list is an append; a shorter one dropped rows and must not
+      // resurrect them from the previous array.
+      else if (items.length > previous.length)
+        items = [...previous, ...items.slice(shared)];
+    }
   }
   const keys = Object.keys(transcripts);
   if (

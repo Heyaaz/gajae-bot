@@ -409,6 +409,32 @@ describe("cacheTranscript", () => {
     expect(refreshed["session-1"][0]).toBe(message);
   });
 
+  it("does not serialize unchanged rows when one row is appended", () => {
+    const history = Array.from({ length: 500 }, (_value, index) => ({
+      ...message,
+      id: `message-${index}`,
+    })) as TranscriptItem[];
+    const poison = { ...message, id: "message-0" } as TranscriptItem;
+    Object.defineProperty(poison, "poison", {
+      enumerable: true,
+      get() {
+        throw new Error("serialized an unchanged row");
+      },
+    });
+    history[0] = poison;
+    const transcripts = { "session-1": history };
+    let cached: Record<string, TranscriptItem[]> | undefined;
+    expect(() => {
+      cached = cacheTranscript(transcripts, "session-1", [
+        ...history,
+        { ...message, id: "message-new" } as TranscriptItem,
+      ]);
+    }).not.toThrow();
+    expect(cached?.["session-1"]).toHaveLength(history.length + 1);
+    expect(cached?.["session-1"][0]).toBe(poison);
+    expect(cached?.["session-1"].at(-1)?.id).toBe("message-new");
+  });
+
   it("keeps an optimistic user message until polling confirms it", () => {
     const optimistic = {
       ...message,
