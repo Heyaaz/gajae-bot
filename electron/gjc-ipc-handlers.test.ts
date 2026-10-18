@@ -93,6 +93,28 @@ describe("destructive message policy", () => {
     );
   });
 
+  it("asks the matching question for compact and goal termination", async () => {
+    const { send, confirm } = setup();
+    const event = { sender: { id: 7 } };
+    for (const [text, message] of [
+      ["/compact", "이 세션을 압축할까요? 대화 기록이 다시 작성됩니다."],
+      ["/goal complete", "이 목표를 완료로 표시할까요?"],
+      ["/goal drop", "이 목표를 삭제할까요?"],
+    ] as const) {
+      await handled.get(GJC_IPC.sendMessage)!(event, "session-a", {
+        text,
+        images: [],
+        files: [],
+      });
+      expect(confirm).toHaveBeenLastCalledWith(event, { message });
+      expect(send).toHaveBeenLastCalledWith(
+        "session-a",
+        { text, images: [], files: [] },
+        { allowDestructive: true },
+      );
+    }
+  });
+
   it("does not send a destructive command whose confirmation was refused", async () => {
     const { send, confirm } = setup("deny");
     await expect(

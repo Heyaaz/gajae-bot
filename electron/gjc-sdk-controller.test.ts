@@ -1292,6 +1292,44 @@ describe("SDK slash commands", () => {
     expect(remove).toHaveBeenCalledExactlyOnceWith("s1");
   });
 
+  it("confirms compact and goal termination slash forms too", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("compaction.run", "goal.list/get", "mode.goal.operate"),
+    );
+    const compact = vi.spyOn(controller, "compactSession").mockResolvedValue(undefined);
+    for (const text of ["/compact", "/goal complete", "/goal drop"]) {
+      await expect(
+        controller.sendMessage("s1", { text, images: [], files: [] }),
+      ).rejects.toThrow(/데스크톱/u);
+    }
+    expect(compact).not.toHaveBeenCalled();
+    expect(cli.rawControl).not.toHaveBeenCalled();
+
+    // The desktop confirms first and then passes the explicit option.
+    await controller.sendMessage(
+      "s1",
+      { text: "/compact", images: [], files: [] },
+      { allowDestructive: true },
+    );
+    expect(compact).toHaveBeenCalledExactlyOnceWith("s1");
+
+    (cli.rawControl as any).mockResolvedValue({ accepted: true });
+    await controller.sendMessage(
+      "s1",
+      { text: "/goal drop", images: [], files: [] },
+      { allowDestructive: true },
+    );
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "mode.goal.operate",
+      { op: "drop" },
+      expect.objectContaining({ repo: "/repo" }),
+    );
+  });
+
   it("refuses a recognized command the runtime does not advertise", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session());

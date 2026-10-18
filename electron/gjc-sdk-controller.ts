@@ -134,7 +134,8 @@ import {
   configOptionValues,
   configuredProfileDefaultThinking,
   customMessageTitle,
-  destructiveSlashCommand,
+  destructiveSlashAction,
+  destructiveSlashMessage,
   durableTurnEnded,
   durableTwinOf,
   execFile,
@@ -2711,10 +2712,9 @@ export class GjcSdkController {
     if (!match?.[1]) return false;
     const name = match[1].toLowerCase();
     const args = match[2]?.trim() ?? "";
-    if (destructiveSlashCommand(input) && !options?.allowDestructive)
-      throw new Error(
-        "세션 삭제는 데스크톱 확인이 필요한 작업입니다. 이 경로에서는 실행하지 않았습니다.",
-      );
+    const destructive = destructiveSlashAction(input);
+    if (destructive && !options?.allowDestructive)
+      throw new Error(`${destructiveSlashMessage(destructive)} 데스크톱 확인이 필요한 작업입니다. 이 경로에서는 실행하지 않았습니다.`);
     const spec = SDK_SLASH_COMMAND_SPECS.find(
       (candidate) => candidate.name === name,
     );

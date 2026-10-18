@@ -522,22 +522,58 @@ export function messageTextWithFiles(input: ResolvedMessageInput): string {
   return `${input.text.trim()}${attachedPathsText(input)}`.trim();
 }
 
+/** Slash forms that cross the same confirmation boundary as their explicit action. */
+export type DestructiveSlashAction =
+  | "session-delete"
+  | "compact"
+  | "goal-complete"
+  | "goal-drop";
+
 /**
- * Whether this message is the slash form of a destructive operation.
+ * The destructive operation this message names, if any.
  *
  * The desktop IPC layer asks this before prompting, and the slash dispatcher asks
  * again before running one. Attachments already route a message to the prompt path,
  * so they are not a destructive command however the text reads.
  */
+export function destructiveSlashAction(
+  input: Pick<ResolvedMessageInput, "text" | "images" | "files">,
+): DestructiveSlashAction | undefined {
+  if (input.images?.length || input.files?.length) return undefined;
+  const match = /^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/iu.exec(input.text.trim());
+  if (!match?.[1]) return undefined;
+  const name = match[1].toLowerCase();
+  const args = match[2]?.trim() ?? "";
+  if (name === "session" && args === "delete") return "session-delete";
+  if (name === "compact" && !args) return "compact";
+  if (name !== "goal") return undefined;
+  const verb = args.split(/\s+/u)[0]?.toLowerCase();
+  if (verb === "complete") return "goal-complete";
+  if (verb === "drop") return "goal-drop";
+  return undefined;
+}
+
+/** The confirmation copy for one destructive slash operation. */
+export function destructiveSlashMessage(
+  action: DestructiveSlashAction,
+): string {
+  switch (action) {
+    case "session-delete":
+      return "세션을 삭제할까요?";
+    case "compact":
+      return "이 세션을 압축할까요? 대화 기록이 다시 작성됩니다.";
+    case "goal-complete":
+      return "이 목표를 완료로 표시할까요?";
+    case "goal-drop":
+      return "이 목표를 삭제할까요?";
+  }
+}
+
+/** Whether this message names a destructive operation. */
 export function destructiveSlashCommand(
   input: Pick<ResolvedMessageInput, "text" | "images" | "files">,
 ): boolean {
-  if (input.images?.length || input.files?.length) return false;
-  const match = /^\/([a-z][a-z0-9-]*)(?:\s+([\s\S]*))?$/iu.exec(input.text.trim());
-  if (!match?.[1]) return false;
-  const name = match[1].toLowerCase();
-  const args = match[2]?.trim() ?? "";
-  return name === "session" && args === "delete";
+  return destructiveSlashAction(input) !== undefined;
 }
 
 export function normalizeQueuedRequestText(text: string): string {
