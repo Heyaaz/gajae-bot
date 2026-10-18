@@ -238,17 +238,33 @@ export class DesktopEventStream {
   }
 
   private handle(request: IncomingMessage, response: ServerResponse): void {
+    // A request the HTTP parser accepted can still carry a target that URL parsing
+    // rejects (`http://[`, for example). That must end as a response, never as an
+    // exception escaping the createServer callback and taking the process down.
+    try {
+      this.handleRequest(request, response);
+    } catch (error) {
+      this.log(`refused a malformed request: ${describeError(error)}`);
+      this.sendJson(response, 400, {
+        error: { code: "invalid", message: "Malformed request target" },
+      });
+    }
+  }
+
+  private handleRequest(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): void {
     const method = request.method ?? "GET";
-    const url = new URL(
-      request.url ?? "/",
-      `http://${request.headers.host ?? "127.0.0.1"}`,
-    );
+    // The Host header is untrusted input and is never used as a URL base: validate it
+    // first, then parse the target against the fixed loopback origin this listener owns.
     if (!this.hostAllowed(request)) {
       this.sendJson(response, 403, {
         error: { code: "forbidden", message: "Unexpected host" },
       });
       return;
     }
+    const url = new URL(request.url ?? "/", "http://127.0.0.1");
     // A browser preflight cannot carry a secret, so it is answered with headers only:
     // it opens no stream and no frame is written for it.
     if (method === "OPTIONS") {

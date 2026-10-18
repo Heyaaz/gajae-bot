@@ -3,7 +3,7 @@ import {
   type IncomingHttpHeaders,
   type IncomingMessage,
 } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createConnection, createServer as createNetServer } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AgentEvent } from "../shared/agent-contract.js";
 import { DesktopEventStream, EVENT_BUFFER_LIMIT } from "./desktop-event-stream.js";
@@ -162,6 +162,28 @@ function openStream(
   });
 }
 
+/** Sends bytes the HTTP client would refuse to construct, and reads the status line. */
+function rawRequest(port: number, payload: string): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("connect", () => socket.write(payload));
+    socket.on("data", (chunk: string) => {
+      response += chunk;
+      const match = /^HTTP\/1\.[01] (\d{3})/u.exec(response);
+      if (match) {
+        socket.destroy();
+        resolve(Number.parseInt(match[1], 10));
+      }
+    });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      if (!response) reject(new Error("The listener closed without a response"));
+    });
+  });
+}
+
 /** Whether a fresh listener can take the port, i.e. whether close() released it. */
 function portIsFree(port: number): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
@@ -241,6 +263,41 @@ describe("the desktop event stream", () => {
     await rebound.waitForEnd();
     expect(rebound.status).toBe(403);
     expect(rebound.frames).toEqual([]);
+  });
+
+  it("answers a Host header that cannot be a URL base instead of crashing the listener", async () => {
+    const stream = createStream();
+    await stream.start("window:1");
+    // Parsing the request target against `http://${host}` used to throw
+    // ERR_INVALID_URL out of the createServer callback and end the whole process.
+    const malformed = await openStream(stream, { host: "[" });
+    await malformed.waitForEnd();
+    expect(malformed.status).toBe(403);
+    expect(JSON.parse(malformed.body)).toMatchObject({
+      error: { code: "forbidden" },
+    });
+
+    // The same listener still accepts the next valid request and fans out events.
+    const client = await openStream(stream);
+    expect(client.status).toBe(200);
+    stream.publish(event("after-malformed-host"));
+    await client.waitForFrames(1);
+    expect(JSON.parse(client.data[0])).toEqual(event("after-malformed-host"));
+    client.close();
+  });
+
+  it("answers an unparseable request target with 400 and keeps serving", async () => {
+    const stream = createStream();
+    const descriptor = await stream.start("window:1");
+    const status = await rawRequest(
+      descriptor.port,
+      `GET http://[ HTTP/1.1\r\nHost: 127.0.0.1:${descriptor.port}\r\nAuthorization: Bearer ${descriptor.token}\r\n\r\n`,
+    );
+    expect(status).toBe(400);
+
+    const client = await openStream(stream);
+    expect(client.status).toBe(200);
+    client.close();
   });
 
   it("answers the preflight a cross-origin bearer fetch needs without opening a stream", async () => {
