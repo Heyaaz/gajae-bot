@@ -164,17 +164,101 @@ export const BUNDLED_GJC_COMMANDS: AgentCommand[] = [
 export const EMPTY_TRANSCRIPT: TranscriptItem[] = [];
 
 export interface DiffLine {
-  kind: "added" | "removed" | "context" | "hunk";
+  kind: "added" | "removed" | "context" | "hunk" | "header";
   text: string;
+  oldLineNumber?: number;
+  newLineNumber?: number;
 }
 
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u;
+
+/**
+ * Parses one file's unified diff body into typed, line-numbered rows.
+ *
+ * `+++`/`---` file headers are their own `header` kind rather than `added`/
+ * `removed`: counting them as content lines inflated every summary's +/- count
+ * by one whenever a diff carried its standard file headers.
+ */
 export function parseDiffLines(diff: string): DiffLine[] {
+  let oldLine = 0;
+  let newLine = 0;
   return diff.split("\n").map((line) => {
-    if (line.startsWith("@@")) return { kind: "hunk" as const, text: line };
-    if (line.startsWith("+"))
-      return { kind: "added" as const, text: line.slice(1) };
-    if (line.startsWith("-"))
-      return { kind: "removed" as const, text: line.slice(1) };
-    return { kind: "context" as const, text: line.replace(/^ /u, "") };
+    const hunk = line.match(HUNK_HEADER_PATTERN);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      return { kind: "hunk" as const, text: line };
+    }
+    if (line.startsWith("+++") || line.startsWith("---"))
+      return { kind: "header" as const, text: line };
+    if (line.startsWith("+")) {
+      const result = {
+        kind: "added" as const,
+        text: line.slice(1),
+        newLineNumber: newLine,
+      };
+      newLine += 1;
+      return result;
+    }
+    if (line.startsWith("-")) {
+      const result = {
+        kind: "removed" as const,
+        text: line.slice(1),
+        oldLineNumber: oldLine,
+      };
+      oldLine += 1;
+      return result;
+    }
+    const result = {
+      kind: "context" as const,
+      text: line.replace(/^ /u, ""),
+      oldLineNumber: oldLine,
+      newLineNumber: newLine,
+    };
+    oldLine += 1;
+    newLine += 1;
+    return result;
+  });
+}
+
+export interface DiffFileSection {
+  path?: string;
+  lines: DiffLine[];
+}
+
+const FILE_HEADER_PATTERN = /^diff --git a\/(.+) b\/(.+)$/u;
+
+/**
+ * Splits a (possibly multi-file) unified diff into per-file sections so a diff
+ * covering several files can collapse one file at a time instead of rendering
+ * every hunk as a single undifferentiated block.
+ */
+export function parseDiffFiles(diff: string): DiffFileSection[] {
+  const rawLines = diff.split("\n");
+  const sections: { path?: string; raw: string[] }[] = [];
+  for (const line of rawLines) {
+    const gitHeader = line.match(FILE_HEADER_PATTERN);
+    const isNewFileHeader =
+      gitHeader ||
+      (line.startsWith("--- ") &&
+        (sections.length === 0 || sections.at(-1)?.raw.some((l) => l.startsWith("+++ "))));
+    if (isNewFileHeader) {
+      const path = gitHeader
+        ? gitHeader[2]
+        : line.replace(/^--- (?:a\/)?/u, "").trim();
+      sections.push({ path: path || undefined, raw: [] });
+      if (gitHeader) continue;
+    }
+    if (sections.length === 0) sections.push({ raw: [] });
+    sections.at(-1)!.raw.push(line);
+  }
+  return sections.map((section) => {
+    const pathFromHeader = section.raw.find((line) => line.startsWith("+++ "));
+    const path =
+      section.path ??
+      (pathFromHeader
+        ? pathFromHeader.replace(/^\+\+\+ (?:b\/)?/u, "").trim()
+        : undefined);
+    return { path, lines: parseDiffLines(section.raw.join("\n")) };
   });
 }

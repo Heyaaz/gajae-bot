@@ -1,7 +1,7 @@
 import type { LinkPreview } from "../../shared/productivity-ipc";
 import { Check, ChevronDown, Copy, ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { parseDiffLines } from "./format";
+import { parseDiffFiles, parseDiffLines } from "./format";
 
 export interface SelectOption<T extends string> {
   value: T;
@@ -150,9 +150,26 @@ export function MessageCopyButton({ text }: { text: string }) {
   );
 }
 
-export function DiffView({ diff, path }: { diff: string; path?: string }) {
-  const [open, setOpen] = useState(false);
-  const lines = parseDiffLines(diff);
+/** Only `header`/`hunk` rows carry no line number; everything else does. */
+function diffLineNumberLabel(line: {
+  oldLineNumber?: number;
+  newLineNumber?: number;
+}): string {
+  const oldText = line.oldLineNumber !== undefined ? String(line.oldLineNumber) : "";
+  const newText = line.newLineNumber !== undefined ? String(line.newLineNumber) : "";
+  return `${oldText}\u2009${newText}`;
+}
+
+function DiffFileBlock({
+  path,
+  lines,
+  defaultOpen,
+}: {
+  path?: string;
+  lines: ReturnType<typeof parseDiffLines>;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
   const added = lines.filter((line) => line.kind === "added").length;
   const removed = lines.filter((line) => line.kind === "removed").length;
   const hunks = lines.filter((line) => line.kind === "hunk").length;
@@ -171,20 +188,45 @@ export function DiffView({ diff, path }: { diff: string; path?: string }) {
       </button>
       {open && (
         <pre className="tool-diff-body">
-          {lines.map((line, index) => (
-            <span key={index} className={`diff-line diff-line--${line.kind}`}>
-              <span className="diff-marker">
-                {line.kind === "added"
-                  ? "+"
-                  : line.kind === "removed"
-                    ? "-"
-                    : " "}
+          {lines
+            .filter((line) => line.kind !== "header")
+            .map((line, index) => (
+              <span key={index} className={`diff-line diff-line--${line.kind}`}>
+                <span className="diff-line-numbers">
+                  {line.kind === "hunk" ? "" : diffLineNumberLabel(line)}
+                </span>
+                <span className="diff-marker">
+                  {line.kind === "added"
+                    ? "+"
+                    : line.kind === "removed"
+                      ? "-"
+                      : " "}
+                </span>
+                {line.text}
               </span>
-              {line.text}
-            </span>
-          ))}
+            ))}
         </pre>
       )}
     </div>
+  );
+}
+
+export function DiffView({ diff, path }: { diff: string; path?: string }) {
+  const files = parseDiffFiles(diff);
+  // Single-file diffs (the common case: one edit/write tool call) default open,
+  // the way the collapsed-but-single summary always behaved. Multiple files
+  // default collapsed so a multi-file diff does not take over the screen.
+  const singleFile = files.length <= 1;
+  return (
+    <>
+      {files.map((file, index) => (
+        <DiffFileBlock
+          key={file.path ?? index}
+          path={file.path ?? path}
+          lines={file.lines}
+          defaultOpen={singleFile}
+        />
+      ))}
+    </>
   );
 }

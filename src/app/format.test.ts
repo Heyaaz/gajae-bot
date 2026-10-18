@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanErrorMessage } from "./format";
+import { humanErrorMessage, parseDiffFiles, parseDiffLines } from "./format";
 
 describe("humanErrorMessage", () => {
   it("masks credentials that reached an error message", () => {
@@ -48,5 +48,66 @@ describe("humanErrorMessage", () => {
   it("handles a thrown value that is not an Error", () => {
     expect(humanErrorMessage("Bearer sk-abcdefgh12345678")).toContain("[삭제됨]");
     expect(humanErrorMessage(undefined)).toBe("undefined");
+  });
+});
+
+describe("parseDiffLines", () => {
+  it("does not count +++/--- file headers as added or removed lines", () => {
+    const diff = [
+      "--- a/src/App.tsx",
+      "+++ b/src/App.tsx",
+      "@@ -10,6 +10,7 @@",
+      " Command,",
+      "+GitFork,",
+      " ListChecks,",
+      "-Legacy,",
+    ].join("\n");
+    const lines = parseDiffLines(diff);
+    expect(lines.filter((line) => line.kind === "header")).toHaveLength(2);
+    expect(lines.filter((line) => line.kind === "added")).toHaveLength(1);
+    expect(lines.filter((line) => line.kind === "removed")).toHaveLength(1);
+  });
+
+  it("assigns old/new line numbers that advance from the hunk header", () => {
+    const diff = ["@@ -10,3 +10,4 @@", " a", "+b", " c", "-d"].join("\n");
+    const lines = parseDiffLines(diff);
+    expect(lines[1]).toMatchObject({ kind: "context", oldLineNumber: 10, newLineNumber: 10 });
+    expect(lines[2]).toMatchObject({ kind: "added", newLineNumber: 11 });
+    expect(lines[3]).toMatchObject({ kind: "context", oldLineNumber: 11, newLineNumber: 12 });
+    expect(lines[4]).toMatchObject({ kind: "removed", oldLineNumber: 12 });
+  });
+});
+
+describe("parseDiffFiles", () => {
+  it("keeps a single-file diff as one section", () => {
+    const diff = ["--- a/src/App.tsx", "+++ b/src/App.tsx", "@@ -1,1 +1,1 @@", "-a", "+b"].join(
+      "\n",
+    );
+    const files = parseDiffFiles(diff);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.path).toBe("src/App.tsx");
+  });
+
+  it("splits a multi-file git diff into one section per file", () => {
+    const diff = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1,1 +1,1 @@",
+      "-old",
+      "+new",
+      "diff --git a/src/b.ts b/src/b.ts",
+      "--- a/src/b.ts",
+      "+++ b/src/b.ts",
+      "@@ -1,1 +1,1 @@",
+      "-foo",
+      "+bar",
+    ].join("\n");
+    const files = parseDiffFiles(diff);
+    expect(files).toHaveLength(2);
+    expect(files[0]?.path).toBe("src/a.ts");
+    expect(files[1]?.path).toBe("src/b.ts");
+    expect(files[0]?.lines.filter((line) => line.kind === "added")).toHaveLength(1);
+    expect(files[1]?.lines.filter((line) => line.kind === "removed")).toHaveLength(1);
   });
 });

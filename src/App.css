@@ -2545,6 +2545,14 @@
   flex: 0 0 auto;
   opacity: 0.6;
 }
+.diff-line-numbers {
+  flex: 0 0 auto;
+  min-width: 38px;
+  text-align: right;
+  color: var(--text-tertiary);
+  opacity: 0.55;
+  user-select: none;
+}
 .diff-line--added {
   color: #9fe0b0;
   background: rgba(94, 194, 122, 0.12);
