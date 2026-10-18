@@ -23,6 +23,11 @@ import {
   mergePreparedAttachments,
   requestFastTier,
   restoreRejectedDraft,
+  acknowledgeComposerDraftRecoveries,
+  composerDraftRecoveries,
+  mergeRecoveredDraft,
+  publishComposerDraftRecovery,
+  subscribeComposerDraftRecovery,
   parkComposerSession,
   saveComposerQueue,
   saveComposerSnapshot,
@@ -674,6 +679,60 @@ describe("rejected submission recovery", () => {
       files: [{ id: "file-new", name: "notes.txt", mimeType: "text/plain", size: 5, token: "b".repeat(43) }],
     });
     expect(drafts.has("session-b")).toBe(false);
+  });
+
+  it("delivers a late failure to a composer that mounts afterwards", () => {
+    const session = "session-remount-recovery";
+    const input: MessageInput = {
+      text: "review this",
+      images: [{ id: "image-1", name: "proof.png", mimeType: "image/png", data: "aW1hZ2U=" }],
+      files: [],
+    };
+    // The old instance is gone before its send rejects.
+    publishComposerDraftRecovery(session, input);
+    let notifications = 0;
+    const unsubscribe = subscribeComposerDraftRecovery(session, () => {
+      notifications += 1;
+    });
+    expect(notifications).toBe(0);
+
+    // The new instance already has its own draft. Mount applies the queued
+    // recovery over that draft instead of replacing it.
+    const current = {
+      value: "new draft",
+      images: [{ id: "image-new", name: "new.png", mimeType: "image/png", data: "bmV3" }],
+      files: [],
+    };
+    const entries = composerDraftRecoveries(session);
+    const merged = mergeRecoveredDraft(
+      current,
+      entries.map((entry) => entry.input),
+    );
+    expect(merged.value).toBe("review this\nnew draft");
+    expect(merged.images.map((image) => image.name)).toEqual(["proof.png", "new.png"]);
+    acknowledgeComposerDraftRecoveries(session, entries.at(-1)!.revision);
+    expect(composerDraftRecoveries(session)).toEqual([]);
+    unsubscribe();
+  });
+
+  it("notifies the active instance and keeps the newest draft", () => {
+    const session = "session-active-recovery";
+    const seen: MessageInput[] = [];
+    const unsubscribe = subscribeComposerDraftRecovery(session, () => {
+      seen.push(...composerDraftRecoveries(session).map((entry) => entry.input));
+    });
+    const input: MessageInput = { text: "failed request", images: [], files: [] };
+    publishComposerDraftRecovery(session, input);
+    expect(seen).toEqual([input]);
+    const merged = mergeRecoveredDraft(
+      { value: "typed after remount", images: [], files: [] },
+      seen,
+    );
+    expect(merged.value).toBe("failed request\ntyped after remount");
+    const [entry] = composerDraftRecoveries(session);
+    acknowledgeComposerDraftRecoveries(session, entry!.revision);
+    expect(composerDraftRecoveries(session)).toEqual([]);
+    unsubscribe();
   });
 
   it("returns rejected content for immediate restoration in its own session", () => {

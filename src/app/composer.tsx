@@ -54,6 +54,76 @@ export type ComposerSnapshot = ComposerDraft & { pendingQueue: PendingRequest[] 
 // its local-only work outside the component lifetime, keyed by session identity.
 const composerSnapshots = new Map<string, ComposerSnapshot>();
 
+/** A rejected send that still has to reach whichever composer is active for its session. */
+export type ComposerDraftRecovery = {
+  revision: number;
+  input: MessageInput;
+};
+
+let recoveryRevision = 0;
+const draftRecoveries = new Map<string, ComposerDraftRecovery[]>();
+const draftRecoveryListeners = new Map<string, Set<() => void>>();
+
+/**
+ * Queue a failed submission for its session rather than the component instance
+ * that sent it. A remounted composer has new refs and a new draft; only session
+ * identity survives that replacement.
+ */
+export function publishComposerDraftRecovery(
+  sessionId: string,
+  input: MessageInput,
+): void {
+  const entries = draftRecoveries.get(sessionId) ?? [];
+  entries.push({ revision: ++recoveryRevision, input });
+  draftRecoveries.set(sessionId, entries.slice(-50));
+  for (const listener of draftRecoveryListeners.get(sessionId) ?? []) listener();
+}
+
+export function composerDraftRecoveries(
+  sessionId: string,
+): readonly ComposerDraftRecovery[] {
+  return draftRecoveries.get(sessionId) ?? [];
+}
+
+export function acknowledgeComposerDraftRecoveries(
+  sessionId: string,
+  throughRevision: number,
+): void {
+  const remaining = (draftRecoveries.get(sessionId) ?? []).filter(
+    (entry) => entry.revision > throughRevision,
+  );
+  if (remaining.length > 0) draftRecoveries.set(sessionId, remaining);
+  else draftRecoveries.delete(sessionId);
+}
+
+export function subscribeComposerDraftRecovery(
+  sessionId: string,
+  listener: () => void,
+): () => void {
+  const listeners = draftRecoveryListeners.get(sessionId) ?? new Set();
+  listeners.add(listener);
+  draftRecoveryListeners.set(sessionId, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0) draftRecoveryListeners.delete(sessionId);
+  };
+}
+
+/** Merge rejected inputs over a newer draft without replacing what the user typed. */
+export function mergeRecoveredDraft(
+  current: ComposerDraft,
+  recovered: readonly MessageInput[],
+): ComposerDraft {
+  let merged = current;
+  for (const input of recovered)
+    merged = {
+      value: [input.text, merged.value].filter(Boolean).join("\n"),
+      images: [...input.images, ...merged.images],
+      files: [...input.files, ...merged.files],
+    };
+  return merged;
+}
+
 export function saveComposerSnapshot(
   snapshots: Map<string, ComposerSnapshot>,
   sessionId: string,
@@ -646,38 +716,9 @@ export function Composer({
     owner: string,
     input: MessageInput,
   ): void {
-    const draft = restoreRejectedDraft(draftSessionRef.current, draftsRef.current, owner, input);
-    if (draft) {
-      const restored = {
-        value: [draft.value, valueRef.current].filter(Boolean).join("\n"),
-        images: [...draft.images, ...imagesRef.current],
-        files: [...draft.files, ...filesRef.current],
-      };
-      valueRef.current = restored.value;
-      imagesRef.current = restored.images;
-      filesRef.current = restored.files;
-      saveComposerSnapshot(composerSnapshots, owner, {
-        ...restored,
-        pendingQueue: pendingQueueRef.current,
-      });
-      if (!mountedRef.current) return;
-      setValue(restored.value);
-      setImages(restored.images);
-      setFiles(restored.files);
-      setAttachmentError("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요.");
-      return;
-    }
-    // The rejected input belongs to a session this composer is not showing. Its
-    // merged draft is mirrored into the module snapshot so it survives an unmount
-    // before the user returns to that session.
-    const parked = draftsRef.current.get(owner);
-    if (parked) {
-      const snapshot = composerSnapshots.get(owner);
-      saveComposerSnapshot(composerSnapshots, owner, {
-        ...parked,
-        pendingQueue: snapshot?.pendingQueue ?? composerQueue(owner),
-      });
-    }
+    // Session identity outlives this instance. The recovery queue is read by
+    // whichever composer is active now, or by the next one to mount.
+    publishComposerDraftRecovery(owner, input);
   }
 
   useEffect(() => {
@@ -820,6 +861,9 @@ export function Composer({
     );
 
     const restored = restoreDraft(draftsRef.current, sessionId);
+    valueRef.current = restored.value;
+    imagesRef.current = restored.images;
+    filesRef.current = restored.files;
     setValue(restored.value);
     setImages(restored.images);
     setFiles(restored.files);
@@ -849,6 +893,61 @@ export function Composer({
   // Keep the module snapshot current while this composer is mounted. The shell
   // releases queues for sessions whose screen is gone, and the chips must reflect
   // a release that started elsewhere.
+  useEffect(() => {
+    const applyRecoveries = (): void => {
+      if (draftSessionRef.current !== sessionId) return;
+      const entries = composerDraftRecoveries(sessionId);
+      if (entries.length === 0) return;
+      const recovered: MessageInput[] = [];
+      let throughRevision = 0;
+      for (const entry of entries) {
+        const draft = restoreRejectedDraft(
+          draftSessionRef.current,
+          draftsRef.current,
+          sessionId,
+          entry.input,
+        );
+        if (!draft) continue;
+        recovered.push({
+          text: draft.value,
+          images: draft.images,
+          files: draft.files,
+        });
+        throughRevision = entry.revision;
+      }
+      if (recovered.length === 0) return;
+      const merged = mergeRecoveredDraft(
+        {
+          value: valueRef.current,
+          images: imagesRef.current,
+          files: filesRef.current,
+        },
+        recovered,
+      );
+      valueRef.current = merged.value;
+      imagesRef.current = merged.images;
+      filesRef.current = merged.files;
+      saveComposerSnapshot(composerSnapshots, sessionId, {
+        ...merged,
+        pendingQueue: pendingQueueRef.current,
+      });
+      acknowledgeComposerDraftRecoveries(sessionId, throughRevision);
+      setValue(merged.value);
+      setImages(merged.images);
+      setFiles(merged.files);
+      setAttachmentError(
+        "전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요.",
+      );
+    };
+    const unsubscribe = subscribeComposerDraftRecovery(
+      sessionId,
+      applyRecoveries,
+    );
+    // A failure that landed before this instance mounted is already queued.
+    applyRecoveries();
+    return unsubscribe;
+  }, [sessionId]);
+
   useEffect(() => {
     saveComposerSnapshot(composerSnapshots, sessionId, {
       value: valueRef.current,
