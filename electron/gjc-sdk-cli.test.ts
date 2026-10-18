@@ -176,6 +176,7 @@ describe("GjcSdkCli.listSessions", () => {
               pid: 42,
               live: true,
               deleted: false,
+              endpointMtimeMs: 1234.5,
               activity: { state: "active", at: 1 },
             },
             {
@@ -197,6 +198,8 @@ describe("GjcSdkCli.listSessions", () => {
       live: true,
       deleted: false,
       pid: 42,
+      endpointMtimeMs: 1234.5,
+      activityAt: 1,
       activityState: "active",
     });
     expect(rows[1]).toMatchObject({ sessionId: "s2", live: false, deleted: true });
@@ -253,6 +256,32 @@ describe("GjcSdkCli.listSessions", () => {
     expect(calls).toHaveLength(2);
     expect(calls[1]).toContain("--cursor");
     expect(calls[1]).toContain("page2");
+  });
+
+  it("surfaces the CLI's stderr when an unsupported flag prints usage to stdout", async () => {
+    // A stale gjc (0.15.2) prints its usage to stdout for --scope and puts the
+    // actual reason on stderr. Reporting only "response was not valid JSON" hid
+    // the fact that the app had resolved the wrong executable.
+    const directory = await mkdtemp(join(tmpdir(), "gjc-sdk-old-cli-"));
+    const executable = join(directory, "gjc");
+    try {
+      await writeFile(
+        executable,
+        "#!/usr/bin/env node\nconsole.log('USAGE\\n  $ gjc sdk [ACTION] [FLAGS]');\nconsole.error(\"Unknown option '--scope'\");\nprocess.exitCode = 2;\n",
+      );
+      await chmod(executable, 0o755);
+      const client = new GjcSdkCli({
+        executable,
+        repo: directory,
+        env: process.env,
+        timeoutMs: 1_000,
+      });
+      await expect(client.listSessions()).rejects.toThrowError(
+        /Unknown option '--scope'/u,
+      );
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   });
 
   it("fails an incomplete list instead of returning partial rows", async () => {

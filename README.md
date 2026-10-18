@@ -476,13 +476,21 @@ consumed once through steering (steer-on-interrupt). Do not dequeue and
 artifacts require reconciliation` means GJC could not confirm it recorded the
 operation. It does not mean the operation failed.
 
-Forking and resuming both hit this for work that had already succeeded. The fork
-is what creates the session, so the broker index is consulted for the new session
-instead of raising an error; the error is raised only when nothing ever appears. A
+Creating and forking both hit this for work that had already succeeded. The broker
+index is consulted for the retained session instead of raising an error; the error
+is raised only when nothing appears. GJC's public list/inspect projection strips
+the ledger's internal `lifecycleRequestId`, so the caller's idempotency key never
+matches a row: the app adopts the one new live generation>=1 session in that
+workspace whose endpoint appeared after the request began. Two such sessions mean
+a concurrent creator and stay a reconciliation error rather than a guess. A
 resumed session stays readable and marked `recovering`, since its transcript comes
 from the session file either way and only live control is unproven.
 
 The receipt failures themselves come from the GJC ledger and are not fixable here.
+On 0.18.12 the broker logs `mismatches:["readBack:shape"]` when one unrelated
+ledger row exceeds its JSON field bound (for example a large `cleanup_pending`
+response), which makes every terminal read-back look rejected. Do not edit the
+ledger to clear it; the broker index is the recovery authority.
 
 ## Do not
 

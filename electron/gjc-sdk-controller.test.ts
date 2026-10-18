@@ -359,17 +359,49 @@ describe("GjcSdkController CLI seam", () => {
 
   it("recovers a lifecycle-uncertain create from the broker list", async () => {
     const { controller, cli } = harness();
-    let requestId: string | undefined;
-    cli.rawGlobal.mockImplementationOnce(async (...args: unknown[]) => {
-      requestId = (args[2] as { idempotencyKey: string }).idempotencyKey;
+    cli.rawGlobal.mockImplementationOnce(async () => {
       throw new Error("terminal_uncertain");
     });
+    // GJC's public row projection does not carry the caller's idempotency key.
+    // The retained session is the new live one whose endpoint is fresher than
+    // the request; the pre-existing row is older and must not be adopted.
     cli.listSessions.mockResolvedValueOnce([]).mockImplementation(async () => [
-      { sessionId: "unrelated", live: true, deleted: false, endpointGeneration: 1, repo: "/repo" },
-      { sessionId: "recovered", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", lifecycleRequestId: requestId },
+      { sessionId: "unrelated", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", endpointMtimeMs: Date.now() - 60_000 },
+      { sessionId: "recovered", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", endpointMtimeMs: Date.now() },
     ] as never);
     const created = await controller.createSession({ runtime: "gjc", workspace: "/repo" } as any);
     expect(created.id).toBe("recovered");
+  });
+
+  it("does not adopt a new session whose endpoint predates the create", async () => {
+    vi.useFakeTimers();
+    const { controller, cli } = harness();
+    try {
+      cli.listSessions.mockResolvedValueOnce([]).mockResolvedValue([
+        { sessionId: "old", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", endpointMtimeMs: Date.now() - 60_000 },
+      ] as never);
+      cli.rawGlobal.mockRejectedValueOnce(new Error("terminal_uncertain"));
+      const creation = expect(
+        controller.createSession({ runtime: "gjc", workspace: "/repo" } as any),
+      ).rejects.toThrow("reconciliation");
+      await vi.runAllTimersAsync();
+      await creation;
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not guess between two fresh sessions after an uncertain create", async () => {
+    const { controller, cli } = harness();
+    cli.listSessions.mockResolvedValueOnce([]).mockResolvedValue([
+      { sessionId: "a", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", endpointMtimeMs: Date.now() },
+      { sessionId: "b", live: true, deleted: false, endpointGeneration: 1, repo: "/repo", endpointMtimeMs: Date.now() },
+    ] as never);
+    cli.rawGlobal.mockRejectedValueOnce(new Error("terminal_uncertain"));
+    await expect(
+      controller.createSession({ runtime: "gjc", workspace: "/repo" } as any),
+    ).rejects.toThrow("reconciliation");
   });
 
   it("never adopts an uncorrelated create or fork from the same workspace", async () => {
@@ -381,7 +413,7 @@ describe("GjcSdkController CLI seam", () => {
       const creation = expect(controller.createSession({ runtime: "gjc", workspace: "/repo", isolation: "workspace" })).rejects.toThrow("reconciliation");
       await vi.runAllTimersAsync();
       await creation;
-      const fork = internals.recoverForkedSession("/repo", new Set(), "expected-request");
+      const fork = internals.recoverForkedSession("/repo", new Set(), Date.now());
       await vi.runAllTimersAsync();
       expect(await fork).toBeUndefined();
       expect(internals.sessions.has("unrelated")).toBe(false);

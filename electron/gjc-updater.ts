@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { promisify } from 'node:util'
 import type { GjcUpdateStatus } from '../shared/agent-contract.js'
+import { runtimeEnvironment } from './runtime-path.js'
 
 const execFile = promisify(execFileCallback)
 const VERSION_PATTERN = /(?:gjc\/|Current version:\s*)(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)/iu
@@ -42,10 +43,14 @@ export async function installGjcUpdate(executable: string, runner: UpdateRunner 
 }
 
 async function run(executable: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
+  // The updater receives the bare name `gjc` when no explicit path is configured.
+  // A Finder launch inherits only the system PATH, so it must spawn with the same
+  // interpreter/install directories as the session controller or every update
+  // check fails with ENOENT on a normally installed GJC.
   const result = await execFile(executable, args, {
     timeout: 5 * 60_000,
     maxBuffer: 4 * 1024 * 1024,
-    env: process.env,
+    env: runtimeEnvironment(),
   })
   return { stdout: result.stdout, stderr: result.stderr }
 }

@@ -222,9 +222,14 @@ const TRANSCRIPT_RESCAN_WINDOW = 32;
  * result only when the call reported one, and nothing here may invent the rest.
  */
 export const TAIL_WINDOW_MS = 1_200;
-// A fork whose lifecycle receipt could not be verified is looked up in the broker
-// index, which only lists the new session once it settles.
-const FORK_RECOVERY_ATTEMPTS = 20;
+// A create or fork whose lifecycle receipt could not be verified is looked up in
+// the broker index, which only lists the new session once it settles. GJC strips
+// the caller's lifecycle request id from every public list/inspect row, so the
+// retained session cannot be matched by idempotency key; it is the one new live
+// session in this workspace whose endpoint appeared after the request began.
+const LIFECYCLE_RECOVERY_ATTEMPTS = 20;
+const LIFECYCLE_RECOVERY_INTERVAL_MS = 250;
+const LIFECYCLE_RECOVERY_CLOCK_SLACK_MS = 2_000;
 const MAX_TOOL_TEXT = 12_000;
 // How long a prompt is followed through its own record before the transcript is
 // left as the only account. A turn can legitimately run for many minutes, so this
@@ -3628,6 +3633,7 @@ export class GjcSdkController {
     ]);
     let response: { sessionId: string } | undefined;
     const createRequestId = `gajae-session-create-${randomUUID()}`;
+    const createStartedAt = Date.now();
     try {
       const created = await cli.rawGlobal(
         "session.create",
@@ -3647,25 +3653,16 @@ export class GjcSdkController {
       // the index is what settles it. Adopting it is not optimism -- it is reading
       // the authoritative account instead of the unverifiable receipt.
       if (isLifecycleUncertain(error)) {
-        for (let attempt = 0; attempt < 20 && !response; attempt += 1) {
-          const retained = (await this.brokerSessions())?.find(
-            (session) =>
-              !knownSessionIds.has(session.sessionId) &&
-              session.live &&
-              !session.deleted &&
-              (session.endpointGeneration ?? 0) > 0 &&
-              session.repo !== undefined &&
-              path.resolve(session.repo) === sessionWorkspace &&
-              session.lifecycleRequestId === createRequestId,
-          );
-          if (retained) {
-            this.sessionCwds.set(retained.sessionId, sessionWorkspace);
-            this.transcripts.set(retained.sessionId, []);
-            this.messageKeys.set(retained.sessionId, new Map());
-            response = { sessionId: retained.sessionId };
-            break;
-          }
-          await new Promise((resolve) => setTimeout(resolve, 250));
+        const retainedId = await this.recoverLifecycleSession(
+          sessionWorkspace,
+          knownSessionIds,
+          createStartedAt,
+        );
+        if (retainedId) {
+          this.sessionCwds.set(retainedId, sessionWorkspace);
+          this.transcripts.set(retainedId, []);
+          this.messageKeys.set(retainedId, new Map());
+          response = { sessionId: retainedId };
         }
       }
       if (!response && worktree && error instanceof SdkCliError && error.outcomeCertainty === "not-applied") {
@@ -8514,6 +8511,7 @@ export class GjcSdkController {
     const cli = await this.requireCli();
     let forkedId: string | undefined;
     const forkRequestId = `gajae-session-fork-${randomUUID()}`;
+    const forkStartedAt = Date.now();
     try {
       const forked = await cli.rawGlobal(
         "session.fork",
@@ -8532,7 +8530,7 @@ export class GjcSdkController {
       forkedId = await this.recoverForkedSession(
         cwd,
         knownSessionIds,
-        forkRequestId,
+        forkStartedAt,
       );
     if (!forkedId)
       throw new Error(
@@ -8594,30 +8592,57 @@ export class GjcSdkController {
   private async recoverForkedSession(
     cwd: string,
     knownSessionIds: ReadonlySet<string>,
-    lifecycleRequestId: string,
+    startedAt: number,
   ): Promise<string | undefined> {
     const workspace = canonicalWorkspace(cwd);
-    for (let attempt = 0; attempt < FORK_RECOVERY_ATTEMPTS; attempt += 1) {
-      const retained = (await this.brokerSessions())?.find(
+    const retained = await this.recoverLifecycleSession(
+      workspace,
+      knownSessionIds,
+      startedAt,
+      LIFECYCLE_RECOVERY_ATTEMPTS,
+      this.forkRecoveryIntervalMs,
+    );
+    if (retained) {
+      this.sessionCwds.set(retained, workspace);
+      this.transcripts.set(retained, []);
+      this.messageKeys.set(retained, new Map());
+    }
+    return retained;
+  }
+
+  /**
+   * Finds the session a create or fork retained after an unverifiable receipt.
+   *
+   * GJC's public list/inspect projection strips `lifecycleRequestId` -- the ledger
+   * marker is internal -- so matching the caller's idempotency key never succeeds.
+   * What the index does establish is that a session is new to this workspace and
+   * that its endpoint appeared after the request began. Two such sessions mean a
+   * concurrent creator, which is ambiguous; the caller must not guess between them.
+   */
+  private async recoverLifecycleSession(
+    workspaceDirectory: string,
+    knownSessionIds: ReadonlySet<string>,
+    startedAt: number,
+    attempts = LIFECYCLE_RECOVERY_ATTEMPTS,
+    intervalMs = LIFECYCLE_RECOVERY_INTERVAL_MS,
+  ): Promise<string | undefined> {
+    const workspace = canonicalWorkspace(workspaceDirectory);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const candidates = ((await this.brokerSessions()) ?? []).filter(
         (listed) =>
           !knownSessionIds.has(listed.sessionId) &&
           listed.live &&
           !listed.deleted &&
           (listed.endpointGeneration ?? 0) > 0 &&
           listed.repo !== undefined &&
-          path.resolve(listed.repo) === workspace &&
-          listed.lifecycleRequestId === lifecycleRequestId,
+          canonicalWorkspace(listed.repo) === workspace &&
+          Math.max(listed.endpointMtimeMs ?? 0, listed.activityAt ?? 0) >=
+            startedAt - LIFECYCLE_RECOVERY_CLOCK_SLACK_MS,
       );
-      if (retained) {
-        this.sessionCwds.set(retained.sessionId, workspace);
-        this.transcripts.set(retained.sessionId, []);
-        this.messageKeys.set(retained.sessionId, new Map());
-        return retained.sessionId;
-      }
-      if (attempt < FORK_RECOVERY_ATTEMPTS - 1)
-        await new Promise((resolve) =>
-          setTimeout(resolve, this.forkRecoveryIntervalMs),
-        );
+      if (candidates.length > 1) return undefined;
+      if (candidates.length === 1) return candidates[0]!.sessionId;
+      if (attempt < attempts - 1)
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
     return undefined;
   }

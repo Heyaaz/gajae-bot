@@ -6,11 +6,12 @@ import path from 'node:path'
 // PATH the shebang fails with `env: bun: No such file or directory`, so every GJC
 // child process must be spawned with these locations appended.
 const INTERPRETER_DIRECTORIES = [
-  path.join(homedir(), '.bun/bin'),
   // GJC's installer default (scripts/install.sh: GJC_INSTALL_DIR, default
   // ~/.local/bin). A Finder launch inherits no user directories, so this must be
-  // present for a normally installed gjc to be found at all.
+  // the first fallback: otherwise a stale Bun global install shadows the
+  // installer's current gjc on every launch from the .app.
   path.join(homedir(), '.local/bin'),
+  path.join(homedir(), '.bun/bin'),
   path.join(homedir(), '.nvm/current/bin'),
   path.join(homedir(), '.volta/bin'),
   '/opt/homebrew/bin',

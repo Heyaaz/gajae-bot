@@ -8,6 +8,7 @@ describe('runtimePath', () => {
     const resolved = runtimePath('/usr/bin:/bin:/usr/sbin:/sbin').split(path.delimiter)
 
     expect(resolved.slice(0, 4)).toEqual(['/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+    expect(resolved).toContain(path.join(homedir(), '.local/bin'))
     expect(resolved).toContain(path.join(homedir(), '.bun/bin'))
     expect(resolved).toContain('/opt/homebrew/bin')
   })
@@ -75,12 +76,17 @@ describe('gjcPathCandidates', () => {
     expect(new Set(candidates).size).toBe(candidates.length)
   })
 
-  it('still offers the interpreter directories on a Finder launch PATH', () => {
-    // A Finder-launched app inherits only the system directories, so the install
-    // locations must still be reachable even though PATH does not mention them.
+  it('prefers the installer target when a Finder launch gives PATH no opinion', () => {
+    // A Finder-launched app inherits only the system directories, so PATH cannot
+    // express a preference. The installer's ~/.local/bin must win over a stale
+    // Bun global install, which otherwise shadows the current gjc on every launch
+    // from the .app and fails with "Unknown option --scope".
     const candidates = gjcPathCandidates('/usr/bin:/bin:/usr/sbin:/sbin')
 
     expect(candidates).toContain(path.join(homedir(), '.local/bin/gjc'))
     expect(candidates).toContain(path.join(homedir(), '.bun/bin/gjc'))
+    expect(candidates.indexOf(path.join(homedir(), '.local/bin/gjc'))).toBeLessThan(
+      candidates.indexOf(path.join(homedir(), '.bun/bin/gjc')),
+    )
   })
 })

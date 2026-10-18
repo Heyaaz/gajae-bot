@@ -117,7 +117,21 @@ export async function brokerExec(
       if (settled) return;
       const text = stdout.trim();
       if (text) {
-        finish(undefined, stdout);
+        // A rejected flag makes the CLI print usage to stdout and the actual
+        // reason to stderr. Resolving with the usage text turned that into the
+        // generic "response was not valid JSON", hiding "Unknown option --scope"
+        // -- which is the whole diagnosis when the app resolved an old gjc.
+        try {
+          JSON.parse(text);
+          finish(undefined, stdout);
+        } catch {
+          const reason = stderr.trim();
+          if (reason) {
+            finish(new Error(reason));
+            return;
+          }
+          finish(undefined, stdout);
+        }
         return;
       }
       finish(
@@ -263,7 +277,10 @@ export interface SdkSessionRow {
   live: boolean;
   deleted: boolean;
   indexSeq?: number;
-  lifecycleRequestId?: string;
+  /** When the session's endpoint file appeared; a create's retained session is newer. */
+  endpointMtimeMs?: number;
+  /** The host's last activity report, the fallback freshness signal. */
+  activityAt?: number;
   activityState?: "active" | "idle";
   terminalUncertain?: boolean;
   ambiguous?: boolean;
@@ -298,9 +315,10 @@ function rowFromIndex(value: unknown): SdkSessionRow | undefined {
     ...(typeof record.indexSeq === "number"
       ? { indexSeq: record.indexSeq }
       : {}),
-    ...(typeof record.lifecycleRequestId === "string"
-      ? { lifecycleRequestId: record.lifecycleRequestId }
+    ...(typeof record.endpointMtimeMs === "number"
+      ? { endpointMtimeMs: record.endpointMtimeMs }
       : {}),
+    ...(typeof activity?.at === "number" ? { activityAt: activity.at } : {}),
     ...(activity?.state === "active" || activity?.state === "idle"
       ? { activityState: activity.state }
       : {}),
