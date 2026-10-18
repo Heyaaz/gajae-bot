@@ -150,6 +150,10 @@ export class ProductivityService {
   private readonly transport: LinkTransport
   private readonly db: DatabaseSync
   private searchStale = true
+  /** Sessions whose rows must be replaced on the next rebuild. */
+  private searchDirtySessions = new Set<string>()
+  /** A global invalidation cannot be answered by session-level replacement. */
+  private searchFullRebuild = true
   private searchGeneration = 0
   private searchRebuild?: Promise<void>
 
@@ -160,7 +164,12 @@ export class ProductivityService {
   }
   private readonly resolve: AddressResolver
 
-  invalidateSearch(): void { this.searchStale = true; this.searchGeneration++ }
+  invalidateSearch(sessionId?: string): void {
+    this.searchStale = true
+    this.searchGeneration++
+    if (sessionId) this.searchDirtySessions.add(sessionId)
+    else this.searchFullRebuild = true
+  }
 
   async previewLink(input: string): Promise<LinkPreview> {
     if (typeof input !== 'string' || input.length === 0 || input.length > MAX_URL) throw new Error('Invalid URL')
@@ -226,23 +235,42 @@ export class ProductivityService {
   }
 
   private async rebuildSearchIndex(generation: number): Promise<void> {
-    const sessions = await this.source.listSessions()
-    this.db.exec('BEGIN'); try {
-      this.db.exec('DELETE FROM productivity_search')
-      const insert = this.db.prepare('INSERT INTO productivity_search (itemId,sessionId,sessionTitle,workspace,kind,displayText,searchText) VALUES (?,?,?,?,?,?,?)')
-      let inserted = 0
-      for (const session of sessions) for (const item of await this.source.getTranscript(session.id)) {
-        const text = displayText(item)
-        insert.run(item.id, session.id, session.title, session.workspace, item.kind, text, `${session.title} ${session.workspace} ${item.kind} ${text}`.toLocaleLowerCase())
-        // A large history used to be inserted in one synchronous pass, blocking the
-        // Electron main thread for the whole rebuild. Yielding between bounded
-        // chunks keeps typing and streaming responsive; the transaction still makes
-        // the index swap atomic.
-        if (++inserted % 200 === 0) await new Promise<void>((resolve) => setImmediate(resolve))
-      }
-      this.db.exec('COMMIT')
-      this.searchStale = this.searchGeneration !== generation
-    } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    const full = this.searchFullRebuild
+    const dirty = this.searchDirtySessions
+    this.searchFullRebuild = false
+    this.searchDirtySessions = new Set()
+    try {
+      const sessions = await this.source.listSessions()
+      const present = new Set(sessions.map((session) => session.id))
+      this.db.exec('BEGIN'); try {
+        const remove = this.db.prepare('DELETE FROM productivity_search WHERE sessionId = ?')
+        if (full) this.db.exec('DELETE FROM productivity_search')
+        else for (const sessionId of dirty) remove.run(sessionId)
+        const insert = this.db.prepare('INSERT INTO productivity_search (itemId,sessionId,sessionTitle,workspace,kind,displayText,searchText) VALUES (?,?,?,?,?,?,?)')
+        let inserted = 0
+        const targets = full ? sessions : sessions.filter((session) => dirty.has(session.id))
+        for (const session of targets) for (const item of await this.source.getTranscript(session.id)) {
+          const text = displayText(item)
+          insert.run(item.id, session.id, session.title, session.workspace, item.kind, text, `${session.title} ${session.workspace} ${item.kind} ${text}`.toLocaleLowerCase())
+          // A large history used to be inserted in one synchronous pass, blocking the
+          // Electron main thread for the whole rebuild. Yielding between bounded
+          // chunks keeps typing and streaming responsive; the transaction still makes
+          // the index swap atomic.
+          if (++inserted % 200 === 0) await new Promise<void>((resolve) => setImmediate(resolve))
+        }
+        // A dirty session that disappeared from discovery has no rows left to index.
+        if (!full) for (const sessionId of dirty) if (!present.has(sessionId)) remove.run(sessionId)
+        this.db.exec('COMMIT')
+        this.searchStale = this.searchGeneration !== generation || this.searchFullRebuild || this.searchDirtySessions.size > 0
+      } catch (error) { this.db.exec('ROLLBACK'); throw error }
+    } catch (error) {
+      // The snapshot failed before any rows were swapped; keep that work queued for
+      // the retry instead of silently losing the invalidation.
+      if (full) this.searchFullRebuild = true
+      for (const sessionId of dirty) this.searchDirtySessions.add(sessionId)
+      this.searchStale = true
+      throw error
+    }
   }
 
   async searchTranscripts(query: string, limit = 50): Promise<GlobalSearchResult[]> {

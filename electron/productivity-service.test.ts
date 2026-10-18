@@ -115,6 +115,36 @@ describe('ProductivityService', () => {
     expect(transcriptCalls).toBe(2)
   })
 
+  it("reindexes only the invalidated session", async () => {
+    const reads = new Map([["s1", 0], ["s2", 0]]);
+    const s1Items = [item("m1", "message", "alpha first")];
+    const s2Items = [{ ...item("m2", "message", "alpha second"), sessionId: "s2" }];
+    const searchSource: ProductivitySource = {
+      listSessions: async () => [session("s1", "First"), session("s2", "Second")],
+      getTranscript: async (sessionId) => {
+        reads.set(sessionId, (reads.get(sessionId) ?? 0) + 1);
+        return sessionId === "s1" ? s1Items : s2Items;
+      },
+    };
+    const service = new ProductivityService(searchSource, ":memory:");
+    await expect(service.searchTranscripts("alpha", 10)).resolves.toHaveLength(2);
+    expect(reads).toEqual(new Map([["s1", 1], ["s2", 1]]));
+
+    reads.set("s1", 0);
+    reads.set("s2", 0);
+    s1Items.splice(0, 1, item("m3", "message", "alpha changed"));
+    service.invalidateSearch("s1");
+    const incremental = await service.searchTranscripts("alpha", 10);
+    // The unchanged session's rows are retained without reading its transcript.
+    expect(reads).toEqual(new Map([["s1", 1], ["s2", 0]]));
+    expect(incremental.map((result) => result.itemId).sort()).toEqual(["m2", "m3"]);
+
+    reads.set("s1", 0);
+    service.invalidateSearch();
+    await expect(service.searchTranscripts("alpha", 10)).resolves.toHaveLength(2);
+    expect(reads).toEqual(new Map([["s1", 1], ["s2", 1]]));
+  });
+
   it("yields the main thread while rebuilding a large index", async () => {
     const items = Array.from({ length: 1200 }, (_value, index) =>
       item(`m${index}`, "message", `alpha ${index}`),

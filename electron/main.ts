@@ -94,6 +94,14 @@ const desktopEvents = new DesktopEventStream((message) =>
 // asserts against it so "the app sends the notification" is a checked fact.
 let lastNotification: { body: string; at: number } | undefined;
 
+function eventSessionId(event: AgentEvent): string | undefined {
+  if ("sessionId" in event && typeof event.sessionId === "string")
+    return event.sessionId;
+  if (event.type === "session.created" || event.type === "session.updated")
+    return event.session.id;
+  return undefined;
+}
+
 function broadcastAgentEvent(event: AgentEvent): void {
   if (
     event.type === "session.created" ||
@@ -107,7 +115,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
     event.type === "plan.updated" ||
     event.type === "tool.updated"
   )
-    productivityService?.invalidateSearch();
+    productivityService?.invalidateSearch(eventSessionId(event));
   const windows = BrowserWindow.getAllWindows();
   // The windows on this machine read the same events from the loopback stream. Nothing
   // is pushed over IPC as well: a second delivery path is how one event becomes two.
