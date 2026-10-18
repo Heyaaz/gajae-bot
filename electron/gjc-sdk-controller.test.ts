@@ -657,6 +657,74 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("publishes a changed row followed by an unchanged parallel call", () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    const toolRow = (id: string, status: string, output?: string) =>
+      ({
+        id,
+        kind: "tool",
+        sessionId: "s1",
+        name: "bash",
+        description: "bash",
+        status,
+        createdAt: "now",
+        ...(output ? { output } : {}),
+      }) as any;
+    const changed = toolRow("call-a", "running");
+    const unchanged = toolRow("call-b", "completed", "done");
+    internals.publishTranscriptSync(
+      "s1",
+      [changed, unchanged],
+      [{ ...changed, status: "completed", output: "ok" }, unchanged],
+    );
+    const events = emit.mock.calls.map(([event]) => event);
+    const appended = events.filter(
+      (event) => event.type === "transcript.appended",
+    );
+    // The last row still matches, but that says nothing about the parallel row
+    // before it: both calls settle independently.
+    expect(appended.map((event) => event.item.id)).toEqual(["call-a"]);
+    expect(appended[0].item).toMatchObject({
+      status: "completed",
+      output: "ok",
+    });
+    expect(events.some((event) => event.type === "transcript.synced")).toBe(
+      false,
+    );
+    controller.dispose();
+  });
+
+  it("republishes history when an out-of-window row changed identity", () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    const toolRow = (id: string) =>
+      ({
+        id,
+        kind: "tool",
+        sessionId: "s1",
+        name: "bash",
+        description: "bash",
+        status: "completed",
+        createdAt: "now",
+      }) as any;
+    const previous = Array.from({ length: 40 }, (_value, index) =>
+      toolRow(`call-${index}`),
+    );
+    const next = previous.map((row, index) =>
+      index === 0 ? toolRow("call-replaced") : row,
+    );
+    internals.publishTranscriptSync("s1", previous, next);
+    // A replacement outside the diff window shifts row identity; appended events
+    // cannot describe it, so the whole history is authoritative.
+    expect(
+      emit.mock.calls.some(
+        ([event]) => event.type === "transcript.synced",
+      ),
+    ).toBe(true);
+    controller.dispose();
+  });
+
   it("does not send a follow-up after permission application fails", async () => {
     const { controller, cli, internals } = harness();
     internals.ensureAttached = vi.fn(async () => { throw new Error("permission_mode.set rejected"); });

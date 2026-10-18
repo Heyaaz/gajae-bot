@@ -4321,39 +4321,55 @@ export class GjcSdkController {
     }
 
     // Rows already published can still change -- a tool call gains its result, a
-    // streamed message settles -- but only recent ones do, so the scan walks back
-    // from the end and stops at the first row that still matches. Comparing the
-    // whole shared prefix instead cost ~9ms per rescan on a 2500-row transcript,
-    // because a rebuilt row is never reference-equal to the one it replaces.
-    let changedFrom = previous.length;
-    let steps = 0;
-    while (changedFrom > 0 && steps < TRANSCRIPT_RESCAN_WINDOW) {
-      const index = changedFrom - 1;
+    // streamed message settles -- and parallel calls settle out of order, so an
+    // unchanged row after a changed one proves nothing. The scan checks every row
+    // in the bounded window and collects each difference instead of stopping at
+    // the first row that happens to still match.
+    const shared = Math.min(previous.length, items.length);
+    const windowStart = Math.max(0, shared - TRANSCRIPT_RESCAN_WINDOW);
+    // Outside the window only identity has to line up. An insert, reorder or
+    // replacement shifts every following row and cannot be described as appended
+    // items, so it takes the full-history route.
+    for (let index = 0; index < windowStart; index += 1) {
+      if (previous[index]?.id !== items[index]?.id) {
+        syncWholeHistory();
+        return;
+      }
+    }
+    const changedIndices: number[] = [];
+    let reachedWindowStart = false;
+    for (let index = shared - 1; index >= windowStart; index -= 1) {
       const before = previous[index];
       const after = items[index];
-      if (before && after && sameTranscriptItem(before, after)) break;
-      changedFrom = index;
-      steps += 1;
+      if (!before || !after) break;
+      if (sameTranscriptItem(before, after)) continue;
+      if (before.id !== after.id) {
+        syncWholeHistory();
+        return;
+      }
+      changedIndices.push(index);
+      if (index === windowStart) reachedWindowStart = true;
     }
-
-    // The shared rows disagree further back than a settling turn explains, so the
-    // history is republished rather than reconciled row by row.
-    if (steps >= TRANSCRIPT_RESCAN_WINDOW) {
+    // The disagreement reaches the edge of a partial window, so rows before it
+    // may have changed too; the whole history is the only safe account.
+    if (reachedWindowStart && windowStart > 0) {
       syncWholeHistory();
       return;
     }
-
-    const changed = items.slice(changedFrom);
-    if (changed.length === 0) return;
+    // Additions after the shared prefix are always new rows.
+    for (let index = shared; index < items.length; index += 1)
+      changedIndices.push(index);
+    if (changedIndices.length === 0) return;
     // Replacing many rows is cheaper as one array than as a burst of events.
-    if (changed.length > 16) {
+    if (changedIndices.length > 16) {
       syncWholeHistory();
       return;
     }
-    for (const item of changed) {
+    changedIndices.sort((left, right) => left - right);
+    for (const index of changedIndices) {
       this.emitEvent({
         type: "transcript.appended",
-        item: cloneTranscriptItem(item),
+        item: cloneTranscriptItem(items[index]!),
       });
     }
   }
