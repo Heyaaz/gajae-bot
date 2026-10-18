@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REPO_LIST_LIMIT } from "../shared/repo-ipc.js";
 import {
+  BoundedProcessGate,
   RepoService,
   classifyGithubFailure,
   countStatusEntries,
@@ -167,6 +168,42 @@ describe("resolveProjects", () => {
     // The fan-out is still parallel, just never unbounded.
     expect(peak).toBeGreaterThan(1);
     expect(peak).toBeLessThanOrEqual(8);
+  });
+
+  it("reserves a released permit for the waiter before admitting a newcomer", async () => {
+    const gate = new BoundedProcessGate(8);
+    const current = await Promise.all(
+      Array.from({ length: 8 }, () => gate.acquire()),
+    );
+    expect(gate.activeCount).toBe(8);
+
+    let waiterStarted = false;
+    const waiter = gate.acquire().then((release) => {
+      waiterStarted = true;
+      return release;
+    });
+    current[0]!();
+    // The count still includes the slot handed to the waiter, so a newcomer
+    // cannot observe a free slot and later push the active work over the limit.
+    expect(gate.activeCount).toBe(8);
+    let newcomerStarted = false;
+    const newcomer = gate.acquire().then((release) => {
+      newcomerStarted = true;
+      return release;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(waiterStarted).toBe(true);
+    expect(newcomerStarted).toBe(false);
+    expect(gate.activeCount).toBe(8);
+
+    for (const release of current.slice(1)) release();
+    const waiterRelease = await waiter;
+    const newcomerRelease = await newcomer;
+    expect(gate.activeCount).toBe(2);
+    waiterRelease();
+    expect(gate.activeCount).toBe(1);
+    newcomerRelease();
+    expect(gate.activeCount).toBe(0);
   });
 
   it("retries a transient resource failure instead of answering outside Git", async () => {

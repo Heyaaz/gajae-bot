@@ -64,6 +64,38 @@ const DEFAULT_RESOLVE_CACHE_MS = 5000;
  * bounding it.
  */
 const MAX_GIT_PROCESSES = 8;
+
+/**
+ * A FIFO gate that reserves a released permit for the next waiter.
+ *
+ * Decrementing a counter before waking a waiter leaves the slot briefly visible,
+ * so a new caller can take it and the woken waiter can push the count over the
+ * limit. Resolving the waiter without changing the count transfers ownership.
+ */
+export class BoundedProcessGate {
+  private active = 0;
+  private readonly queue: Array<() => void> = [];
+
+  constructor(private readonly limit: number) {}
+
+  get activeCount(): number {
+    return this.active;
+  }
+
+  async acquire(): Promise<() => void> {
+    if (this.active >= this.limit || this.queue.length > 0)
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    else this.active += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.queue.shift();
+      if (next) next();
+      else this.active -= 1;
+    };
+  }
+}
 /** A retry is only for a failure the machine can recover from by itself. */
 const TRANSIENT_GIT_FAILURE = /\b(?:EAGAIN|EMFILE|ENFILE|ENOMEM|EBUSY|ETIMEDOUT)\b/u;
 const DETAIL_LIMIT = 200;
@@ -547,8 +579,7 @@ export class RepoService {
   private readonly resolutions = new Map<string, CachedResolution>();
   private readonly pendingResolutions = new Map<string, Promise<ProjectPathResolution>>();
   private readonly pendingReads = new Map<string, Promise<RepositorySnapshot>>();
-  private gitActive = 0;
-  private readonly gitQueue: Array<() => void> = [];
+  private readonly gitGate = new BoundedProcessGate(MAX_GIT_PROCESSES);
 
   constructor(options: RepoServiceOptions = {}) {
     this.gitExecutable = options.gitExecutable ?? "git";
@@ -900,15 +931,11 @@ export class RepoService {
   }
 
   private async git(args: readonly string[], cwd: string): Promise<CommandResult> {
-    if (this.gitActive >= MAX_GIT_PROCESSES) {
-      await new Promise<void>((resolve) => this.gitQueue.push(resolve));
-    }
-    this.gitActive += 1;
+    const release = await this.gitGate.acquire();
     try {
       return await this.run(this.gitExecutable, ["-C", cwd, ...args]);
     } finally {
-      this.gitActive -= 1;
-      this.gitQueue.shift()?.();
+      release();
     }
   }
 
