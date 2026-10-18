@@ -110,10 +110,19 @@ function validHostname(hostname: string): boolean {
   return h.includes('.') && h !== 'localhost' && !h.endsWith('.localhost') && !h.endsWith('.local') && !h.endsWith('.internal') && !h.endsWith('.home.arpa') && !h.endsWith('.test') && !h.endsWith('.invalid') && !h.endsWith('.example')
 }
 
+/**
+ * Decodes one numeric HTML reference. Out-of-range and surrogate values become the
+ * replacement character, as browsers do, instead of throwing out of the preview.
+ */
+function decodeCodePoint(value: number): string {
+  if (!Number.isFinite(value) || value < 0 || value > 0x10ffff || (value >= 0xd800 && value <= 0xdfff)) return '\uFFFD'
+  return String.fromCodePoint(value)
+}
+
 function metadata(html: string, url: URL): LinkPreview {
   const decode = (value: string) => value.replace(/&(?:amp|quot|apos|lt|gt|#(\d+)|#x([0-9a-f]+));/giu, (entity, decimal: string | undefined, hexadecimal: string | undefined) => {
-    if (decimal) return String.fromCodePoint(Number(decimal))
-    if (hexadecimal) return String.fromCodePoint(Number.parseInt(hexadecimal, 16))
+    if (decimal) return decodeCodePoint(Number(decimal))
+    if (hexadecimal) return decodeCodePoint(Number.parseInt(hexadecimal, 16))
     return ({ '&amp;': '&', '&quot;': '"', '&apos;': "'", '&lt;': '<', '&gt;': '>' } as Record<string, string>)[entity.toLowerCase()] ?? entity
   })
   const get = (re: RegExp) => decode(html.match(re)?.[1]?.replace(/\s+/g, ' ').trim() || '')

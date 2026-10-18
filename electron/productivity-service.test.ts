@@ -27,6 +27,12 @@ describe('ProductivityService', () => {
     await expect(binaryService.previewLink('https://example.com')).rejects.toThrow('HTML')
   })
 
+  it('decodes out-of-range numeric entities without failing the preview', async () => {
+    const transport = async () => ({ statusCode: 200, headers: { 'content-type': 'text/html' }, body: [new TextEncoder().encode('<title>Valid &#99999999; &#x110000; &#65; &#x1F600;</title>')] })
+    const service = new ProductivityService(source(), ':memory:', { resolver: async () => ['93.184.216.34'], transport })
+    await expect(service.previewLink('https://example.com')).resolves.toMatchObject({ title: 'Valid \uFFFD \uFFFD A 😀' })
+  })
+
   it('keeps the deadline active while a response body is stalled and closes the body', async () => {
     vi.useFakeTimers()
     const returnBody = vi.fn(async () => ({ done: true as const, value: undefined }))
