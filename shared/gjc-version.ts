@@ -1,11 +1,11 @@
 /**
  * The oldest GJC runtime this app is built against.
  *
- * The SDK session surface, abort confirmation, and lifecycle diagnostics this app
- * relies on are all present from 0.18.11; older runtimes fail in ways that look
+ * The SDK session surface, confirmed operator Stop, and lifecycle diagnostics this
+ * app relies on are all present from 0.18.12; older runtimes fail in ways that look
  * like app bugs, so the version is checked when the connection starts.
  */
-export const GJC_MINIMUM_VERSION = "0.18.11";
+export const GJC_MINIMUM_VERSION = "0.18.12";
 
 interface ParsedVersion {
   major: number;

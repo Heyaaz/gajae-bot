@@ -153,7 +153,7 @@ describe("Sidebar runtime version warning", () => {
       ),
     );
     expect(old).toContain('class="gjc-version-warning" role="alert"');
-    expect(old).toContain("older than the required 0.18.11");
+    expect(old).toContain("older than the required 0.18.12");
     expect(old).toContain("bun add -g gajae-code@latest");
 
     const current = renderToStaticMarkup(
