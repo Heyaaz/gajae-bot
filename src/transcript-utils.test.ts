@@ -647,6 +647,44 @@ describe("cacheTranscript", () => {
     expect(images).toEqual(["one.png", "two.png"]);
   });
 
+  it("matches a repeated image request to its newest persisted occurrence", () => {
+    const first = { id: "img-1", name: "one.png", mimeType: "image/png", data: "1" };
+    const second = { id: "img-2", name: "two.png", mimeType: "image/png", data: "2" };
+    const historical = {
+      ...message,
+      id: "shared-message-old",
+      role: "user" as const,
+      content: "다시 해",
+      images: [first],
+    };
+    const echo = {
+      ...message,
+      id: "local-prompt-1",
+      role: "user" as const,
+      content: "다시 해",
+      images: [second],
+    };
+    const settled = cacheTranscript(
+      { "session-1": [historical, echo] },
+      "session-1",
+      [
+        { ...historical, images: undefined },
+        { ...message, id: "shared-message-new", role: "user" as const, content: "다시 해" },
+      ],
+    );
+    expect(settled["session-1"].map((item) => item.id)).toEqual([
+      "shared-message-old",
+      "shared-message-new",
+    ]);
+    // The old request keeps its own image, and the repeated request gets the
+    // image from the echo rather than losing it to the historical row.
+    expect(
+      settled["session-1"].map((item) =>
+        item.kind === "message" ? item.images?.[0]?.name : undefined,
+      ),
+    ).toEqual(["one.png", "two.png"]);
+  });
+
   it("keeps an unmatched image or steer request at the end until it is confirmed", () => {
     const optimistic = {
       ...message,

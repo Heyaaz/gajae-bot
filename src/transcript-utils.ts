@@ -328,13 +328,36 @@ export function cacheTranscript(
     // confirmed echo is dropped.
     const consumed = new Set<number>();
     for (const local of optimistic) {
-      const match = items.findIndex(
-        (item, index) =>
-          !consumed.has(index) &&
-          item.kind === "message" &&
-          item.role === "user" &&
-          sameUserRequest(item, local),
+      // A repeated request has to keep its position in the sequence. Matching
+      // the first row with the same text consumed an older historical request
+      // and left the new row without its images. Count the identical user rows
+      // before this echo, then confirm the echo against the same occurrence in
+      // the persisted transcript.
+      const localIndex = previous.indexOf(local);
+      let occurrence = 0;
+      for (let index = 0; index < localIndex; index += 1) {
+        const earlier = previous[index];
+        if (
+          earlier?.kind === "message" &&
+          earlier.role === "user" &&
+          sameUserRequest(earlier, local)
+        )
+          occurrence += 1;
+      }
+      const candidates = items.flatMap((item, index) =>
+        item.kind === "message" &&
+        item.role === "user" &&
+        !isLocalEcho(item.id) &&
+        sameUserRequest(item, local)
+          ? [index]
+          : [],
       );
+      // A rescan can republish fewer rows than the window shows (the confirming
+      // row was already on screen); in that case the echo retires against the
+      // newest available occurrence instead of staying pinned forever.
+      let match = candidates[occurrence] ?? candidates.at(-1) ?? -1;
+      if (match >= 0 && consumed.has(match))
+        match = [...candidates].reverse().find((index) => !consumed.has(index)) ?? -1;
       if (match < 0) {
         items = [...items, local];
         continue;
