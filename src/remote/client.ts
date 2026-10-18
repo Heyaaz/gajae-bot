@@ -168,7 +168,20 @@ export interface RemoteClientOptions {
   now?: () => number;
   /** Backoff bounds for the event stream; tests shrink these. */
   reconnect?: ReconnectOptions;
+  /** Deadline for an ordinary request, including its response body. */
+  requestTimeoutMs?: number;
 }
+
+/**
+ * No answer is not an answer.
+ *
+ * A request deadline is a client-side fact, not the host's: a POST that blew it
+ * may still have run. It is reported as uncertain so the control path asks for the
+ * recorded outcome instead of sending the instruction a second time.
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+class RemoteRequestTimeout extends Error {}
 
 const DEVICE_NAME_KEY = "gajae.remote.deviceName";
 
@@ -178,6 +191,7 @@ export class RemoteClient {
   private readonly fetchImpl: typeof fetch;
   private readonly listeners = new Set<(status: RemoteClientStatus) => void>();
   private readonly deviceName: () => string;
+  private readonly requestTimeoutMs: number;
   private token: string | null;
   /**
    * How the host admitted this client. `tailscale` means Serve proved the request
@@ -203,6 +217,8 @@ export class RemoteClient {
     this.storage = options.storage ?? browserTokenStorage();
     this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init));
     this.deviceName = options.deviceName ?? defaultDeviceName;
+    this.requestTimeoutMs =
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.token = this.storage.read();
     this.status = this.token
       ? { state: "connecting", detail: "호스트에 연결하는 중입니다." }
@@ -290,56 +306,107 @@ export class RemoteClient {
     // Which token this request answers with: a refusal that arrives after a later
     // pairing is about a token this client no longer holds.
     const presented = this.token;
-    let response: Response;
-    try {
-      response = await this.fetchImpl(this.url(path), {
-        ...init,
-        headers: { ...(init.headers ?? {}), ...this.authorized() },
-      });
-    } catch {
-      if (this.status.state === "connected")
-        this.setStatus({ ...this.status, state: "offline", detail: "호스트에 연결할 수 없습니다." });
-      throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
+    // One controller and one timer cover the headers and the body. A fetch that
+    // waits forever and a body that stops mid-JSON both have to reject, or a
+    // control call never reaches its unknown-outcome lookup and a snapshot stalls
+    // reconnection.
+    const controller = new AbortController();
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+        reject(new RemoteRequestTimeout());
+      }, this.requestTimeoutMs);
+    });
+    const withinDeadline = <U>(work: Promise<U>): Promise<U> =>
+      Promise.race([work, deadline]);
+    const external = init.signal;
+    const abortFromExternal = () => controller.abort();
+    if (external) {
+      if (external.aborted) controller.abort();
+      else
+        external.addEventListener("abort", abortFromExternal, { once: true });
     }
-    if (response.status === 401) {
-      if (this.token !== presented) {
-        // A pairing landed while this request was in flight. Dropping the token now
-        // would undo it and send the user back to the screen they just cleared.
+    const timeoutError = (): RemoteRequestError => {
+      if (this.status.state === "connected")
+        this.setStatus({
+          ...this.status,
+          state: "offline",
+          detail: "호스트가 제한 시간 안에 응답하지 않았습니다.",
+        });
+      return new RemoteRequestError("호스트 응답 시간이 초과되었습니다.", {
+        uncertain: true,
+      });
+    };
+    const readBody = async <U>(read: () => Promise<U>): Promise<U> => {
+      try {
+        return await withinDeadline(read());
+      } catch (error) {
+        if (timedOut || error instanceof RemoteRequestTimeout)
+          throw timeoutError();
+        throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", {
+          uncertain: true,
+        });
+      }
+    };
+    try {
+      let response: Response;
+      try {
+        response = await withinDeadline(
+          this.fetchImpl(this.url(path), {
+            ...init,
+            signal: controller.signal,
+            headers: { ...(init.headers ?? {}), ...this.authorized() },
+          }),
+        );
+      } catch (error) {
+        if (timedOut || error instanceof RemoteRequestTimeout)
+          throw timeoutError();
+        if (this.status.state === "connected")
+          this.setStatus({ ...this.status, state: "offline", detail: "호스트에 연결할 수 없습니다." });
+        throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
+      }
+      if (response.status === 401) {
+        if (this.token !== presented) {
+          // A pairing landed while this request was in flight. Dropping the token now
+          // would undo it and send the user back to the screen they just cleared.
+          throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
+            status: 401,
+            code: "unauthorized",
+          });
+        }
+        // A token the host no longer recognizes is terminal until the owner pairs
+        // again, so it is dropped rather than retried. With no token to drop the
+        // device was never paired: that is where pairing starts, not a revocation.
+        const held = presented !== null;
+        this.forget();
+        if (held) {
+          this.setStatus({
+            state: "revoked",
+            detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+          });
+          throw new RemoteRequestError("이 기기의 접근이 해제되었습니다.", { status: 401, code: "revoked" });
+        }
+        this.setStatus({
+          state: "pairing",
+          detail: "데스크톱에서 페어링 코드를 발급해 연결해 주세요.",
+        });
         throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
           status: 401,
           code: "unauthorized",
         });
       }
-      // A token the host no longer recognizes is terminal until the owner pairs
-      // again, so it is dropped rather than retried. With no token to drop the
-      // device was never paired: that is where pairing starts, not a revocation.
-      const held = presented !== null;
-      this.forget();
-      if (held) {
-        this.setStatus({
-          state: "revoked",
-          detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
-        });
-        throw new RemoteRequestError("이 기기의 접근이 해제되었습니다.", { status: 401, code: "revoked" });
+      if (!response.ok) {
+        const body = await readBody(() => readErrorBody(response));
+        throw new RemoteRequestError(body.message, { status: response.status, code: body.code });
       }
-      this.setStatus({
-        state: "pairing",
-        detail: "데스크톱에서 페어링 코드를 발급해 연결해 주세요.",
-      });
-      throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
-        status: 401,
-        code: "unauthorized",
-      });
-    }
-    if (!response.ok) {
-      const body = await readErrorBody(response);
-      throw new RemoteRequestError(body.message, { status: response.status, code: body.code });
-    }
-    if (response.status === 204) return undefined as T;
-    try {
-      return (await response.json()) as T;
-    } catch {
-      throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", { uncertain: true });
+      if (response.status === 204) return undefined as T;
+        return await readBody(() => response.json() as Promise<T>);
+    } finally {
+      if (timer) clearTimeout(timer);
+      external?.removeEventListener("abort", abortFromExternal);
     }
   }
 

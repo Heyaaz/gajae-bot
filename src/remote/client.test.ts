@@ -283,6 +283,68 @@ describe("control operations", () => {
     client.dispose();
   });
 
+  it("times out a control request and only performs a bounded outcome lookup", async () => {
+    const never = new Promise<Response>(() => undefined);
+    let posts = 0;
+    let lookups = 0;
+    const { fetchImpl } = recorder((call) => {
+      if (call.method === "POST") {
+        posts += 1;
+        return never;
+      }
+      if (call.url.includes(REMOTE_API.operations)) {
+        lookups += 1;
+        return never;
+      }
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+      requestTimeoutMs: 20,
+    });
+    const failure = await Promise.race([
+      client.sendMessage("s-1", message).then(
+        () => "resolved",
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+    ]);
+    expect(failure).toBeInstanceOf(RemoteRequestError);
+    expect((failure as RemoteRequestError).code).toBe("unknown-outcome");
+    expect((failure as RemoteRequestError).uncertain).toBe(true);
+    // The POST is never repeated: only the recorded-outcome lookup follows it,
+    // and that lookup is subject to the same deadline.
+    expect(posts).toBe(1);
+    expect(lookups).toBe(1);
+    client.dispose();
+  });
+
+  it("applies the deadline while consuming a response body", async () => {
+    const stalled = {
+      status: 200,
+      ok: true,
+      json: () => new Promise<never>(() => undefined),
+    } as unknown as Response;
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl: (async () => stalled) as typeof fetch,
+      requestTimeoutMs: 20,
+    });
+    const failure = await Promise.race([
+      client.snapshot().then(
+        () => "resolved",
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+    ]);
+    expect(failure).toBeInstanceOf(RemoteRequestError);
+    expect((failure as RemoteRequestError).uncertain).toBe(true);
+    client.dispose();
+  });
+
   it("reconciles a successful control response whose JSON body cannot be read", async () => {
     const operation = {
       operationId: "op-jsonfailure01",
