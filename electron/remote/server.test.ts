@@ -507,6 +507,66 @@ describe("remote server control idempotency", () => {
     expect(base.host.calls).toEqual(["send:s-1"]);
   });
 
+  it("makes a concurrent duplicate wait instead of running it twice", async () => {
+    const base = await harness();
+    const device = await base.pair("control");
+    const finishes: Array<() => void> = [];
+    base.host.sendMessage = async (sessionId: string) => {
+      base.host.calls.push(`send:${sessionId}`);
+      await new Promise<void>((resolve) => finishes.push(resolve));
+      return "prompt" as const;
+    };
+    const body = {
+      operationId: "op-concurrent-1",
+      input: { text: "한 번만", images: [], files: [] },
+    };
+    const first = post(base, device.token, REMOTE_API.messages("s-1"), body);
+    const second = post(base, device.token, REMOTE_API.messages("s-1"), body);
+    for (let attempt = 0; attempt < 100 && finishes.length < 1; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    // Give a duplicate a chance to start the host instruction before releasing it.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const started = [...base.host.calls];
+    // Release every run that did start so a failing (pre-fix) case cannot leave
+    // the two HTTP requests hanging.
+    for (const finish of finishes) finish();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(started).toEqual(["send:s-1"]);
+    expect(firstResult.body).toMatchObject({ state: "completed", result: "prompt" });
+    expect(secondResult.body).toMatchObject({ state: "completed", result: "prompt" });
+    expect(base.host.calls).toEqual(["send:s-1"]);
+  });
+
+  it("treats a reused ID with a different payload as the same operation", async () => {
+    const base = await harness();
+    const device = await base.pair("control");
+    let finish!: () => void;
+    base.host.sendMessage = async (sessionId: string) => {
+      base.host.calls.push(`send:${sessionId}`);
+      await new Promise<void>((resolve) => {
+        finish = resolve;
+      });
+      return "prompt" as const;
+    };
+    const first = post(base, device.token, REMOTE_API.messages("s-1"), {
+      operationId: "op-policy-0001",
+      input: { text: "보내기", images: [], files: [] },
+    });
+    for (let attempt = 0; attempt < 100 && base.host.calls.length === 0; attempt += 1)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = post(base, device.token, REMOTE_API.cancel("s-1"), {
+      operationId: "op-policy-0001",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    finish();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    // The first request owns the ID; the second receives its outcome and does not
+    // execute its own route.
+    expect(firstResult.body).toMatchObject({ state: "completed", result: "prompt" });
+    expect(secondResult.body).toEqual(firstResult.body);
+    expect(base.host.calls).toEqual(["send:s-1"]);
+  });
+
   it("replays a recorded failure instead of running it again", async () => {
     const base = await harness();
     const device = await base.pair("control");

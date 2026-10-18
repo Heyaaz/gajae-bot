@@ -154,6 +154,14 @@ export class RemoteServer {
   private readonly now: () => number;
   private readonly log: (message: string) => void;
   private readonly operationLog = new RemoteOperationLog();
+  /**
+   * Control operations currently running, keyed by device + operation ID.
+   *
+   * The operation log only has completed outcomes, so two concurrent retries used
+   * to both miss it and both instruct the host. The first request now reserves the
+   * ID; a duplicate waits for that same outcome instead of running again.
+   */
+  private readonly inFlightOperations = new Map<string, Promise<RemoteOperationOutcome>>();
   private server?: Server;
   private port: number;
   private sequence = 0;
@@ -661,26 +669,56 @@ export class RemoteServer {
       this.sendJson(response, 200, previous);
       return;
     }
+    // An operation ID identifies one logical instruction for this device. A
+    // concurrent request that reuses it joins the first run whatever its route or
+    // payload says; the first request wins and the duplicate only receives its
+    // outcome. Executing the second would apply an instruction whose ID the host
+    // has already seen, which is the duplicate run this booking exists to prevent.
+    const pending = this.inFlightOperations.get(key);
+    if (pending) {
+      this.sendJson(response, 200, await pending);
+      return;
+    }
+    if (this.inFlightOperations.size >= OPERATION_LOG_LIMIT) {
+      this.sendError(response, 503, "unavailable", "Too many control operations are in flight");
+      return;
+    }
+    const running = this.executeControl(key, operationId, operation, params, body);
+    this.inFlightOperations.set(key, running);
+    try {
+      this.sendJson(response, 200, await running);
+    } finally {
+      if (this.inFlightOperations.get(key) === running)
+        this.inFlightOperations.delete(key);
+    }
+  }
+
+  private async executeControl(
+    key: string,
+    operationId: string,
+    operation: RemoteOperationName,
+    params: RemoteOperationParams,
+    body: unknown,
+  ): Promise<RemoteOperationOutcome> {
+    let outcome: RemoteOperationOutcome;
     try {
       const result = await runRemoteOperation(this.options.host, operation, params, body);
-      const outcome: RemoteOperationOutcome = {
+      outcome = {
         operationId,
         state: "completed",
         result: result ?? null,
         at: new Date(this.now()).toISOString(),
       };
-      this.operationLog.set(key, outcome);
-      this.sendJson(response, 200, outcome);
     } catch (error) {
-      const outcome: RemoteOperationOutcome = {
+      outcome = {
         operationId,
         state: "failed",
         message: describeError(error),
         at: new Date(this.now()).toISOString(),
       };
-      this.operationLog.set(key, outcome);
-      this.sendJson(response, 200, outcome);
     }
+    this.operationLog.set(key, outcome);
+    return outcome;
   }
 
   private async readJsonBody(
