@@ -562,6 +562,92 @@ describe("event stream", () => {
     client.dispose();
   });
 
+  it("closes the previous stream and reconnects after forget and pair", async () => {
+    let oldCancelled = false;
+    const newToken = "n".repeat(43);
+    let streams = 0;
+    const { fetchImpl, calls } = recorder((call) => {
+      if (call.url.includes(REMOTE_API.events)) {
+        streams += 1;
+        const hello = `event: hello\ndata: ${JSON.stringify({
+          seq: 1,
+          device: { id: "d-1", name: "iPhone", permission: "control" },
+        })}\n\n`;
+        if (streams > 1) return streamResponse([hello], { keepOpen: true });
+        const encoder = new TextEncoder();
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(hello));
+          },
+          cancel() {
+            oldCancelled = true;
+          },
+        });
+        return new Response(body, {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      if (call.url.endsWith(REMOTE_API.pair))
+        return jsonResponse(200, {
+          token: newToken,
+          device: { id: "d-2", name: "New phone", permission: "control" },
+        });
+      if (call.url.endsWith(REMOTE_API.state)) return jsonResponse(200, snapshotBody);
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+    });
+    client.startRealtime();
+    await vi.waitFor(() => expect(client.getStatus().state).toBe("connected"));
+    client.forget();
+    await client.pair("ABCD2345");
+    client.startRealtime();
+    await vi.waitFor(() =>
+      expect(calls.filter((call) => call.url.includes(REMOTE_API.events))).toHaveLength(2),
+    );
+    const streamCalls = calls.filter((call) => call.url.includes(REMOTE_API.events));
+    expect(oldCancelled).toBe(true);
+    expect(streamCalls[1]?.headers.authorization).toBe(`Bearer ${newToken}`);
+    expect(client.getStatus()).toMatchObject({ state: "connected", deviceName: "New phone" });
+    client.dispose();
+  });
+
+  it("discards a snapshot that started under the previous credential", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { fetchImpl } = recorder(async (call) => {
+      if (call.url.endsWith(REMOTE_API.state)) {
+        await gate;
+        return jsonResponse(200, snapshotBody);
+      }
+      return undefined;
+    });
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+    });
+    const pending = client.snapshot().then(
+      () => "applied",
+      (error: unknown) => error,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    client.forget();
+    release();
+    const failure = await pending;
+    expect(failure).toBeInstanceOf(RemoteRequestError);
+    expect((failure as RemoteRequestError).code).toBe("stale-auth");
+    // The late response did not overwrite the pairing state.
+    expect(client.getStatus().state).toBe("pairing");
+    client.dispose();
+  });
+
   it("does not forget a newly paired token when an old stream is refused", async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => (release = resolve));

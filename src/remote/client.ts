@@ -208,6 +208,10 @@ export class RemoteClient {
   private streamGeneration = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private closed = false;
+  /** Bumped whenever the credential changes, so older snapshots cannot apply. */
+  private authGeneration = 0;
+  /** Ordinary requests in flight; a credential change aborts all of them. */
+  private readonly requestControllers = new Set<AbortController>();
 
   private readonly options: RemoteClientOptions;
 
@@ -272,6 +276,14 @@ export class RemoteClient {
     if (typeof body.token !== "string" || !isRemotePermission(body.device?.permission)) {
       throw new RemoteRequestError("호스트가 올바른 기기 정보를 보내지 않았습니다.");
     }
+    // A new credential starts a new auth channel: drop the old stream, its
+    // cursor, and any response whose request predates this pairing.
+    this.closeRealtime();
+    this.authGeneration += 1;
+    this.abortRequests();
+    this.lastSeq = undefined;
+    this.serverInstance = undefined;
+    this.attempt = 0;
     this.token = body.token;
     this.via = body.device.via ?? "device";
     this.storage.write(body.token);
@@ -287,11 +299,35 @@ export class RemoteClient {
     this.token = null;
     this.via = undefined;
     this.storage.clear();
+    // The credential is also this client's identity on the live channel and its
+    // cursor into the host's log. Keeping either would let an old stream block the
+    // next pairing's stream, and let a late snapshot repopulate state that belongs
+    // to the credential just removed.
+    this.authGeneration += 1;
+    this.abortRequests();
+    this.closeRealtime();
+    this.lastSeq = undefined;
+    this.serverInstance = undefined;
+    this.attempt = 0;
     this.setStatus({ state: "pairing" });
   }
 
+  private abortRequests(): void {
+    for (const controller of [...this.requestControllers]) controller.abort();
+    this.requestControllers.clear();
+  }
+
   async snapshot(): Promise<RemoteSnapshot> {
+    const generation = this.authGeneration;
     const body = await this.request<RemoteSnapshot>(REMOTE_API.state);
+    if (generation !== this.authGeneration) {
+      // The credential changed while this read was in flight. Applying its device,
+      // sessions, or connection would show the previous account as current.
+      throw new RemoteRequestError(
+        "인증 정보가 변경되어 이전 상태를 적용하지 않았습니다.",
+        { code: "stale-auth" },
+      );
+    }
     this.via = body.device?.via;
     if (isRemotePermission(body.device?.permission))
       this.setStatus({
@@ -304,13 +340,16 @@ export class RemoteClient {
 
   async request<T>(path: string, init: RequestInit = {}): Promise<T> {
     // Which token this request answers with: a refusal that arrives after a later
-    // pairing is about a token this client no longer holds.
+    // pairing is about a token this client no longer holds. The auth generation
+    // also keeps a late abort/error from moving the status of the new credential.
     const presented = this.token;
+    const authGeneration = this.authGeneration;
     // One controller and one timer cover the headers and the body. A fetch that
     // waits forever and a body that stops mid-JSON both have to reject, or a
     // control call never reaches its unknown-outcome lookup and a snapshot stalls
     // reconnection.
     const controller = new AbortController();
+    this.requestControllers.add(controller);
     let timedOut = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
@@ -330,7 +369,10 @@ export class RemoteClient {
         external.addEventListener("abort", abortFromExternal, { once: true });
     }
     const timeoutError = (): RemoteRequestError => {
-      if (this.status.state === "connected")
+      if (
+        authGeneration === this.authGeneration &&
+        this.status.state === "connected"
+      )
         this.setStatus({
           ...this.status,
           state: "offline",
@@ -364,7 +406,10 @@ export class RemoteClient {
       } catch (error) {
         if (timedOut || error instanceof RemoteRequestTimeout)
           throw timeoutError();
-        if (this.status.state === "connected")
+        if (
+          authGeneration === this.authGeneration &&
+          this.status.state === "connected"
+        )
           this.setStatus({ ...this.status, state: "offline", detail: "호스트에 연결할 수 없습니다." });
         throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
       }
@@ -406,6 +451,7 @@ export class RemoteClient {
         return await readBody(() => response.json() as Promise<T>);
     } finally {
       if (timer) clearTimeout(timer);
+      this.requestControllers.delete(controller);
       external?.removeEventListener("abort", abortFromExternal);
     }
   }
@@ -570,17 +616,28 @@ export class RemoteClient {
       if (generation !== this.streamGeneration || controller.signal.aborted) return;
       const parser = new SseParser();
       const reader = response.body.getReader();
+      // Aborting the fetch signal alone does not wake a read that is waiting on a
+      // silent stream. Cancelling the reader ends that wait as well, so a forget or
+      // re-pair cannot leave the old body open behind the new credential.
+      const cancelReader = () => {
+        void reader.cancel().catch(() => undefined);
+      };
+      controller.signal.addEventListener("abort", cancelReader, { once: true });
       const decoder = new TextDecoder();
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (generation !== this.streamGeneration || controller.signal.aborted) return;
-        if (done) break;
-        for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
-          // A listener can replace the pairing/stream while dispatching a frame.
-          // Remaining frames from this chunk no longer own revocation authority.
-          if (generation !== this.streamGeneration || this.token !== presented) return;
-          this.handleFrame(frame);
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (generation !== this.streamGeneration || controller.signal.aborted) return;
+          if (done) break;
+          for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+            // A listener can replace the pairing/stream while dispatching a frame.
+            // Remaining frames from this chunk no longer own revocation authority.
+            if (generation !== this.streamGeneration || this.token !== presented) return;
+            this.handleFrame(frame);
+          }
         }
+      } finally {
+        controller.signal.removeEventListener("abort", cancelReader);
       }
       throw new Error("stream ended");
     } catch {
