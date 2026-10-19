@@ -489,6 +489,10 @@ export class MockAgentBackend implements AgentBackend {
     this.emit({ type: "session.updated", session: cloneSession(session) });
   }
 
+  async hideSession(sessionId: string): Promise<void> {
+    await this.deleteSession(sessionId);
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     const index = this.sessionStore.findIndex(
       (candidate) => candidate.id === sessionId,

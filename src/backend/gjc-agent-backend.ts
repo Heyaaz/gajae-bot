@@ -118,6 +118,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.deleteSession(sessionId);
   }
 
+  hideSession(sessionId: string): Promise<void> {
+    return this.bridge.hideSession(sessionId);
+  }
+
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     return this.bridge.getTranscript(sessionId);
   }

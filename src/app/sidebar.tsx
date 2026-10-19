@@ -4,6 +4,7 @@ import type { AgentSession, BackendConnection } from "../backend/types";
 import {
   ArrowDown,
   ExternalLink,
+  EyeOff,
   FolderGit2,
   FolderOpen,
   GitFork,
@@ -259,6 +260,7 @@ export interface SidebarProps {
   onResumePicker: () => void;
   onRename: (sessionId: string, title: string) => void;
   onDelete: (session: AgentSession) => void;
+  onHide: (session: AgentSession) => void;
   onSettings: () => void;
   workspaceLabel: string;
   onWorkspaceLabelChange: (label: string) => void;
@@ -296,6 +298,7 @@ function SidebarView({
   onResumePicker,
   onRename,
   onDelete,
+  onHide,
   onSettings,
   workspaceLabel,
   onWorkspaceLabelChange,
@@ -707,6 +710,19 @@ function SidebarView({
                 }}
               >
                 <Trash2 size={14} /> 삭제
+              </button>
+              {/* gjc/0.18.12 cannot delete saved history through the public SDK, so
+                  the only removal that actually completes is hiding the row here.
+                  It is a separate item, not a silent substitute: the label says the
+                  history stays. */}
+              <button
+                type="button"
+                onClick={() => {
+                  setContextMenu(null);
+                  onHide(contextMenu.session);
+                }}
+              >
+                <EyeOff size={14} /> 목록에서 숨기기
               </button>
             </>
           )}

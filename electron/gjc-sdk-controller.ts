@@ -4119,6 +4119,21 @@ export class GjcSdkController {
     return { ...this.connectionState };
   }
 
+  /**
+   * Stops this window listing a session without touching anything GJC owns.
+   *
+   * gjc/0.18.12's public `session.delete` cannot remove saved history: it answers
+   * `operation_failed` with `outcomeCertainty: unknown` and leaves the broker row
+   * at `deleted: false` and the transcript on disk (reproduced on a throwaway
+   * session with the exact input this app sends). A delete that cannot be proven is
+   * refused, so this is the only removal this build can actually complete. The
+   * session id is added to the hidden set discovery filters on, which means it
+   * stays out of the rail instead of reappearing on the next scan.
+   */
+  hideSession(sessionId: string): void {
+    this.removeLocalSession(sessionId, true);
+  }
+
   deleteSession(sessionId: string): Promise<void> {
     const previous = this.deletionPromises.get(sessionId);
     if (previous) return previous;

@@ -1453,6 +1453,30 @@ export default function App() {
     });
   }
 
+  /**
+   * Hides a session from the rail without deleting anything GJC owns.
+   *
+   * gjc/0.18.12 cannot complete a saved-history delete through the public SDK
+   * (session.delete answers operation_failed with an unknown outcome and leaves
+   * the row and transcript in place), so this is the only removal that finishes.
+   * It is offered as its own action; the delete path above stays as it was.
+   */
+  function hideSession(sessionId: string): void {
+    const removed = sessions.find((candidate) => candidate.id === sessionId);
+    forgetSession(sessionId);
+    void backend.hideSession(sessionId).catch((error: unknown) => {
+      // Hiding is local bookkeeping, so a failure leaves the rail unchanged and
+      // reports why instead of pretending the row went away.
+      if (removed)
+        setSessions((current) =>
+          current.some((session) => session.id === removed.id)
+            ? current
+            : [removed, ...current],
+        );
+      setAppError(error instanceof Error ? error.message : String(error));
+    });
+  }
+
   async function deleteSession(sessionId: string): Promise<void> {
     // The user is the first to know: the backend's delete walks close, broker
     // lookup and delete one CLI call at a time, and the row used to sit in the
@@ -1665,6 +1689,7 @@ export default function App() {
         onResumePicker={openResumePickerStable}
         onRename={startRename}
         onDelete={setDeleteCandidate}
+        onHide={(session) => hideSession(session.id)}
         onSettings={openSettings}
         workspaceLabel={workspaceLabel}
         onWorkspaceLabelChange={startWorkspaceRename}

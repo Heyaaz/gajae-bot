@@ -36,6 +36,7 @@ class FakeGjcBridge implements GjcDesktopBridge {
   readonly listeners = new Set<(event: AgentEvent) => void>();
   readonly renamed: Array<{ sessionId: string; title: string }> = [];
   readonly deleted: string[] = [];
+  readonly hidden: string[] = [];
   createCalls = 0;
 
   async getConnection(): Promise<BackendConnection> {
@@ -145,6 +146,9 @@ class FakeGjcBridge implements GjcDesktopBridge {
   }
   async deleteSession(sessionId: string): Promise<void> {
     this.deleted.push(sessionId);
+  }
+  async hideSession(sessionId: string): Promise<void> {
+    this.hidden.push(sessionId);
   }
   async sendMessage(
     _sessionId: string,

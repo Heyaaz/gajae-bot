@@ -308,6 +308,10 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.desktopOnly();
   }
 
+  hideSession(_sessionId: string): Promise<void> {
+    return this.desktopOnly();
+  }
+
   setSessionConfig(_sessionId: string, _configId: string, _value: string): Promise<void> {
     return this.desktopOnly();
   }

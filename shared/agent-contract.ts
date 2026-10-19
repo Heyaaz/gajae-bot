@@ -656,6 +656,7 @@ export interface GjcDesktopBridge {
   openHistorySession(sessionId: string): Promise<AgentSession>;
   renameSession(sessionId: string, title: string): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
+  hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
   setSessionConfig(
     sessionId: string,

@@ -1127,6 +1127,21 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.sessions.has("s1")).toBe(false);
   });
 
+  it("hides a session locally without calling a delete the SDK cannot confirm", async () => {
+    // gjc/0.18.12 answers session.delete with an unknown outcome and leaves the row
+    // and transcript in place, so hiding must not depend on it: no CLI call, the row
+    // leaves the rail, and the id is recorded as hidden so discovery stays quiet.
+    const { controller, cli, internals } = harness();
+    const hidden: string[] = [];
+    internals.sessionMetadata = { hideSession: (id: string) => hidden.push(id) };
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    controller.hideSession("s1");
+    expect(hidden).toEqual(["s1"]);
+    expect(internals.sessions.has("s1")).toBe(false);
+    expect(cli.rawGlobal).not.toHaveBeenCalled();
+  });
+
   it("keeps the session when the broker index cannot be read", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");

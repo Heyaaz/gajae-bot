@@ -202,6 +202,19 @@ export function registerGjcIpcHandlers(
     });
     return controller.deleteSession(id);
   });
+  // Deleting GJC's own saved history is not available through the public SDK on
+  // gjc/0.18.12: `session.delete` answers operation_failed with an unknown outcome
+  // and leaves the row and its transcript in place (reproduced on a throwaway
+  // session with the exact input the app sends). Hiding is the separate, honest
+  // action that only stops this window from listing the session; nothing GJC owns
+  // is destroyed, and the transcript stays readable on disk.
+  handle(GJC_IPC.hideSession, async (event, sessionId: unknown) => {
+    const id = requiredId(sessionId, "Session ID");
+    await security.authorizeDestructive(event, {
+      message: "이 세션을 목록에서 숨길까요? GJC의 기록은 삭제되지 않습니다.",
+    });
+    return controller.hideSession(id);
+  });
   handle(GJC_IPC.getTranscript, (_event, sessionId: unknown) =>
     controller.getTranscript(requiredId(sessionId, "Session ID")),
   );
