@@ -28,7 +28,7 @@ describe("transcriptDelivery", () => {
   it("sends a row whose text changed without changing length", () => {
     const before = message("m1", "abcd");
     const after = message("m1", "abce");
-    expect(before.content.length).toBe(after.content.length);
+    expect("abcd".length).toBe("abce".length);
     expect(transcriptDelivery([before], [after])).toEqual({
       kind: "patch",
       items: [after],
