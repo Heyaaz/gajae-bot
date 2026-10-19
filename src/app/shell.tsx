@@ -1845,9 +1845,10 @@ export default function App() {
                 }}
               />
               <div className="composer-wrap">
-                {composerTurnLive(selectedSession, selectedTranscript) && (
+                {(composerTurnLive(selectedSession, selectedTranscript) || selectedSession.phase === "compacting") && (
                   <p className="conversation-progress" role="status">
-                    {currentWorkLabel(selectedTranscript)}
+                    <span className="mini-spinner" aria-hidden="true" />
+                    {selectedSession.phase === "compacting" ? "세션 context 압축 중" : currentWorkLabel(selectedTranscript)}
                   </p>
                 )}
                 <ApprovalBanner

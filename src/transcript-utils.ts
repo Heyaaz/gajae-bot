@@ -3,14 +3,18 @@ import type { TranscriptItem } from "./backend/types";
 export const MAX_CACHED_TRANSCRIPTS = 3;
 
 export function currentWorkLabel(items: readonly TranscriptItem[]): string {
+  let latest: string | undefined;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
+    if (item.kind === "message" && item.role === "user") break;
     if (item.kind === "tool" && item.status === "approval-required") return "승인 대기 중";
-    if (item.kind === "tool" && item.status === "running") return item.description || "도구 실행 중";
-    if (item.kind === "thought" && item.streaming) return "추론 중";
-    if (item.kind === "message" && item.role === "assistant" && item.streaming) return "답변 작성 중";
+    if (latest) continue;
+    if (item.kind === "tool" && item.status === "running") latest = item.description || "도구 실행 중";
+    if (item.kind === "tool" && item.status === "pending") latest = "도구 실행 대기 중";
+    if (item.kind === "thought" && item.streaming) latest = "추론 중";
+    if (item.kind === "message" && item.role === "assistant" && item.streaming) latest = "답변 작성 중";
   }
-  return "응답 대기 중";
+  return latest ?? "응답 대기 중";
 }
 
 /** Commit blank-line-delimited Markdown blocks only outside fenced code. */

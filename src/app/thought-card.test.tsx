@@ -67,8 +67,9 @@ describe("thought card", () => {
     );
 
     expect(markup).toContain("is-streaming");
-    expect(markup).toContain("생각 중…");
-    expect(markup).toContain("mini-spinner");
+    expect(markup).toContain("추론");
+    expect(markup).not.toContain("생각 중…");
+    expect(markup).not.toContain("mini-spinner");
     expect(markup).not.toContain("thought-content");
     expect(markup).not.toContain("지금 확인 중입니다");
   });
@@ -79,8 +80,9 @@ describe("thought card", () => {
       true,
     );
 
-    expect(markup).toContain("생각 중…");
-    expect(markup).toContain("mini-spinner");
+    expect(markup).toContain("추론");
+    expect(markup).not.toContain("생각 중…");
+    expect(markup).not.toContain("mini-spinner");
     expect(markup).toContain("thought-content is-streaming");
     expect(markup).toContain("지금 확인 중입니다");
   });

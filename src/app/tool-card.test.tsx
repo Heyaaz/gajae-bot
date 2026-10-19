@@ -39,10 +39,10 @@ describe("tool card status", () => {
     expect(markup).not.toContain("mini-spinner");
   });
 
-  it("shows an executing call as working, with a spinner", () => {
+  it("keeps the executing status without a second progress spinner", () => {
     const markup = render("running");
     expect(markup).toContain("작업 중");
-    expect(markup).toContain("mini-spinner");
+    expect(markup).not.toContain("mini-spinner");
   });
 
   it("shows a finished call as complete", () => {

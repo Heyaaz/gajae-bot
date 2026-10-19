@@ -36,7 +36,7 @@ describe("fenced code block rendering", () => {
     } as never));
     expect(markup).toContain("<strong>done</strong>");
     expect(markup).toContain("**unfinished");
-    expect(markup).toContain("streaming-caret");
+    expect(markup).not.toContain("streaming-caret");
   });
   it("shows the fence's language and a copy control", () => {
     const markup = render("```ts\nconst x = 1;\n```");

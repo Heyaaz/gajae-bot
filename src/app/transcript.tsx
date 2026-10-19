@@ -1257,19 +1257,6 @@ export function Transcript({
             );
           })}
         </div>
-        {compacting && (
-          <article className="compaction-card compaction-card--progress">
-            <header>
-              <Shrink size={15} />
-              <strong>compaction</strong>
-              <span>압축 중</span>
-            </header>
-            <p className="compaction-progress">
-              <span className="mini-spinner" />
-              세션 context를 압축하고 있습니다
-            </p>
-          </article>
-        )}
       </div>
       {!following && (
         <button
@@ -1713,8 +1700,7 @@ export function ThoughtCard({
       <header>
         <Brain size={15} />
         <strong>Gajae</strong>
-        <span>{item.streaming ? "생각 중…" : "추론"}</span>
-        {item.streaming && <span className="mini-spinner" />}
+        <span>추론</span>
         {!item.streaming && (
           <button
             type="button"
@@ -1794,14 +1780,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
               ) : (
                 copyText || item.content
               )
-            ) : (
-              <span className="typing-dots">
-                <i />
-                <i />
-                <i />
-              </span>
-            )}
-            {item.streaming && <span className="streaming-caret" />}
+            ) : null}
           </div>
         )}
         {item.images && item.images.length > 0 && (
@@ -1996,7 +1975,6 @@ export function ToolCard({
             <small>{tool.description}</small>
           </span>
           <span className={`tool-status tool-status--${tool.status}`}>
-            {tool.status === "running" && <span className="mini-spinner" />}
             {toolStatusLabel(tool.status)}
           </span>
         </header>
