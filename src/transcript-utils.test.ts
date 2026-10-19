@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "./backend/types";
 import {
   cacheTranscript,
-  currentWorkLabel,
+  appendProgressBlock,
   copyableMessageText,
+  currentTurnWork,
+  elapsedTurnMs,
+  formatWorkedSummary,
+  gajaeEmoticonFor,
+  GAJAE_PROGRESS_ROW_HEIGHT,
   groupTranscriptItems,
   initialSessionId,
   isNearTranscriptBottom,
+  progressBlockId,
+  resolveTurnProgress,
+  transcriptRowEstimate,
   transcriptScrollIntent,
   shouldFollowTranscript,
   discoveryRevisionIsFresh,
@@ -21,6 +29,7 @@ import {
   streamingMarkdownParts,
   turnStartBlockIds,
   updateTranscriptItem,
+  type TurnActivityKind,
 } from "./transcript-utils";
 
 describe("streamingMarkdownParts", () => {
@@ -46,12 +55,344 @@ describe("streamingMarkdownParts", () => {
   });
 });
 
-describe("currentWorkLabel", () => {
-  it("names running work but not a completed historical call", () => {
-    const call = { id: "work", kind: "tool" as const, sessionId: "s", name: "bash", description: "Running tests", status: "running" as const, createdAt: "now" };
-    expect(currentWorkLabel([call])).toBe("Running tests");
-    expect(currentWorkLabel([{ ...call, status: "completed" }])).toBe("응답 대기 중");
-    expect(currentWorkLabel([{ ...call, status: "approval-required" }])).toBe("승인 대기 중");
+describe("currentTurnWork", () => {
+  const user = {
+    id: "user-1",
+    kind: "message" as const,
+    sessionId: "s",
+    role: "user" as const,
+    content: "고쳐 줘",
+    createdAt: "now",
+  };
+  const call = {
+    id: "work",
+    kind: "tool" as const,
+    sessionId: "s",
+    name: "bash",
+    description: "Running tests",
+    status: "running" as const,
+    createdAt: "now",
+  };
+  const emoticon: Record<TurnActivityKind, string> = {
+    thinking: "coding",
+    tool: "coding",
+    waiting: "sleepy",
+    approval: "surprised",
+    done: "celebrate",
+    error: "crying",
+  };
+
+  it("maps a running or pending tool to the coding emoticon", () => {
+    const running = currentTurnWork([user, call], { status: "running" });
+    expect(running).toMatchObject({ kind: "tool", ticking: true });
+    expect(gajaeEmoticonFor(running!.kind)).toBe("coding");
+    const pending = currentTurnWork(
+      [user, { ...call, status: "pending" }],
+      { status: "running" },
+    );
+    expect(pending?.kind).toBe("tool");
+    expect(gajaeEmoticonFor("tool")).toBe(emoticon.tool);
+  });
+
+  it("maps a streaming thought and a quiet running turn to thinking", () => {
+    const thought = currentTurnWork(
+      [
+        user,
+        {
+          id: "t",
+          kind: "thought" as const,
+          sessionId: "s",
+          content: "...",
+          streaming: true,
+          createdAt: "now",
+        },
+      ],
+      { status: "running" },
+    );
+    expect(thought).toMatchObject({ kind: "thinking", ticking: true });
+    expect(gajaeEmoticonFor("thinking")).toBe("coding");
+    // The old default was "응답 대기 중". A running turn with nothing live yet
+    // is the agent thinking, not a paused wait.
+    expect(currentTurnWork([user], { status: "running" })).toMatchObject({
+      kind: "thinking",
+      ticking: true,
+    });
+    expect(currentTurnWork([user], { status: "running" })?.label).toBeUndefined();
+  });
+
+  it("hides the row while assistant text is streaming", () => {
+    expect(
+      currentTurnWork(
+        [
+          user,
+          {
+            id: "a",
+            kind: "message" as const,
+            sessionId: "s",
+            role: "assistant" as const,
+            content: "답",
+            streaming: true,
+            createdAt: "now",
+          },
+        ],
+        { status: "running" },
+      ),
+    ).toBeNull();
+  });
+
+  it("maps approval to surprised and does not repeat the banner's 승인 대기 wording", () => {
+    const work = currentTurnWork(
+      [user, { ...call, status: "approval-required" }],
+      { status: "waiting" },
+    );
+    expect(work).toMatchObject({
+      kind: "approval",
+      label: "승인이 필요해요",
+      ticking: false,
+    });
+    expect(gajaeEmoticonFor("approval")).toBe("surprised");
+    expect(work?.label).not.toContain("승인 대기");
+  });
+
+  it("lets approval win over a streaming answer later in the turn", () => {
+    const work = currentTurnWork(
+      [
+        user,
+        { ...call, status: "approval-required" },
+        {
+          id: "a",
+          kind: "message" as const,
+          sessionId: "s",
+          role: "assistant" as const,
+          content: "답",
+          streaming: true,
+          createdAt: "now",
+        },
+      ],
+      { status: "running" },
+    );
+    expect(work?.kind).toBe("approval");
+  });
+
+  it("maps input-needed to sleepy, separate from a running turn", () => {
+    const work = currentTurnWork([user], { status: "waiting" });
+    expect(work).toMatchObject({
+      kind: "waiting",
+      label: "입력을 기다리고 있어요",
+      ticking: false,
+    });
+    expect(gajaeEmoticonFor("waiting")).toBe("sleepy");
+  });
+
+  it("maps a failed session to crying even if a stale stream flag remains", () => {
+    const work = currentTurnWork(
+      [
+        user,
+        {
+          id: "a",
+          kind: "message" as const,
+          sessionId: "s",
+          role: "assistant" as const,
+          content: "답",
+          streaming: true,
+          createdAt: "now",
+        },
+      ],
+      { status: "failed" },
+    );
+    expect(work).toMatchObject({ kind: "error", label: "오류가 났어요", ticking: false });
+    expect(gajaeEmoticonFor("error")).toBe("crying");
+  });
+
+  it("maps a finished turn to celebrate, and ignores a completed tool from the previous turn", () => {
+    expect(currentTurnWork([user, { ...call, status: "completed" }], { status: "idle" })).toMatchObject({
+      kind: "done",
+      ticking: false,
+    });
+    expect(gajaeEmoticonFor("done")).toBe("celebrate");
+    const next = currentTurnWork(
+      [{ ...call, status: "running" }, { ...user, id: "user-2" }],
+      { status: "running" },
+    );
+    expect(next?.kind).toBe("thinking");
+  });
+
+  it("names compaction instead of the rotating working phrases", () => {
+    expect(currentTurnWork([], { status: "idle", phase: "compacting" })).toEqual({
+      kind: "thinking",
+      label: "세션 context 압축 중",
+      ticking: true,
+    });
+  });
+
+  it("keeps one progress-row height for every kind and a stable id per turn", () => {
+    const kinds: TurnActivityKind[] = [
+      "thinking",
+      "tool",
+      "waiting",
+      "approval",
+      "done",
+      "error",
+    ];
+    for (const kind of kinds) {
+      expect(transcriptRowEstimate("progress")).toBe(GAJAE_PROGRESS_ROW_HEIGHT);
+      expect(gajaeEmoticonFor(kind)).toBe(emoticon[kind]);
+    }
+    expect(transcriptRowEstimate("item")).toBe(140);
+    expect(transcriptRowEstimate("tools")).toBe(140);
+    expect(progressBlockId("session-1", "user-1")).toBe(
+      progressBlockId("session-1", "user-1"),
+    );
+    expect(progressBlockId("session-1", "user-2")).not.toBe(
+      progressBlockId("session-1", "user-1"),
+    );
+  });
+
+  it("reserves exactly the progress height when the row is appended, and not for an old session", () => {
+    const items = [user, { ...call, status: "completed" as const }];
+    const grouped = groupTranscriptItems(items);
+    const running = resolveTurnProgress(items, { status: "running" }, "session-1", undefined, 1_000);
+    expect(running.progress?.work.kind).toBe("thinking");
+    const withRow = appendProgressBlock(grouped, running.progress);
+    expect(withRow.slice(0, grouped.length).map((block) => block.id)).toEqual(
+      grouped.map((block) => block.id),
+    );
+    expect(withRow.at(-1)?.id).toBe(running.progress?.id);
+    const estimate = (blocks: readonly { kind: string }[]) =>
+      blocks.reduce(
+        (sum, block) =>
+          sum + transcriptRowEstimate(block.kind === "progress" ? "progress" : "item"),
+        0,
+      );
+    expect(estimate(withRow) - estimate(grouped)).toBe(GAJAE_PROGRESS_ROW_HEIGHT);
+
+    const stillRunning = resolveTurnProgress(
+      [user, call],
+      { status: "running" },
+      "session-1",
+      running.stored,
+      4_000,
+    );
+    expect(stillRunning.progress?.id).toBe(running.progress?.id);
+    expect(stillRunning.progress?.work.kind).toBe("tool");
+    expect(estimate(appendProgressBlock(grouped, stillRunning.progress)) - estimate(grouped)).toBe(
+      GAJAE_PROGRESS_ROW_HEIGHT,
+    );
+
+    const finished = resolveTurnProgress(
+      items,
+      { status: "idle" },
+      "session-1",
+      stillRunning.stored,
+      70_000,
+    );
+    expect(finished.progress?.work.kind).toBe("done");
+    expect(finished.progress && elapsedTurnMs(finished.progress.clock, 70_000)).toBe(69_000);
+    expect(formatWorkedSummary(69_000)).toBe("1분 9초 작업");
+    expect(estimate(appendProgressBlock(grouped, finished.progress)) - estimate(grouped)).toBe(
+      GAJAE_PROGRESS_ROW_HEIGHT,
+    );
+
+    // Opening a finished session never watched here must not invent a duration.
+    expect(
+      resolveTurnProgress(items, { status: "idle" }, "session-1", undefined, 5_000).progress,
+    ).toBeNull();
+  });
+
+  it("keeps the clock running while the answer streams, then leaves only the summary", () => {
+    const items = [user, call];
+    const started = resolveTurnProgress(items, { status: "running" }, "s", undefined, 1_000);
+    const streaming = resolveTurnProgress(
+      [
+        user,
+        {
+          id: "a",
+          kind: "message" as const,
+          sessionId: "s",
+          role: "assistant" as const,
+          content: "답",
+          streaming: true,
+          createdAt: "now",
+        },
+      ],
+      { status: "running" },
+      "s",
+      started.stored,
+      5_000,
+    );
+    expect(streaming.progress).toBeNull();
+    expect(streaming.stored?.clock.heldAt).toBeUndefined();
+    const done = resolveTurnProgress(
+      [
+        user,
+        {
+          id: "a",
+          kind: "message" as const,
+          sessionId: "s",
+          role: "assistant" as const,
+          content: "답",
+          createdAt: "now",
+        },
+      ],
+      { status: "idle" },
+      "s",
+      streaming.stored,
+      8_000,
+    );
+    expect(done.progress?.work.kind).toBe("done");
+    expect(done.progress && elapsedTurnMs(done.progress.clock, 8_000)).toBe(7_000);
+  });
+
+  it("pauses the clock while waiting and carries the approval actions", () => {
+    const started = resolveTurnProgress([user], { status: "running" }, "s", undefined, 1_000);
+    const waiting = resolveTurnProgress([user], { status: "waiting" }, "s", started.stored, 4_000);
+    expect(waiting.progress?.work.kind).toBe("waiting");
+    expect(waiting.progress?.clock.heldAt).toBe(4_000);
+    expect(waiting.progress && elapsedTurnMs(waiting.progress.clock, 9_000)).toBe(3_000);
+    const approval = resolveTurnProgress(
+      [
+        user,
+        {
+          ...call,
+          status: "approval-required" as const,
+          permissionOptions: [
+            { optionId: "no", kind: "reject_once" as const, name: "Reject" },
+            { optionId: "yes", kind: "allow_once" as const, name: "Allow" },
+          ],
+        },
+      ],
+      { status: "waiting" },
+      "s",
+      waiting.stored,
+      6_000,
+    );
+    expect(approval.progress?.approval).toEqual({
+      toolId: "work",
+      deny: { optionId: "no", name: "Reject" },
+      allow: { optionId: "yes", name: "Allow" },
+    });
+    // Still held: approval does not resume the clock.
+    expect(approval.progress && elapsedTurnMs(approval.progress.clock, 9_000)).toBe(3_000);
+  });
+
+  it("does not turn an approval we never saw running into a zero-length summary", () => {
+    const opened = resolveTurnProgress(
+      [user, { ...call, status: "approval-required" as const }],
+      { status: "idle" },
+      "s",
+      undefined,
+      1_000,
+    );
+    expect(opened.progress?.work.kind).toBe("approval");
+    expect(opened.progress?.clock.ran).toBe(false);
+    const settled = resolveTurnProgress(
+      [user, { ...call, status: "approved" as const }],
+      { status: "idle" },
+      "s",
+      opened.stored,
+      2_000,
+    );
+    expect(settled.progress).toBeNull();
   });
 });
 

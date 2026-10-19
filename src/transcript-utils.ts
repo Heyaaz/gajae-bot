@@ -1,20 +1,348 @@
-import type { TranscriptItem } from "./backend/types";
+import type { SessionStatus, TranscriptItem } from "./backend/types";
 
 export const MAX_CACHED_TRANSCRIPTS = 3;
 
-export function currentWorkLabel(items: readonly TranscriptItem[]): string {
-  let latest: string | undefined;
+/**
+ * What the turn at the bottom of the conversation is doing.
+ *
+ * `thinking` and `tool` share the working emoticon; the row rotates its own
+ * phrases. `waiting` is the session asking the user for input, distinct from
+ * the agent still working. `done` is a finished turn — the view only draws it
+ * once a clock was actually started, so an old session does not invent a
+ * duration. Assistant text that is still streaming is not a kind: the text is
+ * the progress signal, and `currentTurnWork` returns null so the row steps aside.
+ */
+export type TurnActivityKind =
+  | "thinking"
+  | "tool"
+  | "waiting"
+  | "approval"
+  | "done"
+  | "error";
+
+export interface TurnWork {
+  kind: TurnActivityKind;
+  /** Fixed phrase. Absent on working states, which rotate `ROTATING_WORK_LABELS`. */
+  label?: string;
+  /** False holds the elapsed clock (input, approval, summary, error). */
+  ticking: boolean;
+}
+
+export interface TurnSessionHint {
+  status?: SessionStatus;
+  phase?: string;
+}
+
+export const ROTATING_WORK_LABELS = [
+  "생각 중…",
+  "파일 읽는 중…",
+  "명령 실행 중…",
+] as const;
+
+/** Sprite frames, left to right. Index is the frame offset in the sheet. */
+export const GAJAE_EMOTICONS = [
+  "coding",
+  "sleepy",
+  "surprised",
+  "celebrate",
+  "crying",
+] as const;
+
+export type GajaeEmoticon = (typeof GAJAE_EMOTICONS)[number];
+
+const EMOTICON_BY_KIND: Record<TurnActivityKind, GajaeEmoticon> = {
+  thinking: "coding",
+  tool: "coding",
+  waiting: "sleepy",
+  approval: "surprised",
+  done: "celebrate",
+  error: "crying",
+};
+
+export function gajaeEmoticonFor(kind: TurnActivityKind): GajaeEmoticon {
+  return EMOTICON_BY_KIND[kind];
+}
+
+export function gajaeEmoticonFrame(emoticon: GajaeEmoticon): number {
+  return GAJAE_EMOTICONS.indexOf(emoticon);
+}
+
+/**
+ * Reserved height of the progress virtual row.
+ *
+ * Every kind uses the same height, including the collapsed summary. The row
+ * fades inside this box, so a kind change does not change the estimate the
+ * virtualizer reserved and the scroll position does not jump.
+ */
+export const GAJAE_PROGRESS_ROW_HEIGHT = 44;
+
+/** Default estimate for a message or tool-run row. */
+export const TRANSCRIPT_ROW_ESTIMATE = 140;
+
+export function transcriptRowEstimate(
+  kind: "item" | "tools" | "progress",
+): number {
+  return kind === "progress" ? GAJAE_PROGRESS_ROW_HEIGHT : TRANSCRIPT_ROW_ESTIMATE;
+}
+
+export interface TurnClock {
+  zeroAt: number;
+  pausedMs: number;
+  /** When set, elapsed stops at this instant. */
+  heldAt?: number;
+  /** Set once the clock has actually advanced. A paused row we only observed does not become a summary. */
+  ran: boolean;
+}
+
+export function elapsedTurnMs(
+  clock: Pick<TurnClock, "zeroAt" | "pausedMs" | "heldAt">,
+  now: number,
+): number {
+  const end = clock.heldAt ?? now;
+  return Math.max(0, end - clock.zeroAt - clock.pausedMs);
+}
+
+/** Live clock, `m:ss`. */
+export function formatElapsedClock(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+/** Summary line, `N분 N초 작업` (seconds only while under a minute). */
+export function formatWorkedSummary(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes <= 0) return `${seconds}초 작업`;
+  return `${minutes}분 ${seconds}초 작업`;
+}
+
+/**
+ * Steps the elapsed clock.
+ *
+ * Returns the same object when the mode did not change, so a memoised progress
+ * row does not re-render just because another transcript row did.
+ */
+export function stepTurnClock(
+  previous: TurnClock | undefined,
+  now: number,
+  run: boolean,
+): TurnClock {
+  if (!previous)
+    return run
+      ? { zeroAt: now, pausedMs: 0, ran: true }
+      : { zeroAt: now, pausedMs: 0, heldAt: now, ran: false };
+  if (run) {
+    if (previous.heldAt === undefined)
+      return previous.ran ? previous : { ...previous, ran: true };
+    return {
+      zeroAt: previous.zeroAt,
+      pausedMs: previous.pausedMs + Math.max(0, now - previous.heldAt),
+      ran: true,
+    };
+  }
+  if (previous.heldAt !== undefined) return previous;
+  return { ...previous, heldAt: now };
+}
+
+export interface TurnApprovalAction {
+  optionId: string;
+  name: string;
+}
+
+export interface TurnApproval {
+  toolId: string;
+  deny?: TurnApprovalAction;
+  allow?: TurnApprovalAction;
+}
+
+type TailSignal =
+  | { kind: "approval" }
+  | { kind: "tool" }
+  | { kind: "thinking" }
+  | { kind: "answering" }
+  | { kind: "idle" };
+
+/** Live signal in the items after the latest user message. Approval wins. */
+function tailSignal(items: readonly TranscriptItem[]): TailSignal {
+  let latest: TailSignal | undefined;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.kind === "message" && item.role === "user") break;
-    if (item.kind === "tool" && item.status === "approval-required") return "승인 대기 중";
+    if (item.kind === "tool" && item.status === "approval-required")
+      return { kind: "approval" };
     if (latest) continue;
-    if (item.kind === "tool" && item.status === "running") latest = item.description || "도구 실행 중";
-    if (item.kind === "tool" && item.status === "pending") latest = "도구 실행 대기 중";
-    if (item.kind === "thought" && item.streaming) latest = "추론 중";
-    if (item.kind === "message" && item.role === "assistant" && item.streaming) latest = "답변 작성 중";
+    if (item.kind === "tool" && (item.status === "running" || item.status === "pending"))
+      latest = { kind: "tool" };
+    else if (item.kind === "thought" && item.streaming) latest = { kind: "thinking" };
+    else if (item.kind === "message" && item.role === "assistant" && item.streaming)
+      latest = { kind: "answering" };
   }
-  return latest ?? "응답 대기 중";
+  return latest ?? { kind: "idle" };
+}
+
+function hasUserTurn(items: readonly TranscriptItem[]): boolean {
+  return items.some((item) => item.kind === "message" && item.role === "user");
+}
+
+export function latestUserMessageId(
+  items: readonly TranscriptItem[],
+): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind === "message" && item.role === "user") return item.id;
+  }
+  return undefined;
+}
+
+function currentTurnApproval(
+  items: readonly TranscriptItem[],
+): TurnApproval | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind === "message" && item.role === "user") break;
+    if (item.kind !== "tool" || item.status !== "approval-required") continue;
+    const options = item.permissionOptions ?? [];
+    const deny = options.find((option) => option.kind.startsWith("reject"));
+    const allow = options.find((option) => option.kind.startsWith("allow"));
+    return {
+      toolId: item.id,
+      ...(deny ? { deny: { optionId: deny.optionId, name: deny.name } } : {}),
+      ...(allow ? { allow: { optionId: allow.optionId, name: allow.name } } : {}),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Kind and fixed wording for the progress row.
+ *
+ * Null while an assistant message is streaming. A failed session wins over a
+ * stale streaming flag: those flags outlive the turn, and treating them as
+ * "still answering" would hide the error row.
+ */
+export function currentTurnWork(
+  items: readonly TranscriptItem[],
+  session?: TurnSessionHint | null,
+): TurnWork | null {
+  if (session?.phase === "compacting")
+    return { kind: "thinking", label: "세션 context 압축 중", ticking: true };
+
+  const signal = tailSignal(items);
+  if (signal.kind === "approval")
+    return { kind: "approval", label: "승인이 필요해요", ticking: false };
+  if (session?.status === "failed")
+    return { kind: "error", label: "오류가 났어요", ticking: false };
+  if (signal.kind === "answering") return null;
+  if (signal.kind === "tool") return { kind: "tool", ticking: true };
+  if (signal.kind === "thinking") return { kind: "thinking", ticking: true };
+  if (session?.status === "waiting")
+    return { kind: "waiting", label: "입력을 기다리고 있어요", ticking: false };
+  if (session?.status === "running") return { kind: "thinking", ticking: true };
+  if (
+    (session == null || session.status === undefined || session.status === "idle") &&
+    hasUserTurn(items)
+  )
+    return { kind: "done", ticking: false };
+  return null;
+}
+
+/**
+ * Whether the elapsed clock should advance.
+ *
+ * `null` means there is nothing to time. Answering is hidden but still runs:
+ * the summary at the end includes the time the answer spent streaming.
+ */
+export function turnClockRuns(
+  items: readonly TranscriptItem[],
+  session?: TurnSessionHint | null,
+): boolean | null {
+  if (session?.phase === "compacting") return true;
+  const signal = tailSignal(items);
+  if (signal.kind === "approval") return false;
+  if (session?.status === "failed") return false;
+  if (signal.kind === "answering") return true;
+  if (signal.kind === "tool" || signal.kind === "thinking") return true;
+  if (session?.status === "waiting") return false;
+  if (session?.status === "running") return true;
+  if (
+    (session == null || session.status === undefined || session.status === "idle") &&
+    hasUserTurn(items)
+  )
+    return false;
+  return null;
+}
+
+export function progressBlockId(sessionId: string, turnId: string): string {
+  return `gajae-progress:${sessionId}:${turnId}`;
+}
+
+export interface ProgressBlock {
+  kind: "progress";
+  id: string;
+  work: TurnWork;
+  clock: TurnClock;
+  approval?: TurnApproval;
+}
+
+export interface StoredTurnClock {
+  turnId: string;
+  clock: TurnClock;
+}
+
+/**
+ * Progress row for this render, and the clock to keep for the next one.
+ *
+ * A finished session that was never watched returns neither: there is no
+ * honest duration. A streaming answer returns no row but keeps the clock.
+ */
+export function resolveTurnProgress(
+  items: readonly TranscriptItem[],
+  session: TurnSessionHint | null | undefined,
+  sessionId: string,
+  previous: StoredTurnClock | undefined,
+  now: number,
+): { progress: ProgressBlock | null; stored: StoredTurnClock | undefined } {
+  const turnId = latestUserMessageId(items) ?? "";
+  const prior = previous?.turnId === turnId ? previous.clock : undefined;
+  const mode = turnClockRuns(items, session);
+  const work = currentTurnWork(items, session);
+  if (mode === null) return { progress: null, stored: undefined };
+  // Done without a clock we started would print "0초 작업" for every old
+  // session. Waiting, approval, and error may be the first thing we see, and
+  // a stopped clock at zero is honest for those.
+  if (mode === false && !prior && (work == null || work.kind === "done"))
+    return { progress: null, stored: undefined };
+
+  const clock = stepTurnClock(prior, now, mode);
+  const stored: StoredTurnClock = { turnId, clock };
+  if (!work) return { progress: null, stored };
+  // A finished turn we never saw running has no duration to print. The held
+  // clock from an approval or a waiting row we opened mid-way is not one.
+  if (work.kind === "done" && !clock.ran)
+    return { progress: null, stored: undefined };
+  return {
+    progress: {
+      kind: "progress",
+      id: progressBlockId(sessionId, turnId || "session"),
+      work,
+      clock,
+      ...(work.kind === "approval"
+        ? { approval: currentTurnApproval(items) }
+        : {}),
+    },
+    stored,
+  };
+}
+
+export function appendProgressBlock(
+  blocks: readonly TranscriptBlock[],
+  progress: ProgressBlock | null,
+): readonly (TranscriptBlock | ProgressBlock)[] {
+  if (!progress) return blocks;
+  return [...blocks, progress];
 }
 
 /** Commit blank-line-delimited Markdown blocks only outside fenced code. */

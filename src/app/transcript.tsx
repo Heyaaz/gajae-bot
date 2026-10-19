@@ -8,18 +8,24 @@ import type {
 import type { ToolActivity, ToolViewMode, TranscriptItem } from "../backend/types";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import {
+  appendProgressBlock,
   attachmentSummaryText,
   copyableMessageText,
   groupTranscriptItems,
   parseSkillInvocation,
+  resolveTurnProgress,
   shouldFollowTranscript,
   recentUserRequests,
   searchTranscriptItems,
   summarizeToolRun,
   streamingMarkdownParts,
   transcriptBlockIndexForItem,
+  transcriptRowEstimate,
   turnStartBlockIds,
+  type StoredTurnClock,
+  type TurnSessionHint,
 } from "../transcript-utils";
+import { GajaeProgressRow } from "./gajae-progress";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Brain,
@@ -40,6 +46,7 @@ import {
 import {
   isValidElement,
   memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -362,6 +369,8 @@ export interface TranscriptProps {
    * user had deliberately scrolled away from.
    */
   sentRequestToken?: number;
+  /** Session row the progress emoticon reads. Absent on a session with no row. */
+  turnSession?: TurnSessionHint | null;
   compacting?: boolean;
   /** The persisted, window-wide reasoning-card preference. */
   thoughtsExpanded?: boolean;
@@ -401,6 +410,7 @@ export function Transcript({
   sessionId,
   items,
   sentRequestToken = 0,
+  turnSession = null,
   compacting = false,
   thoughtsExpanded = false,
   onToggleThoughtsExpanded,
@@ -473,23 +483,46 @@ export function Transcript({
   // opening a session is not read as a request that was just typed.
   const answeredSendRef = useRef(sentRequestToken);
 
-  const blocks = useMemo(() => groupTranscriptItems(items), [items]);
-  const turnStarts = useMemo(() => turnStartBlockIds(blocks), [blocks]);
+  const grouped = useMemo(() => groupTranscriptItems(items), [items]);
+  const turnStarts = useMemo(() => turnStartBlockIds(grouped), [grouped]);
+  // One clock per session, kept across renders so a streaming answer can hide the
+  // row without forgetting when the turn started. The row itself only ticks a
+  // text node; this memo runs when the transcript or the session status changes.
+  const turnClockRef = useRef(new Map<string, StoredTurnClock>());
+  const turnStatus = turnSession?.status;
+  const turnPhase = turnSession?.phase;
+  const retryProgress = useCallback(() => {
+    onRetryLastRequest?.(sessionId);
+  }, [onRetryLastRequest, sessionId]);
+  const rows = useMemo(() => {
+    const previous = turnClockRef.current.get(sessionId);
+    const resolved = resolveTurnProgress(
+      items,
+      { status: turnStatus, phase: turnPhase },
+      sessionId,
+      previous,
+      Date.now(),
+    );
+    if (resolved.stored) turnClockRef.current.set(sessionId, resolved.stored);
+    else turnClockRef.current.delete(sessionId);
+    return appendProgressBlock(grouped, resolved.progress);
+  }, [grouped, items, sessionId, turnPhase, turnStatus]);
   // The restoration runs across frames and has to name the anchored block, so it reads the
   // current blocks rather than the ones its effect closed over.
-  const blocksRef = useRef(blocks);
+  const blocksRef = useRef(rows);
   useLayoutEffect(() => {
-    blocksRef.current = blocks;
-  }, [blocks]);
+    blocksRef.current = rows;
+  }, [rows]);
 
   // Only the blocks near the viewport are mounted. A full session used to keep ~800
   // entries and 20,000 nodes live, which made every width change -- opening the detail
   // panel, resizing the window -- re-wrap and re-measure the whole document in one
   // frame. Estimates are refined by measuring each row as it mounts.
   const virtualizer = useVirtualizer({
-    count: blocks.length,
+    count: rows.length,
     getScrollElement: () => transcriptRef.current,
-    estimateSize: () => 140,
+    estimateSize: (index) =>
+      transcriptRowEstimate(rows[index]?.kind === "progress" ? "progress" : "item"),
     // offsetHeight, not getBoundingClientRect: the rect is scaled by the window's zoom
     // level while the offsets the virtualizer positions rows with are not. At 110% zoom
     // every row was recorded 10% too tall (941px measured as 1035px), so the reserved
@@ -499,7 +532,7 @@ export function Transcript({
     // is already inside this box. Reading margins off the cards double counted the spacing
     // -- once in the measured height, again in layout -- for gaps of -154px to +81px.
     measureElement: (element) => (element as HTMLElement).offsetHeight,
-    getItemKey: (index) => blocks[index]?.id ?? index,
+    getItemKey: (index) => rows[index]?.id ?? index,
     // Rows are only measured once mounted, and a row's real height runs from 61px to
     // 1415px against a single estimate. Too small an overscan and the rows arriving at the
     // bottom edge get positioned on the estimate before they are measured, so they
@@ -564,8 +597,8 @@ export function Transcript({
     selfScrollingRef.current = true;
     setFollowing(true);
     virtualizer.measure();
-    if (blocks.length > 0)
-      virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+    if (rows.length > 0)
+      virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
     const frame = requestAnimationFrame(() => {
       const element = transcriptRef.current;
       if (element && followingRef.current)
@@ -573,7 +606,7 @@ export function Transcript({
       selfScrollingRef.current = false;
     });
     return () => cancelAnimationFrame(frame);
-  }, [blocks.length, sessionId, virtualizer]);
+  }, [rows.length, sessionId, virtualizer]);
 
   // Measure slots the first time they mount.
   //
@@ -612,7 +645,7 @@ export function Transcript({
   const totalSize = virtualizer.getTotalSize();
 
   useEffect(() => {
-    if (!followingRef.current || blocks.length === 0) return;
+    if (!followingRef.current || rows.length === 0) return;
     if (!transcriptRef.current) return;
     // Keeping the newest message in view is the point of this pane, and virtualization
     // makes it a moving target: rows below are unmounted, so the scroll height is an
@@ -683,7 +716,7 @@ export function Transcript({
       scroller?.removeEventListener("scroll", noteForeignScroll);
       selfScrollingRef.current = false;
     };
-  }, [blocks.length, items]);
+  }, [rows.length, items]);
 
   /**
    * Where the viewport top sits right now, read before `measure()` discards the row
@@ -929,7 +962,7 @@ export function Transcript({
       cancelResizeRestore();
       observer.disconnect();
     };
-  }, [blocks.length, virtualizer]);
+  }, [rows.length, virtualizer]);
 
   useEffect(
     () => () => {
@@ -941,7 +974,7 @@ export function Transcript({
 
   useEffect(() => {
     if (!revealItemId) return;
-    const index = transcriptBlockIndexForItem(blocks, revealItemId);
+    const index = transcriptBlockIndexForItem(grouped, revealItemId);
     if (index < 0) return;
     // A search hit is usually not mounted, so it has to be scrolled to by index before
     // its element exists to highlight. Navigation wins over a pending restoration.
@@ -972,7 +1005,7 @@ export function Transcript({
       window.clearTimeout(removeTimer);
       cancelAnimationFrame(highlightFrame);
     };
-  }, [blocks, onRevealComplete, revealItemId, virtualizer]);
+  }, [grouped, onRevealComplete, revealItemId, virtualizer]);
 
   // A wheel, a trackpad swipe, or a touch drag over the transcript. Direction decides who
   // owns the view, never the distance to the bottom -- see transcriptGestureClaimsView.
@@ -1049,14 +1082,14 @@ export function Transcript({
     scrolledAwayRef.current = false;
     gestureAtRef.current = 0;
     cancelHandBack();
-    if (blocks.length === 0) return;
+    if (rows.length === 0) return;
     // Scrolling by index rather than to scrollHeight: rows above are unmounted, so the
     // total height is still an estimate and a raw scrollTop lands short. Dragging the
     // scrollbar to the bottom hits the same problem, which is what the follow effect
     // below corrects.
     // Instant, not smooth: a smooth scroll makes the virtualizer defer measuring the rows
     // it passes, which is what left the first screen unmeasured and overlapping.
-    virtualizer.scrollToIndex(blocks.length - 1, { align: "end" });
+    virtualizer.scrollToIndex(rows.length - 1, { align: "end" });
     // One write is not the hand-back: it lands on a bottom that is still an estimate, and
     // the layout keeps moving under it -- the composer gives back the height it held for
     // the draft, and the rows the request appended are measured into place. A single
@@ -1114,7 +1147,11 @@ export function Transcript({
     latestFrameRef.current = requestAnimationFrame(settle);
   }
 
-  if (items.length === 0 && !compacting) {
+  if (
+    items.length === 0 &&
+    !compacting &&
+    !rows.some((row) => row.kind === "progress")
+  ) {
     return (
       <div className="empty-conversation">
         <span className="empty-conversation__mark">
@@ -1213,19 +1250,31 @@ export function Transcript({
           style={{ height: `${totalSize}px` }}
         >
           {virtualItems.map((virtualRow) => {
-            const block = blocks[virtualRow.index];
+            const block = rows[virtualRow.index];
             if (!block) return null;
             return (
               <div
                 className="transcript-slot"
                 data-index={virtualRow.index}
-                data-last={virtualRow.index === blocks.length - 1 ? "true" : undefined}
+                data-last={virtualRow.index === rows.length - 1 ? "true" : undefined}
                 data-turn-start={turnStarts.has(block.id) ? "true" : undefined}
                 key={virtualRow.key}
                 ref={virtualizer.measureElement}
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                {block.kind === "item" ? (
+                {block.kind === "progress" ? (
+                  <GajaeProgressRow
+                    kind={block.work.kind}
+                    label={block.work.label}
+                    ticking={block.work.ticking}
+                    startedAt={block.clock.zeroAt}
+                    pausedMs={block.clock.pausedMs}
+                    heldAt={block.clock.heldAt}
+                    approval={block.approval}
+                    onResolve={onResolveTool}
+                    onRetry={onRetryLastRequest ? retryProgress : undefined}
+                  />
+                ) : block.kind === "item" ? (
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
                     <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
