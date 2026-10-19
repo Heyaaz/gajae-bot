@@ -22,6 +22,7 @@ import type {
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
   cacheTranscript,
+  currentWorkLabel,
   initialSessionId,
   discoveryRevisionIsFresh,
   lastUserRequestContent,
@@ -1844,6 +1845,11 @@ export default function App() {
                 }}
               />
               <div className="composer-wrap">
+                {composerTurnLive(selectedSession, selectedTranscript) && (
+                  <p className="conversation-progress" role="status">
+                    {currentWorkLabel(selectedTranscript)}
+                  </p>
+                )}
                 <ApprovalBanner
                   pending={pendingApprovals}
                   focusedId={focusedApprovalId}

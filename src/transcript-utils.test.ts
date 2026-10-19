@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "./backend/types";
 import {
   cacheTranscript,
+  currentWorkLabel,
   copyableMessageText,
   groupTranscriptItems,
   initialSessionId,
@@ -42,6 +43,15 @@ describe("streamingMarkdownParts", () => {
   it("does not close a fence with a shorter or different marker", () => {
     const content = "````ts\nx\n```\n\n~~~\n";
     expect(streamingMarkdownParts(content).complete).toBe("");
+  });
+});
+
+describe("currentWorkLabel", () => {
+  it("names running work but not a completed historical call", () => {
+    const call = { id: "work", kind: "tool" as const, sessionId: "s", name: "bash", description: "Running tests", status: "running" as const, createdAt: "now" };
+    expect(currentWorkLabel([call])).toBe("Running tests");
+    expect(currentWorkLabel([{ ...call, status: "completed" }])).toBe("응답 대기 중");
+    expect(currentWorkLabel([{ ...call, status: "approval-required" }])).toBe("승인 대기 중");
   });
 });
 

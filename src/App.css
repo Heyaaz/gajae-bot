@@ -1303,7 +1303,7 @@
   white-space: nowrap;
 }
 .recent-requests > header strong {
-  font-size: 8.5px;
+  font-size: 11px;
   font-weight: 600;
 }
 .recent-requests-timeline-toggle {
@@ -1442,14 +1442,14 @@
 }
 .recent-requests button > strong {
   overflow: hidden;
-  font-size: 8.5px;
+  font-size: 11px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .recent-requests button > time {
-  color: #55555c;
-  font-size: 7.5px;
+  color: var(--text-tertiary);
+  font-size: 10px;
   white-space: nowrap;
 }
 .conversation--running::before,
@@ -2005,7 +2005,7 @@
   align-items: center;
   gap: 5px;
   color: var(--text-tertiary);
-  font-size: 9px;
+  font-size: 11px;
   text-transform: capitalize;
 }
 .tool-status--completed,
@@ -2059,7 +2059,7 @@
   overflow: hidden;
   color: #85858d;
   font:
-    9.5px/1.45 ui-monospace,
+    11px/1.45 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -2100,7 +2100,7 @@
 }
 .tool-full-details section > strong {
   color: var(--text-tertiary);
-  font-size: 8.5px;
+  font-size: 10px;
   letter-spacing: 0.05em;
   text-transform: uppercase;
 }
@@ -3109,6 +3109,12 @@
   background: rgba(227, 179, 106, 0.1);
   border: 1px solid rgba(227, 179, 106, 0.32);
   border-radius: 8px;
+}
+.conversation-progress {
+  margin: 0 0 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 .approval-banner > span {
   flex: 1 1 auto;

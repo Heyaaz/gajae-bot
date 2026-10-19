@@ -2,6 +2,17 @@ import type { TranscriptItem } from "./backend/types";
 
 export const MAX_CACHED_TRANSCRIPTS = 3;
 
+export function currentWorkLabel(items: readonly TranscriptItem[]): string {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind === "tool" && item.status === "approval-required") return "승인 대기 중";
+    if (item.kind === "tool" && item.status === "running") return item.description || "도구 실행 중";
+    if (item.kind === "thought" && item.streaming) return "추론 중";
+    if (item.kind === "message" && item.role === "assistant" && item.streaming) return "답변 작성 중";
+  }
+  return "응답 대기 중";
+}
+
 /** Commit blank-line-delimited Markdown blocks only outside fenced code. */
 export function streamingMarkdownParts(content: string): { complete: string; pending: string } {
   let fence: { marker: string; length: number } | undefined;
