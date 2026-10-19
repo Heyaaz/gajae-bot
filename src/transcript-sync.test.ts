@@ -46,6 +46,7 @@ describe("transcript safety-net revision", () => {
     expect(raced).toEqual({
       kind: "loaded",
       items: [row("old")],
+      change: { kind: "full", items: [row("old")] },
       revision: undefined,
     });
 
@@ -57,6 +58,7 @@ describe("transcript safety-net revision", () => {
     expect(caughtUp).toEqual({
       kind: "loaded",
       items: [row("new")],
+      change: { kind: "full", items: [row("new")] },
       revision: "rev-2",
     });
   });

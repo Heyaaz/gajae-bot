@@ -587,6 +587,16 @@ export type TranscriptItem =
   | BranchSummaryActivity
   | SystemNoticeActivity;
 
+/**
+ * A safety-net read of a transcript the caller already has.
+ *
+ * `full` is the merged conversation. `patch` is only the rows that changed or
+ * were appended, in their current order of appearance.
+ */
+export type TranscriptChange =
+  | { kind: "full"; items: TranscriptItem[] }
+  | { kind: "patch"; items: TranscriptItem[] };
+
 export type AgentEvent =
   | { type: "connection.updated"; connection: BackendConnection }
   | { type: "session.created"; session: AgentSession }
@@ -711,6 +721,11 @@ export interface GjcDesktopBridge {
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  /**
+   * Safety-net read that sends changed rows instead of the whole conversation.
+   * The first read is `full`.
+   */
+  getTranscriptChanges(sessionId: string): Promise<TranscriptChange>;
   /** Cheap durable-file revision used by the selected-transcript safety net. */
   getTranscriptRevision(sessionId: string): Promise<string | undefined>;
   /**

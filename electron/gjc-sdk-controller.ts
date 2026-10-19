@@ -33,6 +33,7 @@ import type {
   ToolDecision,
   ThoughtActivity,
   TranscriptItem,
+  TranscriptChange,
   ArtifactContent,
   DiffSnapshot,
   EffectiveRuntimeState,
@@ -46,6 +47,7 @@ import type {
   SystemNoticeActivity,
 } from "../shared/agent-contract.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
+import { transcriptDelivery } from "../shared/transcript-item-equal.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 import {
@@ -1829,8 +1831,20 @@ export class GjcSdkController {
       this.removeLocalSession(sessionId, true);
       return [];
     }
-    await this.refreshModelProfiles(sessionId);
+    // Model profiles are loaded when the session is attached. Reading them again
+    // here made every safety-net body fetch spawn `models.profiles.list`.
     return (this.transcripts.get(sessionId) ?? []).map(cloneTranscriptItem);
+  }
+
+  /**
+   * Safety-net read. The first observation is the whole merged transcript.
+   * Later reads send only the rows that changed, which is what the file watcher
+   * already does through `publishTranscriptSync`.
+   */
+  async getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
+    const previous = this.transcripts.get(sessionId)?.slice();
+    const items = await this.getTranscript(sessionId);
+    return transcriptDelivery(previous, items);
   }
 
   /**

@@ -7,6 +7,7 @@ import type {
   MessageInput,
   GjcDesktopBridge,
   ToolDecision,
+  TranscriptChange,
   TranscriptItem,
 } from "./types";
 import type {
@@ -88,6 +89,10 @@ export class GjcAgentBackend implements AgentBackend {
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     return this.bridge.getTranscript(sessionId);
+  }
+
+  getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
+    return this.bridge.getTranscriptChanges(sessionId);
   }
 
   getTranscriptRevision(sessionId: string): Promise<string | undefined> {
