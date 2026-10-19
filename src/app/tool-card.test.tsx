@@ -51,3 +51,31 @@ describe("tool card status", () => {
     expect(markup).not.toContain("mini-spinner");
   });
 });
+
+describe("tool card auto-deny hint", () => {
+  function renderDenied(autoDenyHint: { message: string; onOpenSettings?: () => void } | undefined): string {
+    return renderToStaticMarkup(
+      createElement(TranscriptItemView, {
+        item: tool("denied"),
+        onResolveTool: noop,
+        onReadArtifact: noop,
+        autoDenyHint,
+      } as never),
+    );
+  }
+
+  it("shows the hint and an open-settings control when the hint is present", () => {
+    const markup = renderDenied({
+      message: "현재 권한 모드 때문에 자동 거부됨",
+      onOpenSettings: noop,
+    });
+    expect(markup).toContain("tool-card-auto-deny");
+    expect(markup).toContain("현재 권한 모드 때문에 자동 거부됨");
+    expect(markup).toContain("설정 열기");
+  });
+
+  it("omits the hint entirely when none is given (e.g. always-allow mode)", () => {
+    const markup = renderDenied(undefined);
+    expect(markup).not.toContain("tool-card-auto-deny");
+  });
+});

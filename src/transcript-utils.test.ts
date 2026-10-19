@@ -12,6 +12,7 @@ import {
   mergeDiscoveredSessions,
   attachmentSummaryText,
   mergeTranscriptItem,
+  lastUserRequestContent,
   pendingToolApprovals,
   recentUserRequests,
   searchTranscriptItems,
@@ -879,6 +880,21 @@ describe("searchTranscriptItems", () => {
       { ...message, id: "m2", content: "needle two" },
     ];
     expect(searchTranscriptItems(items, "needle")).toEqual(["m1", "m2"]);
+  });
+});
+
+describe("lastUserRequestContent", () => {
+  it("returns the raw content of the most recent user message", () => {
+    const items = [
+      { ...message, id: "m1", role: "user" as const, content: "first" },
+      { ...message, id: "m2", role: "assistant" as const, content: "reply" },
+      { ...message, id: "m3", role: "user" as const, content: "second, with markup" },
+    ];
+    expect(lastUserRequestContent(items)).toBe("second, with markup");
+  });
+
+  it("returns undefined when there is no user message", () => {
+    expect(lastUserRequestContent([message, notice])).toBeUndefined();
   });
 });
 

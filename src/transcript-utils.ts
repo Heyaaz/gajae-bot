@@ -233,6 +233,25 @@ export function searchTranscriptItems(
 }
 
 /**
+ * The session's own last user message, verbatim -- what a run-failure notice's
+ * retry button resends.
+ *
+ * `recentUserRequest` above exists for *display* and already strips local
+ * attachment markup for that reason; a retry has to resend the request GJC
+ * actually saw, including that markup, so it reads the raw content directly
+ * instead.
+ */
+export function lastUserRequestContent(
+  items: readonly TranscriptItem[],
+): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind === "message" && item.role === "user") return item.content;
+  }
+  return undefined;
+}
+
+/**
  * Tool calls currently waiting on an approval decision, in transcript order.
  *
  * The sticky approval banner needs this independent of whichever blocks the

@@ -2289,6 +2289,36 @@ describe("live rows across a durable rebuild", () => {
     }
   });
 
+  it("keeps a run-failure notice across a durable rebuild instead of dropping it like a toast", async () => {
+    // A `GJC run failed` notice (id `gjc-error-N`) is appended live the same way
+    // the cancelled notice is, so without a matching entry in the resync's
+    // app-owned allowlist it would vanish the moment a durable rebuild ran --
+    // leaving no more record of the failure than the app-error toast the issue
+    // was about.
+    const { controller, internals, root, cleanup } = await rebuildHarness();
+    try {
+      await durableFile(root, "s1", [userRow]);
+      internals.appendTranscript({
+        id: `gjc-error-${internals.nextLocalId++}`,
+        kind: "notice",
+        sessionId: "s1",
+        title: "GJC run failed",
+        content: "network timeout",
+        tone: "warning",
+        createdAt: "now",
+      });
+      await internals.refreshTranscriptFromFile("s1");
+      const failureNotice = rows(internals).find(
+        (item) => item.kind === "notice" && item.title === "GJC run failed",
+      );
+      expect(failureNotice).toBeDefined();
+      expect(ids(internals)).toEqual(["shared-message-u1", failureNotice.id]);
+      void controller;
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("polls the tail reader on the short window without spinning on an empty answer", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session());

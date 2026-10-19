@@ -24,6 +24,7 @@ import {
   cacheTranscript,
   initialSessionId,
   discoveryRevisionIsFresh,
+  lastUserRequestContent,
   mergeDiscoveredSessions,
   mergeTranscriptItem,
   pendingToolApprovals,
@@ -1244,6 +1245,18 @@ export default function App() {
     }
   }
 
+  // A run-failure notice's 다시 시도 button: resends the session's own last request
+  // rather than making the user retype it. Text only -- the transcript does not
+  // keep the original attachments to resend alongside it.
+  const retryLastRequest = useCallback(
+    (sessionId: string): void => {
+      const text = lastUserRequestContent(transcripts[sessionId] ?? []);
+      if (!text) return;
+      void sendMessage(sessionId, { text, images: [], files: [] });
+    },
+    [transcripts],
+  );
+
   async function setSessionConfig(
     sessionId: string,
     configId: string,
@@ -1807,6 +1820,23 @@ export default function App() {
                 onRevealComplete={completeReveal}
                 onResolveTool={resolveToolCall}
                 onReadArtifact={readArtifact}
+                onRetryLastRequest={retryLastRequest}
+                autoDenyHint={
+                  preferences.permissionHandling !== "always-allow" &&
+                  preferences.permissionHandling !== "auto"
+                    ? {
+                        message: "현재 권한 모드 때문에 자동 거부됨",
+                        onOpenSettings: openSettings,
+                      }
+                    : undefined
+                }
+                emptyStateMeta={{
+                  workspace: selectedSession.workspace,
+                  modelDisplay: selectedSession.modelDisplay,
+                  recentWorkspaces,
+                  onWorkspaceChange: (workspace) =>
+                    createSession({ title: "새 Gajae 세션", workspace }),
+                }}
               />
               <div className="composer-wrap">
                 <ApprovalBanner

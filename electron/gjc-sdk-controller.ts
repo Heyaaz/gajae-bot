@@ -5494,7 +5494,8 @@ export class GjcSdkController {
     for (let index = 0; index < previous.length; index += 1) {
       const row = previous[index]!;
       const isAppOwned =
-        (row.kind === "notice" && row.id.startsWith("gjc-cancelled-")) ||
+        (row.kind === "notice" &&
+          (row.id.startsWith("gjc-cancelled-") || row.id.startsWith("gjc-error-"))) ||
         appOwned.some(
           (view) => view !== undefined && view.id === row.id,
         );

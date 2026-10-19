@@ -26,6 +26,7 @@ import {
   ChevronDown,
   Clock3,
   Copy,
+  FolderGit2,
   GitFork,
   ListChecks,
   Paperclip,
@@ -45,7 +46,13 @@ import {
   useState,
 } from "react";
 import type { ComponentPropsWithoutRef, ReactNode } from "react";
-import { httpUrls, humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
+import {
+  directoryName,
+  httpUrls,
+  humanRuntimeText,
+  toolDisplayName,
+  toolStatusLabel,
+} from "./format";
 import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
 import { SkillInvocation, SkillPromptCard } from "./skill-activity";
 
@@ -367,6 +374,20 @@ export interface TranscriptProps {
   onRevealComplete?: (itemId: string) => void;
   onResolveTool: (toolId: string, optionId: string) => void;
   onReadArtifact?: (artifactId: string) => Promise<ArtifactContent>;
+  /**
+   * The auto-deny hint shown on every denied tool call, when the session's
+   * permission mode (not a user's own reject decision) is what denied it.
+   */
+  autoDenyHint?: { message: string; onOpenSettings?: () => void };
+  /** Retries the session's own last user request, from a run-failure notice's 다시 시도 button. */
+  onRetryLastRequest?: (sessionId: string) => void;
+  /** What the empty-conversation state shows about the session it is about to run in. */
+  emptyStateMeta?: {
+    workspace: string;
+    modelDisplay?: string;
+    recentWorkspaces: string[];
+    onWorkspaceChange?: (workspace: string) => void;
+  };
 }
 
 export function Transcript({
@@ -381,6 +402,9 @@ export function Transcript({
   onRevealComplete,
   onResolveTool,
   onReadArtifact,
+  autoDenyHint,
+  onRetryLastRequest,
+  emptyStateMeta,
 }: TranscriptProps) {
   // `detailed` absorbs the reasoning toggle: it always shows thought cards open
   // regardless of the persisted preference, rather than requiring a second control.
@@ -1089,6 +1113,54 @@ export function Transcript({
           <img src={gajaeIconUrl} alt="" />
         </span>
         <h2>Gajae에게 어떤 작업을 맡길까요?</h2>
+        {emptyStateMeta && (
+          <div className="empty-conversation__meta">
+            <dl>
+              <div>
+                <dt>workspace</dt>
+                <dd title={emptyStateMeta.workspace}>
+                  {directoryName(emptyStateMeta.workspace)}
+                </dd>
+              </div>
+              <div>
+                <dt>모델</dt>
+                <dd>{emptyStateMeta.modelDisplay ?? "확인 중…"}</dd>
+              </div>
+            </dl>
+            {emptyStateMeta.recentWorkspaces.length > 1 && (
+              <div className="empty-conversation__workspaces">
+                {emptyStateMeta.recentWorkspaces
+                  .filter((workspace) => workspace !== emptyStateMeta.workspace)
+                  .slice(0, 4)
+                  .map((workspace) => (
+                    <button
+                      type="button"
+                      key={workspace}
+                      title={workspace}
+                      onClick={() => emptyStateMeta.onWorkspaceChange?.(workspace)}
+                    >
+                      <FolderGit2 size={12} />
+                      {directoryName(workspace)}
+                    </button>
+                  ))}
+              </div>
+            )}
+            <ul className="empty-conversation__hints">
+              <li>
+                <kbd>⌘K</kbd>
+                <span>세션/메시지 전체 검색</span>
+              </li>
+              <li>
+                <kbd>⌘F</kbd>
+                <span>이 대화에서 찾기</span>
+              </li>
+              <li>
+                <kbd>/</kbd>
+                <span>명령어 (예: /compact, /resume)</span>
+              </li>
+            </ul>
+          </div>
+        )}
       </div>
     );
   }
@@ -1156,6 +1228,8 @@ export function Transcript({
                       onToggleThoughtsExpanded={onToggleThoughtsExpanded}
                       onResolveTool={onResolveTool}
                       onReadArtifact={onReadArtifact}
+                      autoDenyHint={autoDenyHint}
+                      onRetryLastRequest={onRetryLastRequest}
                     />
                   </div>
                 ) : (
@@ -1166,6 +1240,7 @@ export function Transcript({
                     onToggleThoughtsExpanded={onToggleThoughtsExpanded}
                     onResolveTool={onResolveTool}
                     onReadArtifact={onReadArtifact}
+                    autoDenyHint={autoDenyHint}
                   />
                 )}
               </div>
@@ -1540,6 +1615,7 @@ function ToolRunBlockView({
   onToggleThoughtsExpanded,
   onResolveTool,
   onReadArtifact,
+  autoDenyHint,
 }: {
   items: Extract<TranscriptItem, { kind: "tool" }>[];
   toolViewMode: "basic" | "reasoning" | "detailed";
@@ -1547,6 +1623,7 @@ function ToolRunBlockView({
   onToggleThoughtsExpanded?: () => void;
   onResolveTool: TranscriptProps["onResolveTool"];
   onReadArtifact: TranscriptProps["onReadArtifact"];
+  autoDenyHint?: TranscriptProps["autoDenyHint"];
 }) {
   const summary = useMemo(() => summarizeToolRun(items), [items]);
   const needsAttention = !summary.allCompleted;
@@ -1576,6 +1653,7 @@ function ToolRunBlockView({
               onToggleThoughtsExpanded={onToggleThoughtsExpanded}
               onResolveTool={onResolveTool}
               onReadArtifact={onReadArtifact}
+              autoDenyHint={autoDenyHint}
             />
           </div>
         ))}
@@ -1657,12 +1735,16 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   onToggleThoughtsExpanded,
   onResolveTool,
   onReadArtifact,
+  autoDenyHint,
+  onRetryLastRequest,
 }: {
   item: TranscriptItem;
   thoughtsExpanded?: boolean;
   onToggleThoughtsExpanded?: () => void;
   onResolveTool: TranscriptProps["onResolveTool"];
   onReadArtifact: TranscriptProps["onReadArtifact"];
+  autoDenyHint?: TranscriptProps["autoDenyHint"];
+  onRetryLastRequest?: TranscriptProps["onRetryLastRequest"];
 }) {
   if (item.kind === "message") {
     const copyText = copyableMessageText(item.content);
@@ -1749,6 +1831,11 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   }
 
   if (item.kind === "notice") {
+    // A run failure is announced this way (id `gjc-error-`, title "GJC run failed"),
+    // and is the one notice tone this app can act on: the request that failed is
+    // still known (the transcript's own last user message), so retrying it is one
+    // click rather than retyping the prompt.
+    const isRunFailure = item.id.startsWith("gjc-error-");
     return (
       <article className={`notice-card notice-card--${item.tone}`}>
         <Check size={16} />
@@ -1756,6 +1843,15 @@ export const TranscriptItemView = memo(function TranscriptItemView({
           <strong>{item.title}</strong>
           <small>{item.content}</small>
         </span>
+        {isRunFailure && onRetryLastRequest && (
+          <button
+            type="button"
+            className="notice-card-retry"
+            onClick={() => onRetryLastRequest(item.sessionId)}
+          >
+            다시 시도
+          </button>
+        )}
       </article>
     );
   }
@@ -1824,6 +1920,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
       tool={item}
       onResolve={onResolveTool}
       onReadArtifact={onReadArtifact}
+      autoDenyHint={item.kind === "tool" && item.status === "denied" ? autoDenyHint : undefined}
     />
   );
 });
@@ -1832,9 +1929,21 @@ export interface ToolCardProps {
   tool: ToolActivity;
   onResolve: (toolId: string, optionId: string) => void;
   onReadArtifact?: (artifactId: string) => Promise<ArtifactContent>;
+  /**
+   * Shown on a denied call when the current permission mode is what denied it,
+   * rather than a user's own reject decision -- the app has no reverse channel to
+   * ask an external controller for a decision (README, Permission handling), so a
+   * session not in "always allow" mode has every call auto-denied by GJC itself.
+   */
+  autoDenyHint?: { message: string; onOpenSettings?: () => void };
 }
 
-export function ToolCard({ tool, onResolve, onReadArtifact }: ToolCardProps) {
+export function ToolCard({
+  tool,
+  onResolve,
+  onReadArtifact,
+  autoDenyHint,
+}: ToolCardProps) {
   const approvalRequired = tool.status === "approval-required";
   const [expanded, setExpanded] = useState(false);
   const [artifact, setArtifact] = useState<ArtifactContent | null>(null);
@@ -1975,6 +2084,22 @@ export function ToolCard({ tool, onResolve, onReadArtifact }: ToolCardProps) {
               </small>
             </section>
           </div>
+        )}
+        {autoDenyHint && (
+          <footer className="tool-card-auto-deny">
+            <span>
+              <ShieldCheck size={14} /> {autoDenyHint.message}
+            </span>
+            {autoDenyHint.onOpenSettings && (
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={autoDenyHint.onOpenSettings}
+              >
+                설정 열기
+              </button>
+            )}
+          </footer>
         )}
         {approvalRequired && (
           <footer>
