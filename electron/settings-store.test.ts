@@ -80,6 +80,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: false,
       toolViewMode: 'reasoning',
       notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+      language: 'ko',
       runningSubmission: 'queue',
     })
   })
@@ -130,7 +131,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, runningSubmission: 'queue' })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, language: 'ko', runningSubmission: 'queue' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
@@ -146,6 +147,15 @@ describe('SettingsStore', () => {
     expect(saved.completed).toEqual({ enabled: false, sound: 'Glass' })
     expect(saved.failed).toEqual(DEFAULT_NOTIFICATION_PREFERENCES.failed)
     expect(new SettingsStore(userData, root).get().notificationPreferences).toEqual(saved)
+  })
+
+  it('persists the resolved UI language alone', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+    expect(store.setLanguage('en')).toBe('en')
+    expect(new SettingsStore(userData, root).get().language).toBe('en')
+    expect(() => store.setLanguage('fr')).toThrow('UI language must be ko or en')
   })
 
   it('keeps accepted settings unchanged when persistence fails', () => {

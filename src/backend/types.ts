@@ -27,5 +27,6 @@ export type {
   ToolDecision,
   ThoughtActivity,
   ToolViewMode,
+  UiLanguage,
   TranscriptItem,
 } from "../../shared/agent-contract";

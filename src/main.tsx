@@ -7,8 +7,12 @@ import { GjcAgentBackend } from './backend/gjc-agent-backend'
 import { MockAgentBackend } from './backend/mock-agent-backend'
 import { RemoteAgentBackend } from './backend/remote-agent-backend'
 import { initializeTheme } from './theme'
+import { initializeLanguage, getLanguage } from './i18n'
 import './index.css'
 
+initializeLanguage()
+const settingsBridge = window.agentControlDesktop?.settings
+if (settingsBridge) void settingsBridge.setLanguage(getLanguage()).catch(() => undefined)
 initializeTheme()
 
 /**

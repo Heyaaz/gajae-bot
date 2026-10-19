@@ -63,6 +63,8 @@ import {
 } from "./format";
 import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
 import { SkillInvocation, SkillPromptCard } from "./skill-activity";
+import { locale, t, useLanguage } from "../i18n";
+
 
 // How long a gesture keeps its say over the follow decision. Long enough to cover the
 // smooth-scroll animation one notch triggers -- measured at ~157ms from the wheel event to
@@ -148,7 +150,7 @@ function MarkdownPre({
         <button
           type="button"
           className={`code-block-copy ${copied ? "is-copied" : ""}`}
-          title={copied ? "복사됨" : "복사"}
+          title={copied ? t("복사됨") : t("복사")}
           onClick={() => void copy()}
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
@@ -567,7 +569,7 @@ export function Transcript({
     const prepare = (event: Event): void => {
       const target = event.target;
       if (!(target instanceof Element)) return;
-      if (!target.closest('button[title="세션 정보"], .inspector header button')) return;
+      if (!target.closest('[data-session-info], .inspector header button')) return;
       rememberViewport();
       resizePreparedRef.current = true;
       requestAnimationFrame(() => {
@@ -1157,7 +1159,7 @@ export function Transcript({
         <span className="empty-conversation__mark">
           <img src={gajaeIconUrl} alt="" />
         </span>
-        <h2>Gajae에게 어떤 작업을 맡길까요?</h2>
+        <h2>{t("Gajae에게 어떤 작업을 맡길까요?")}</h2>
         {emptyStateMeta && (
           <div className="empty-conversation__meta">
             <dl>
@@ -1168,8 +1170,8 @@ export function Transcript({
                 </dd>
               </div>
               <div>
-                <dt>모델</dt>
-                <dd>{emptyStateMeta.modelDisplay ?? "확인 중…"}</dd>
+                <dt>{t("모델")}</dt>
+                <dd>{emptyStateMeta.modelDisplay ?? t("확인 중…")}</dd>
               </div>
             </dl>
             {emptyStateMeta.recentWorkspaces.length > 1 && (
@@ -1193,15 +1195,15 @@ export function Transcript({
             <ul className="empty-conversation__hints">
               <li>
                 <kbd>⌘K</kbd>
-                <span>세션/메시지 전체 검색</span>
+                <span>{t("세션/메시지 전체 검색")}</span>
               </li>
               <li>
                 <kbd>⌘F</kbd>
-                <span>이 대화에서 찾기</span>
+                <span>{t("이 대화에서 찾기")}</span>
               </li>
               <li>
                 <kbd>/</kbd>
-                <span>명령어 (예: /compact, /resume)</span>
+                <span>{t("명령어 (예: /compact, /resume)")}</span>
               </li>
             </ul>
           </div>
@@ -1288,8 +1290,7 @@ export function Transcript({
           type="button"
           onClick={scrollToLatest}
         >
-          최신 내용으로
-        </button>
+          {t("최신 내용으로")} </button>
       )}
     </div>
   );
@@ -1301,21 +1302,21 @@ export function CompactionCard({
   item: Extract<TranscriptItem, { kind: "compaction" }>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const tokens = item.tokensBefore.toLocaleString("en-US");
+  const tokens = item.tokensBefore.toLocaleString(locale());
   const preview = item.shortSummary || item.summary;
   return (
     <article className={`compaction-card ${expanded ? "is-expanded" : ""}`}>
       <header>
         <Shrink size={15} />
         <strong>compaction</strong>
-        <span>{tokens} 토큰에서 압축됨</span>
+        <span>{tokens} {t("토큰에서 압축됨")}</span>
       </header>
       <button
         type="button"
         className="compaction-toggle"
         onClick={() => setExpanded((value) => !value)}
       >
-        {expanded ? "요약 접기" : "요약 펼치기"}
+        {expanded ? t("요약 접기") : t("요약 펼치기")}
       </button>
       {expanded ? (
         <div className="compaction-summary markdown-body">
@@ -1345,14 +1346,14 @@ export function BranchSummaryCard({
       <header>
         <GitFork size={15} />
         <strong>branch</strong>
-        <span>분기 요약</span>
+        <span>{t("분기 요약")}</span>
       </header>
       <button
         type="button"
         className="compaction-toggle"
         onClick={() => setExpanded((value) => !value)}
       >
-        {expanded ? "요약 접기" : "요약 펼치기"}
+        {expanded ? t("요약 접기") : t("요약 펼치기")}
       </button>
       {expanded && (
         <div className="compaction-summary markdown-body">
@@ -1415,7 +1416,7 @@ export function SystemNoticeCard({
           aria-expanded={expanded}
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "접기" : "더 보기"}
+          {expanded ? t("접기") : t("더 보기")}
         </button>
       </article>
     );
@@ -1440,7 +1441,7 @@ export function SystemNoticeCard({
           className="compaction-toggle"
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "접기" : "더 보기"}
+          {expanded ? t("접기") : t("더 보기")}
         </button>
       )}
     </article>
@@ -1612,7 +1613,7 @@ export function TodoCard({
           className="compaction-toggle"
           onClick={() => setExpanded((value) => !value)}
         >
-          {expanded ? "접기" : "더 보기"}
+          {expanded ? t("접기") : t("더 보기")}
         </button>
       )}
       <footer className="todo-provenance">
@@ -1661,8 +1662,7 @@ function ToolRunBlockView({
             className="tool-run-collapse"
             onClick={() => setManuallyExpanded(false)}
           >
-            접기
-          </button>
+            {t("접기")} </button>
         )}
         {items.map((tool) => (
           <div
@@ -1685,10 +1685,10 @@ function ToolRunBlockView({
     );
   }
   const parts: string[] = [];
-  if (summary.commandCount > 0) parts.push(`명령 ${summary.commandCount}개 실행`);
+  if (summary.commandCount > 0) parts.push(t`명령 ${summary.commandCount}개 실행`);
   if (summary.fileCount > 0)
     parts.push(
-      `파일 ${summary.fileCount}개 수정 (+${summary.added} \u2212${summary.removed})`,
+      t`파일 ${summary.fileCount}개 수정 (+${summary.added} \u2212${summary.removed})`,
     );
   return (
     <div className="transcript-entry tool-run tool-run--collapsed">
@@ -1698,7 +1698,7 @@ function ToolRunBlockView({
         onClick={() => setManuallyExpanded(true)}
       >
         <TerminalSquare size={14} />
-        <span>{parts.join(" \u00b7 ") || `도구 ${items.length}개 실행`}</span>
+        <span>{parts.join(" \u00b7 ") || t`도구 ${items.length}개 실행`}</span>
       </button>
     </div>
   );
@@ -1724,14 +1724,14 @@ export function ThoughtCard({
       <header>
         <Brain size={15} />
         <strong>Gajae</strong>
-        <span>추론</span>
+        <span>{t("추론")}</span>
         {!item.streaming && (
           <button
             type="button"
             className="thought-toggle"
             onClick={onToggle}
           >
-            {expanded ? "접기" : "펼치기"}
+            {expanded ? t("접기") : t("펼치기")}
           </button>
         )}
       </header>
@@ -1771,6 +1771,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   onRetryLastRequest?: TranscriptProps["onRetryLastRequest"];
   onRevealInspector?: TranscriptProps["onRevealInspector"];
 }) {
+  useLanguage();
   if (item.kind === "message") {
     const copyText = copyableMessageText(item.content);
     const attachments = attachmentSummaryText(item.content);
@@ -1867,8 +1868,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
             className="notice-card-retry"
             onClick={() => onRetryLastRequest(item.sessionId)}
           >
-            다시 시도
-          </button>
+            {t("다시 시도")} </button>
         )}
       </article>
     );
@@ -1909,7 +1909,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
       <article className="plan-card">
         <header>
           <ListChecks size={15} />
-          <strong>계획</strong>
+          <strong>{t("계획")}</strong>
           <span>
             {
               item.entries.filter((entry) => entry.status === "completed")
@@ -2008,13 +2008,12 @@ export function ToolCard({
             className="tool-reveal-inspector"
             onClick={() => onRevealInspector(tool.id)}
           >
-            세션 정보에서 보기
-          </button>
+            {t("세션 정보에서 보기")} </button>
         )}
         {tool.subagents && tool.subagents.length > 0 && (
           <div className="tool-full-details">
             <section>
-              <strong>요청된 서브에이전트</strong>
+              <strong>{t("요청된 서브에이전트")}</strong>
               {/* What the call asked for, not what those agents are doing now: their
                   status is inferred from the parent and is not authoritative here. */}
               {tool.subagents.map((subagent) => (
@@ -2034,13 +2033,13 @@ export function ToolCard({
             key={`${tool.id}-image-${index}`}
             className="tool-image"
             src={image.dataUrl}
-            alt={tool.targetPath ?? "도구가 읽은 이미지"}
+            alt={tool.targetPath ?? t("도구가 읽은 이미지")}
           />
         ))}
         {!tool.diff && output?.text && (
           <div className="tool-output-preview">
             {output.omittedLines > 0 && (
-              <small>앞부분 {output.omittedLines}줄 생략</small>
+              <small>{t("앞부분")} {output.omittedLines}{t("줄 생략")}</small>
             )}
             <pre>{output.text}</pre>
           </div>
@@ -2051,7 +2050,7 @@ export function ToolCard({
             type="button"
             onClick={() => setExpanded((open) => !open)}
           >
-            {expanded ? "상세 내용 닫기" : "상세 내용 보기"}{" "}
+            {expanded ? t("상세 내용 닫기") : t("상세 내용 보기")}{" "}
             <ChevronDown size={12} />
           </button>
         )}
@@ -2059,13 +2058,13 @@ export function ToolCard({
           <div className="tool-full-details">
             {command?.fullText && (
               <section>
-                <strong>입력</strong>
+                <strong>{t("입력")}</strong>
                 <pre>{command.fullText}</pre>
               </section>
             )}
             {output?.fullText && (
               <section>
-                <strong>출력</strong>
+                <strong>{t("출력")}</strong>
                 <pre>{output.fullText}</pre>
               </section>
             )}
@@ -2110,13 +2109,13 @@ export function ToolCard({
             <section>
               <strong>
                 Artifact {artifact.artifactId}{" "}
-                {artifact.complete ? "" : "(미완료)"}
+                {artifact.complete ? "" : t("(미완료)")}
               </strong>
               <pre>{artifact.text}</pre>
               <small>
                 {artifact.complete
-                  ? "전체 내용"
-                  : `일부만 로드됨 · ${artifact.totalBytes} bytes`}
+                  ? t("전체 내용")
+                  : t`일부만 로드됨 · ${artifact.totalBytes} bytes`}
               </small>
             </section>
           </div>
@@ -2132,16 +2131,14 @@ export function ToolCard({
                 className="button-secondary"
                 onClick={autoDenyHint.onOpenSettings}
               >
-                설정 열기
-              </button>
+                {t("설정 열기")} </button>
             )}
           </footer>
         )}
         {approvalRequired && (
           <footer>
             <span>
-              <ShieldCheck size={14} /> 승인이 필요합니다
-            </span>
+              <ShieldCheck size={14} /> {t("승인이 필요합니다")} </span>
             <div className="permission-options">
               {(tool.permissionOptions ?? []).map((option) => (
                 <button
@@ -2182,17 +2179,17 @@ export function RecentRequestStrip({
   );
   if (requests.length === 0) return null;
   return (
-    <section className="recent-requests" aria-label="최근 요청">
+    <section className="recent-requests" aria-label={t("최근 요청")}>
       <header>
         <Clock3 size={11} />
-        <strong>최근 요청</strong>
+        <strong>{t("최근 요청")}</strong>
         {timeline.length > requests.length && (
           <button
             type="button"
             className="recent-requests-timeline-toggle"
             onClick={() => setTimelineOpen((open) => !open)}
           >
-            타임라인 ({timeline.length})
+            {t("타임라인 (")}{timeline.length})
           </button>
         )}
       </header>
@@ -2211,12 +2208,12 @@ export function RecentRequestStrip({
         ))}
       </div>
       {timelineOpen && (
-        <div className="prompt-timeline" role="dialog" aria-label="전체 요청 타임라인" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setTimelineOpen(false); } }}>
+        <div className="prompt-timeline" role="dialog" aria-label={t("전체 요청 타임라인")} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setTimelineOpen(false); } }}>
           <header>
-            <strong>요청 타임라인</strong>
+            <strong>{t("요청 타임라인")}</strong>
             <button
               type="button"
-              aria-label="닫기"
+              aria-label={t("닫기")}
               onClick={() => setTimelineOpen(false)}
             >
               <X size={13} />
@@ -2277,15 +2274,14 @@ export function ApprovalBanner({
     <div className="approval-banner" role="status">
       <ShieldCheck size={14} />
       <span>
-        승인 대기 {pending.length}건 · {toolDisplayName(focused.name)}
+        {t("승인 대기")} {pending.length}{t("건 ·")} {toolDisplayName(focused.name)}
       </span>
       <button
         type="button"
         className="approval-banner-jump"
         onClick={() => onReveal(focused.id)}
       >
-        해당 위치로 이동
-      </button>
+        {t("해당 위치로 이동")} </button>
       {pending.length > 1 && (
         <button
           type="button"
@@ -2297,7 +2293,7 @@ export function ApprovalBanner({
             onReveal(next.id);
           }}
         >
-          다음 대기 ({pending.length})
+          {t("다음 대기 (")}{pending.length})
         </button>
       )}
     </div>
@@ -2355,7 +2351,7 @@ export function ConversationFindBar({
         ref={inputRef}
         type="text"
         value={query}
-        placeholder="이 대화에서 찾기"
+        placeholder={t("이 대화에서 찾기")}
         onChange={(event) => setQuery(event.target.value)}
         onKeyDown={(event) => {
           if (event.key === "Escape") {
@@ -2374,7 +2370,7 @@ export function ConversationFindBar({
       </span>
       <button
         type="button"
-        aria-label="이전 결과"
+        aria-label={t("이전 결과")}
         disabled={matches.length === 0}
         onClick={() => step(-1)}
       >
@@ -2382,13 +2378,13 @@ export function ConversationFindBar({
       </button>
       <button
         type="button"
-        aria-label="다음 결과"
+        aria-label={t("다음 결과")}
         disabled={matches.length === 0}
         onClick={() => step(1)}
       >
         ↓
       </button>
-      <button type="button" aria-label="닫기" onClick={onClose}>
+      <button type="button" aria-label={t("닫기")} onClick={onClose}>
         <X size={14} />
       </button>
     </div>

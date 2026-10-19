@@ -18,6 +18,7 @@ import type {
   ManagementDesktopBridge,
   McpServerInput,
   NotificationPreferences,
+  UiLanguage,
 } from "../shared/agent-contract.js";
 import type { ProductivityDesktopBridge } from "../shared/productivity-ipc.js";
 import type {
@@ -391,6 +392,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
       SETTINGS_IPC.setNotificationPreferences,
       preferences,
     ),
+  setLanguage: (language: UiLanguage) =>
+    ipcRenderer.invoke(SETTINGS_IPC.setLanguage, language),
   setViewedSession: (sessionId: string | null) =>
     ipcRenderer.invoke(SETTINGS_IPC.setViewedSession, sessionId),
   setRunningSubmission: (value: "queue" | "steer") =>

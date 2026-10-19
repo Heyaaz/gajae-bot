@@ -40,6 +40,8 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import type { FormEvent, KeyboardEvent } from "react";
 import { configOptionGroups, directoryName, httpUrls, humanErrorMessage } from "./format";
 import { LinkPreviewCard } from "./primitives";
+import { t } from "../i18n";
+
 
 const FAST_SERVICE_TIERS = new Set([
   "priority",
@@ -405,13 +407,13 @@ export function FastTierControls({
     <span
       className="config-option-menu-fast"
       role="group"
-      aria-label="Fast 모드"
+      aria-label={t("Fast 모드")}
     >
       <button
         type="button"
         aria-pressed={fastMode}
         disabled={disabled}
-        title="Fast 모드 켜기 (/fast on)"
+        title={t("Fast 모드 켜기 (/fast on)")}
         onClick={() => onSelect(true)}
       >
         Fast on
@@ -420,7 +422,7 @@ export function FastTierControls({
         type="button"
         aria-pressed={!fastMode}
         disabled={disabled}
-        title="Fast 모드 끄기 (/fast off)"
+        title={t("Fast 모드 끄기 (/fast off)")}
         onClick={() => onSelect(false)}
       >
         Fast off
@@ -554,14 +556,14 @@ export function QueueChip({ entry, onPull, onDiscard }: QueueChipProps) {
   return (
     <span className={`composer-queue-item composer-queue-item--${entry.mode}${entry.blocked ? " composer-queue-item--blocked" : ""}`}>
       <button type="button" className="composer-queue-pull" onClick={onPull}
-        title={entry.blocked ? "이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요." : undefined}>
-        <em>{entry.blocked ? "확인 필요" : entry.mode === "steer" ? "즉시" : "대기"}</em>
+        title={entry.blocked ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요.") : undefined}>
+        <em>{entry.blocked ? t("확인 필요") : entry.mode === "steer" ? t("즉시") : t("대기")}</em>
         <span className="composer-queue-text">{entry.text}</span>
       </button>
       <button
         type="button"
         className="composer-queue-discard"
-        aria-label="대기 항목 버리기"
+        aria-label={t("대기 항목 버리기")}
         onClick={onDiscard}
       >
         <X size={10} />
@@ -805,7 +807,7 @@ export function Composer({
       setAttachmentError("");
       try {
         if (imagesRef.current.length + files.length > 6)
-          throw new Error("이미지는 메시지당 최대 6장까지 첨부할 수 있습니다");
+          throw new Error(t("이미지는 메시지당 최대 6장까지 첨부할 수 있습니다"));
         const all = Array.from(files);
         // Only a file selected or dragged from the OS has a main-authorizable
         // native identity. Browser-originated images stay inline; an actual native
@@ -849,7 +851,7 @@ export function Composer({
         if (textFiles.length > 0) {
           if (!settingsBridge)
             throw new Error(
-              "원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요.",
+              t("원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요."),
             );
           const selected = await settingsBridge.prepareFiles(textFiles);
           commitPrepared(owner, "files", selected);
@@ -968,7 +970,7 @@ export function Composer({
       setImages(merged.images);
       setFiles(merged.files);
       setAttachmentError(
-        "전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요.",
+        t("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요."),
       );
     };
     const unsubscribe = subscribeComposerDraftRecovery(
@@ -1264,7 +1266,7 @@ export function Composer({
 
   function submit(): void {
     if (readOnly) {
-      setAttachmentError("보기 전용 기기입니다. 조작은 데스크톱에서 해주세요.");
+      setAttachmentError(t("보기 전용 기기입니다. 조작은 데스크톱에서 해주세요."));
       return;
     }
     const content = (textareaRef.current?.value ?? value).trim();
@@ -1300,7 +1302,7 @@ export function Composer({
       }
       const preset = resolveModelPreset(query, modelOption?.options);
       if (!preset) {
-        setAttachmentError(`알 수 없는 모델 프리셋: ${query}`);
+        setAttachmentError(t`알 수 없는 모델 프리셋: ${query}`);
         return;
       }
       onConfigChange(modelOption?.id ?? "model", preset);
@@ -1404,7 +1406,7 @@ export function Composer({
     const owner = sessionId;
     if (!settingsBridge) {
       setAttachmentError(
-        "원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요.",
+        t("원격 연결에서는 파일 첨부를 지원하지 않습니다. 이미지를 사용해 주세요."),
       );
       if (fileInputRef.current) fileInputRef.current.value = "";
       return;
@@ -1425,7 +1427,7 @@ export function Composer({
   async function browseWorkspace(): Promise<void> {
     if (!settingsBridge) {
       setWorkspaceOpen(false);
-      setAttachmentError("원격 연결에서는 워크스페이스를 바꿀 수 없습니다.");
+      setAttachmentError(t("원격 연결에서는 워크스페이스를 바꿀 수 없습니다."));
       return;
     }
     setWorkspaceOpen(false);
@@ -1444,7 +1446,7 @@ export function Composer({
       setValue("");
       if (running) {
         discardQueueAfterCancel(sessionId);
-      } else setAttachmentError("중단할 실행 작업이 없습니다");
+      } else setAttachmentError(t("중단할 실행 작업이 없습니다"));
       return;
     }
     if (command.name === "steer") {
@@ -1716,15 +1718,14 @@ export function Composer({
       )}
       {readOnly && (
         <small className="composer-readonly">
-          보기 전용 기기입니다. 이 기기에서는 대화 조회만 가능합니다.
-        </small>
+          {t("보기 전용 기기입니다. 이 기기에서는 대화 조회만 가능합니다.")} </small>
       )}
       {attachmentError && (
         <small className="composer-error">{attachmentError}</small>
       )}
       {pendingQueue.length > 0 && (
         <span className={`composer-queue${pendingQueue[0]?.blocked ? " composer-queue--blocked" : ""}`}>
-          <strong>{pendingQueue[0]?.blocked ? "자동 전송 중지" : `${pendingQueue.length}개 대기 중`}</strong>
+          <strong>{pendingQueue[0]?.blocked ? t("자동 전송 중지") : t`${pendingQueue.length}개 대기 중`}</strong>
           <span className="composer-queue-items">
             {pendingQueue.map((entry) => (
               <QueueChip
@@ -1737,16 +1738,16 @@ export function Composer({
           </span>
           <small role={pendingQueue[0]?.blocked ? "status" : undefined}>
             {pendingQueue[0]?.blocked
-              ? "이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요."
-              : "Enter 한 번 더 = 바로 실행 · ⌥↑/⌥↓ = 꺼내기 · 항목 클릭 = 꺼내기"}
+              ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요.")
+              : t("Enter 한 번 더 = 바로 실행 · ⌥↑/⌥↓ = 꺼내기 · 항목 클릭 = 꺼내기")}
           </small>
         </span>
       )}
       {draftUrl && <LinkPreviewCard url={draftUrl} compact />}
       <textarea
         ref={textareaRef}
-        aria-label={`${sessionTitle}에게 메시지 보내기`}
-        placeholder={readOnly ? "보기 전용 기기입니다" : "무엇이든 요청하세요"}
+        aria-label={t`${sessionTitle}에게 메시지 보내기`}
+        placeholder={readOnly ? t("보기 전용 기기입니다") : t("무엇이든 요청하세요")}
         rows={1}
         value={value}
         disabled={readOnly}
@@ -1785,9 +1786,8 @@ export function Composer({
       {matchingCommands.length > 0 && (
         <div className="command-palette" ref={commandPaletteRef}>
           <header>
-            <Sparkles size={14} /> 스킬 및 명령어
-            <span className="command-palette-count">{matchingCommands.length}</span>
-            <span className="command-palette-help">↑↓ 선택 · Enter 적용</span>
+            <Sparkles size={14} /> {t("스킬 및 명령어")} <span className="command-palette-count">{matchingCommands.length}</span>
+            <span className="command-palette-help">{t("↑↓ 선택 · Enter 적용")}</span>
           </header>
           {matchingCommands.map((command, index) => (
             <button
@@ -1807,7 +1807,7 @@ export function Composer({
                 <small title={command.description}>{command.description}</small>
               </span>
               <span className="command-palette-meta">
-                {command.name.startsWith("skill:") && <span className="command-skill-badge">스킬</span>}
+                {command.name.startsWith("skill:") && <span className="command-skill-badge">{t("스킬")}</span>}
                 {command.hint && <code>{command.hint}</code>}
               </span>
             </button>
@@ -1834,7 +1834,7 @@ export function Composer({
           <button
             className="icon-button"
             type="button"
-            title="이미지 첨부"
+            title={t("이미지 첨부")}
             disabled={readOnly || images.length >= 6}
             aria-busy={choosingImages}
             onClick={() => imageInputRef.current?.click()}
@@ -1844,7 +1844,7 @@ export function Composer({
           <button
             className="icon-button"
             type="button"
-            title="파일 첨부"
+            title={t("파일 첨부")}
             disabled={files.length >= 5}
             onClick={() => fileInputRef.current?.click()}
           >
@@ -1862,7 +1862,7 @@ export function Composer({
             </button>
             {workspaceOpen && (
               <span className="workspace-menu">
-                <strong>세션을 시작할 workspace</strong>
+                <strong>{t("세션을 시작할 workspace")}</strong>
                 {workspaces.map((candidate) => (
                   <button
                     type="button"
@@ -1883,7 +1883,7 @@ export function Composer({
                 ))}
                 <button type="button" onClick={() => void browseWorkspace()}>
                   <FolderOpen size={14} />
-                  <span>다른 폴더 선택…</span>
+                  <span>{t("다른 폴더 선택…")}</span>
                 </button>
               </span>
             )}
@@ -1923,8 +1923,8 @@ export function Composer({
                     <i />
                     <span
                       className="composer-fast-mode"
-                      title="Fast 모드 켜짐"
-                      aria-label="Fast 모드 켜짐"
+                      title={t("Fast 모드 켜짐")}
+                      aria-label={t("Fast 모드 켜짐")}
                     >
                       <Zap size={10} aria-hidden="true" />
                       Fast
@@ -1935,7 +1935,7 @@ export function Composer({
               {configMenu === modelOption.id && (
                 <span className="config-option-menu config-option-menu--model">
                   <header>
-                    <strong>모델 프로필</strong>
+                    <strong>{t("모델 프로필")}</strong>
                     <FastTierControls
                       commands={commands}
                       fastMode={fastMode}
@@ -1944,8 +1944,7 @@ export function Composer({
                       onSelect={(fast) => void setFastTier(fast)}
                     />
                     <small>
-                      {modelOption.options?.length ?? 0}개 사용 가능
-                    </small>
+                      {modelOption.options?.length ?? 0}{t("개 사용 가능")} </small>
                   </header>
                   <span className="config-option-scroll">
                     {configOptionGroups(modelOption.options).map((group) => (
@@ -1983,7 +1982,7 @@ export function Composer({
               {thinkingOption && configMenu === thinkingOption.id && (
                 <span className="config-option-menu config-option-menu--effort">
                   <header>
-                    <strong>추론 Effort</strong>
+                    <strong>{t("추론 Effort")}</strong>
                     <small>⇧⇥</small>
                   </header>
                   {thinkingOption.options?.map((choice) => (
@@ -2021,7 +2020,7 @@ export function Composer({
               className="send-button"
               type="submit"
               disabled={readOnly}
-              title={running ? "이어서 보내기" : "메시지 보내기"}
+              title={running ? t("이어서 보내기") : t("메시지 보내기")}
             >
               <ArrowUp size={18} />
             </button>
@@ -2031,7 +2030,7 @@ export function Composer({
               type="button"
               disabled={!running || readOnly}
               onClick={() => discardQueueAfterCancel(sessionId)}
-              title="작업 중단 (Esc)"
+              title={t("작업 중단 (Esc)")}
             >
               <CircleStop size={18} />
             </button>

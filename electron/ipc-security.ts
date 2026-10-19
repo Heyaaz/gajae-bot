@@ -1,6 +1,7 @@
 import { BrowserWindow, dialog, type IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { hostText } from "./host-text.js";
 
 export interface RendererLaunchConfig {
   developmentUrl?: string;
@@ -48,8 +49,8 @@ export const nativeDestructiveConfirmation: DestructiveConfirmation = async ({
     buttons: ["Cancel", "Continue"],
     defaultId: 0,
     cancelId: 0,
-    message,
-    detail,
+    message: hostText(message),
+    detail: detail ? hostText(detail) : undefined,
   });
   return result.response === 1;
 };

@@ -1,4 +1,6 @@
 import type { SessionStatus, TranscriptItem } from "./backend/types";
+import { t } from "./i18n";
+
 
 export const MAX_CACHED_TRANSCRIPTS = 3;
 
@@ -209,18 +211,18 @@ export function currentTurnWork(
   session?: TurnSessionHint | null,
 ): TurnWork | null {
   if (session?.phase === "compacting")
-    return { kind: "thinking", label: "세션 context 압축 중" };
+    return { kind: "thinking", label: t("세션 context 압축 중") };
 
   const signal = tailSignal(items);
   if (signal.kind === "approval")
-    return { kind: "approval", label: "승인이 필요해요" };
+    return { kind: "approval", label: t("승인이 필요해요") };
   if (session?.status === "failed")
-    return { kind: "error", label: "오류가 났어요" };
+    return { kind: "error", label: t("오류가 났어요") };
   if (signal.kind === "answering") return null;
   if (signal.kind === "tool") return { kind: "tool" };
   if (signal.kind === "thinking") return { kind: "thinking" };
   if (session?.status === "waiting")
-    return { kind: "waiting", label: "입력을 기다리고 있어요" };
+    return { kind: "waiting", label: t("입력을 기다리고 있어요") };
   if (session?.status === "running") return { kind: "thinking" };
   if (
     (session == null || session.status === undefined || session.status === "idle") &&
@@ -386,7 +388,7 @@ function recentUserRequest(
     .replace(/\s+/gu, " ")
     .trim();
   const text =
-    body || (paths.length > 0 ? `첨부: ${paths.join(", ")}` : "첨부 요청");
+    body || (paths.length > 0 ? t`첨부: ${paths.join(", ")}` : t("첨부 요청"));
   const request = text.length > 0 ? { id: item.id, text, createdAt: item.createdAt } : null;
   recentRequestCache.set(item, request);
   return request ?? undefined;

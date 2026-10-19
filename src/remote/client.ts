@@ -12,6 +12,8 @@ import {
   type RemoteSnapshot,
   type RemoteStreamFrame,
 } from "../../shared/remote-protocol.js";
+import { t } from "../i18n";
+
 
 /**
  * The phone-side connection to the host.
@@ -227,7 +229,7 @@ export class RemoteClient {
       options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.token = this.storage.read();
     this.status = this.token
-      ? { state: "connecting", detail: "호스트에 연결하는 중입니다." }
+      ? { state: "connecting", detail: t("호스트에 연결하는 중입니다.") }
       : { state: "pairing" };
   }
 
@@ -282,14 +284,14 @@ export class RemoteClient {
     const withinDeadline = <U>(work: Promise<U>): Promise<U> =>
       Promise.race([work, deadline]);
     const timeoutError = (): RemoteRequestError =>
-      new RemoteRequestError("호스트 응답 시간이 초과되었습니다.", {
+      new RemoteRequestError(t("호스트 응답 시간이 초과되었습니다."), {
         uncertain: true,
       });
     const superseded = (): boolean =>
       authGeneration !== this.authGeneration ||
       this.pairingController !== controller;
     const stalePairing = (): RemoteRequestError =>
-      new RemoteRequestError("이전 페어링 요청은 적용하지 않았습니다.", {
+      new RemoteRequestError(t("이전 페어링 요청은 적용하지 않았습니다."), {
         code: "stale-auth",
       });
     const readBody = async <U>(read: () => Promise<U>): Promise<U> => {
@@ -299,7 +301,7 @@ export class RemoteClient {
         if (superseded()) throw stalePairing();
         if (timedOut || error instanceof RemoteRequestTimeout)
           throw timeoutError();
-        throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", {
+        throw new RemoteRequestError(t("호스트의 응답을 읽을 수 없습니다."), {
           uncertain: true,
         });
       }
@@ -319,7 +321,7 @@ export class RemoteClient {
         if (superseded()) throw stalePairing();
         if (timedOut || error instanceof RemoteRequestTimeout)
           throw timeoutError();
-        throw new RemoteRequestError("호스트에 연결할 수 없습니다.", {
+        throw new RemoteRequestError(t("호스트에 연결할 수 없습니다."), {
           uncertain: true,
         });
       }
@@ -339,7 +341,7 @@ export class RemoteClient {
         !isRemotePermission(body.device?.permission)
       ) {
         throw new RemoteRequestError(
-          "호스트가 올바른 기기 정보를 보내지 않았습니다.",
+          t("호스트가 올바른 기기 정보를 보내지 않았습니다."),
         );
       }
       // A new credential starts a new auth channel: drop the old stream, its
@@ -397,7 +399,7 @@ export class RemoteClient {
       // The credential changed while this read was in flight. Applying its device,
       // sessions, or connection would show the previous account as current.
       throw new RemoteRequestError(
-        "인증 정보가 변경되어 이전 상태를 적용하지 않았습니다.",
+        t("인증 정보가 변경되어 이전 상태를 적용하지 않았습니다."),
         { code: "stale-auth" },
       );
     }
@@ -449,9 +451,9 @@ export class RemoteClient {
         this.setStatus({
           ...this.status,
           state: "offline",
-          detail: "호스트가 제한 시간 안에 응답하지 않았습니다.",
+          detail: t("호스트가 제한 시간 안에 응답하지 않았습니다."),
         });
-      return new RemoteRequestError("호스트 응답 시간이 초과되었습니다.", {
+      return new RemoteRequestError(t("호스트 응답 시간이 초과되었습니다."), {
         uncertain: true,
       });
     };
@@ -461,7 +463,7 @@ export class RemoteClient {
       } catch (error) {
         if (timedOut || error instanceof RemoteRequestTimeout)
           throw timeoutError();
-        throw new RemoteRequestError("호스트의 응답을 읽을 수 없습니다.", {
+        throw new RemoteRequestError(t("호스트의 응답을 읽을 수 없습니다."), {
           uncertain: true,
         });
       }
@@ -483,14 +485,14 @@ export class RemoteClient {
           authGeneration === this.authGeneration &&
           this.status.state === "connected"
         )
-          this.setStatus({ ...this.status, state: "offline", detail: "호스트에 연결할 수 없습니다." });
-        throw new RemoteRequestError("호스트에 연결할 수 없습니다.", { uncertain: true });
+          this.setStatus({ ...this.status, state: "offline", detail: t("호스트에 연결할 수 없습니다.") });
+        throw new RemoteRequestError(t("호스트에 연결할 수 없습니다."), { uncertain: true });
       }
       if (response.status === 401) {
         if (this.token !== presented) {
           // A pairing landed while this request was in flight. Dropping the token now
           // would undo it and send the user back to the screen they just cleared.
-          throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
+          throw new RemoteRequestError(t("이 기기는 아직 호스트에 연결되어 있지 않습니다."), {
             status: 401,
             code: "unauthorized",
           });
@@ -503,15 +505,15 @@ export class RemoteClient {
         if (held) {
           this.setStatus({
             state: "revoked",
-            detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+            detail: t("이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요."),
           });
-          throw new RemoteRequestError("이 기기의 접근이 해제되었습니다.", { status: 401, code: "revoked" });
+          throw new RemoteRequestError(t("이 기기의 접근이 해제되었습니다."), { status: 401, code: "revoked" });
         }
         this.setStatus({
           state: "pairing",
-          detail: "데스크톱에서 페어링 코드를 발급해 연결해 주세요.",
+          detail: t("데스크톱에서 페어링 코드를 발급해 연결해 주세요."),
         });
-        throw new RemoteRequestError("이 기기는 아직 호스트에 연결되어 있지 않습니다.", {
+        throw new RemoteRequestError(t("이 기기는 아직 호스트에 연결되어 있지 않습니다."), {
           status: 401,
           code: "unauthorized",
         });
@@ -536,7 +538,7 @@ export class RemoteClient {
 
   private unwrapOutcome(outcome: RemoteOperationOutcome): unknown {
     if (outcome.state === "failed")
-      throw new RemoteRequestError(outcome.message ?? "요청이 실패했습니다.", {
+      throw new RemoteRequestError(outcome.message ?? t("요청이 실패했습니다."), {
         code: "failed",
         operationId: outcome.operationId,
       });
@@ -562,7 +564,7 @@ export class RemoteClient {
       const outcome = await this.lookupOperation(operationId);
       if (outcome) return this.unwrapOutcome(outcome) as T;
       throw new RemoteRequestError(
-        "전송 결과를 확인할 수 없습니다. 중복 실행을 막기 위해 다시 보내지 않았습니다. 데스크톱에서 상태를 확인해 주세요.",
+        t("전송 결과를 확인할 수 없습니다. 중복 실행을 막기 위해 다시 보내지 않았습니다. 데스크톱에서 상태를 확인해 주세요."),
         { uncertain: true, operationId, code: "unknown-outcome" },
       );
     }
@@ -674,7 +676,7 @@ export class RemoteClient {
           this.forget();
           this.setStatus({
             state: "revoked",
-            detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+            detail: t("이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요."),
           });
         }
         return;
@@ -765,7 +767,7 @@ export class RemoteClient {
       this.forget();
       this.setStatus({
         state: "revoked",
-        detail: "이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요.",
+        detail: t("이 기기의 접근이 해제되었습니다. 데스크톱에서 다시 연결해 주세요."),
       });
       this.closeRealtime();
       return;
@@ -834,10 +836,10 @@ async function readErrorBody(response: Response): Promise<{ code?: string; messa
     const body = (await response.json()) as { error?: { code?: string; message?: string } };
     return {
       ...(body.error?.code ? { code: body.error.code } : {}),
-      message: body.error?.message ?? `요청이 실패했습니다 (${response.status})`,
+      message: body.error?.message ?? t`요청이 실패했습니다 (${response.status})`,
     };
   } catch {
-    return { message: `요청이 실패했습니다 (${response.status})` };
+    return { message: t`요청이 실패했습니다 (${response.status})` };
   }
 }
 
@@ -847,7 +849,7 @@ function defaultBaseUrl(): string {
 }
 
 function defaultDeviceName(): string {
-  const fallback = "원격 기기";
+  const fallback = t("원격 기기");
   if (typeof navigator === "undefined") return fallback;
   const stored = (() => {
     try {

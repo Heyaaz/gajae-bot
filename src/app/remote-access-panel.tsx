@@ -17,6 +17,8 @@ import {
   type RemoteAccessState,
   type RemotePermission,
 } from "../../shared/remote-protocol";
+import { locale, t } from "../i18n";
+
 
 /**
  * Desktop-side remote access: the host's switchboard.
@@ -41,12 +43,12 @@ import {
 export async function writeClipboard(text: string): Promise<void> {
   const clipboard = navigator.clipboard;
   if (!clipboard?.writeText) {
-    throw new Error("클립보드를 사용할 수 없습니다. 값을 직접 선택해 복사해 주세요.");
+    throw new Error(t("클립보드를 사용할 수 없습니다. 값을 직접 선택해 복사해 주세요."));
   }
   try {
     await clipboard.writeText(text);
   } catch {
-    throw new Error("복사하지 못했습니다. 값을 직접 선택해 복사해 주세요.");
+    throw new Error(t("복사하지 못했습니다. 값을 직접 선택해 복사해 주세요."));
   }
 }
 
@@ -120,12 +122,12 @@ export function RemoteAccessPanelView({
 
   const statusTone = !tailscale?.installed ? "is-off" : tailscale.connected ? "is-on" : "is-warn";
   const statusTitle = !tailscale
-    ? "Tailscale 상태 확인 중"
+    ? t("Tailscale 상태 확인 중")
     : !tailscale.installed
-      ? "Tailscale이 설치되어 있지 않습니다"
+      ? t("Tailscale이 설치되어 있지 않습니다")
       : tailscale.connected
-        ? `Tailscale 연결됨${tailscale.version ? ` · ${tailscale.version}` : ""}`
-        : "Tailscale에 연결되어 있지 않습니다";
+        ? t`Tailscale 연결됨${tailscale.version ? ` · ${tailscale.version}` : ""}`
+        : t("Tailscale에 연결되어 있지 않습니다");
 
   return (
     <div className="remote-panel">
@@ -144,7 +146,7 @@ export function RemoteAccessPanelView({
       {!state && !error && (
         <p className="remote-alert remote-alert--pending" role="status">
           <span className="mini-spinner" aria-hidden="true" />
-          <span>원격 접속 상태를 불러오는 중입니다.</span>
+          <span>{t("원격 접속 상태를 불러오는 중입니다.")}</span>
         </p>
       )}
       {copyError && (
@@ -156,12 +158,9 @@ export function RemoteAccessPanelView({
 
       <section className="remote-card remote-toggle">
         <div className="remote-toggle__text">
-          <h3 id="remote-enabled-heading">원격 접속 사용</h3>
+          <h3 id="remote-enabled-heading">{t("원격 접속 사용")}</h3>
           <p>
-            켜면 Tailscale 테일넷의 기기가 이 컴퓨터의 HTTPS 주소에 닿을 수 있습니다.
-            서버는 loopback에만 열려 공개 인터넷에는 노출되지 않고, 세션 데이터는
-            페어링한 기기와 Tailscale이 이 계정의 소유자로 확인한 기기만 받습니다.
-          </p>
+            {t("켜면 Tailscale 테일넷의 기기가 이 컴퓨터의 HTTPS 주소에 닿을 수 있습니다. 서버는 loopback에만 열려 공개 인터넷에는 노출되지 않고, 세션 데이터는 페어링한 기기와 Tailscale이 이 계정의 소유자로 확인한 기기만 받습니다.")} </p>
         </div>
         <button
           type="button"
@@ -176,7 +175,7 @@ export function RemoteAccessPanelView({
             <span className="remote-switch__thumb" />
           </span>
           <span className="remote-switch__state">
-            {!state ? "불러오는 중" : enabled ? "켜짐" : "꺼짐"}
+            {!state ? t("불러오는 중") : enabled ? t("켜짐") : t("꺼짐")}
           </span>
         </button>
       </section>
@@ -185,12 +184,12 @@ export function RemoteAccessPanelView({
         <>
           <section className="remote-card remote-status">
             <div className="remote-card__head">
-              <h3 id="remote-status-heading">연결 상태</h3>
+              <h3 id="remote-status-heading">{t("연결 상태")}</h3>
               <button
                 type="button"
                 className="remote-icon-button"
-                title="상태 다시 확인"
-                aria-label="상태 다시 확인"
+                title={t("상태 다시 확인")}
+                aria-label={t("상태 다시 확인")}
                 disabled={pending}
                 onClick={actions.refresh}
               >
@@ -201,20 +200,20 @@ export function RemoteAccessPanelView({
               <span className={`remote-status__dot ${statusTone}`} aria-hidden="true" />
               <span className="remote-status__text">
                 <strong>{statusTitle}</strong>
-                <small>{tailscale?.detail ?? "Tailscale 상태를 확인하지 못했습니다."}</small>
+                <small>{tailscale?.detail ?? t("Tailscale 상태를 확인하지 못했습니다.")}</small>
               </span>
             </div>
             <div className="remote-address">
               <span className={`remote-address__value${address ? "" : " is-empty"}`}>
-                {address || "아직 접속 주소가 없습니다"}
+                {address || t("아직 접속 주소가 없습니다")}
               </span>
               {address && (
                 <span className="remote-address__actions">
                   <button
                     type="button"
                     className={`remote-icon-button${copied === "address" ? " is-done" : ""}`}
-                    title="주소 복사"
-                    aria-label="주소 복사"
+                    title={t("주소 복사")}
+                    aria-label={t("주소 복사")}
                     onClick={() => void copy("address", address)}
                   >
                     {copied === "address" ? <Check size={14} /> : <Copy size={14} />}
@@ -224,8 +223,8 @@ export function RemoteAccessPanelView({
                     href={address}
                     target="_blank"
                     rel="noreferrer"
-                    title="주소 열기"
-                    aria-label="주소 열기"
+                    title={t("주소 열기")}
+                    aria-label={t("주소 열기")}
                   >
                     <ExternalLink size={14} />
                   </a>
@@ -234,29 +233,27 @@ export function RemoteAccessPanelView({
             </div>
             <ul className="remote-guidance">
               <li>
-                <strong>같은 Tailscale 계정</strong>
-                <span>위 주소를 열면 바로 연결됩니다.</span>
+                <strong>{t("같은 Tailscale 계정")}</strong>
+                <span>{t("위 주소를 열면 바로 연결됩니다.")}</span>
               </li>
               <li>
-                <strong>다른 계정·기기</strong>
-                <span>아래 연결 코드를 입력하거나 QR을 스캔하세요.</span>
+                <strong>{t("다른 계정·기기")}</strong>
+                <span>{t("아래 연결 코드를 입력하거나 QR을 스캔하세요.")}</span>
               </li>
             </ul>
             {state.enabled && !state.running && (
               <p className="remote-alert remote-alert--warning" role="status">
                 <CircleAlert size={15} />
-                <span>원격 접속이 켜져 있지만 서버가 실행되지 않았습니다.</span>
+                <span>{t("원격 접속이 켜져 있지만 서버가 실행되지 않았습니다.")}</span>
               </p>
             )}
           </section>
 
           <section className="remote-card remote-pairing">
             <div className="remote-pairing__text">
-              <h3 id="remote-pairing-heading">기기 연결</h3>
+              <h3 id="remote-pairing-heading">{t("기기 연결")}</h3>
               <p>
-                코드는 5분 동안 한 번만 사용할 수 있습니다. 코드를 만든 뒤 휴대폰에서
-                입력하거나 QR을 스캔하세요.
-              </p>
+                {t("코드는 5분 동안 한 번만 사용할 수 있습니다. 코드를 만든 뒤 휴대폰에서 입력하거나 QR을 스캔하세요.")} </p>
             </div>
             <div className="remote-pairing__actions">
               <button
@@ -265,29 +262,27 @@ export function RemoteAccessPanelView({
                 disabled={pending || !state.enabled}
                 onClick={() => actions.issueCode("view")}
               >
-                <Plus size={14} /> 보기 전용 코드
-              </button>
+                <Plus size={14} /> {t("보기 전용 코드")} </button>
               <button
                 type="button"
                 className="button-primary"
                 disabled={pending || !state.enabled}
                 onClick={() => actions.issueCode("control")}
               >
-                <ShieldCheck size={14} /> 조작 가능 코드
-              </button>
+                <ShieldCheck size={14} /> {t("조작 가능 코드")} </button>
             </div>
             {pairing && (
               <div className={`remote-code${pairingExpired ? " is-expired" : ""}`}>
                 <span className="remote-code__value">
                   <code>{pairing.code}</code>
-                  <small>{`${remotePermissionLabel(pairing.permission)} · ${expiryLabel(pairing.expiresAt, now)}`}</small>
+                  <small>{`${t(remotePermissionLabel(pairing.permission))} · ${expiryLabel(pairing.expiresAt, now)}`}</small>
                 </span>
                 <span className="remote-code__actions">
                   <button
                     type="button"
                     className={`remote-icon-button${copied === "code" ? " is-done" : ""}`}
-                    title="연결 코드 복사"
-                    aria-label="연결 코드 복사"
+                    title={t("연결 코드 복사")}
+                    aria-label={t("연결 코드 복사")}
                     onClick={() => void copy("code", pairing.code)}
                   >
                     {copied === "code" ? <Check size={14} /> : <Copy size={14} />}
@@ -295,8 +290,8 @@ export function RemoteAccessPanelView({
                   <button
                     type="button"
                     className="remote-icon-button remote-icon-button--danger"
-                    title="연결 코드 취소"
-                    aria-label="연결 코드 취소"
+                    title={t("연결 코드 취소")}
+                    aria-label={t("연결 코드 취소")}
                     disabled={pending}
                     onClick={actions.clearCode}
                   >
@@ -306,13 +301,13 @@ export function RemoteAccessPanelView({
               </div>
             )}
             {pairing && pairingExpired && (
-              <p className="remote-hint">코드가 만료되었습니다. 위에서 새 코드를 만들어 주세요.</p>
+              <p className="remote-hint">{t("코드가 만료되었습니다. 위에서 새 코드를 만들어 주세요.")}</p>
             )}
             {pairing && !pairingExpired && qr && (
               <div
                 className="remote-qr"
                 role="img"
-                aria-label="기기 연결 QR 코드"
+                aria-label={t("기기 연결 QR 코드")}
                 dangerouslySetInnerHTML={{ __html: qr }}
               />
             )}
@@ -320,14 +315,14 @@ export function RemoteAccessPanelView({
 
           <section className="remote-card remote-devices-card">
             <div className="remote-card__head">
-              <h3 id="remote-devices-heading">허용된 기기</h3>
+              <h3 id="remote-devices-heading">{t("허용된 기기")}</h3>
               <span className="remote-count">{state.devices.length}</span>
             </div>
             {state.devices.length === 0 ? (
               <div className="remote-empty">
                 <Smartphone size={16} aria-hidden="true" />
-                <strong>연결된 기기가 없습니다</strong>
-                <small>위에서 연결 코드를 만들면 휴대폰이 이 목록에 나타납니다.</small>
+                <strong>{t("연결된 기기가 없습니다")}</strong>
+                <small>{t("위에서 연결 코드를 만들면 휴대폰이 이 목록에 나타납니다.")}</small>
               </div>
             ) : (
               <ul className="remote-devices">
@@ -337,15 +332,15 @@ export function RemoteAccessPanelView({
                       <strong>{device.name}</strong>
                       <small>
                         {device.lastSeenAt
-                          ? `마지막 사용 ${new Date(device.lastSeenAt).toLocaleString()}`
-                          : "아직 사용되지 않음"}
+                          ? t`마지막 사용 ${new Date(device.lastSeenAt).toLocaleString(locale())}`
+                          : t("아직 사용되지 않음")}
                         {device.clientAddress ? ` · ${device.clientAddress}` : ""}
                       </small>
                     </span>
                     <span className="remote-devices__actions">
                       <select
                         value={device.permission}
-                        aria-label={`${device.name} 권한`}
+                        aria-label={t`${device.name} 권한`}
                         disabled={pending}
                         onChange={(event) =>
                           actions.setDevicePermission(
@@ -354,18 +349,17 @@ export function RemoteAccessPanelView({
                           )
                         }
                       >
-                        <option value="view">보기 전용</option>
-                        <option value="control">조작 가능</option>
+                        <option value="view">{t("보기 전용")}</option>
+                        <option value="control">{t("조작 가능")}</option>
                       </select>
                       <button
                         type="button"
                         className="button-danger"
-                        aria-label={`${device.name} 접근 해제`}
+                        aria-label={t`${device.name} 접근 해제`}
                         disabled={pending}
                         onClick={() => actions.revokeDevice(device.id)}
                       >
-                        접근 해제
-                      </button>
+                        {t("접근 해제")} </button>
                     </span>
                   </li>
                 ))}
@@ -376,19 +370,19 @@ export function RemoteAccessPanelView({
           <details className="remote-card remote-advanced">
             <summary>
               <ChevronDown size={14} className="remote-advanced__chevron" aria-hidden="true" />
-              <span className="remote-advanced__title">고급 설정</span>
-              <span className="remote-advanced__meta">{`loopback 포트 ${state.port}`}</span>
+              <span className="remote-advanced__title">{t("고급 설정")}</span>
+              <span className="remote-advanced__meta">{t`loopback 포트 ${state.port}`}</span>
             </summary>
             <div className="remote-advanced__body">
               <span className="remote-advanced__text">
-                <strong>포트</strong>
-                <small>호스트의 loopback 포트입니다. Tailscale Serve가 이 포트로 연결합니다.</small>
+                <strong>{t("포트")}</strong>
+                <small>{t("호스트의 loopback 포트입니다. Tailscale Serve가 이 포트로 연결합니다.")}</small>
               </span>
               <span className="remote-port">
                 <input
                   value={portDraft}
                   inputMode="numeric"
-                  aria-label="원격 접속 포트"
+                  aria-label={t("원격 접속 포트")}
                   placeholder="8791"
                   onChange={(event) => actions.editPort(event.target.value)}
                 />
@@ -398,8 +392,7 @@ export function RemoteAccessPanelView({
                   disabled={pending || portDraft === String(state.port)}
                   onClick={actions.applyPort}
                 >
-                  적용
-                </button>
+                  {t("적용")} </button>
               </span>
             </div>
           </details>
@@ -409,9 +402,7 @@ export function RemoteAccessPanelView({
       <p className="remote-footnote">
         <Check size={13} aria-hidden="true" />
         <span>
-          원격 설정은 저장 버튼 없이 즉시 적용됩니다. 접근을 해제한 기기는 열려 있던
-          실시간 연결도 함께 끊깁니다.
-        </span>
+          {t("원격 설정은 저장 버튼 없이 즉시 적용됩니다. 접근을 해제한 기기는 열려 있던 실시간 연결도 함께 끊깁니다.")} </span>
       </p>
     </div>
   );
@@ -498,7 +489,7 @@ export function RemoteAccessPanel() {
     };
   }, [pairingUrl, state?.pairing?.code]);
 
-  if (!bridge) return <p className="settings-note">데스크톱 앱에서만 설정할 수 있습니다.</p>;
+  if (!bridge) return <p className="settings-note">{t("데스크톱 앱에서만 설정할 수 있습니다.")}</p>;
 
   async function run(
     label: string,
@@ -552,12 +543,12 @@ function expiryRemaining(expiresAt: string, now: number): number {
 
 function expiryLabel(expiresAt: string, now: number): string {
   const remaining = expiryRemaining(expiresAt, now);
-  if (remaining <= 0) return "만료됨";
+  if (remaining <= 0) return t("만료됨");
   const minutes = Math.floor(remaining / 60_000);
   const seconds = Math.floor((remaining % 60_000) / 1000);
-  return minutes > 0 ? `${minutes}분 남음` : `${seconds}초 남음`;
+  return minutes > 0 ? t`${minutes}분 남음` : t`${seconds}초 남음`;
 }
 
 function message(failure: unknown): string {
-  return failure instanceof Error ? failure.message : String(failure);
+  return t(failure instanceof Error ? failure.message : String(failure));
 }

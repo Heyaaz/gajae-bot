@@ -28,6 +28,7 @@ import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
 import { SettingsStore, validDirectory } from "./settings-store.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
+import { setHostLanguage } from "./host-text.js";
 import { ManagementService } from "./desktop-services.js";
 import { registerDesktopServicesIpcHandlers } from "./desktop-services-ipc-handlers.js";
 import { ProductivityService } from "./productivity-service.js";
@@ -70,6 +71,7 @@ mkdirSync(userDataDirectory, { recursive: true });
 // is a real filesystem directory in both development and packaged launches.
 const settingsStore = new SettingsStore(userDataDirectory, app.getPath("documents"));
 const preferences = settingsStore.get();
+setHostLanguage(preferences.language);
 const presetOverride = process.env.AGENT_CONTROL_GJC_PRESET;
 const modelPreset = presetOverride?.trim()
   ? presetOverride.trim()
@@ -148,7 +150,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
   const delivery = notificationDelivery(preference);
   const notification = new Notification({
     title: "Gajae",
-    body: sessionActivityBody(event),
+    body: sessionActivityBody(event, settingsStore.get().language),
     silent: delivery.silent,
     ...(delivery.sound ? { sound: delivery.sound } : {}),
   });
@@ -166,7 +168,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
     console.error("Notification delivery failed:", error);
   });
   notification.show();
-  lastNotification = { body: sessionActivityBody(event), at: Date.now() };
+  lastNotification = { body: sessionActivityBody(event, settingsStore.get().language), at: Date.now() };
 }
 
 function sendSessionShortcut(shortcut: SessionShortcut): void {

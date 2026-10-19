@@ -1,8 +1,11 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import { GajaeProgressRow } from "./gajae-progress";
 import { gajaeEmoticonFor } from "../transcript-utils";
+import { setLanguageMode } from "../i18n";
+
+afterEach(() => setLanguageMode("ko"));
 
 function render(props: Parameters<typeof GajaeProgressRow>[0]): string {
   return renderToStaticMarkup(createElement(GajaeProgressRow, props));
@@ -20,6 +23,13 @@ describe("GajaeProgressRow", () => {
     expect(markup).not.toContain("gajae-progress-time");
     expect(markup).toContain('aria-live="polite"');
     expect(markup).not.toContain("응답 대기 중");
+  });
+
+  it("renders the working phrase in English when English is selected", () => {
+    setLanguageMode("en");
+    const markup = render({ kind: "thinking" });
+    expect(markup).toContain("Thinking…");
+    expect(markup).not.toContain("생각 중");
   });
 
   it("holds a sleepy gajae on the input phrase and does not offer Esc", () => {

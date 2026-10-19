@@ -31,6 +31,7 @@ import {
   pendingToolApprovals,
   updateTranscriptItem,
 } from "../transcript-utils";
+import { getLanguage, t, useLanguage } from "../i18n";
 import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -49,6 +50,7 @@ import {
   EMPTY_TRANSCRIPT,
   directoryName,
   humanErrorMessage,
+  sessionTitleText,
   statusLabel,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
@@ -218,6 +220,7 @@ export function syncAppBadge(
 }
 
 export default function App() {
+  const language = useLanguage();
   const backend = useAgentBackend();
   const [connection, setConnection] = useState<BackendConnection>({
     state: "connecting",
@@ -307,13 +310,14 @@ export default function App() {
   // one field through the bridge without touching the rest.
   const [preferences, setPreferences] = useState<AgentControlPreferences>({
     workspace: "",
-    workspaceLabel: "개인 Workspace",
+    workspaceLabel: t("개인 Workspace"),
     modelPreset: DEFAULT_MODEL_PRESET,
     permissionHandling: "prompt",
     gjcExecutable: "",
     thoughtsExpanded: false,
     toolViewMode: DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+    language: getLanguage(),
     runningSubmission: "queue",
   });
   const preferencesRef = useRef(preferences);
@@ -374,7 +378,7 @@ export default function App() {
     if (!settingsBridge || !updateStatus?.updateAvailable) return;
     if (
       !window.confirm(
-        `GJC ${updateStatus.latestVersion}(으)로 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.`,
+        t`GJC ${updateStatus.latestVersion}(으)로 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.`,
       )
     )
       return;
@@ -987,7 +991,7 @@ export default function App() {
   const readArtifact = useCallback(
     (artifactId: string) => {
       if (!selectedId)
-        return Promise.reject(new Error("선택된 세션이 없습니다."));
+        return Promise.reject(new Error(t("선택된 세션이 없습니다.")));
       return backend.readArtifact(
         selectedId,
         artifactId.replace(/^artifact:\/\//u, ""),
@@ -1004,11 +1008,15 @@ export default function App() {
       ...new Map(
         [...BUNDLED_GJC_COMMANDS, ...live].map((command) => [
           command.name,
-          command,
+          {
+            ...command,
+            description: t(command.description),
+            ...(command.hint ? { hint: t(command.hint) } : {}),
+          },
         ]),
       ).values(),
     ];
-  }, [commands, selectedId]);
+  }, [commands, selectedId, language]);
   const selectedConfigOptions = selectedId
     ? (configOptions[selectedId] ?? [])
     : [];
@@ -1019,7 +1027,7 @@ export default function App() {
     : [
         {
           id: "model",
-          name: "프리셋",
+          name: t("프리셋"),
           category: "model",
           type: "select" as const,
           currentValue:
@@ -1032,7 +1040,7 @@ export default function App() {
                 selectedSession?.model ??
                 connection.modelPreset ??
                 DEFAULT_MODEL_PRESET,
-              name: selectedSession?.modelDisplay ?? "모델 확인 중…",
+              name: selectedSession?.modelDisplay ?? t("모델 확인 중…"),
             },
           ],
         },
@@ -1331,7 +1339,7 @@ export default function App() {
         await resolveSessionId(sessionId),
       );
       if (!level) {
-        setAppError("현재 모델은 추론 effort 전환을 지원하지 않습니다.");
+        setAppError(t("현재 모델은 추론 effort 전환을 지원하지 않습니다."));
       }
     } catch (error) {
       setAppError(humanErrorMessage(error));
@@ -1444,7 +1452,7 @@ export default function App() {
     try {
       const fork = await backend.forkSession({
         sourceSessionId: await resolveSessionId(session.id),
-        title: `${session.title} (포크)`,
+        title: t`${sessionTitleText(session.title)} (포크)`,
       });
       setSessions((current) => [
         fork,
@@ -1564,7 +1572,7 @@ export default function App() {
     // Remote clients do not edit host preferences; the panel that does lives in
     // the desktop app, where the runtime and workspace it changes also live.
     if (backend.remoteAccess) {
-      setAppError("설정은 Gajae 데스크톱 앱에서 열 수 있습니다.");
+      setAppError(t("설정은 Gajae 데스크톱 앱에서 열 수 있습니다."));
       return;
     }
     setSettingsOpen(true);
@@ -1577,7 +1585,7 @@ export default function App() {
     const next = !current;
     if (!settingsBridge) {
       // A browser is the remote client of a host, and the preference belongs to the host.
-      setAppError("설정은 Gajae 데스크톱 앱에서 열 수 있습니다.");
+      setAppError(t("설정은 Gajae 데스크톱 앱에서 열 수 있습니다."));
       return;
     }
     setPreferences((latest) => ({ ...latest, thoughtsExpanded: next }));
@@ -1677,7 +1685,7 @@ export default function App() {
       .then((snapshot) => {
         const url = snapshot.remote?.webUrl;
         if (!url) {
-          setAppError("GitHub remote가 없어서 열 수 있는 페이지가 없습니다.");
+          setAppError(t("GitHub remote가 없어서 열 수 있는 페이지가 없습니다."));
           return;
         }
         return repoBridge.openExternal(url);
@@ -1703,7 +1711,7 @@ export default function App() {
       <button
         className="nav-toggle"
         type="button"
-        aria-label="세션 목록"
+        aria-label={t("세션 목록")}
         aria-expanded={navOpen}
         onClick={() => setNavOpen((open) => !open)}
       >
@@ -1757,11 +1765,10 @@ export default function App() {
           <span className="workspace-empty__mark">
             <img src={gajaeIconUrl} alt="" />
           </span>
-          <h1>GJC runtime에 연결되지 않았습니다</h1>
+          <h1>{t("GJC runtime에 연결되지 않았습니다")}</h1>
           <p className="workspace-offline__detail">{connection.detail}</p>
           <p className="workspace-offline__hint">
-            연결되지 않은 동안에는 세션 목록과 대화 내용을 표시할 수 없습니다.
-          </p>
+            {t("연결되지 않은 동안에는 세션 목록과 대화 내용을 표시할 수 없습니다.")} </p>
           <div className="workspace-offline__actions">
             <button
               className="button-primary"
@@ -1770,15 +1777,14 @@ export default function App() {
               onClick={() => void reconnect()}
             >
               {reconnecting ? <span className="mini-spinner" /> : null}
-              {reconnecting ? "재연결 중" : "재연결"}
+              {reconnecting ? t("재연결 중") : t("재연결")}
             </button>
             <button
               className="button-secondary"
               type="button"
               onClick={openSettings}
             >
-              설정 열기
-            </button>
+              {t("설정 열기")} </button>
           </div>
         </main>
       ) : centerView === "projects" ? (
@@ -1814,21 +1820,20 @@ export default function App() {
                   />
                   {statusLabel(selectedSession.status, selectedSession.phase)}
                   {selectedSession.attachment === "terminal-only" && (
-                    <span className="chat-sync">제어 연결 없음 · 기록 동기화 중</span>
+                    <span className="chat-sync">{t("제어 연결 없음 · 기록 동기화 중")}</span>
                   )}
                   {selectedSession.attachment === "recovering" && (
                     <span
                       className="chat-sync"
-                      title="삭제·재연결 결과를 확인하지 못해 기록을 보존했습니다. 이 세션은 다시 이어서 진행해야 보낼 수 있습니다."
+                      title={t("삭제·재연결 결과를 확인하지 못해 기록을 보존했습니다. 이 세션은 다시 이어서 진행해야 보낼 수 있습니다.")}
                     >
-                      복구 필요 · 읽기 전용
-                    </span>
+                      {t("복구 필요 · 읽기 전용")} </span>
                   )}
                   {(selectedGit?.branch ||
                     selectedSession.worktree?.branch) && (
                     <span
                       className="chat-branch"
-                      title={`${selectedGit?.workspace ?? selectedSession.workspace}의 현재 Git 브랜치`}
+                      title={t`${selectedGit?.workspace ?? selectedSession.workspace}의 현재 Git 브랜치`}
                     >
                       <GitBranch size={11} />
                       {selectedGit?.branch || selectedSession.worktree?.branch}
@@ -1839,17 +1844,17 @@ export default function App() {
             </div>
             <div className="chat-header__actions">
               <div className="tool-view-mode-toggle">
-                <Dropdown ariaLabel="대화 표시 방식" icon={<Layers size={15} aria-hidden="true" />} value={preferences.toolViewMode} onChange={changeToolViewMode}
+                <Dropdown ariaLabel={t("대화 표시 방식")} icon={<Layers size={15} aria-hidden="true" />} value={preferences.toolViewMode} onChange={changeToolViewMode}
                   options={[
-                    { value: "basic", label: "요약", description: "도구 요약" },
-                    { value: "reasoning", label: "기본", description: "도구 카드" },
-                    { value: "detailed", label: "상세", description: "추론까지 펼침" },
+                    { value: "basic", label: t("요약"), description: t("도구 요약") },
+                    { value: "reasoning", label: t("기본"), description: t("도구 카드") },
+                    { value: "detailed", label: t("상세"), description: t("추론까지 펼침") },
                   ]} />
               </div>
               <button
                 className={`icon-button ${diffOpen ? "is-active" : ""}`}
                 type="button"
-                title="변경 파일 보기"
+                title={t("변경 파일 보기")}
                 onClick={() => {
                   setDiffOpen((open) => !open);
                   if (!diffOpen) void refreshDiff();
@@ -1860,7 +1865,8 @@ export default function App() {
               <button
                 className={`icon-button ${inspectorOpen ? "is-active" : ""}`}
                 type="button"
-                title="세션 정보"
+                data-session-info
+                title={t("세션 정보")}
                 onClick={() => setInspectorOpen((open) => !open)}
               >
                 <PanelRight size={18} />
@@ -1916,7 +1922,7 @@ export default function App() {
                   preferences.permissionHandling !== "always-allow" &&
                   preferences.permissionHandling !== "auto"
                     ? {
-                        message: "현재 권한 모드 때문에 자동 거부됨",
+                        message: t("현재 권한 모드 때문에 자동 거부됨"),
                         onOpenSettings: openSettings,
                       }
                     : undefined
@@ -2009,14 +2015,13 @@ export default function App() {
           <span className="workspace-empty__mark">
             <img src={gajaeIconUrl} alt="" />
           </span>
-          <h1>선택된 Gajae 세션이 없습니다</h1>
+          <h1>{t("선택된 Gajae 세션이 없습니다")}</h1>
           <button
             className="button-primary"
             type="button"
             onClick={() => setNewSessionOpen(true)}
           >
-            <Plus size={16} /> 새 세션
-          </button>
+            <Plus size={16} /> {t("새 세션")} </button>
         </main>
       )}
 

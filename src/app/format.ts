@@ -6,6 +6,8 @@ import type {
   ToolActivity,
   TranscriptItem,
 } from "../backend/types";
+import { getLanguage, t } from "../i18n";
+
 
 /**
  * Masks credentials that reached an error message.
@@ -17,19 +19,47 @@ import type {
  */
 function redactCredentials(value: string): string {
   return value
-    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}/giu, "$1[삭제됨]")
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, "[삭제됨]")
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+/-]{8,}/giu, `$1${t("[삭제됨]")}`)
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/gu, t("[삭제됨]"))
     // The value runs to the closing quote or delimiter, not to the first space: a
     // header like `"authorization": "Token abcdef"` carries the secret in a second
     // word, and stopping at the space left it on screen.
     .replace(
       /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,"'}]+)/giu,
-      "$1[삭제됨]",
+      `$1${t("[삭제됨]")}`,
     )
     .replace(
       /\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD))=[^\s]+/gu,
-      "$1=[삭제됨]",
+      `$1=${t("[삭제됨]")}`,
     );
+}
+
+function translateHostError(message: string): string {
+  if (getLanguage() !== "en") return message;
+  const patterns: ReadonlyArray<[RegExp, (match: RegExpMatchArray) => string]> = [
+    [/^(.+)은\(는\) 지원하는 이미지 형식이 아닙니다$/u, (m) => `${m[1]} is not a supported image format.`],
+    [/^(.+)은\(는\) 파일이 아닙니다$/u, (m) => `${m[1]} is not a file.`],
+    [/^(.+)은\(는\) 10 MiB 제한을 초과합니다$/u, (m) => `${m[1]} exceeds the 10 MiB limit.`],
+    [/^(.+)이\(가\) 읽는 동안 변경되었습니다$/u, (m) => `${m[1]} changed while it was being read.`],
+    [/^(.+)의 경로에 지원하지 않는 문자가 있습니다$/u, (m) => `${m[1]} contains unsupported characters in its path.`],
+    [/^(.+): 이미지를 준비하지 못했습니다$/u, (m) => `${m[1]}: could not prepare the image.`],
+    [/^(.+): 파일을 준비하지 못했습니다$/u, (m) => `${m[1]}: could not prepare the file.`],
+    [/^이미지는 메시지당 최대 (\d+)장까지 첨부할 수 있습니다$/u, (m) => `You can attach up to ${m[1]} images per message.`],
+    [/^파일은 메시지당 최대 (\d+)개까지 첨부할 수 있습니다$/u, (m) => `You can attach up to ${m[1]} files per message.`],
+    [/^(.+) 실행이 실패했습니다\.$/u, (m) => `${m[1]} failed to run.`],
+    [/^GitHub 인증이 필요합니다\. (.+)$/u, (m) => `GitHub authentication required. ${m[1]}`],
+    [/^gh 응답을 읽지 못했습니다: (.+)$/u, (m) => `Could not read the gh response: ${m[1]}`],
+    [/^저장소 정보를 일부만 읽었습니다: (.+)$/u, (m) => `Only part of the repository information was read: ${m[1]}`],
+    [/^세션 기록을 찾지 못했습니다: (.+)$/u, (m) => `Session history not found: ${m[1]}`],
+    [/^세션 (\d+)$/u, (m) => `Session ${m[1]}`],
+    [/^Tailscale이 연결되어 있지 않습니다 \((.+)\)\.$/u, (m) => `Tailscale is not connected (${m[1]}).`],
+    [/^(.+): 읽지 못했습니다\.$/u, (m) => `${m[1]}: could not read.`],
+  ];
+  for (const [pattern, replace] of patterns) {
+    const match = message.match(pattern);
+    if (match) return replace(match);
+  }
+  return message;
 }
 
 export function humanErrorMessage(error: unknown): string {
@@ -41,21 +71,21 @@ export function humanErrorMessage(error: unknown): string {
       message,
     )
   )
-    return "작업이 취소되었습니다.";
+    return t("작업이 취소되었습니다.");
   if (
     /uncertain_after_send|SDK request outcome is uncertain after the frame was sent/iu.test(
       message,
     )
   )
-    return "작업이 이미 전달됐는지 확인하지 못했습니다. 채팅을 확인하세요.";
-  return message;
+    return t("작업이 이미 전달됐는지 확인하지 못했습니다. 채팅을 확인하세요.");
+  return t(translateHostError(message));
 }
 
 export function humanRuntimeText(value: string): string {
   return /^\s*(?:error:\s*)?(?:operation[ _-]?aborted|operation[ _-]?cancelled|operation[ _-]?canceled)\.?\s*$/iu.test(
     value,
   )
-    ? "작업이 취소되었습니다."
+    ? t("작업이 취소되었습니다.")
     : value;
 }
 
@@ -75,14 +105,19 @@ export function statusLabel(status: AgentSession["status"], phase?: string): str
 }
 
 export function connectionStateLabel(state: BackendConnection["state"]): string {
-  if (state === "connected") return "연결됨";
-  if (state === "connecting") return "연결 중";
-  if (state === "error") return "오류";
-  return "연결 끊김";
+  if (state === "connected") return t("연결됨");
+  if (state === "connecting") return t("연결 중");
+  if (state === "error") return t("오류");
+  return t("연결 끊김");
 }
 
 export function directoryName(value: string): string {
   return value.split("/").filter(Boolean).at(-1) ?? (value || "Workspace");
+}
+
+/** The backend stores the default draft title in Korean; display it in the UI language. */
+export function sessionTitleText(title: string): string {
+  return title === "새 Gajae 세션" ? t("새 Gajae 세션") : title;
 }
 
 export function toolDisplayName(name: string): string {
@@ -115,18 +150,18 @@ export function subagentLabel(tool: ToolActivity): string {
   } catch {
     // Fall back to the title the stream sent when raw input is partial or truncated.
   }
-  return tool.description || "서브 에이전트";
+  return tool.description || t("서브 에이전트");
 }
 
 export function toolStatusLabel(status: ToolActivity["status"]): string {
   // A queued call is not work in progress: GJC leaves a tool pending for seconds
   // before it starts, and saying 작업 중 for that stretch claimed work had begun.
-  if (status === "pending") return "대기 중";
-  if (status === "running") return "작업 중";
-  if (status === "completed" || status === "approved") return "완료";
-  if (status === "failed" || status === "denied") return "실패";
-  if (status === "cancelled") return "취소됨";
-  return "승인 대기";
+  if (status === "pending") return t("대기 중");
+  if (status === "running") return t("작업 중");
+  if (status === "completed" || status === "approved") return t("완료");
+  if (status === "failed" || status === "denied") return t("실패");
+  if (status === "cancelled") return t("취소됨");
+  return t("승인 대기");
 }
 
 export function configOptionGroups(

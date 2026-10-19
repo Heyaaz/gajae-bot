@@ -16,6 +16,7 @@ import { Bell, CalendarClock, Check, Command, FolderOpen, Palette, ShieldCheck, 
 import { useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { readStoredTheme, setThemeMode, type ThemeMode } from "../theme";
+import { getLanguage, setLanguageMode, t, useLanguageMode } from "../i18n";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
 import { RemoteAccessPanel } from "./remote-access-panel";
@@ -115,7 +116,7 @@ export function canSavePreferences(
 }
 
 export function settingsErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  return t(error instanceof Error ? error.message : String(error));
 }
 
 const NOTIFICATION_ROWS: ReadonlyArray<{
@@ -171,13 +172,14 @@ export function SettingsDialog({
   const detectedPreset = connection.modelPreset ?? DEFAULT_MODEL_PRESET;
   const fallbackPreferences: AgentControlPreferences = {
     workspace: connection.workspace,
-    workspaceLabel: "개인 Workspace",
+    workspaceLabel: t("개인 Workspace"),
     modelPreset: detectedPreset,
     permissionHandling: "prompt",
     gjcExecutable: "",
     thoughtsExpanded,
     toolViewMode: DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+    language: getLanguage(),
     runningSubmission: "queue",
   };
   const [tab, setTab] = useState<
@@ -192,6 +194,7 @@ export function SettingsDialog({
     | "automations"
   >("gjc");
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => readStoredTheme());
+  const languageMode = useLanguageMode();
   const [management, setManagement] = useState<ManagementSnapshot | null>(null);
   const [managementError, setManagementError] = useState("");
   const [managementLoading, setManagementLoading] = useState(false);
@@ -218,26 +221,26 @@ export function SettingsDialog({
     preferences.gjcExecutable !== original.gjcExecutable;
   const tabTitle = {
     gjc: "GJC",
-    appearance: "모양",
-    workspace: "Workspace 범위",
-    remote: "원격 접속",
-    mcp: "MCP 서버",
+    appearance: t("모양"),
+    workspace: t("Workspace 범위"),
+    remote: t("원격 접속"),
+    mcp: t("MCP 서버"),
     skills: "Skills & Plugins",
     usage: "Usage",
-    notifications: "알림",
+    notifications: t("알림"),
     automations: "Automations",
   }[tab];
   const tabDescription = {
-    gjc: "GJC 실행 파일과 새 세션이 시작될 모델 프로필·도구 승인 방식을 설정합니다.",
-    appearance: "앱의 테마와 표시 언어를 설정합니다.",
-    workspace: "GJC가 확인하고 수정할 폴더를 선택합니다.",
-    remote: "휴대폰과 다른 개인 기기에서 이 컴퓨터의 세션을 조회·조작합니다.",
-    mcp: "GJC가 자동으로 로드할 MCP 서버를 관리합니다.",
-    skills: "발견된 스킬과 설치된 플러그인을 확인합니다.",
-    usage: "모델별 토큰, 캐시율, 비용을 확인합니다.",
+    gjc: t("GJC 실행 파일과 새 세션이 시작될 모델 프로필·도구 승인 방식을 설정합니다."),
+    appearance: t("앱의 테마와 표시 언어를 설정합니다."),
+    workspace: t("GJC가 확인하고 수정할 폴더를 선택합니다."),
+    remote: t("휴대폰과 다른 개인 기기에서 이 컴퓨터의 세션을 조회·조작합니다."),
+    mcp: t("GJC가 자동으로 로드할 MCP 서버를 관리합니다."),
+    skills: t("발견된 스킬과 설치된 플러그인을 확인합니다."),
+    usage: t("모델별 토큰, 캐시율, 비용을 확인합니다."),
     notifications:
-      "완료·승인/질문 대기·실패를 이벤트별로 알리고 소리를 고릅니다.",
-    automations: "앱이 닫혀 있어도 GJC 작업을 정해진 시간에 실행합니다.",
+      t("완료·승인/질문 대기·실패를 이벤트별로 알리고 소리를 고릅니다."),
+    automations: t("앱이 닫혀 있어도 GJC 작업을 정해진 시간에 실행합니다."),
   }[tab];
 
   useEffect(() => {
@@ -434,11 +437,11 @@ export function SettingsDialog({
         className="settings-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="설정"
+        aria-label={t("설정")}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <nav>
-          <h2>설정</h2>
+          <h2>{t("설정")}</h2>
           <button
             type="button"
             className={tab === "gjc" ? "is-active" : ""}
@@ -451,8 +454,7 @@ export function SettingsDialog({
             className={tab === "appearance" ? "is-active" : ""}
             onClick={() => setTab("appearance")}
           >
-            <Palette size={17} /> 모양
-          </button>
+            <Palette size={17} /> {t("모양")} </button>
           <button
             type="button"
             className={tab === "workspace" ? "is-active" : ""}
@@ -465,15 +467,13 @@ export function SettingsDialog({
             className={tab === "remote" ? "is-active" : ""}
             onClick={() => setTab("remote")}
           >
-            <Smartphone size={17} /> 원격 접속
-          </button>
+            <Smartphone size={17} /> {t("원격 접속")} </button>
           <button
             type="button"
             className={tab === "notifications" ? "is-active" : ""}
             onClick={() => setTab("notifications")}
           >
-            <Bell size={17} /> 알림
-          </button>
+            <Bell size={17} /> {t("알림")} </button>
           <button
             type="button"
             className={tab === "mcp" ? "is-active" : ""}
@@ -514,22 +514,21 @@ export function SettingsDialog({
             </button>
           </header>
 
-          {workspaceError && <p className="diff-error" role="alert">폴더를 선택하지 못했습니다: {workspaceError}</p>}
+          {workspaceError && <p className="diff-error" role="alert">{t("폴더를 선택하지 못했습니다:")} {workspaceError}</p>}
           {loadError && (
             <p className="diff-error" role="alert">
-              설정을 불러오지 못했습니다: {loadError}
+              {t("설정을 불러오지 못했습니다:")} {loadError}
               <button
                 type="button"
                 className="button-secondary"
                 onClick={() => setLoadAttempt((attempt) => attempt + 1)}
               >
-                다시 시도
-              </button>
+                {t("다시 시도")} </button>
             </p>
           )}
           {saveError && (
             <p className="diff-error" role="alert">
-              설정을 저장하지 못했습니다: {saveError}
+              {t("설정을 저장하지 못했습니다:")} {saveError}
             </p>
           )}
 
@@ -538,16 +537,16 @@ export function SettingsDialog({
               <div className="settings-panel">
                 <div className="settings-toggle-row">
                   <span>
-                    <strong>테마</strong>
-                    <small>앱 전체의 밝기 모드를 선택합니다.</small>
+                    <strong>{t("테마")}</strong>
+                    <small>{t("앱 전체의 밝기 모드를 선택합니다.")}</small>
                   </span>
                   <Dropdown
-                    ariaLabel="테마"
+                    ariaLabel={t("테마")}
                     value={themeMode}
                     options={[
-                      { value: "light", label: "화이트" },
-                      { value: "dark", label: "블랙" },
-                      { value: "system", label: "시스템" },
+                      { value: "light", label: t("화이트") },
+                      { value: "dark", label: t("블랙") },
+                      { value: "system", label: t("시스템") },
                     ]}
                     onChange={(value) => {
                       const mode = value as ThemeMode;
@@ -557,9 +556,48 @@ export function SettingsDialog({
                   />
                 </div>
               </div>
+              <div className="settings-panel">
+                <div className="settings-toggle-row">
+                  <span>
+                    <strong>{t("표시 언어")}</strong>
+                    <small>{t("앱 전체에 표시할 언어를 선택합니다.")}</small>
+                  </span>
+                  <Dropdown
+                    ariaLabel={t("표시 언어")}
+                    value={languageMode}
+                    options={[
+                      { value: "ko", label: t("한국어") },
+                      { value: "en", label: "English" },
+                      { value: "system", label: t("시스템") },
+                    ]}
+                    onChange={(value) => {
+                      const resolved = setLanguageMode(value as typeof languageMode);
+                      const next = {
+                        ...preferencesRef.current,
+                        language: resolved,
+                      };
+                      preferencesRef.current = next;
+                      setPreferences(next);
+                      setOriginal((original) => ({ ...original, language: resolved }));
+                      setSaveError("");
+                      if (settingsBridge) {
+                        void settingsBridge
+                          .setLanguage(resolved)
+                          .catch((error: unknown) =>
+                            setSaveError(settingsErrorMessage(error)),
+                          );
+                      }
+                    }}
+                  />
+                </div>
+              </div>
               <p className="settings-note">
-                시스템은 macOS의 화면 모드를 따르며, 변경 즉시 앱 전체에
-                적용됩니다.
+                {t(
+                  "시스템은 macOS의 화면 모드를 따르며, 변경 즉시 앱 전체에 적용됩니다.",
+                )}
+              </p>
+              <p className="settings-note">
+                {t("언어를 바꾸면 현재 창에 즉시 적용됩니다.")}
               </p>
             </div>
           )}
@@ -567,24 +605,22 @@ export function SettingsDialog({
           {tab === "notifications" && (
             <div className="settings-stack">
               <p className="settings-note">
-                지금 보고 있는 세션의 완료·실패·승인 알림은 생략합니다. 창이
-                앞에 있어도 다른 세션의 결과는 알립니다. 원격 PWA에는 같은
-                이벤트의 읽지 않은 세션 수가 앱 배지로 표시됩니다.
-              </p>
+                {t("지금 보고 있는 세션의 완료·실패·승인 알림은 생략합니다. 창이 앞에 있어도 다른 세션의 결과는 알립니다. 원격 PWA에는 같은 이벤트의 읽지 않은 세션 수가 앱 배지로 표시됩니다.")} </p>
               <div className="settings-panel">
                 {NOTIFICATION_ROWS.map((row) => {
                   const preference =
                     preferences.notificationPreferences[row.key];
+                  const label = t(row.label);
                   return (
                     <div className="settings-toggle-row" key={row.key}>
                       <span>
-                        <strong>{row.label}</strong>
-                        <small>{row.detail}</small>
+                        <strong>{label}</strong>
+                        <small>{t(row.detail)}</small>
                       </span>
                       <span className="notification-controls">
                         <input
                           type="checkbox"
-                          aria-label={`${row.label} 알림`}
+                          aria-label={t`${label} 알림`}
                           checked={preference.enabled}
                           disabled={!settingsBridge}
                           onChange={(event) =>
@@ -600,10 +636,10 @@ export function SettingsDialog({
                         />
                         <Dropdown
                           value={preference.sound}
-                          ariaLabel={`${row.label} 알림 소리`}
+                          ariaLabel={t`${label} 알림 소리`}
                           options={NOTIFICATION_SOUNDS.map((sound) => ({
                             value: sound,
-                            label: NOTIFICATION_SOUND_LABELS[sound],
+                            label: t(NOTIFICATION_SOUND_LABELS[sound]),
                           }))}
                           onChange={(sound) =>
                             void persistNotifications({
@@ -643,8 +679,8 @@ export function SettingsDialog({
               <div className="settings-panel">
                 <label>
                   <span>
-                    <strong>모델 프로필</strong>
-                    <small>기본 preset 또는 models.yml의 custom ID</small>
+                    <strong>{t("모델 프로필")}</strong>
+                    <small>{t("기본 preset 또는 models.yml의 custom ID")}</small>
                   </span>
                   <input
                     list="gjc-model-profiles"
@@ -665,16 +701,16 @@ export function SettingsDialog({
                 </label>
                 <label>
                   <span>
-                    <strong>도구 승인</strong>
-                    <small>위험한 작업을 GJC가 처리하는 방식</small>
+                    <strong>{t("도구 승인")}</strong>
+                    <small>{t("위험한 작업을 GJC가 처리하는 방식")}</small>
                   </span>
                   <Dropdown
                     value={preferences.permissionHandling}
-                    ariaLabel="도구 승인"
+                    ariaLabel={t("도구 승인")}
                     options={[
-                      { value: "prompt", label: "매번 확인" },
-                      { value: "auto", label: "GJC 스마트 정책" },
-                      { value: "always-allow", label: "항상 허용" },
+                      { value: "prompt", label: t("매번 확인") },
+                      { value: "auto", label: t("GJC 스마트 정책") },
+                      { value: "always-allow", label: t("항상 허용") },
                     ]}
                     onChange={(value) =>
                       editPreferences((current) => ({
@@ -687,8 +723,8 @@ export function SettingsDialog({
                 </label>
                 <label className="settings-toggle-row">
                   <span>
-                    <strong>추론 카드 펼치기</strong>
-                    <small>추론(thinking) 기록을 모든 세션에서 펼친 상태로 둡니다</small>
+                    <strong>{t("추론 카드 펼치기")}</strong>
+                    <small>{t("추론(thinking) 기록을 모든 세션에서 펼친 상태로 둡니다")}</small>
                   </span>
                   <input
                     type="checkbox"
@@ -703,19 +739,16 @@ export function SettingsDialog({
                 </label>
                 <label>
                   <span>
-                    <strong>실행 중 Enter</strong>
+                    <strong>{t("실행 중 Enter")}</strong>
                     <small>
-                      턴이 실행 중일 때 Enter로 제출하면 보류(Queue)할지 다음
-                      경계에서 반영(Steer)할지 고릅니다. /queue·/steer는 항상 이
-                      설정보다 우선합니다.
-                    </small>
+                      {t("턴이 실행 중일 때 Enter로 제출하면 보류(Queue)할지 다음 경계에서 반영(Steer)할지 고릅니다. /queue·/steer는 항상 이 설정보다 우선합니다.")} </small>
                   </span>
                   <Dropdown
                     value={preferences.runningSubmission}
-                    ariaLabel="실행 중 Enter 동작"
+                    ariaLabel={t("실행 중 Enter 동작")}
                     options={[
-                      { value: "queue", label: "보류 후 턴 종료 시 전송 (Queue)" },
-                      { value: "steer", label: "다음 경계에서 바로 반영 (Steer)" },
+                      { value: "queue", label: t("보류 후 턴 종료 시 전송 (Queue)") },
+                      { value: "steer", label: t("다음 경계에서 바로 반영 (Steer)") },
                     ]}
                     onChange={(value) =>
                       void persistRunningSubmission(value as "queue" | "steer")
@@ -724,8 +757,8 @@ export function SettingsDialog({
                 </label>
                 <label className="settings-field-wide">
                   <span>
-                    <strong>GJC 실행 파일</strong>
-                    <small>비워 두면 로컬 설치를 자동으로 찾습니다</small>
+                    <strong>{t("GJC 실행 파일")}</strong>
+                    <small>{t("비워 두면 로컬 설치를 자동으로 찾습니다")}</small>
                   </span>
                   <input
                     value={preferences.gjcExecutable}
@@ -740,14 +773,14 @@ export function SettingsDialog({
                 </label>
                 <div className="gjc-update-row">
                   <span>
-                    <strong>GJC 업데이트</strong>
+                    <strong>{t("GJC 업데이트")}</strong>
                     <small>
                       {updateError ||
                         (updateStatus
                           ? updateStatus.updateAvailable
-                            ? `${updateStatus.currentVersion} → ${updateStatus.latestVersion} 사용 가능`
-                            : `최신 버전 ${updateStatus.currentVersion}`
-                          : "업데이트 정보를 확인합니다")}
+                            ? t`${updateStatus.currentVersion} → ${updateStatus.latestVersion} 사용 가능`
+                            : t`최신 버전 ${updateStatus.currentVersion}`
+                          : t("업데이트 정보를 확인합니다"))}
                     </small>
                   </span>
                   <span className="gjc-update-actions">
@@ -756,7 +789,7 @@ export function SettingsDialog({
                       disabled={Boolean(updateBusy)}
                       onClick={onCheckUpdate}
                     >
-                      {updateBusy === "checking" ? "확인 중…" : "다시 확인"}
+                      {updateBusy === "checking" ? t("확인 중…") : t("다시 확인")}
                     </button>
                     {updateStatus?.updateAvailable && (
                       <button
@@ -766,8 +799,8 @@ export function SettingsDialog({
                         onClick={onInstallUpdate}
                       >
                         {updateBusy === "installing"
-                          ? "업데이트 중…"
-                          : "업데이트"}
+                          ? t("업데이트 중…")
+                          : t("업데이트")}
                       </button>
                     )}
                   </span>
@@ -778,7 +811,7 @@ export function SettingsDialog({
           {["mcp", "skills", "usage"].includes(tab) && (
             <div className="settings-stack">
               {managementLoading && (
-                <p className="settings-note">불러오는 중…</p>
+                <p className="settings-note">{t("불러오는 중…")}</p>
               )}
               {managementError && (
                 <p className="diff-error">{managementError}</p>
@@ -797,7 +830,7 @@ export function SettingsDialog({
                   />
                 )}
               {!managementLoading && !managementError && !management && (
-                <p className="settings-note">데이터가 없습니다.</p>
+                <p className="settings-note">{t("데이터가 없습니다.")}</p>
               )}
             </div>
           )}
@@ -828,17 +861,14 @@ export function SettingsDialog({
                   className="button-secondary"
                   onClick={() => void chooseWorkspace()}
                 >
-                  선택…
-                </button>
+                  {t("선택…")} </button>
               </div>
               <div className="scope-notice">
                 <ShieldCheck size={17} />
                 <span>
-                  <strong>폴더 범위</strong>
+                  <strong>{t("폴더 범위")}</strong>
                   <small>
-                    새 GJC 세션은 이 폴더에서 시작하며 파일 작업과 저장소 탐색의
-                    기준으로 사용합니다.
-                  </small>
+                    {t("새 GJC 세션은 이 폴더에서 시작하며 파일 작업과 저장소 탐색의 기준으로 사용합니다.")} </small>
                 </span>
               </div>
             </div>
@@ -850,12 +880,12 @@ export function SettingsDialog({
             <footer className="settings-footer">
               <span>
                 {!loaded
-                  ? "설정을 불러온 뒤 저장할 수 있습니다."
+                  ? t("설정을 불러온 뒤 저장할 수 있습니다.")
                   : dirty
                     ? runtimeDirty
-                      ? "저장하면 GJC runtime만 다시 연결됩니다."
-                      : "앱 재실행 없이 바로 적용됩니다."
-                    : "설정이 최신 상태입니다."}
+                      ? t("저장하면 GJC runtime만 다시 연결됩니다.")
+                      : t("앱 재실행 없이 바로 적용됩니다.")
+                    : t("설정이 최신 상태입니다.")}
               </span>
               <button
                 type="button"
@@ -872,9 +902,9 @@ export function SettingsDialog({
               >
                 {saving
                   ? runtimeDirty
-                    ? "GJC 재연결 중…"
-                    : "저장 중…"
-                  : "저장"}
+                    ? t("GJC 재연결 중…")
+                    : t("저장 중…")
+                  : t("저장")}
               </button>
             </footer>
           )}

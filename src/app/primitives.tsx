@@ -3,6 +3,8 @@ import { Check, ChevronDown, Copy, ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { parseDiffFiles, parseDiffLines } from "./format";
+import { t } from "../i18n";
+
 
 export interface SelectOption<T extends string> {
   value: T;
@@ -151,7 +153,7 @@ export function MessageCopyButton({ text }: { text: string }) {
     <button
       type="button"
       className={`message-copy ${copied ? "is-copied" : ""}`}
-      title={copied ? "복사됨" : "복사"}
+      title={copied ? t("복사됨") : t("복사")}
       onClick={() => void copy()}
     >
       {copied ? <Check size={13} /> : <Copy size={13} />}

@@ -7,6 +7,8 @@ import {
 } from "../../shared/remote-protocol";
 import { readPairingCodeFromHash } from "../remote/client";
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
+import { t } from "../i18n";
+
 
 /**
  * The phone-side shell: pairing first, then a status strip.
@@ -37,7 +39,7 @@ export function RemoteGate({
     async (value: string): Promise<void> => {
       const candidate = value.trim();
       if (!candidate) {
-        setError("연결 코드를 입력해 주세요.");
+        setError(t("연결 코드를 입력해 주세요."));
         return;
       }
       setBusy(true);
@@ -77,11 +79,11 @@ export function RemoteGate({
         <span className="remote-gate__mark">
           <img src={gajaeIconUrl} alt="" />
         </span>
-        <h1>{revoked ? "접근이 해제되었습니다" : "원격 접속"}</h1>
+        <h1>{revoked ? t("접근이 해제되었습니다") : t("원격 접속")}</h1>
         <p className="remote-gate__detail">
           {revoked
-            ? "이 기기의 원격 접근을 호스트에서 해제했습니다. 다시 사용하려면 데스크톱에서 연결 코드를 새로 만들고 입력해 주세요."
-            : "Gajae 데스크톱에서 ‘원격 접속’을 켜고 표시된 연결 코드를 입력하세요. QR을 스캔하면 코드가 자동으로 채워집니다."}
+            ? t("이 기기의 원격 접근을 호스트에서 해제했습니다. 다시 사용하려면 데스크톱에서 연결 코드를 새로 만들고 입력해 주세요.")
+            : t("Gajae 데스크톱에서 ‘원격 접속’을 켜고 표시된 연결 코드를 입력하세요. QR을 스캔하면 코드가 자동으로 채워집니다.")}
         </p>
         <p className="remote-gate__origin">{window.location.origin}</p>
         <form
@@ -95,17 +97,17 @@ export function RemoteGate({
             className="remote-gate__code"
             value={code}
             onChange={(event) => setCode(event.target.value)}
-            placeholder="연결 코드"
+            placeholder={t("연결 코드")}
             inputMode="text"
             autoCapitalize="characters"
             autoCorrect="off"
             spellCheck={false}
             maxLength={16}
-            aria-label="연결 코드"
+            aria-label={t("연결 코드")}
           />
           <button className="button-primary" type="submit" disabled={busy}>
             {busy ? <span className="mini-spinner" /> : <Wifi size={16} />}
-            {busy ? "연결 중" : "연결"}
+            {busy ? t("연결 중") : t("연결")}
           </button>
         </form>
         {error && <p className="remote-gate__error">{error}</p>}
@@ -130,15 +132,15 @@ export function RemoteStrip({
   return (
     <div className={`remote-strip ${offline ? "is-offline" : "is-viewonly"}`}>
       <span className="remote-strip__label">
-        {offline ? remoteClientStatusLabel(status) : "보기 전용 기기"}
+        {offline ? remoteClientStatusLabel(status) : t("보기 전용 기기")}
       </span>
       <span className="remote-strip__detail">
         {offline
-          ? status.detail ?? "호스트에 다시 연결하는 중입니다."
-          : "조회만 가능합니다. 메시지 전송과 승인은 데스크톱에서 하거나 기기 권한을 조작 가능으로 올려주세요."}
+          ? status.detail ?? t("호스트에 다시 연결하는 중입니다.")
+          : t("조회만 가능합니다. 메시지 전송과 승인은 데스크톱에서 하거나 기기 권한을 조작 가능으로 올려주세요.")}
       </span>
       {offline && (
-        <button className="icon-button" type="button" title="다시 연결" onClick={onReconnect}>
+        <button className="icon-button" type="button" title={t("다시 연결")} onClick={onReconnect}>
           <RefreshCw size={14} />
         </button>
       )}

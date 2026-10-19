@@ -1,7 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { setLanguageMode } from "../i18n";
 import { humanErrorMessage, parseDiffFiles, parseDiffLines } from "./format";
 
+afterEach(() => setLanguageMode("ko"));
+
 describe("humanErrorMessage", () => {
+  it("translates host errors and redactions in English", () => {
+    setLanguageMode("en");
+    expect(
+      humanErrorMessage(new Error("report.png은(는) 10 MiB 제한을 초과합니다")),
+    ).toBe("report.png exceeds the 10 MiB limit.");
+    expect(humanErrorMessage(new Error("Bearer sk-abcdefgh12345678"))).toContain(
+      "[redacted]",
+    );
+  });
+
   it("masks credentials that reached an error message", () => {
     // Errors are surfaced verbatim in the UI, and a failure from a lower layer
     // carries whatever was on the wire. A rejected auth header put the token itself

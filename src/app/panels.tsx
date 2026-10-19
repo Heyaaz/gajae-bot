@@ -4,6 +4,8 @@ import { Play, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { Dropdown } from "./primitives";
+import { locale, t } from "../i18n";
+
 
 export interface ManagementPanelProps {
   tab: "mcp" | "skills" | "usage";
@@ -73,11 +75,11 @@ export function ManagementPanel({
     return (
       <div className="management-panel">
         <form className="management-form" onSubmit={addMcp}>
-          <h3>MCP 서버 추가</h3>
+          <h3>{t("MCP 서버 추가")}</h3>
           <div>
             <input
               required
-              placeholder="서버 이름"
+              placeholder={t("서버 이름")}
               value={mcpName}
               onChange={(event) => setMcpName(event.target.value)}
             />
@@ -104,31 +106,30 @@ export function ManagementPanel({
           <input
             required
             placeholder={
-              mcpType === "stdio" ? "절대 실행 파일 경로" : "HTTPS URL"
+              mcpType === "stdio" ? t("절대 실행 파일 경로") : "HTTPS URL"
             }
             value={mcpEndpoint}
             onChange={(event) => setMcpEndpoint(event.target.value)}
           />
           {mcpType === "stdio" && (
             <textarea
-              placeholder="인수 — 한 줄에 하나"
+              placeholder={t("인수 — 한 줄에 하나")}
               value={mcpArgs}
               onChange={(event) => setMcpArgs(event.target.value)}
             />
           )}
-          <small>환경변수와 인증 헤더는 보안상 앱에서 입력하지 않습니다.</small>
+          <small>{t("환경변수와 인증 헤더는 보안상 앱에서 입력하지 않습니다.")}</small>
           <button
             className="button-primary"
             type="submit"
             disabled={Boolean(busy)}
           >
-            추가
-          </button>
+            {t("추가")} </button>
         </form>
         <div className="management-list">
-          <h3>등록된 서버</h3>
+          <h3>{t("등록된 서버")}</h3>
           {snapshot.mcpServers.length === 0 ? (
-            <p>등록된 MCP 서버가 없습니다.</p>
+            <p>{t("등록된 MCP 서버가 없습니다.")}</p>
           ) : (
             snapshot.mcpServers.map((server) => (
               <article key={`${server.scope}-${server.name}`}>
@@ -144,7 +145,7 @@ export function ManagementPanel({
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => {
-                    if (window.confirm(`${server.name} MCP 서버를 제거할까요?`))
+                    if (window.confirm(t`${server.name} MCP 서버를 제거할까요?`))
                       void mutate(`mcp-${server.name}`, () =>
                         bridge.removeMcpServer(
                           workspace,
@@ -154,8 +155,7 @@ export function ManagementPanel({
                       );
                   }}
                 >
-                  제거
-                </button>
+                  {t("제거")} </button>
               </article>
             ))
           )}
@@ -175,7 +175,7 @@ export function ManagementPanel({
             if (
               !target ||
               !window.confirm(
-                `${target} 패키지의 코드를 ${pluginScope} 범위에 설치하고 실행 가능하게 할까요? 신뢰하는 정확한 버전인지 확인하세요.`,
+                t`${target} 패키지의 코드를 ${pluginScope} 범위에 설치하고 실행 가능하게 할까요? 신뢰하는 정확한 버전인지 확인하세요.`,
               )
             )
               return;
@@ -184,11 +184,11 @@ export function ManagementPanel({
             ).then(() => setPluginTarget(""));
           }}
         >
-          <h3>Plugin 설치</h3>
+          <h3>{t("Plugin 설치")}</h3>
           <div>
             <input
               required
-              placeholder="정확한 npm 버전: package@1.2.3"
+              placeholder={t("정확한 npm 버전: package@1.2.3")}
               value={pluginTarget}
               onChange={(event) => setPluginTarget(event.target.value)}
             />
@@ -206,25 +206,22 @@ export function ManagementPanel({
               type="submit"
               disabled={Boolean(busy)}
             >
-              검토 후 설치
-            </button>
+              {t("검토 후 설치")} </button>
           </div>
           <small>
-            태그, latest, Git URL, 로컬 경로는 허용하지 않습니다. 설치된
-            플러그인은 GJC 프로세스에서 코드를 실행할 수 있습니다.
-          </small>
+            {t("태그, latest, Git URL, 로컬 경로는 허용하지 않습니다. 설치된 플러그인은 GJC 프로세스에서 코드를 실행할 수 있습니다.")} </small>
         </form>
         <div className="management-list">
           <h3>Skills</h3>
           {snapshot.skills.length === 0 ? (
-            <p>발견된 스킬이 없습니다.</p>
+            <p>{t("발견된 스킬이 없습니다.")}</p>
           ) : (
             snapshot.skills.map((skill) => (
               <article key={`${skill.source}-${skill.name}`}>
                 <span>
                   <strong>{skill.name}</strong>
                   <small>
-                    {skill.source} · {skill.description || "설명 없음"}
+                    {skill.source} · {skill.description || t("설명 없음")}
                   </small>
                 </span>
               </article>
@@ -234,7 +231,7 @@ export function ManagementPanel({
         <div className="management-list">
           <h3>Plugins</h3>
           {snapshot.plugins.length === 0 ? (
-            <p>설치된 플러그인이 없습니다.</p>
+            <p>{t("설치된 플러그인이 없습니다.")}</p>
           ) : (
             snapshot.plugins.map((plugin) => (
               <article key={`${plugin.source}-${plugin.name}`}>
@@ -261,7 +258,7 @@ export function ManagementPanel({
                         )
                       }
                     >
-                      {plugin.enabled ? "비활성화" : "활성화"}
+                      {plugin.enabled ? t("비활성화") : t("활성화")}
                     </button>
                   )}
                   <button
@@ -271,7 +268,7 @@ export function ManagementPanel({
                     onClick={() => {
                       if (
                         window.confirm(
-                          `${plugin.name} 플러그인을 제거할까요? 설치된 코드가 삭제됩니다.`,
+                          t`${plugin.name} 플러그인을 제거할까요? 설치된 코드가 삭제됩니다.`,
                         )
                       )
                         void mutate(`plugin-remove-${plugin.name}`, () =>
@@ -279,8 +276,7 @@ export function ManagementPanel({
                         );
                     }}
                   >
-                    제거
-                  </button>
+                    {t("제거")} </button>
                 </div>
               </article>
             ))
@@ -294,35 +290,34 @@ export function ManagementPanel({
     <div className="management-panel">
       <section className="usage-summary">
         <span>
-          <strong>{snapshot.usage.requests.toLocaleString()}</strong>
-          <small>요청</small>
+          <strong>{snapshot.usage.requests.toLocaleString(locale())}</strong>
+          <small>{t("요청")}</small>
         </span>
         <span>
-          <strong>{snapshot.usage.inputTokens.toLocaleString()}</strong>
-          <small>입력 토큰</small>
+          <strong>{snapshot.usage.inputTokens.toLocaleString(locale())}</strong>
+          <small>{t("입력 토큰")}</small>
         </span>
         <span>
-          <strong>{snapshot.usage.outputTokens.toLocaleString()}</strong>
-          <small>출력 토큰</small>
+          <strong>{snapshot.usage.outputTokens.toLocaleString(locale())}</strong>
+          <small>{t("출력 토큰")}</small>
         </span>
         <span>
           <strong>{(snapshot.usage.cacheRate * 100).toFixed(1)}%</strong>
-          <small>캐시율</small>
+          <small>{t("캐시율")}</small>
         </span>
         <span>
           <strong>${snapshot.usage.cost.toFixed(2)}</strong>
-          <small>비용</small>
+          <small>{t("비용")}</small>
         </span>
       </section>
       <div className="management-list">
-        <h3>모델별 사용량</h3>
+        <h3>{t("모델별 사용량")}</h3>
         {snapshot.usage.models.map((model) => (
           <article key={`${model.provider}-${model.model}`}>
             <span>
               <strong>{model.model}</strong>
               <small>
-                {model.provider} · {model.requests.toLocaleString()}회 · $
-                {(model.cacheRate * 100).toFixed(1)}% cache
+                {model.provider} · {model.requests.toLocaleString(locale())}{t("회 · $")} {(model.cacheRate * 100).toFixed(1)}% cache
               </small>
             </span>
             <strong>${model.cost.toFixed(2)}</strong>
@@ -338,13 +333,13 @@ export function automationRunStatusLabel(
 ): string {
   switch (status) {
     case "completed":
-      return "완료";
+      return t("완료");
     case "failed":
-      return "실패";
+      return t("실패");
     case "skipped":
-      return "건너뜀";
+      return t("건너뜀");
     default:
-      return "실행 중";
+      return t("실행 중");
   }
 }
 
@@ -353,11 +348,11 @@ export function automationRunTriggerLabel(
 ): string {
   switch (trigger) {
     case "scheduled":
-      return "예약";
+      return t("예약");
     case "catch-up":
-      return "보충";
+      return t("보충");
     default:
-      return "수동";
+      return t("수동");
   }
 }
 
@@ -448,50 +443,50 @@ export function AutomationPanel({
   return (
     <div className="automation-panel">
       <form className="automation-form" onSubmit={createAutomation}>
-        <h3>예약 작업 만들기</h3>
+        <h3>{t("예약 작업 만들기")}</h3>
         <input
           required
           maxLength={200}
-          placeholder="자동화 이름"
+          placeholder={t("자동화 이름")}
           value={name}
           onChange={(event) => setName(event.target.value)}
         />
         <textarea
           required
           maxLength={20000}
-          placeholder="GJC에 실행할 작업을 구체적으로 작성하세요"
+          placeholder={t("GJC에 실행할 작업을 구체적으로 작성하세요")}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
         />
         <input
           required
-          placeholder="절대 workspace 경로"
+          placeholder={t("절대 workspace 경로")}
           value={workspace}
           onChange={(event) => setWorkspace(event.target.value)}
         />
         <div className="automation-form-grid">
           <Dropdown
             value={kind}
-            ariaLabel="자동화 주기"
+            ariaLabel={t("자동화 주기")}
             options={[
-              { value: "daily", label: "매일" },
-              { value: "weekdays", label: "평일" },
-              { value: "weekly", label: "매주" },
+              { value: "daily", label: t("매일") },
+              { value: "weekdays", label: t("평일") },
+              { value: "weekly", label: t("매주") },
             ]}
             onChange={setKind}
           />
           {kind === "weekly" && (
             <Dropdown
               value={weekday}
-              ariaLabel="실행 요일"
+              ariaLabel={t("실행 요일")}
               options={[
-                { value: "0", label: "일요일" },
-                { value: "1", label: "월요일" },
-                { value: "2", label: "화요일" },
-                { value: "3", label: "수요일" },
-                { value: "4", label: "목요일" },
-                { value: "5", label: "금요일" },
-                { value: "6", label: "토요일" },
+                { value: "0", label: t("일요일") },
+                { value: "1", label: t("월요일") },
+                { value: "2", label: t("화요일") },
+                { value: "3", label: t("수요일") },
+                { value: "4", label: t("목요일") },
+                { value: "5", label: t("금요일") },
+                { value: "6", label: t("토요일") },
               ]}
               onChange={setWeekday}
             />
@@ -505,13 +500,13 @@ export function AutomationPanel({
         </div>
         <div className="automation-form-grid">
           <input
-            placeholder="모델 프로필"
+            placeholder={t("모델 프로필")}
             value={modelProfile}
             onChange={(event) => setModelProfile(event.target.value)}
           />
           <Dropdown
             value={thinking}
-            ariaLabel="자동화 추론 effort"
+            ariaLabel={t("자동화 추론 effort")}
             options={[
               { value: "off", label: "Off" },
               { value: "low", label: "Low" },
@@ -530,10 +525,9 @@ export function AutomationPanel({
             onChange={(event) => setWorktree(event.target.checked)}
           />
           <span>
-            <strong>별도 worktree에서 실행</strong>
+            <strong>{t("별도 worktree에서 실행")}</strong>
             <small>
-              예약 작업이 현재 작업 폴더를 직접 건드리지 않게 격리합니다.
-            </small>
+              {t("예약 작업이 현재 작업 폴더를 직접 건드리지 않게 격리합니다.")} </small>
           </span>
         </label>
         <button
@@ -541,17 +535,14 @@ export function AutomationPanel({
           type="submit"
           disabled={!bridge || Boolean(busy)}
         >
-          자동화 추가
-        </button>
+          {t("자동화 추가")} </button>
       </form>
       {error && <p className="diff-error">{error}</p>}
       <section className="automation-list">
-        <h3>등록된 자동화</h3>
+        <h3>{t("등록된 자동화")}</h3>
         <p className="automation-policy">
-          잠자는 동안 놓친 실행은 7일 이내의 가장 최근 1회만 보충하고,
-          그보다 오래된 실행은 건너뛴 사유와 함께 기록합니다.
-        </p>
-        {automations.length === 0 && <p>등록된 자동화가 없습니다.</p>}
+          {t("잠자는 동안 놓친 실행은 7일 이내의 가장 최근 1회만 보충하고, 그보다 오래된 실행은 건너뛴 사유와 함께 기록합니다.")} </p>
+        {automations.length === 0 && <p>{t("등록된 자동화가 없습니다.")}</p>}
         {automations.map((automation) => {
           const history = runs
             .filter((run) => run.automationId === automation.id)
@@ -581,23 +572,21 @@ export function AutomationPanel({
                       );
                   }}
                 >
-                  {automation.enabled ? "활성" : "중지"}
+                  {automation.enabled ? t("활성") : t("중지")}
                 </button>
               </header>
               <p>{automation.prompt}</p>
               <small>
                 {automation.nextRunAt
-                  ? `다음 실행 ${new Date(automation.nextRunAt).toLocaleString("ko-KR")}`
-                  : "예약 중지됨"}
+                  ? t`다음 실행 ${new Date(automation.nextRunAt).toLocaleString(locale())}`
+                  : t("예약 중지됨")}
                 {latest
-                  ? ` · 최근 ${automationRunStatusLabel(latest.status)}`
+                  ? t` · 최근 ${automationRunStatusLabel(latest.status)}`
                   : ""}
               </small>
               {automation.enabled && history.length === 0 && (
                 <p className="automation-hint">
-                  아직 실행 전입니다. ‘지금 실행’으로 권한과 도구 설정을 먼저
-                  확인하세요.
-                </p>
+                  {t("아직 실행 전입니다. ‘지금 실행’으로 권한과 도구 설정을 먼저 확인하세요.")} </p>
               )}
               <footer>
                 <button
@@ -611,8 +600,7 @@ export function AutomationPanel({
                       );
                   }}
                 >
-                  <Play size={12} /> 지금 실행
-                </button>
+                  <Play size={12} /> {t("지금 실행")} </button>
                 <button
                   className="button-danger"
                   type="button"
@@ -620,19 +608,18 @@ export function AutomationPanel({
                   onClick={() => {
                     if (
                       bridge &&
-                      window.confirm(`${automation.name} 자동화를 삭제할까요?`)
+                      window.confirm(t`${automation.name} 자동화를 삭제할까요?`)
                     )
                       void mutate(`delete-${automation.id}`, () =>
                         bridge.delete(automation.id),
                       );
                   }}
                 >
-                  <Trash2 size={12} /> 삭제
-                </button>
+                  <Trash2 size={12} /> {t("삭제")} </button>
               </footer>
               {history.length > 0 && (
                 <details className="automation-history">
-                  <summary>실행 이력 {history.length}건</summary>
+                  <summary>{t("실행 이력")} {history.length}{t("건")}</summary>
                   <ul>
                     {history.map((run) => {
                       const detail = run.reason || run.error || run.output;
@@ -644,11 +631,11 @@ export function AutomationPanel({
                             {automationRunStatusLabel(run.status)}
                           </span>
                           <small>
-                            {new Date(run.startedAt).toLocaleString("ko-KR")}
+                            {new Date(run.startedAt).toLocaleString(locale())}
                             {" · "}
                             {automationRunTriggerLabel(run.trigger)}
                             {run.scheduledFor
-                              ? ` · 예약 ${new Date(run.scheduledFor).toLocaleString("ko-KR")}`
+                              ? t` · 예약 ${new Date(run.scheduledFor).toLocaleString(locale())}`
                               : ""}
                           </small>
                           {detail && <pre>{detail}</pre>}

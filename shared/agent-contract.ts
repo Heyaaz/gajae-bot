@@ -96,6 +96,9 @@ export function notificationDelivery(
 
 export type ToolViewMode = "basic" | "reasoning" | "detailed";
 
+/** Resolved UI language used by the desktop host for native text. */
+export type UiLanguage = "ko" | "en";
+
 /**
  * The conversation density new and upgraded windows start with.
  *
@@ -115,6 +118,8 @@ export interface AgentControlPreferences {
   permissionHandling: GjcPermissionHandling;
   gjcExecutable: string;
   notificationPreferences: NotificationPreferences;
+  /** Resolved language the desktop host uses for native dialogs and notifications. */
+  language: UiLanguage;
   /**
    * How tool activity and reasoning render in the conversation.
    *
@@ -742,6 +747,8 @@ export interface SettingsDesktopBridge {
   setNotificationPreferences(
     preferences: NotificationPreferences,
   ): Promise<NotificationPreferences>;
+  /** Persists the resolved UI language used by the desktop host. */
+  setLanguage(language: UiLanguage): Promise<UiLanguage>;
   /** Persists the running-turn Enter behavior alone. */
   setRunningSubmission(value: "queue" | "steer"): Promise<"queue" | "steer">;
   /** Names the session a window is currently showing, for notification suppression. */
@@ -813,8 +820,22 @@ export function announcesSessionActivity(
 export function sessionActivityBody(event: {
   title: string;
   category: "completed" | "failed" | "permission" | "message" | "recovered";
-}): string {
-  const name = event.title.trim() || "세션";
+}, language: UiLanguage = "ko"): string {
+  const name = event.title.trim() || (language === "en" ? "Session" : "세션");
+  if (language === "en") {
+    switch (event.category) {
+      case "permission":
+        return `${name} is waiting for approval or an answer.`;
+      case "failed":
+        return `${name} failed.`;
+      case "recovered":
+        return `${name} reconnected.`;
+      case "completed":
+        return `${name} completed.`;
+      default:
+        return `${name} sent a new response.`;
+    }
+  }
   switch (event.category) {
     case "permission":
       return `${name} 승인 또는 질문을 기다립니다.`;

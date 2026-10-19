@@ -1,5 +1,7 @@
 import { FolderGit2, Layers, X } from "lucide-react";
 import type { ProjectGroup } from "./project-model";
+import { t } from "../i18n";
+
 
 export interface ProjectListProps {
   projects: readonly ProjectGroup[];
@@ -30,12 +32,12 @@ export function ProjectList({
     <main className="project-list">
       <header className="project-list__header">
         <Layers size={16} />
-        <strong>프로젝트 목록</strong>
-        <small>{projects.length}개 프로젝트</small>
+        <strong>{t("프로젝트 목록")}</strong>
+        <small>{projects.length}{t("개 프로젝트")}</small>
         <button
           type="button"
           className="icon-button"
-          title="대화로 돌아가기"
+          title={t("대화로 돌아가기")}
           onClick={onClose}
         >
           <X size={16} />
@@ -43,8 +45,7 @@ export function ProjectList({
       </header>
       {projects.length === 0 ? (
         <p className="project-list__empty">
-          프로젝트가 없습니다. 세션을 만들면 그 작업 폴더가 프로젝트가 됩니다.
-        </p>
+          {t("프로젝트가 없습니다. 세션을 만들면 그 작업 폴더가 프로젝트가 됩니다.")} </p>
       ) : (
         <div className="project-list__rows">
           {projects.map((project) => (
@@ -61,9 +62,8 @@ export function ProjectList({
                 <strong>{project.name}</strong>
                 <code>{project.root}</code>
                 <small>
-                  {project.repository ? "Git 레포" : "Git 레포 아님"} · 세션{" "}
-                  {project.sessions.length}개
-                </small>
+                  {project.repository ? t("Git 레포") : t("Git 레포 아님")} {t("· 세션")}{" "}
+                  {project.sessions.length}{t("개 세션")} </small>
               </button>
               {project.repository ? (
                 <button
@@ -71,12 +71,10 @@ export function ProjectList({
                   className="button-secondary"
                   onClick={() => onOpenRepository(project.id)}
                 >
-                  <FolderGit2 size={14} /> 레포 보기
-                </button>
+                  <FolderGit2 size={14} /> {t("레포 보기")} </button>
               ) : (
                 <span className="project-row__hint">
-                  Git 레포가 아니라 레포 화면이 없습니다
-                </span>
+                  {t("Git 레포가 아니라 레포 화면이 없습니다")} </span>
               )}
             </article>
           ))}

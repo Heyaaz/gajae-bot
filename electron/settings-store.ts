@@ -15,6 +15,7 @@ import type {
   GjcPermissionHandling,
   NotificationPreferences,
   ToolViewMode,
+  UiLanguage,
 } from '../shared/agent-contract.js'
 import {
   DEFAULT_MODEL_PRESET,
@@ -87,6 +88,7 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
     notificationPreferences: parseNotificationPreferences(
       candidate.notificationPreferences,
     ),
+    language: candidate.language === 'en' ? 'en' : 'ko',
     runningSubmission:
       candidate.runningSubmission === "steer" ? "steer" : "queue",
   }
@@ -130,6 +132,10 @@ export class SettingsStore {
     const toolViewMode = (value as Partial<AgentControlPreferences> | null)?.toolViewMode
     if (toolViewMode !== undefined && !isToolViewMode(toolViewMode)) {
       throw new Error('Tool view mode must be basic, reasoning, or detailed')
+    }
+    const language = (value as Partial<AgentControlPreferences> | null)?.language
+    if (language !== undefined && language !== 'ko' && language !== 'en') {
+      throw new Error('UI language must be ko or en')
     }
 
     return preferences
@@ -176,6 +182,17 @@ export class SettingsStore {
     this.persist(preferences)
     this.preferences = preferences
     return this.preferences.runningSubmission
+  }
+
+  /** Resolved UI language for native host text. */
+  setLanguage(value: unknown): UiLanguage {
+    if (value !== 'ko' && value !== 'en')
+      throw new Error('UI language must be ko or en')
+    const language: UiLanguage = value
+    const preferences = { ...this.preferences, language }
+    this.persist(preferences)
+    this.preferences = preferences
+    return this.preferences.language
   }
 
   /** Display-only notification settings, saved without the runtime confirmation. */

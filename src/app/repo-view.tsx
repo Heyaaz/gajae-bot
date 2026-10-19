@@ -20,9 +20,11 @@ import type { AgentSession } from "../backend/types";
 import { ArrowLeft, ExternalLink, FolderOpen, GitCompare } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { humanErrorMessage } from "./format";
+import { humanErrorMessage, sessionTitleText } from "./format";
 import { DiffPanel } from "./inspector";
 import { sessionsInPath } from "./project-model";
+import { t } from "../i18n";
+
 
 /**
  * The project-scoped repository screen.
@@ -51,13 +53,13 @@ const REPO_TABS: readonly RepoViewTab[] = [
 export function repoTabLabel(tab: RepoViewTab): string {
   switch (tab) {
     case "overview":
-      return "개요";
+      return t("개요");
     case "issues":
-      return "이슈";
+      return t("이슈");
     case "pulls":
-      return "PR";
+      return t("PR");
     case "branches":
-      return "브랜치·워크트리";
+      return t("브랜치·워크트리");
   }
 }
 
@@ -83,30 +85,30 @@ export type RepoLoad<T> =
 export function githubFailureText(failure: GithubFailureState): string {
   switch (failure) {
     case "no-remote":
-      return "원격 저장소가 없습니다. 이 프로젝트는 로컬에만 있습니다.";
+      return t("원격 저장소가 없습니다. 이 프로젝트는 로컬에만 있습니다.");
     case "not-github":
-      return "GitHub 저장소가 아닙니다. 이슈와 풀 리퀘스트는 GitHub에서만 조회합니다.";
+      return t("GitHub 저장소가 아닙니다. 이슈와 풀 리퀘스트는 GitHub에서만 조회합니다.");
     case "no-cli":
-      return "GitHub CLI(gh)를 찾을 수 없습니다. 설치하면 이슈와 풀 리퀘스트를 볼 수 있습니다.";
+      return t("GitHub CLI(gh)를 찾을 수 없습니다. 설치하면 이슈와 풀 리퀘스트를 볼 수 있습니다.");
     case "unauthenticated":
-      return "GitHub에 로그인되어 있지 않습니다. 터미널에서 gh auth login을 실행하세요.";
+      return t("GitHub에 로그인되어 있지 않습니다. 터미널에서 gh auth login을 실행하세요.");
     case "unreachable":
-      return "GitHub에 연결하지 못했습니다. 네트워크 상태를 확인하세요.";
+      return t("GitHub에 연결하지 못했습니다. 네트워크 상태를 확인하세요.");
     case "error":
-      return "GitHub에서 응답을 받지 못했습니다. 잠시 후 다시 시도하세요.";
+      return t("GitHub에서 응답을 받지 못했습니다. 잠시 후 다시 시도하세요.");
   }
 }
 
 export function ciLabel(ci: RepoCiSummary): string {
   switch (ci.state) {
     case "passing":
-      return "CI 통과";
+      return t("CI 통과");
     case "failing":
-      return ci.total > 0 ? `CI 실패 ${ci.failing}/${ci.total}` : "CI 실패";
+      return ci.total > 0 ? t`CI 실패 ${ci.failing}/${ci.total}` : t("CI 실패");
     case "pending":
-      return ci.total > 0 ? `CI 진행 중 ${ci.pending}/${ci.total}` : "CI 진행 중";
+      return ci.total > 0 ? t`CI 진행 중 ${ci.pending}/${ci.total}` : t("CI 진행 중");
     case "none":
-      return "CI 없음";
+      return t("CI 없음");
   }
 }
 
@@ -131,13 +133,13 @@ function GithubFailureNotice({ failure }: { failure: GithubFailure }): ReactNode
 export function reviewLabel(review: GithubReviewState): string {
   switch (review) {
     case "approved":
-      return "승인됨";
+      return t("승인됨");
     case "changes-requested":
-      return "변경 요청";
+      return t("변경 요청");
     case "review-required":
-      return "리뷰 필요";
+      return t("리뷰 필요");
     case "none":
-      return "리뷰 없음";
+      return t("리뷰 없음");
   }
 }
 
@@ -151,17 +153,17 @@ const REVIEW_ENTRY_LABELS: Record<GithubReview["state"], string> = {
 };
 
 export function issueStateLabel(state: GithubIssueSummary["state"]): string {
-  return state === "open" ? "열림" : "닫힘";
+  return state === "open" ? t("열림") : t("닫힘");
 }
 
 export function pullStateLabel(state: GithubPullSummary["state"]): string {
   switch (state) {
     case "open":
-      return "열림";
+      return t("열림");
     case "closed":
-      return "닫힘";
+      return t("닫힘");
     case "merged":
-      return "병합됨";
+      return t("병합됨");
   }
 }
 
@@ -187,8 +189,8 @@ export function formatRepoCount(value: number): string {
   if (!Number.isFinite(value) || value <= 0) return "0";
   const count = Math.trunc(value);
   if (count < 1_000) return String(count);
-  if (count < 10_000) return `${trimTrailingZero((count / 1_000).toFixed(1))}천`;
-  return `${trimTrailingZero((count / 10_000).toFixed(1))}만`;
+  if (count < 10_000) return t`${trimTrailingZero((count / 1_000).toFixed(1))}천`;
+  return t`${trimTrailingZero((count / 10_000).toFixed(1))}만`;
 }
 
 /**
@@ -237,13 +239,13 @@ export function RepoOverviewPanel({
     <>
       <section className="repo-card">
         <header className="repo-card__header">
-          <h3>로컬 저장소</h3>
+          <h3>{t("로컬 저장소")}</h3>
           <code>{repository.branch || "detached"}</code>
         </header>
         {repository.repository && (
           <p className="repo-card__meta">
-            <span>브랜치 {formatRepoCount(repository.branches.length)}</span>
-            <span>워크트리 {formatRepoCount(repository.worktrees.length)}</span>
+            <span>{t("브랜치")} {formatRepoCount(repository.branches.length)}</span>
+            <span>{t("워크트리")} {formatRepoCount(repository.worktrees.length)}</span>
             {repository.remote && (
               <span>{repository.remote.slug ?? repository.remote.name}</span>
             )}
@@ -254,7 +256,7 @@ export function RepoOverviewPanel({
             together: Git refusing the path is the only reason this project has
             no repository, and a failed read reports itself instead. */}
         {!repository.repository && !repository.error && (
-          <p className="repo-empty">Git 저장소가 아닙니다.</p>
+          <p className="repo-empty">{t("Git 저장소가 아닙니다.")}</p>
         )}
         <WorktreeRows
           worktrees={repository.worktrees}
@@ -271,17 +273,17 @@ export function RepoOverviewPanel({
         {github.state === "ok" ? (
           <>
             <p className="repo-card__meta">
-              <span>열린 이슈 {formatRepoCount(github.value.openIssues)}</span>
-              <span>열린 PR {formatRepoCount(github.value.openPulls)}</span>
+              <span>{t("열린 이슈")} {formatRepoCount(github.value.openIssues)}</span>
+              <span>{t("열린 PR")} {formatRepoCount(github.value.openPulls)}</span>
               <RepoBadge tone={github.value.ci.state}>
                 {ciLabel(github.value.ci)}
               </RepoBadge>
             </p>
             <p className="repo-card__meta">
               <span>
-                기본 브랜치 <code>{github.value.defaultBranch}</code>
+                {t("기본 브랜치")} <code>{github.value.defaultBranch}</code>
               </span>
-              {github.value.private && <span>비공개 저장소</span>}
+              {github.value.private && <span>{t("비공개 저장소")}</span>}
             </p>
           </>
         ) : (
@@ -312,14 +314,14 @@ export function RepoBranchesPanel({
     return repository.error ? (
       <p className="repo-error">{repository.error}</p>
     ) : (
-      <p className="repo-empty">Git 저장소가 아닙니다.</p>
+      <p className="repo-empty">{t("Git 저장소가 아닙니다.")}</p>
     );
   return (
     <>
       {repository.error && <p className="repo-error">{repository.error}</p>}
       <section className="repo-card">
         <header className="repo-card__header">
-          <h3>워크트리</h3>
+          <h3>{t("워크트리")}</h3>
           <span>{formatRepoCount(repository.worktrees.length)}</span>
         </header>
         <WorktreeRows
@@ -331,7 +333,7 @@ export function RepoBranchesPanel({
       </section>
       <section className="repo-card">
         <header className="repo-card__header">
-          <h3>브랜치</h3>
+          <h3>{t("브랜치")}</h3>
           <span>{formatRepoCount(repository.branches.length)}</span>
         </header>
         {repository.branches.length > 0 && (
@@ -342,7 +344,7 @@ export function RepoBranchesPanel({
                 {branch.worktreePath && (
                   <>
                     <span className="repo-branch__path">{branch.worktreePath}</span>
-                    <RepoBadge tone="checked-out">체크아웃됨</RepoBadge>
+                    <RepoBadge tone="checked-out">{t("체크아웃됨")}</RepoBadge>
                   </>
                 )}
               </li>
@@ -352,7 +354,7 @@ export function RepoBranchesPanel({
         {/* An empty list beside a failed read would state a fact the read did
             not establish. */}
         {repository.branches.length === 0 && !repository.error && (
-          <p className="repo-empty">브랜치가 없습니다.</p>
+          <p className="repo-empty">{t("브랜치가 없습니다.")}</p>
         )}
       </section>
     </>
@@ -378,7 +380,7 @@ function WorktreeRows({
   onOpenDiff: (session: AgentSession) => void;
 }) {
   if (worktrees.length === 0)
-    return <p className="repo-empty">워크트리가 없습니다.</p>;
+    return <p className="repo-empty">{t("워크트리가 없습니다.")}</p>;
   return (
     <ul className="repo-worktrees">
       {worktrees.map((worktree) => {
@@ -394,11 +396,11 @@ function WorktreeRows({
               <span>{worktree.branch ?? "detached"}</span>
               <span>
                 {worktree.changed === undefined
-                  ? "읽을 수 없음"
-                  : `변경 ${formatRepoCount(worktree.changed)}`}
+                  ? t("읽을 수 없음")
+                  : t`변경 ${formatRepoCount(worktree.changed)}`}
               </span>
-              {worktree.locked && <span>잠김</span>}
-              {worktree.prunable && <span>정리 필요</span>}
+              {worktree.locked && <span>{t("잠김")}</span>}
+              {worktree.prunable && <span>{t("정리 필요")}</span>}
             </div>
             {connected.length > 0 && (
               <div className="repo-chips">
@@ -409,7 +411,7 @@ function WorktreeRows({
                     key={session.id}
                     onClick={() => onOpenSession(session.id)}
                   >
-                    {session.title}
+                    {sessionTitleText(session.title)}
                   </button>
                 ))}
               </div>
@@ -421,8 +423,7 @@ function WorktreeRows({
                 onClick={() => onOpenDiff(diffSession)}
               >
                 <GitCompare size={13} />
-                변경 파일
-              </button>
+                {t("변경 파일")} </button>
             )}
           </li>
         );
@@ -454,7 +455,7 @@ export function RepoIssuesPanel({
   if (query.state !== "ok")
     return <GithubFailureNotice failure={query} />;
   if (query.value.length === 0)
-    return <p className="repo-empty">열린 이슈가 없습니다.</p>;
+    return <p className="repo-empty">{t("열린 이슈가 없습니다.")}</p>;
   return (
     <ul className="repo-list">
       {query.value.map((issue) => (
@@ -505,7 +506,7 @@ export function RepoPullsPanel({
   if (query.state !== "ok")
     return <GithubFailureNotice failure={query} />;
   if (query.value.length === 0)
-    return <p className="repo-empty">열린 풀 리퀘스트가 없습니다.</p>;
+    return <p className="repo-empty">{t("열린 풀 리퀘스트가 없습니다.")}</p>;
   return (
     <ul className="repo-list">
       {query.value.map((pull) => (
@@ -539,8 +540,7 @@ function DetailHeader({ onBack }: { onBack: () => void }) {
     <header className="repo-detail__header">
       <button className="button-secondary" type="button" onClick={onBack}>
         <ArrowLeft size={13} />
-        목록으로
-      </button>
+        {t("목록으로")} </button>
     </header>
   );
 }
@@ -558,7 +558,7 @@ function IssueDetailView({
     <article className="repo-detail">
       <DetailHeader onBack={onBack} />
       {load.status === "loading" && (
-        <p className="repo-view__status">불러오는 중…</p>
+        <p className="repo-view__status">{t("불러오는 중…")}</p>
       )}
       {load.status === "failed" && <p className="repo-error">{load.error}</p>}
       {load.status === "ready" &&
@@ -593,7 +593,7 @@ function IssueDetailBody({
         <span>{issue.author}</span>
         <span>{issue.updatedAt}</span>
         {issue.comments > 0 && (
-          <span>댓글 {formatRepoCount(issue.comments)}</span>
+          <span>{t("댓글")} {formatRepoCount(issue.comments)}</span>
         )}
         <button
           className="button-secondary"
@@ -601,15 +601,14 @@ function IssueDetailBody({
           onClick={() => onOpenUrl(issue.url)}
         >
           <ExternalLink size={13} />
-          GitHub에서 열기
-        </button>
+          {t("GitHub에서 열기")} </button>
       </p>
       {issue.assignees.length > 0 && (
         <p className="repo-detail__meta">
-          담당자 {issue.assignees.join(", ")}
+          {t("담당자")} {issue.assignees.join(", ")}
         </p>
       )}
-      <pre className="repo-detail__body">{issue.body || "본문이 없습니다."}</pre>
+      <pre className="repo-detail__body">{issue.body || t("본문이 없습니다.")}</pre>
     </>
   );
 }
@@ -627,7 +626,7 @@ function PullDetailView({
     <article className="repo-detail">
       <DetailHeader onBack={onBack} />
       {load.status === "loading" && (
-        <p className="repo-view__status">불러오는 중…</p>
+        <p className="repo-view__status">{t("불러오는 중…")}</p>
       )}
       {load.status === "failed" && <p className="repo-error">{load.error}</p>}
       {load.status === "ready" &&
@@ -654,7 +653,7 @@ function PullDetailBody({
       </h3>
       <p className="repo-detail__meta">
         <RepoBadge tone={pull.state}>{pullStateLabel(pull.state)}</RepoBadge>
-        {pull.draft && <RepoBadge tone="draft">초안</RepoBadge>}
+        {pull.draft && <RepoBadge tone="draft">{t("초안")}</RepoBadge>}
         <RepoBadge tone={`review-${pull.review}`}>
           {reviewLabel(pull.review)}
         </RepoBadge>
@@ -667,8 +666,7 @@ function PullDetailBody({
           onClick={() => onOpenUrl(pull.url)}
         >
           <ExternalLink size={13} />
-          GitHub에서 열기
-        </button>
+          {t("GitHub에서 열기")} </button>
       </p>
       <p className="repo-detail__branches">
         <code>{pull.headRefName}</code> → <code>{pull.baseRefName}</code>
@@ -680,23 +678,23 @@ function PullDetailBody({
         <span className="repo-detail__deletions">
           -{formatRepoCount(pull.deletions)}
         </span>
-        <span>파일 {formatRepoCount(pull.changedFiles)}개</span>
-        <span>{MERGEABLE_LABELS[pull.mergeable]}</span>
+        <span>{t("파일")} {formatRepoCount(pull.changedFiles)}{t("개 파일")}</span>
+        <span>{t(MERGEABLE_LABELS[pull.mergeable])}</span>
       </p>
       {pull.reviews.length === 0 ? (
-        <p className="repo-empty">아직 리뷰가 없습니다.</p>
+        <p className="repo-empty">{t("아직 리뷰가 없습니다.")}</p>
       ) : (
         <ul className="repo-reviews">
           {pull.reviews.map((review, index) => (
             <li key={`${review.author}-${review.submittedAt ?? index}`}>
               <strong>{review.author}</strong>
-              <span>{REVIEW_ENTRY_LABELS[review.state]}</span>
+              <span>{t(REVIEW_ENTRY_LABELS[review.state])}</span>
               {review.submittedAt && <small>{review.submittedAt}</small>}
             </li>
           ))}
         </ul>
       )}
-      <pre className="repo-detail__body">{pull.body || "본문이 없습니다."}</pre>
+      <pre className="repo-detail__body">{pull.body || t("본문이 없습니다.")}</pre>
     </>
   );
 }
@@ -942,7 +940,7 @@ export function RepoView({
         if (repository.status === "failed")
           return <p className="repo-error">{repository.error}</p>;
         if (repository.status === "loading")
-          return <p className="repo-view__status">불러오는 중…</p>;
+          return <p className="repo-view__status">{t("불러오는 중…")}</p>;
         // A failed GitHub read is one card's problem, not the whole screen's: the
         // local repository has already answered, and hiding it behind the same
         // paragraph would take away the branch and worktree state the user can
@@ -961,7 +959,7 @@ export function RepoView({
             </>
           );
         if (github.status === "loading")
-          return <p className="repo-view__status">불러오는 중…</p>;
+          return <p className="repo-view__status">{t("불러오는 중…")}</p>;
         return (
           <RepoOverviewPanel
             repository={repository.value}
@@ -976,7 +974,7 @@ export function RepoView({
         if (issues.status === "failed")
           return <p className="repo-error">{issues.error}</p>;
         if (issues.status === "loading")
-          return <p className="repo-view__status">불러오는 중…</p>;
+          return <p className="repo-view__status">{t("불러오는 중…")}</p>;
         return (
           <RepoIssuesPanel
             query={issues.value}
@@ -993,7 +991,7 @@ export function RepoView({
         if (pulls.status === "failed")
           return <p className="repo-error">{pulls.error}</p>;
         if (pulls.status === "loading")
-          return <p className="repo-view__status">불러오는 중…</p>;
+          return <p className="repo-view__status">{t("불러오는 중…")}</p>;
         return (
           <RepoPullsPanel
             query={pulls.value}
@@ -1010,7 +1008,7 @@ export function RepoView({
         if (repository.status === "failed")
           return <p className="repo-error">{repository.error}</p>;
         if (repository.status === "loading")
-          return <p className="repo-view__status">불러오는 중…</p>;
+          return <p className="repo-view__status">{t("불러오는 중…")}</p>;
         return (
           <RepoBranchesPanel
             repository={repository.value}
@@ -1036,12 +1034,11 @@ export function RepoView({
           className="button-secondary"
           type="button"
           disabled={!webUrl}
-          title={webUrl || "GitHub remote가 없습니다"}
+          title={webUrl || t("GitHub remote가 없습니다")}
           onClick={() => openUrl(webUrl)}
         >
           <ExternalLink size={13} />
-          GitHub에서 열기
-        </button>
+          {t("GitHub에서 열기")} </button>
         {bridge && (
           <button
             className="button-secondary"
@@ -1049,13 +1046,11 @@ export function RepoView({
             onClick={() => revealFolder(project.root)}
           >
             <FolderOpen size={13} />
-            로컬 폴더 열기
-          </button>
+            {t("로컬 폴더 열기")} </button>
         )}
         <button className="button-secondary" type="button" onClick={onClose}>
           <ArrowLeft size={14} />
-          대화로 돌아가기
-        </button>
+          {t("대화로 돌아가기")} </button>
       </header>
       {/* The tabs are the only thing that starts a read, so a renderer without the
           desktop bridge gets the notice and no way to ask for one. */}
@@ -1079,9 +1074,7 @@ export function RepoView({
           tabBody()
         ) : (
           <p className="repo-view__notice">
-            저장소 화면은 데스크톱 앱에서만 사용할 수 있습니다. 브라우저나 원격
-            기기에서는 세션 목록으로 돌아가세요.
-          </p>
+            {t("저장소 화면은 데스크톱 앱에서만 사용할 수 있습니다. 브라우저나 원격 기기에서는 세션 목록으로 돌아가세요.")} </p>
         )}
       </div>
     </main>

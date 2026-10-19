@@ -58,6 +58,15 @@ describe("sessionActivityBody", () => {
       "세션 작업이 완료되었습니다.",
     );
   });
+
+  it("writes the body in the resolved English language", () => {
+    expect(
+      sessionActivityBody({ title: "gjc-bot", category: "completed" }, "en"),
+    ).toBe("gjc-bot completed.");
+    expect(
+      sessionActivityBody({ title: "  ", category: "permission" }, "en"),
+    ).toBe("Session is waiting for approval or an answer.");
+  });
 });
 
 describe("notification preferences", () => {

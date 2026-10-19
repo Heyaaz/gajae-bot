@@ -11,6 +11,8 @@ import {
   type TurnApproval,
 } from "../transcript-utils";
 import { memo, useEffect, useRef, useState } from "react";
+import { t, useLanguage } from "../i18n";
+
 
 const SHEET_80_WIDTH = 80 * GAJAE_EMOTICONS.length;
 const SHEET_160_WIDTH = 160 * GAJAE_EMOTICONS.length;
@@ -97,6 +99,7 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
   onResolve,
   onRetry,
 }: GajaeProgressRowProps) {
+  useLanguage();
   const rootRef = useRef<HTMLDivElement>(null);
   const [spriteReady, setSpriteReady] = useState(false);
   const [labelIndex, setLabelIndex] = useState(0);
@@ -117,8 +120,8 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
     kind === "approval" ||
     (kind === "done" && !summary);
   const shownLabel = rotates
-    ? ROTATING_WORK_LABELS[labelIndex] ?? ROTATING_WORK_LABELS[0]
-    : (label ?? (kind === "done" ? "완료" : ""));
+    ? t(ROTATING_WORK_LABELS[labelIndex] ?? ROTATING_WORK_LABELS[0])
+    : (label ?? (kind === "done" ? t("완료") : ""));
 
   useEffect(() => {
     let live = true;
@@ -218,8 +221,7 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
                   if (deny) onResolve?.(approval.toolId, deny.optionId);
                 }}
               >
-                거절
-              </button>
+                {t("거절")} </button>
             )}
             {approval.allow && (
               <button
@@ -230,15 +232,13 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
                   if (allow) onResolve?.(approval.toolId, allow.optionId);
                 }}
               >
-                허용
-              </button>
+                {t("허용")} </button>
             )}
           </span>
         )}
         {kind === "error" && onRetry && (
           <button type="button" className="gajae-progress-button" onClick={onRetry}>
-            다시 시도
-          </button>
+            {t("다시 시도")} </button>
         )}
       </div>
       <div
@@ -247,7 +247,7 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
         aria-live={summary ? "polite" : undefined}
       >
         <GajaeSprite emoticon="celebrate" size={20} ready={spriteReady} />
-        <span>완료</span>
+        <span>{t("완료")}</span>
       </div>
     </div>
   );

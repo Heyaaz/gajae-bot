@@ -12,6 +12,9 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { t } from "../i18n";
+import { sessionTitleText } from "./format";
+
 
 export interface NewSessionDialogProps {
   defaultWorkspace: string;
@@ -29,7 +32,8 @@ export function NewSessionDialog({
   onCancel,
   onCreate,
 }: NewSessionDialogProps) {
-  const [title, setTitle] = useState("새 Gajae 세션");
+  const defaultTitle = t("새 Gajae 세션");
+  const [title, setTitle] = useState(defaultTitle);
   const [workspace, setWorkspace] = useState(defaultWorkspace);
   const [isolation, setIsolation] = useState<"workspace" | "worktree">(
     "workspace",
@@ -48,7 +52,7 @@ export function NewSessionDialog({
       if (selected) setWorkspace(selected);
     } catch (error) {
       setWorkspaceError(
-        error instanceof Error ? error.message : String(error),
+        t(error instanceof Error ? error.message : String(error)),
       );
     } finally {
       setChoosing(false);
@@ -58,8 +62,12 @@ export function NewSessionDialog({
   function submit(event: FormEvent): void {
     event.preventDefault();
     if (!workspace) return;
+    const trimmedTitle = title.trim();
     onCreate({
-      title: title.trim() || "새 Gajae 세션",
+      title:
+        !trimmedTitle || trimmedTitle === defaultTitle
+          ? "새 Gajae 세션"
+          : trimmedTitle,
       workspace,
       isolation,
       worktreeBranch: worktreeBranch.trim() || undefined,
@@ -70,7 +78,7 @@ export function NewSessionDialog({
     <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
       <form
         className="new-session-dialog"
-        aria-label="새 GJC 세션"
+        aria-label={t("새 GJC 세션")}
         onSubmit={submit}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -79,15 +87,15 @@ export function NewSessionDialog({
             <Plus size={18} />
           </span>
           <div>
-            <h2>새 GJC 세션</h2>
-            <p>Gajae가 확인하고 수정할 프로젝트를 선택하세요.</p>
+            <h2>{t("새 GJC 세션")}</h2>
+            <p>{t("Gajae가 확인하고 수정할 프로젝트를 선택하세요.")}</p>
           </div>
           <button className="icon-button" type="button" onClick={onCancel}>
             <X size={18} />
           </button>
         </header>
         <label>
-          <span>세션 이름</span>
+          <span>{t("세션 이름")}</span>
           <input
             autoFocus
             value={title}
@@ -95,37 +103,35 @@ export function NewSessionDialog({
           />
         </label>
         <fieldset className="isolation-options">
-          <legend>작업 격리</legend>
+          <legend>{t("작업 격리")}</legend>
           <label>
             <input
               type="radio"
               checked={isolation === "workspace"}
               onChange={() => setIsolation("workspace")}
             />{" "}
-            현재 workspace에서 작업
-          </label>
+            {t("현재 workspace에서 작업")} </label>
           <label>
             <input
               type="radio"
               checked={isolation === "worktree"}
               onChange={() => setIsolation("worktree")}
             />{" "}
-            별도 worktree 생성
-          </label>
+            {t("별도 worktree 생성")} </label>
           {isolation === "worktree" && (
             <input
-              placeholder="안전한 브랜치 (선택)"
+              placeholder={t("안전한 브랜치 (선택)")}
               value={worktreeBranch}
               onChange={(e) => setWorktreeBranch(e.target.value)}
             />
           )}
         </fieldset>
         <label>
-          <span>프로젝트 위치</span>
+          <span>{t("프로젝트 위치")}</span>
           <div className="project-location-field">
             <FolderOpen size={17} />
             <code title={workspace}>
-              {workspace || "프로젝트 폴더를 선택하세요"}
+              {workspace || t("프로젝트 폴더를 선택하세요")}
             </code>
             <button
               type="button"
@@ -133,22 +139,20 @@ export function NewSessionDialog({
               disabled={choosing}
               onClick={() => void chooseWorkspace()}
             >
-              {choosing ? "선택 중…" : "선택…"}
+              {choosing ? t("선택 중…") : t("선택…")}
             </button>
           </div>
         </label>
         {workspaceError && <p role="alert">{workspaceError}</p>}
         <footer>
           <button type="button" className="button-secondary" onClick={onCancel}>
-            취소
-          </button>
+            {t("취소")} </button>
           <button
             type="submit"
             className="button-primary"
             disabled={!workspace}
           >
-            <Plus size={15} /> 세션 만들기
-          </button>
+            <Plus size={15} /> {t("세션 만들기")} </button>
         </footer>
       </form>
     </div>
@@ -172,26 +176,22 @@ export function DeleteSessionDialog({
         className="confirm-dialog"
         role="alertdialog"
         aria-modal="true"
-        aria-label="세션 삭제"
+        aria-label={t("세션 삭제")}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
           <Trash2 size={18} />
-          <h2>세션을 삭제할까요?</h2>
+          <h2>{t("세션을 삭제할까요?")}</h2>
         </header>
         <p>
           <>
-            <strong>{session.title}</strong> 세션의 GJC 프로세스를 종료하고 대화
-            기록까지 삭제합니다. 목록에서만 숨기지 않습니다.
-          </>
+            <strong>{sessionTitleText(session.title)}</strong> {t("세션의 GJC 프로세스를 종료하고 대화 기록까지 삭제합니다. 목록에서만 숨기지 않습니다.")} </>
         </p>
         <footer>
           <button type="button" className="button-secondary" onClick={onCancel}>
-            취소
-          </button>
+            {t("취소")} </button>
           <button type="button" className="button-danger" onClick={onConfirm}>
-            삭제
-          </button>
+            {t("삭제")} </button>
         </footer>
       </section>
     </div>
@@ -259,14 +259,14 @@ export function ResumeSessionDialog({
   // A fork is named where it sits: the list is ordered by recency, so moving a fork
   // under a source that may be hundreds of rows down would hide it instead of
   // showing what it is. The source is named when the same window lists it.
-  const titlesById = new Map(visible.map((session) => [session.id, session.title]));
+  const titlesById = new Map(visible.map((session) => [session.id, sessionTitleText(session.title)]));
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
       <section
         className="resume-session-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="지난 세션 이어서 진행"
+        aria-label={t("지난 세션 이어서 진행")}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
@@ -274,7 +274,7 @@ export function ResumeSessionDialog({
           <input
             autoFocus
             value={query}
-            placeholder="세션 ID, 제목, 폴더로 찾기"
+            placeholder={t("세션 ID, 제목, 폴더로 찾기")}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") onClose();
@@ -288,13 +288,13 @@ export function ResumeSessionDialog({
           {loading && (
             <div className="global-search-empty">
               <span className="mini-spinner" />
-              <small>세션 기록을 읽는 중…</small>
+              <small>{t("세션 기록을 읽는 중…")}</small>
             </div>
           )}
           {error && <p className="diff-error">{error}</p>}
           {!loading && !error && visible.length === 0 && (
             <div className="global-search-empty">
-              <strong>이어서 진행할 세션이 없습니다</strong>
+              <strong>{t("이어서 진행할 세션이 없습니다")}</strong>
             </div>
           )}
           {rendered.map((session) => (
@@ -305,29 +305,28 @@ export function ResumeSessionDialog({
               onClick={() => onOpen(session.id)}
             >
               <span className="resume-session-head">
-                <strong>{sessionSummaryLine(session.title)}</strong>
-                {session.live && <em className="resume-live">진행 중</em>}
+                <strong>{sessionSummaryLine(sessionTitleText(session.title))}</strong>
+                {session.live && <em className="resume-live">{t("진행 중")}</em>}
                 {session.parentId && (
                   <em
                     className="resume-fork"
                     title={
                       titlesById.get(session.parentId)
-                        ? `${titlesById.get(session.parentId)}에서 포크`
-                        : `포크: ${session.parentId}`
+                        ? t`${titlesById.get(session.parentId)}에서 포크`
+                        : t`포크: ${session.parentId}`
                     }
                   >
-                    포크
-                  </em>
+                    {t("포크")} </em>
                 )}
               </span>
               <small>
-                {workspaceLabelFor(session.workspace) || "폴더 정보 없음"}
+                {workspaceLabelFor(session.workspace) || t("폴더 정보 없음")}
               </small>
               <span className="resume-session-meta">
                 {/* 8 chars collide across real sessions; 12 is unambiguous. */}
                 <code>{session.id.slice(0, 12)}</code>
                 <time>{session.updatedAt}</time>
-                <small>{session.messageCount}개 대화</small>
+                <small>{session.messageCount}{t("개 대화")}</small>
                 {busyId === session.id && <span className="mini-spinner" />}
               </span>
             </button>
@@ -338,7 +337,7 @@ export function ResumeSessionDialog({
               className="resume-session-more"
               onClick={() => setShown((current) => current + HISTORY_PAGE_SIZE)}
             >
-              더 보기 ({visible.length - rendered.length})
+              {t("더 보기 (")}{visible.length - rendered.length})
             </button>
           )}
         </div>
@@ -410,7 +409,7 @@ export function GlobalSearchDialog({
         className="global-search-dialog"
         role="dialog"
         aria-modal="true"
-        aria-label="전체 대화 검색"
+        aria-label={t("전체 대화 검색")}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <header>
@@ -418,7 +417,7 @@ export function GlobalSearchDialog({
           <input
             autoFocus
             value={query}
-            placeholder="메시지, 파일, 도구 실행 검색"
+            placeholder={t("메시지, 파일, 도구 실행 검색")}
             onChange={(event) => onQueryChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Escape") onClose();
@@ -430,16 +429,15 @@ export function GlobalSearchDialog({
           {!query.trim() && (
             <div className="global-search-empty">
               <FileSearch size={24} />
-              <strong>모든 Gajae 대화를 검색합니다</strong>
+              <strong>{t("모든 Gajae 대화를 검색합니다")}</strong>
               <small>
-                메시지, 계획, 도구 출력과 첨부 파일 내용을 찾을 수 있습니다.
-              </small>
+                {t("메시지, 계획, 도구 출력과 첨부 파일 내용을 찾을 수 있습니다.")} </small>
             </div>
           )}
           {loading && (
             <div className="global-search-empty">
               <span className="mini-spinner" />
-              <small>대화 인덱스를 검색하는 중…</small>
+              <small>{t("대화 인덱스를 검색하는 중…")}</small>
             </div>
           )}
           {error && <p className="diff-error">{error}</p>}
@@ -449,7 +447,7 @@ export function GlobalSearchDialog({
             !error &&
             results.length === 0 && (
               <div className="global-search-empty">
-                <strong>검색 결과가 없습니다</strong>
+                <strong>{t("검색 결과가 없습니다")}</strong>
               </div>
             )}
           {!loading &&

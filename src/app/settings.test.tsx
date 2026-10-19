@@ -1,12 +1,21 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../shared/agent-contract";
 import type { AgentControlPreferences } from "../backend/types";
+import { setLanguageMode } from "../i18n";
 import {
   canSavePreferences,
   mergeInitialPreferences,
   resolvePreferenceSave,
+  SettingsDialog,
   settingsErrorMessage,
 } from "./settings";
+
+afterEach(() => {
+  setLanguageMode("ko");
+  vi.unstubAllGlobals();
+});
 
 const fallback: AgentControlPreferences = {
   workspace: "/fallback",
@@ -17,6 +26,7 @@ const fallback: AgentControlPreferences = {
   thoughtsExpanded: false,
   toolViewMode: "reasoning",
   notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+  language: "ko",
   runningSubmission: "queue",
 };
 
@@ -141,6 +151,36 @@ describe("settings save completion", () => {
       preferences: newer,
       original: newer,
     });
+  });
+});
+
+describe("settings dialog language", () => {
+  it("renders its navigation and appearance controls in English", () => {
+    setLanguageMode("en");
+    vi.stubGlobal("window", { agentControlDesktop: undefined });
+    const markup = renderToStaticMarkup(
+      createElement(SettingsDialog, {
+        connection: {
+          state: "connected",
+          backend: "gjc",
+          label: "GJC",
+          detail: "",
+          workspace: "/tmp",
+        },
+        thoughtsExpanded: false,
+        onClose: () => undefined,
+        onSaved: () => undefined,
+        updateStatus: null,
+        updateBusy: null,
+        updateError: "",
+        onCheckUpdate: () => undefined,
+        onInstallUpdate: () => undefined,
+      }),
+    );
+    expect(markup).toContain("Appearance");
+    expect(markup).toContain("Notifications");
+    expect(markup).toContain("Save");
+    expect(markup).not.toContain("모양");
   });
 });
 

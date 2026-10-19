@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { connectionStateLabel, statusLabel } from "./format";
+import { connectionStateLabel, sessionTitleText, statusLabel } from "./format";
 import { gjcVersionWarning } from "../../shared/gjc-version";
 import { Dropdown } from "./primitives";
 import { ALL_PROJECTS_ID } from "./project-model";
@@ -30,6 +30,8 @@ import type {
   SessionGroupId,
   SessionRowNode,
 } from "./sidebar-model";
+import { t, useLanguage } from "../i18n";
+
 
 /** What a closed family reports instead of the rows it is holding back. */
 function familySummaryLabel(
@@ -59,7 +61,7 @@ export function projectSelectorOptions(projects: readonly ProjectGroup[]): {
   for (const project of projects)
     seen.set(project.name, (seen.get(project.name) ?? 0) + 1);
   return [
-    { value: ALL_PROJECTS_ID, label: "전체 프로젝트" },
+    { value: ALL_PROJECTS_ID, label: t("전체 프로젝트") },
     ...projects.map((project) => ({
       value: project.id,
       label:
@@ -173,13 +175,13 @@ export function SessionRow({
               }}
             />
           ) : (
-            <strong>{session.title}</strong>
+            <strong>{sessionTitleText(session.title)}</strong>
           )}
           {session.usagePending ? (
             <span
               className="session-context-usage session-context-usage--pending"
-              aria-label="컨텍스트 사용량 계산 중"
-              title="컨텍스트 사용량 계산 중"
+              aria-label={t("컨텍스트 사용량 계산 중")}
+              title={t("컨텍스트 사용량 계산 중")}
             >
               ?
             </span>
@@ -227,7 +229,7 @@ export function SessionRow({
             selection anyway: without this the dot stayed up until that round trip
             landed and then vanished under the cursor. */}
         {session.unread && !selected && (
-          <span className="unread-dot" aria-label="새 활동" />
+          <span className="unread-dot" aria-label={t("새 활동")} />
         )}
       </span>
     </div>
@@ -306,6 +308,7 @@ function SidebarView({
   updateBusy,
   onUpdate,
 }: SidebarProps) {
+  useLanguage();
   const versionWarning = gjcVersionWarning(connection.version);
   const [contextMenu, setContextMenu] = useState<
     | { kind: "session"; session: AgentSession; x: number; y: number }
@@ -432,8 +435,8 @@ function SidebarView({
         <label className="search-field">
           <Search size={15} />
           <input
-            aria-label="세션 검색"
-            placeholder="검색"
+            aria-label={t("세션 검색")}
+            placeholder={t("검색")}
             value={searchQuery}
             onFocus={onSearchOpen}
             onChange={(event) => onSearchChange(event.target.value)}
@@ -443,7 +446,7 @@ function SidebarView({
         <button
           className="icon-button"
           type="button"
-          title="새 Gajae 세션"
+          title={t("새 Gajae 세션")}
           onClick={onCreate}
         >
           <Plus size={18} />
@@ -455,7 +458,7 @@ function SidebarView({
           value={projectId}
           options={projectSelectorOptions(projects)}
           onChange={onProjectChange}
-          ariaLabel="프로젝트 선택"
+          ariaLabel={t("프로젝트 선택")}
         />
         {/* The repository entry point is offered for a chosen project and the
             project list for the whole rail. A single 레포 보기 in 전체 프로젝트
@@ -465,8 +468,8 @@ function SidebarView({
           className="project-entry"
           title={
             projectId === ALL_PROJECTS_ID
-              ? "프로젝트 목록"
-              : "선택한 프로젝트의 레포 보기"
+              ? t("프로젝트 목록")
+              : t("선택한 프로젝트의 레포 보기")
           }
           onClick={
             projectId === ALL_PROJECTS_ID ? onOpenProjects : onOpenRepository
@@ -493,7 +496,7 @@ function SidebarView({
             <FolderGit2 size={15} />
           )}
           <span>
-            {projectId === ALL_PROJECTS_ID ? "프로젝트 목록" : "레포 보기"}
+            {projectId === ALL_PROJECTS_ID ? t("프로젝트 목록") : t("레포 보기")}
           </span>
         </button>
       </div>
@@ -502,7 +505,7 @@ function SidebarView({
         {model.pinned.length > 0 && (
           <section className="session-section">
             <header>
-              <span>고정됨</span>
+              <span>{t("고정됨")}</span>
               <MoreHorizontal size={15} />
             </header>
             {model.pinned.map(renderNode)}
@@ -522,8 +525,8 @@ function SidebarView({
                 onClick={() => toggleGroup(group.id)}
               >
                 {expandedGroups.has(group.id)
-                  ? "접기"
-                  : `더 보기 (${group.overflow})`}
+                  ? t("접기")
+                  : t`더 보기 (${group.overflow})`}
               </button>
             )}
           </section>
@@ -536,20 +539,18 @@ function SidebarView({
                 with no sessions is a filter to widen, not a missing session. */}
             <span>
               {projectId === ALL_PROJECTS_ID
-                ? "세션이 없습니다"
-                : "이 프로젝트에 세션이 없습니다"}
+                ? t("세션이 없습니다")
+                : t("이 프로젝트에 세션이 없습니다")}
             </span>
             {projectId === ALL_PROJECTS_ID ? (
               <button type="button" onClick={onResumePicker}>
-                지난 세션 보기
-              </button>
+                {t("지난 세션 보기")} </button>
             ) : (
               <button
                 type="button"
                 onClick={() => onProjectChange(ALL_PROJECTS_ID)}
               >
-                전체 프로젝트 보기
-              </button>
+                {t("전체 프로젝트 보기")} </button>
             )}
           </div>
         )}
@@ -560,15 +561,15 @@ function SidebarView({
             without it this button becomes an unlabelled icon. */}
         <button
           type="button"
-          title="지난 세션 이어서 진행"
+          title={t("지난 세션 이어서 진행")}
           onClick={onResumePicker}
         >
           <RotateCcw size={16} />
-          <span>지난 세션 이어서 진행</span>
+          <span>{t("지난 세션 이어서 진행")}</span>
         </button>
-        <button type="button" title="설정" onClick={onSettings}>
+        <button type="button" title={t("설정")} onClick={onSettings}>
           <Settings size={16} />
-          <span>설정</span>
+          <span>{t("설정")}</span>
         </button>
         <div
           className="profile-row"
@@ -607,7 +608,7 @@ function SidebarView({
             <button
               type="button"
               className="workspace-rename-button"
-              title="Workspace 이름 변경"
+              title={t("Workspace 이름 변경")}
               onClick={() => {
                 setWorkspaceValue(workspaceLabel);
                 setEditingWorkspace(true);
@@ -621,7 +622,7 @@ function SidebarView({
               <button
                 type="button"
                 className="profile-update-button"
-                title={`GJC ${updateStatus.latestVersion} 업데이트`}
+                title={t`GJC ${updateStatus.latestVersion} 업데이트`}
                 disabled={updateBusy}
                 onClick={onUpdate}
               >
@@ -660,8 +661,7 @@ function SidebarView({
                   onOpenProjectGithub();
                 }}
               >
-                <ExternalLink size={14} /> GitHub에서 열기
-              </button>
+                <ExternalLink size={14} /> {t("GitHub에서 열기")} </button>
               <button
                 type="button"
                 onClick={() => {
@@ -669,8 +669,7 @@ function SidebarView({
                   onOpenProjectFolder();
                 }}
               >
-                <FolderOpen size={14} /> 로컬 폴더 열기
-              </button>
+                <FolderOpen size={14} /> {t("로컬 폴더 열기")} </button>
             </>
           ) : (
             <>
@@ -681,8 +680,7 @@ function SidebarView({
                   onFork(contextMenu.session);
                 }}
               >
-                <GitFork size={14} /> 현재 상태에서 포크
-              </button>
+                <GitFork size={14} /> {t("현재 상태에서 포크")} </button>
               {contextMenu.session.attachment !== "attached" && (
                 <button
                   type="button"
@@ -692,15 +690,13 @@ function SidebarView({
                     onResume(session);
                   }}
                 >
-                  <RotateCcw size={14} /> 세션 이어서 진행
-                </button>
+                  <RotateCcw size={14} /> {t("세션 이어서 진행")} </button>
               )}
               <button
                 type="button"
                 onClick={() => beginRename(contextMenu.session)}
               >
-                <Pencil size={14} /> 이름 변경
-              </button>
+                <Pencil size={14} /> {t("이름 변경")} </button>
               <button
                 type="button"
                 className="is-danger"
@@ -709,8 +705,7 @@ function SidebarView({
                   onDelete(contextMenu.session);
                 }}
               >
-                <Trash2 size={14} /> 삭제
-              </button>
+                <Trash2 size={14} /> {t("삭제")} </button>
               {/* gjc/0.18.12 cannot delete saved history through the public SDK, so
                   the only removal that actually completes is hiding the row here.
                   It is a separate item, not a silent substitute: the label says the
@@ -722,8 +717,7 @@ function SidebarView({
                   onHide(contextMenu.session);
                 }}
               >
-                <EyeOff size={14} /> 목록에서 숨기기
-              </button>
+                <EyeOff size={14} /> {t("목록에서 숨기기")} </button>
             </>
           )}
         </div>

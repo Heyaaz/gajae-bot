@@ -4,13 +4,15 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { TranscriptItem } from "../backend/types";
 import { MessageCopyButton } from "./primitives";
+import { t } from "../i18n";
+
 
 export function SkillInvocation({ name, args }: { name: string; args: string }) {
   return (
     <div className="skill-invocation">
-      <div className="skill-invocation-heading" aria-label={`스킬 호출: ${name}`}>
+      <div className="skill-invocation-heading" aria-label={t`스킬 호출: ${name}`}>
         <Sparkles size={14} aria-hidden />
-        <span className="skill-invocation-label">스킬</span>
+        <span className="skill-invocation-label">{t("스킬")}</span>
         <strong>{name}</strong>
       </div>
       {args && <p className="skill-invocation-args">{args}</p>}
@@ -21,23 +23,23 @@ export function SkillInvocation({ name, args }: { name: string; args: string }) 
 export function SkillPromptCard({ item }: { item: Extract<TranscriptItem, { kind: "system" }> }) {
   const [expanded, setExpanded] = useState(false);
   const heading = /^#[\t ]+(.+?)[\t ]*#*[\t ]*$/mu.exec(item.content)?.[1]?.trim();
-  const name = heading || (item.title !== "스킬" ? item.title : "스킬 지침");
+  const name = heading || (item.title !== "스킬" ? item.title : t("스킬 지침"));
   return (
     <details className="skill-activity" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary className="skill-activity-summary">
         <span className="skill-activity-icon"><Sparkles size={15} aria-hidden /></span>
         <span className="skill-activity-name" title={name}>{name}</span>
-        <span className="skill-activity-label">스킬 지침</span>
-        <span className="skill-activity-action">{expanded ? "원문 접기" : "원문 보기"}</span>
+        <span className="skill-activity-label">{t("스킬 지침")}</span>
+        <span className="skill-activity-action">{expanded ? t("원문 접기") : t("원문 보기")}</span>
         <ChevronRight className="skill-activity-chevron" size={14} aria-hidden />
       </summary>
       {expanded && (
         <div className="skill-activity-body">
           <div className="skill-activity-toolbar">
-            <span>세션에 전달된 스킬 원문</span>
+            <span>{t("세션에 전달된 스킬 원문")}</span>
             <MessageCopyButton text={item.content} />
           </div>
-          <div className="skill-activity-content markdown-body" role="region" aria-label={`${name} 스킬 원문`} tabIndex={0}>
+          <div className="skill-activity-content markdown-body" role="region" aria-label={t`${name} 스킬 원문`} tabIndex={0}>
             <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
           </div>
         </div>

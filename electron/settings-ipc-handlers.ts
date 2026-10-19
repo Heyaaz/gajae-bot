@@ -9,6 +9,7 @@ import type { SettingsStore } from './settings-store.js'
 import type { AttachmentStore } from './attachment-store.js'
 import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
+import { setHostLanguage } from './host-text.js'
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
 const MAX_IMAGE_COUNT = 6
@@ -172,6 +173,11 @@ export function registerSettingsIpcHandlers(
     store.setToolViewMode(mode)))
   ipcMain.handle(SETTINGS_IPC.setNotificationPreferences, security.guarded((_event, value: unknown) =>
     store.setNotificationPreferences(value)))
+  ipcMain.handle(SETTINGS_IPC.setLanguage, security.guarded((_event, value: unknown) => {
+    const saved = store.setLanguage(value)
+    setHostLanguage(saved)
+    return saved
+  }))
   ipcMain.handle(SETTINGS_IPC.setRunningSubmission, security.guarded((_event, value: unknown) =>
     store.setRunningSubmission(value)))
   ipcMain.handle(SETTINGS_IPC.setViewedSession, security.guarded((event, sessionId: unknown) => {

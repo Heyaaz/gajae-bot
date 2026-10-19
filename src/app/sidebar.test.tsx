@@ -1,7 +1,8 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, afterEach } from "vitest";
 import type { AgentSession, BackendConnection } from "../backend/types";
+import { setLanguageMode } from "../i18n";
 import { ALL_PROJECTS_ID } from "./project-model";
 import type { ProjectGroup } from "./project-model";
 import {
@@ -11,6 +12,8 @@ import {
   Sidebar,
 } from "./sidebar";
 import type { SessionRowProps } from "./sidebar";
+
+afterEach(() => setLanguageMode("ko"));
 
 const connection: BackendConnection = {
   state: "connected",
@@ -521,6 +524,14 @@ describe("Sidebar project selector", () => {
     expect(markup).toContain("gajae-bot");
     // One visible entry point; the title attribute repeats the words on purpose.
     expect(markup.split("<span>레포 보기</span>").length - 1).toBe(1);
+  });
+
+  it("renders the empty rail in English when English is selected", () => {
+    setLanguageMode("en");
+    const markup = renderToStaticMarkup(createElement(Sidebar, props([])));
+    expect(markup).toContain("No sessions");
+    expect(markup).toContain("View past sessions");
+    expect(markup).not.toContain("세션이 없습니다");
   });
 
   it("tells an empty project apart from an empty rail", () => {

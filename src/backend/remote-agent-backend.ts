@@ -24,6 +24,8 @@ import type {
   TranscriptItem,
 } from "./types";
 import { RemoteClient, type RemoteClientOptions } from "../remote/client";
+import { t } from "../i18n";
+
 
 /**
  * The browser's real backend.
@@ -35,7 +37,9 @@ import { RemoteClient, type RemoteClientOptions } from "../remote/client";
  * something the host never did.
  */
 
-const DESKTOP_ONLY = "이 작업은 Gajae 데스크톱 앱에서만 할 수 있습니다.";
+function desktopOnlyError(): string {
+  return t("이 작업은 Gajae 데스크톱 앱에서만 할 수 있습니다.");
+}
 
 /** The session an event belongs to, so replay repair can tell stale data from live. */
 export function eventSessionId(event: AgentEvent): string | undefined {
@@ -181,7 +185,7 @@ export class RemoteAgentBackend implements AgentBackend {
         ...connection,
         state: "error",
         detail:
-          "원격 대화 동기화에 실패했습니다. 다시 연결한 뒤 대화를 확인해 주세요.",
+          t("원격 대화 동기화에 실패했습니다. 다시 연결한 뒤 대화를 확인해 주세요."),
       },
     });
   }
@@ -196,7 +200,7 @@ export class RemoteAgentBackend implements AgentBackend {
         if (attempt === 1) throw error;
       }
     }
-    throw new Error("호스트에 연결할 수 없습니다.");
+    throw new Error(t("호스트에 연결할 수 없습니다."));
   }
 
   async listSessions(): Promise<AgentSession[]> {
@@ -281,7 +285,7 @@ export class RemoteAgentBackend implements AgentBackend {
   }
 
   private async desktopOnly<T>(): Promise<T> {
-    throw new Error(DESKTOP_ONLY);
+    throw new Error(desktopOnlyError());
   }
 
   createSession(_input: CreateSessionInput): Promise<AgentSession> {

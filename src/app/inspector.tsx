@@ -10,7 +10,9 @@ import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
 import { Copy, RotateCcw, Target, X } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { statusLabel, subagentLabel } from "./format";
+import { sessionTitleText, statusLabel, subagentLabel } from "./format";
+import { t, useLanguage } from "../i18n";
+
 
 export function shouldClearCommitMessage(
   succeeded: boolean,
@@ -34,6 +36,7 @@ const InspectorWorkCard = memo(function InspectorWorkCard({
   work,
   highlighted,
 }: { work: SubagentSnapshot; highlighted: boolean }) {
+  useLanguage();
   const ref = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     if (!highlighted || !ref.current) return;
@@ -47,12 +50,12 @@ const InspectorWorkCard = memo(function InspectorWorkCard({
       <summary>
         <span className={`subagent-state subagent-state--${work.status}`} />
         <strong>{work.label}</strong>
-        <em>{work.status === "running" ? "작업 중" : work.status === "waiting" ? "대기" : work.status === "failed" ? "실패" : "완료"}</em>
+        <em>{work.status === "running" ? t("작업 중") : work.status === "waiting" ? t("대기") : work.status === "failed" ? t("실패") : t("완료")}</em>
       </summary>
       <small>{[work.role, work.id].filter(Boolean).join(" · ")}</small>
       {work.objective && <p>{work.objective}</p>}
       {work.detail ? <pre className="inspector-work-output">{work.detail}</pre> :
-        <p>아직 보고된 상세 내용이 없습니다.</p>}
+        <p>{t("아직 보고된 상세 내용이 없습니다.")}</p>}
     </details>
   );
 });
@@ -74,6 +77,7 @@ function InspectorView({
   onClose,
   revealToolId,
 }: InspectorProps) {
+  useLanguage();
   const shellWork = useMemo(() => transcript.filter(
     (item): item is ToolActivity => item.kind === "tool" && /^(bash|shell|exec|execute)$/iu.test(item.name),
   ), [transcript]);
@@ -104,7 +108,7 @@ function InspectorView({
   return (
     <aside className="inspector">
       <header>
-        <strong>Gajae 세션 정보</strong>
+        <strong>{t("Gajae 세션 정보")}</strong>
         <button className="icon-button" type="button" onClick={onClose}>
           <X size={17} />
         </button>
@@ -113,11 +117,11 @@ function InspectorView({
         <span className="inspector-avatar">
           <img src={gajaeIconUrl} alt="" />
         </span>
-        <h2>{session.title}</h2>
+        <h2>{sessionTitleText(session.title)}</h2>
         <button
           className="inspector-session-id"
           type="button"
-          title="세션 ID 복사"
+          title={t("세션 ID 복사")}
           onClick={() => void navigator.clipboard?.writeText(session.id)}
         >
           <code>{session.id}</code>
@@ -137,28 +141,28 @@ function InspectorView({
             onClick={() => onResume()}
           >
             <RotateCcw size={12} />
-            {resuming ? "이어서 진행 중…" : "세션 이어서 진행"}
+            {resuming ? t("이어서 진행 중…") : t("세션 이어서 진행")}
           </button>
         )}
       </section>
       <section className="inspector-section inspector-subagents">
-        <h3>서브 에이전트</h3>
+        <h3>{t("서브 에이전트")}</h3>
         {subagents.length > 0 ? (
           subagents.map((tool) => (
             <InspectorWorkCard key={tool.id} work={tool} highlighted={tool.id === revealToolId} />
           ))
         ) : (
-          <p>실행된 서브 에이전트가 없습니다.</p>
+          <p>{t("실행된 서브 에이전트가 없습니다.")}</p>
         )}
       </section>
       <section className="inspector-section">
-        <h3>셸 작업</h3>
-        <p>이 대화의 셸 실행 기록입니다.</p>
+        <h3>{t("셸 작업")}</h3>
+        <p>{t("이 대화의 셸 실행 기록입니다.")}</p>
         {shellWork.map((tool) => <InspectorWorkCard key={tool.id} highlighted={tool.id === revealToolId}
           work={{ id: tool.id, label: tool.description,
             status: tool.status === "running" ? "running" : tool.status === "pending" || tool.status === "approval-required" ? "waiting" : tool.status === "failed" || tool.status === "denied" || tool.status === "cancelled" ? "failed" : "completed",
             objective: tool.command, detail: tool.output }} />)}
-        {shellWork.length === 0 && <p>보고된 셸 작업이 없습니다.</p>}
+        {shellWork.length === 0 && <p>{t("보고된 셸 작업이 없습니다.")}</p>}
       </section>
     </aside>
   );
@@ -198,8 +202,7 @@ export function GoalProgressRow({
             disabled={busy}
             onClick={() => onOperate("resume")}
           >
-            재개
-          </button>
+            {t("재개")} </button>
         ) : (
           goal.mode !== "complete" && (
             <button
@@ -207,8 +210,7 @@ export function GoalProgressRow({
               disabled={busy}
               onClick={() => onOperate("pause")}
             >
-              일시정지
-            </button>
+              {t("일시정지")} </button>
           )
         )}
         {goal.mode !== "complete" && (
@@ -217,12 +219,10 @@ export function GoalProgressRow({
             disabled={busy}
             onClick={() => onOperate("complete")}
           >
-            완료
-          </button>
+            {t("완료")} </button>
         )}
         <button type="button" disabled={busy} onClick={() => onOperate("drop")}>
-          해제
-        </button>
+          {t("해제")} </button>
       </span>
     </div>
   );
@@ -294,7 +294,7 @@ export function DiffPanel({
   return (
     <aside className="diff-panel">
       <header>
-        <strong>변경된 파일</strong>
+        <strong>{t("변경된 파일")}</strong>
         <button className="icon-button" type="button" onClick={onClose}>
           <X size={16} />
         </button>
@@ -309,7 +309,7 @@ export function DiffPanel({
           }}
           disabled={loading || gitBusy}
         >
-          {loading ? "불러오는 중…" : "새로 고침"}
+          {loading ? t("불러오는 중…") : t("새로 고침")}
         </button>
         {git && (
           <span>
@@ -387,7 +387,7 @@ export function DiffPanel({
           </div>
           <div className="commit-row">
             <input
-              placeholder="커밋 메시지"
+              placeholder={t("커밋 메시지")}
               value={commitMessage}
               onChange={(event) => {
                 commitMessageRevision.current += 1;
@@ -401,7 +401,7 @@ export function DiffPanel({
               onClick={() => {
                 if (
                   !window.confirm(
-                    `스테이징된 ${staged.length}개 파일을 커밋할까요?`,
+                    t`스테이징된 ${staged.length}개 파일을 커밋할까요?`,
                   )
                 )
                   return;
@@ -431,7 +431,7 @@ export function DiffPanel({
               onClick={() => {
                 if (
                   !window.confirm(
-                    `${git?.upstream ?? "upstream"}으로 ${git?.ahead ?? 0}개 커밋을 push할까요?`,
+                    t`${git?.upstream ?? "upstream"}으로 ${git?.ahead ?? 0}개 커밋을 push할까요?`,
                   )
                 )
                   return;
@@ -444,17 +444,16 @@ export function DiffPanel({
         </section>
       ) : (
         <p className="diff-empty">
-          Git 변경 작업은 Gajae managed worktree 세션에서만 사용할 수 있습니다.
-        </p>
+          {t("Git 변경 작업은 Gajae managed worktree 세션에서만 사용할 수 있습니다.")} </p>
       )}
       {diff?.error && <p className="diff-error">{diff.error}</p>}
       {!loading && !diff?.error && (diff?.files.length ?? 0) === 0 && (
-        <p className="diff-empty">변경된 파일이 없습니다.</p>
+        <p className="diff-empty">{t("변경된 파일이 없습니다.")}</p>
       )}
       {diff?.files.map((file) => (
         <details key={file.id} open>
           <summary>{file.path}</summary>
-          <pre>{file.patch || "(패치 없음)"}</pre>
+          <pre>{file.patch || t("(패치 없음)")}</pre>
         </details>
       ))}
     </aside>
