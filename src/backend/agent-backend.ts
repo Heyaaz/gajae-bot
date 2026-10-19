@@ -41,6 +41,11 @@ export interface AgentBackend {
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  /**
+   * Cheap durable-file revision used by the selected transcript safety net. Remote
+   * backends omit it and keep the full-read fallback.
+   */
+  getTranscriptRevision?(sessionId: string): Promise<string | undefined>;
   setSessionConfig(
     sessionId: string,
     configId: string,

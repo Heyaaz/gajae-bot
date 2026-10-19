@@ -1706,6 +1706,23 @@ export class GjcSdkController {
     return (this.transcripts.get(sessionId) ?? []).map(cloneTranscriptItem);
   }
 
+  /**
+   * Revision of the durable transcript file, used by the renderer's low-frequency
+   * safety net. A stat is orders of magnitude cheaper than re-reading and cloning
+   * every row, and the inode catches a re-host that reuses the same path.
+   */
+  async getTranscriptRevision(sessionId: string): Promise<string | undefined> {
+    const filePath = await this.locateSharedTranscriptFile(sessionId);
+    if (!filePath) return undefined;
+    try {
+      const info = await stat(filePath);
+      if (!info.isFile()) return undefined;
+      return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async readSharedTranscript(
     sessionId: string,
   ): Promise<TranscriptItem[]> {

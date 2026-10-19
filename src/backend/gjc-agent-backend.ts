@@ -126,6 +126,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.getTranscript(sessionId);
   }
 
+  getTranscriptRevision(sessionId: string): Promise<string | undefined> {
+    return this.bridge.getTranscriptRevision(sessionId);
+  }
+
   setSessionConfig(
     sessionId: string,
     configId: string,

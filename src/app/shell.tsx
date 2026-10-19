@@ -538,17 +538,16 @@ export default function App() {
       const id = selectedIdRef.current;
       if (!id || refreshingTranscript) return;
       refreshingTranscript = true;
-      void backend
-        .getTranscript(id)
-        .then((items) => {
-          if (!active) return;
-          setTranscripts((current) => {
-            const existing = current[id];
-            if (!existing || JSON.stringify(existing) === JSON.stringify(items))
-              return current;
-            return cacheTranscript(current, id, items);
-          });
-        })
+      void (async () => {
+        const revision = await backend
+          .getTranscriptRevision?.(id)
+          .catch(() => undefined);
+        if (revision && transcriptRevisions.current.get(id) === revision) return;
+        const items = await backend.getTranscript(id);
+        if (!active) return;
+        if (revision) transcriptRevisions.current.set(id, revision);
+        setTranscripts((current) => cacheTranscript(current, id, items));
+      })()
         .catch(() => undefined)
         .finally(() => { refreshingTranscript = false; });
     };
@@ -722,6 +721,7 @@ export default function App() {
     () => ({ backend, pending: new Map<string, Promise<TranscriptItem[]>>() }),
     [backend],
   );
+  const transcriptRevisions = useRef(new Map<string, string>());
 
   useEffect(() => {
     if (!selectedId || cachedSelectedTranscript) return;
@@ -735,11 +735,17 @@ export default function App() {
       transcriptReads.pending.set(selectedId, read);
     }
     void read
-      .then((items) => {
-        if (active)
+      .then(async (items) => {
+        const revision = await transcriptReads.backend
+          .getTranscriptRevision?.(selectedId)
+          .catch(() => undefined);
+        if (active) {
+          if (revision)
+            transcriptRevisions.current.set(selectedId, revision);
           setTranscripts((current) =>
             current[selectedId] ? current : cacheTranscript(current, selectedId, items),
           );
+        }
       })
       .catch((error) => {
         if (!active) return;

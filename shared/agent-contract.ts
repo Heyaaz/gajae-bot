@@ -684,6 +684,8 @@ export interface GjcDesktopBridge {
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  /** Cheap durable-file revision used by the selected-transcript safety net. */
+  getTranscriptRevision(sessionId: string): Promise<string | undefined>;
   setSessionConfig(
     sessionId: string,
     configId: string,
