@@ -11,7 +11,6 @@ import {
   attachmentSummaryText,
   copyableMessageText,
   groupTranscriptItems,
-  turnSummaries,
   parseSkillInvocation,
   shouldFollowTranscript,
   recentUserRequests,
@@ -415,9 +414,6 @@ export function Transcript({
   emptyStateMeta,
   onRevealInspector,
 }: TranscriptProps) {
-  const turnViews = useMemo(() => turnSummaries(groupTranscriptItems(items)), [items]);
-  const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<string>>(() => new Set());
-  const collapsedBlockIds = useMemo(() => new Set(turnViews.filter((turn) => collapsedTurns.has(turn.requestId)).flatMap((turn) => turn.blockIds.slice(1))), [collapsedTurns, turnViews]);
   // `detailed` absorbs the reasoning toggle: it always shows thought cards open
   // regardless of the persisted preference, rather than requiring a second control.
   const effectiveThoughtsExpanded = toolViewMode === "detailed" || thoughtsExpanded;
@@ -1229,19 +1225,13 @@ export function Transcript({
                 ref={virtualizer.measureElement}
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                {turnStarts.has(block.id) && (() => {
-                  const turn = turnViews.find((candidate) => candidate.requestId === block.id);
-                  const seconds = turn?.durationMs === undefined ? undefined : Math.round(turn.durationMs / 1000);
-                  const collapsed = collapsedTurns.has(block.id);
-                  return <header className="turn-header"><button type="button" aria-expanded={!collapsed} aria-label={collapsed ? "이 요청의 응답 펼치기" : "이 요청의 응답 접기"} onClick={() => setCollapsedTurns((current) => { const next = new Set(current); if (next.has(block.id)) next.delete(block.id); else next.add(block.id); return next; })}>{collapsed ? "응답 펼치기" : "응답 접기"}</button>{!turn?.live && seconds !== undefined && <span title="요청과 마지막 기록의 시각 차이이며 실제 실행 시간과 다를 수 있습니다">기록 간격 {seconds}초</span>}</header>;
-                })()}
-                {!collapsedBlockIds.has(block.id) && (block.kind === "item" ? (
+                {block.kind === "item" ? (
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
                     <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
                 ) : (
                   <ToolRunBlockView items={block.items} toolViewMode={toolViewMode} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRevealInspector={onRevealInspector} />
-                ))}
+                )}
               </div>
             );
           })}

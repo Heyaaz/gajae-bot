@@ -6,6 +6,7 @@ import { parseDiffFiles, parseDiffLines } from "./format";
 export interface SelectOption<T extends string> {
   value: T;
   label: string;
+  shortLabel?: string;
 }
 
 export function Dropdown<T extends string>({
@@ -54,7 +55,7 @@ export function Dropdown<T extends string>({
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
-        <span>{selected?.label ?? value}</span>
+        <span>{selected?.shortLabel ?? selected?.label ?? value}</span>
         <ChevronDown size={13} />
       </button>
       {open && (

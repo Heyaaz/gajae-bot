@@ -2011,18 +2011,7 @@ export function Composer({
           )}
         </div>
         <div className="composer-submit-actions">
-          {running && (
-            <small
-              className={`composer-enter-mode is-${runningSubmission}`}
-              title={
-                runningSubmission === "steer"
-                  ? "실행 중 Enter는 다음 경계에서 바로 반영됩니다. /queue로 보류할 수 있습니다."
-                  : "실행 중 Enter는 턴이 끝날 때까지 보류됩니다. /steer로 바로 반영할 수 있습니다."
-              }
-            >
-              실행 중 Enter · {runningSubmission === "steer" ? "Steer" : "Queue"}
-            </small>
-          )}
+
           {/* One button, two states. Something to submit always wins: while a turn
               runs, typed text is queued or steered, so the arrow has to stay
               reachable. With an empty composer during a turn the same slot stops

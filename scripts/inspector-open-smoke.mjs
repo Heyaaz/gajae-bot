@@ -1714,6 +1714,8 @@ app.whenReady().then(async () => {
     const mode = document.querySelector('button[aria-label="대화 표시 방식"]');
     if (!mode) issues.push('view mode trigger missing');
     else {
+      if (!['요약', '기본', '상세'].includes(mode.querySelector('span').textContent)) issues.push('view mode trigger must use short label');
+      if (mode.getBoundingClientRect().width > 90) issues.push('view mode trigger too wide');
       if (getComputedStyle(mode).getPropertyValue('-webkit-app-region') !== 'no-drag') issues.push('view mode trigger intercepts clicks as window dragging');
       mode.click();
       await wait(100);
@@ -1724,12 +1726,14 @@ app.whenReady().then(async () => {
         if (bounds.top < mode.getBoundingClientRect().bottom || bounds.right > innerWidth) issues.push('view mode menu misaligned');
         menu.querySelector('[role="option"]').click();
         await wait(100);
-        if (!mode.textContent.includes('간단히')) issues.push('view mode selection not applied');
+        if (!mode.textContent.includes('요약')) issues.push('view mode selection not applied');
       }
     }
     const note = document.querySelector('.inspector-section > p');
     if (note && parseFloat(getComputedStyle(note).fontSize) > 12) issues.push('inspector note oversized');
     if (document.body.textContent.includes('시간 확인 불가')) issues.push('unknown timing placeholder visible');
+    if (document.querySelector('.turn-header')) issues.push('removed turn controls still visible');
+    if (document.querySelector('.composer-enter-mode')) issues.push('removed Enter mode chip still visible');
     const settings = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '설정');
     if (!settings) issues.push('settings entry missing');
     else {

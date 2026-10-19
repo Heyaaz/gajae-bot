@@ -1755,9 +1755,9 @@ export default function App() {
                 <Layers size={16} aria-hidden="true" />
                 <Dropdown ariaLabel="대화 표시 방식" value={toolViewMode} onChange={setToolViewMode}
                   options={[
-                    { value: "basic", label: "간단히 · 도구 요약" },
-                    { value: "reasoning", label: "기본 · 도구 카드" },
-                    { value: "detailed", label: "상세 · 추론까지 펼침" },
+                    { value: "basic", shortLabel: "요약", label: "요약 · 도구 요약" },
+                    { value: "reasoning", shortLabel: "기본", label: "기본 · 도구 카드" },
+                    { value: "detailed", shortLabel: "상세", label: "상세 · 추론까지 펼침" },
                   ]} />
               </div>
               <button
