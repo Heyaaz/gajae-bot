@@ -1,6 +1,5 @@
 import ReactMarkdown from "react-markdown";
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
-import remarkGfm from "remark-gfm";
 import type {
   ArtifactContent,
   TodoSnapshotTask,
@@ -28,6 +27,7 @@ import {
   type TurnSessionHint,
 } from "../transcript-utils";
 import { GajaeProgressRow } from "./gajae-progress";
+import { MARKDOWN_REMARK_PLUGINS } from "./markdown-plugins";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Brain,
@@ -163,11 +163,9 @@ const MARKDOWN_COMPONENTS = { pre: MarkdownPre };
 // One array for every document. The synchronous renderer parses on each call, so a
 // fresh array would not by itself skip a parse, but a memoized document skips the
 // call. The same array is what the hooks renderer keys its effect on.
-const REMARK_PLUGINS = [remarkGfm];
-
 const MarkdownBody = memo(function MarkdownBody({ children }: { children: string }) {
   return (
-    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+    <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
       {children}
     </ReactMarkdown>
   );

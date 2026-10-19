@@ -1,8 +1,8 @@
 import { ChevronRight, Sparkles } from "lucide-react";
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 import type { TranscriptItem } from "../backend/types";
+import { MARKDOWN_REMARK_PLUGINS } from "./markdown-plugins";
 import { MessageCopyButton } from "./primitives";
 import { t } from "../i18n";
 
@@ -40,7 +40,7 @@ export function SkillPromptCard({ item }: { item: Extract<TranscriptItem, { kind
             <MessageCopyButton text={item.content} />
           </div>
           <div className="skill-activity-content markdown-body" role="region" aria-label={t`${name} 스킬 원문`} tabIndex={0}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.content}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>{item.content}</ReactMarkdown>
           </div>
         </div>
       )}

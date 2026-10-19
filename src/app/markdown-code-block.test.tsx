@@ -58,3 +58,16 @@ describe("fenced code block rendering", () => {
     expect(markup).toContain("inline code");
   });
 });
+
+describe("strikethrough rendering", () => {
+  it("keeps single-tilde ranges as literal text", () => {
+    const markup = render("가입은 매일 10~11시에 시간당 80~90명씩 몰렸어요.");
+    expect(markup).not.toContain("<del>");
+    expect(markup).toContain("10~11시에 시간당 80~90명씩");
+  });
+
+  it("still renders double-tilde strikethrough", () => {
+    const markup = render("~~취소된 문장~~");
+    expect(markup).toContain("<del>취소된 문장</del>");
+  });
+});
