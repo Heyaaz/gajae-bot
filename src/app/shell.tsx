@@ -1737,6 +1737,14 @@ export default function App() {
                   {selectedSession.attachment === "terminal-only" && (
                     <span className="chat-sync">제어 연결 없음 · 기록 동기화 중</span>
                   )}
+                  {selectedSession.attachment === "recovering" && (
+                    <span
+                      className="chat-sync"
+                      title="삭제·재연결 결과를 확인하지 못해 기록을 보존했습니다. 이 세션은 다시 이어서 진행해야 보낼 수 있습니다."
+                    >
+                      복구 필요 · 읽기 전용
+                    </span>
+                  )}
                   {(selectedGit?.branch ||
                     selectedSession.worktree?.branch) && (
                     <span
