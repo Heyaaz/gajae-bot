@@ -1069,7 +1069,7 @@ describe("GjcSdkController CLI seam", () => {
         throw new SdkCliError("terminal_uncertain", "retained artifacts require reconciliation");
       return {};
     });
-    await expect(controller.deleteSession("s1")).rejects.toThrow(/삭제 결과가 확인되지/u);
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/세션 삭제를 확정하지 못했습니다/u);
     expect(internals.sessions.get("s1")?.attachment).toBe("recovering");
     expect(internals.sessions.has("s1")).toBe(true);
   });
@@ -1131,7 +1131,7 @@ describe("GjcSdkController CLI seam", () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     (cli.listSessions as any).mockRejectedValue(new Error("index unavailable"));
-    await expect(controller.deleteSession("s1")).rejects.toThrow(/삭제 결과가 확인되지/u);
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/세션 삭제를 확정하지 못했습니다/u);
     // No row is no evidence: without the index nothing may be closed or deleted.
     expect(cli.rawGlobal).not.toHaveBeenCalled();
     expect(internals.sessions.get("s1")?.attachment).toBe("recovering");

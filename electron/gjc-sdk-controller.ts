@@ -4159,7 +4159,13 @@ export class GjcSdkController {
           this.stopTailFollower(sessionId);
           this.emitEvent({ type: "session.updated", session: { ...session } });
         }
-        throw new Error("세션 삭제 결과가 확인되지 않았습니다. 로컬 기록을 보존했습니다. 현재 SDK가 기록 삭제를 거부했거나 broker 상태를 확인할 수 없습니다. CLI가 사용 중인 기록은 해당 CLI의 세션 선택 화면에서 삭제해야 합니다. 앱은 삭제를 위해 CLI를 종료하거나 자동으로 재시도하지 않습니다.");
+        // Who created the session does not decide this: on gjc/0.18.12 a saved
+        // session that contains tool execution answers `session.delete` with an
+        // unknown outcome while the broker row stays `deleted: false` (upstream
+        // #6828), so an app-created session is refused exactly like a CLI's. The
+        // old wording sent every caller to a CLI picker and read as "a CLI holds
+        // this", which is not the reason here -- the receipt was never conclusive.
+        throw new Error("세션 삭제를 확정하지 못했습니다. 로컬 기록과 워크트리는 보존했고, 이 세션은 복구 필요 · 읽기 전용이 되었습니다. GJC가 삭제 결과를 확정하지 못한 경우로, 도구를 실행한 이력이 있는 세션은 gjc/0.18.12에서 삭제가 미확정으로 끝나는 알려진 제한이 있습니다. 삭제를 다시 확인하려면 다시 시도하고, 계속 쓰려면 세션을 이어서 진행하세요. 앱은 삭제를 위해 CLI를 종료하거나 자동으로 재시도하지 않습니다.");
       }
       await this.removeSessionArtifacts(sessionId);
       this.removeLocalSession(sessionId, false);
@@ -4195,7 +4201,10 @@ export class GjcSdkController {
           this.stopTailFollower(sessionId);
           this.emitEvent({ type: "session.updated", session: { ...session } });
         }
-        throw new Error("세션 삭제 결과가 확인되지 않아 로컬 기록을 보존했습니다. broker 상태를 확인한 뒤 다시 시도하세요.");
+        // Same evidence rule as the branch above: the receipt did not establish an
+        // outcome and the broker row was never proven gone, so nothing local is
+        // discarded and the session stops accepting sends until it is reattached.
+        throw new Error("세션 삭제를 확정하지 못했습니다. 로컬 기록과 워크트리는 보존했고, 이 세션은 복구 필요 · 읽기 전용이 되었습니다. 같은 이유로 반복 시도해도 결과가 같을 수 있습니다. 계속 쓰려면 세션을 이어서 진행하세요.");
       }
       throw error;
     } finally {
