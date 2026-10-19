@@ -5,7 +5,7 @@ import type {
   ArtifactContent,
   TodoSnapshotTask,
 } from "../../shared/agent-contract";
-import type { ToolActivity, TranscriptItem } from "../backend/types";
+import type { ToolActivity, ToolViewMode, TranscriptItem } from "../backend/types";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import {
   attachmentSummaryText,
@@ -375,7 +375,7 @@ export interface TranscriptProps {
    * forces reasoning cards open regardless of `thoughtsExpanded`, absorbing that
    * global toggle rather than requiring a second one.
    */
-  toolViewMode?: "basic" | "reasoning" | "detailed";
+  toolViewMode?: ToolViewMode;
   revealItemId?: string;
   onRevealComplete?: (itemId: string) => void;
   onResolveTool: (toolId: string, optionId: string) => void;

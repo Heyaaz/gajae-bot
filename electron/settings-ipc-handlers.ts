@@ -168,6 +168,8 @@ export function registerSettingsIpcHandlers(
     if (typeof expanded !== 'boolean') throw new Error('Thought card expansion must be a boolean')
     return store.setThoughtsExpanded(expanded)
   }))
+  ipcMain.handle(SETTINGS_IPC.setToolViewMode, security.guarded((_event, mode: unknown) =>
+    store.setToolViewMode(mode)))
   ipcMain.handle(SETTINGS_IPC.setNotificationPreferences, security.guarded((_event, value: unknown) =>
     store.setNotificationPreferences(value)))
   ipcMain.handle(SETTINGS_IPC.setRunningSubmission, security.guarded((_event, value: unknown) =>

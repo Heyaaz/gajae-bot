@@ -78,6 +78,7 @@ describe('SettingsStore', () => {
       permissionHandling: 'prompt',
       gjcExecutable: '',
       thoughtsExpanded: false,
+      toolViewMode: 'reasoning',
       notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
       runningSubmission: 'queue',
     })
@@ -129,7 +130,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, runningSubmission: 'queue' })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, runningSubmission: 'queue' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
@@ -206,6 +207,41 @@ describe('SettingsStore', () => {
     expect(store.validate(base).thoughtsExpanded).toBe(false)
     expect(store.validate({ ...base, thoughtsExpanded: true }).thoughtsExpanded).toBe(true)
     expect(() => store.validate({ ...base, thoughtsExpanded: 'open' })).toThrow('Thought card expansion must be a boolean')
+  })
+
+  it('persists the conversation density alone and reads missing or junk values as reasoning', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+
+    expect(store.get().toolViewMode).toBe('reasoning')
+    expect(store.setToolViewMode('detailed')).toBe('detailed')
+    // The setter writes one field: the rest of the object survives it untouched.
+    expect(new SettingsStore(userData, root).get()).toMatchObject({ toolViewMode: 'detailed', workspace: path.resolve(root), modelPreset: DEFAULT_MODEL_PRESET })
+
+    // A file written before this preference existed carries no key at all.
+    const file = path.join(userData, 'agent-control-settings.json')
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    delete stored.toolViewMode
+    writeFileSync(file, JSON.stringify(stored))
+    expect(new SettingsStore(userData, root).get().toolViewMode).toBe('reasoning')
+
+    stored.toolViewMode = 'compact'
+    writeFileSync(file, JSON.stringify(stored))
+    expect(new SettingsStore(userData, root).get().toolViewMode).toBe('reasoning')
+    expect(parsePreferences({ toolViewMode: 'detailed' }, root).toolViewMode).toBe('detailed')
+    expect(parsePreferences({ toolViewMode: 1 }, root).toolViewMode).toBe('reasoning')
+    expect(() => store.setToolViewMode('compact')).toThrow('Tool view mode must be basic, reasoning, or detailed')
+  })
+
+  it('validates a density value that is present', () => {
+    const root = temporaryDirectory()
+    const store = new SettingsStore(path.join(root, 'user-data'), root)
+    const base = { workspace: root, workspaceLabel: 'Private workspace', modelPreset: 'codex-medium', permissionHandling: 'prompt', gjcExecutable: '' }
+
+    expect(store.validate(base).toolViewMode).toBe('reasoning')
+    expect(store.validate({ ...base, toolViewMode: 'basic' }).toolViewMode).toBe('basic')
+    expect(() => store.validate({ ...base, toolViewMode: 'compact' })).toThrow('Tool view mode must be basic, reasoning, or detailed')
   })
 
   it('rejects invalid workspace scope', () => {

@@ -94,6 +94,20 @@ export function notificationDelivery(
   return { silent: false, sound: preference.sound };
 }
 
+export type ToolViewMode = "basic" | "reasoning" | "detailed";
+
+/**
+ * The conversation density new and upgraded windows start with.
+ *
+ * `reasoning` keeps the previous default: tool cards are shown and thought cards
+ * follow the separate reasoning-card preference.
+ */
+export const DEFAULT_TOOL_VIEW_MODE: ToolViewMode = "reasoning";
+
+export function isToolViewMode(value: unknown): value is ToolViewMode {
+  return value === "basic" || value === "reasoning" || value === "detailed";
+}
+
 export interface AgentControlPreferences {
   workspace: string;
   workspaceLabel: string;
@@ -101,6 +115,13 @@ export interface AgentControlPreferences {
   permissionHandling: GjcPermissionHandling;
   gjcExecutable: string;
   notificationPreferences: NotificationPreferences;
+  /**
+   * How tool activity and reasoning render in the conversation.
+   *
+   * Saved as a window-wide reading preference so a reload or a relaunch keeps the
+   * density the user chose instead of falling back to `reasoning`.
+   */
+  toolViewMode: ToolViewMode;
   /**
    * What Enter does while a turn is running and nothing is held yet.
    *
@@ -710,6 +731,8 @@ export interface SettingsDesktopBridge {
    * reading preference gets its own non-destructive channel.
    */
   setThoughtsExpanded(expanded: boolean): Promise<boolean>;
+  /** Persists the conversation density alone, without a runtime reconnect. */
+  setToolViewMode(mode: ToolViewMode): Promise<ToolViewMode>;
   /**
    * Persists the notification toggles and sounds alone.
    *

@@ -17,6 +17,7 @@ import type {
   AgentSession,
   BackendConnection,
   MessageInput,
+  ToolViewMode,
   TranscriptItem,
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
@@ -77,6 +78,7 @@ import {
 import {
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
+  DEFAULT_TOOL_VIEW_MODE,
 } from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
@@ -251,13 +253,6 @@ export default function App() {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorToolId, setInspectorToolId] = useState<string>();
   const [resumingId, setResumingId] = useState<string | null>(null);
-  // Not persisted: a per-window reading preference, cycled with a header button.
-  // basic -> tool-run blocks collapse to a summary; reasoning -> every tool card
-  // shown, thought cards follow the saved preference; detailed -> every tool card
-  // shown and thought cards forced open, absorbing that saved toggle.
-  const [toolViewMode, setToolViewMode] = useState<"basic" | "reasoning" | "detailed">(
-    "reasoning",
-  );
   const [focusedApprovalId, setFocusedApprovalId] = useState<string | undefined>(
     undefined,
   );
@@ -318,6 +313,7 @@ export default function App() {
     permissionHandling: "prompt",
     gjcExecutable: "",
     thoughtsExpanded: false,
+    toolViewMode: DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
     runningSubmission: "queue",
   });
@@ -1566,6 +1562,30 @@ export default function App() {
       },
     );
   }, [settingsBridge]);
+  // The header density selector is optimistic for the same reason as the thought
+  // toggle: the click has to land immediately, while the store is the authority on
+  // whether it persisted. A browser has no host settings bridge, so the density
+  // stays local to that client instead of pretending to save on the host.
+  const changeToolViewMode = useCallback(
+    (next: ToolViewMode): void => {
+      const current = preferencesRef.current.toolViewMode;
+      if (next === current) return;
+      setPreferences((latest) => ({ ...latest, toolViewMode: next }));
+      if (!settingsBridge) return;
+      void settingsBridge.setToolViewMode(next).then(
+        (saved) =>
+          setPreferences((latest) => ({ ...latest, toolViewMode: saved })),
+        (error: unknown) => {
+          setPreferences((latest) => ({
+            ...latest,
+            toolViewMode: current,
+          }));
+          setAppError(humanErrorMessage(error));
+        },
+      );
+    },
+    [settingsBridge],
+  );
   const startFork = useCallback((session: AgentSession) => {
     void handlersRef.current.forkSession(session);
   }, []);
@@ -1785,7 +1805,7 @@ export default function App() {
             </div>
             <div className="chat-header__actions">
               <div className="tool-view-mode-toggle">
-                <Dropdown ariaLabel="대화 표시 방식" icon={<Layers size={15} aria-hidden="true" />} value={toolViewMode} onChange={setToolViewMode}
+                <Dropdown ariaLabel="대화 표시 방식" icon={<Layers size={15} aria-hidden="true" />} value={preferences.toolViewMode} onChange={changeToolViewMode}
                   options={[
                     { value: "basic", label: "요약", description: "도구 요약" },
                     { value: "reasoning", label: "기본", description: "도구 카드" },
@@ -1840,7 +1860,7 @@ export default function App() {
                 compacting={selectedSession.phase === "compacting"}
                 thoughtsExpanded={preferences.thoughtsExpanded}
                 onToggleThoughtsExpanded={toggleThoughtsExpanded}
-                toolViewMode={toolViewMode}
+                toolViewMode={preferences.toolViewMode}
                 revealItemId={
                   revealTarget?.sessionId === selectedSession.id
                     ? revealTarget.itemId

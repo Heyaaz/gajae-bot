@@ -15,6 +15,7 @@ const fallback: AgentControlPreferences = {
   permissionHandling: "prompt",
   gjcExecutable: "",
   thoughtsExpanded: false,
+  toolViewMode: "reasoning",
   notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
   runningSubmission: "queue",
 };

@@ -14,9 +14,12 @@ import type {
   AgentControlPreferences,
   GjcPermissionHandling,
   NotificationPreferences,
+  ToolViewMode,
 } from '../shared/agent-contract.js'
 import {
   DEFAULT_MODEL_PRESET,
+  DEFAULT_TOOL_VIEW_MODE,
+  isToolViewMode,
   parseNotificationPreferences,
 } from '../shared/agent-contract.js'
 
@@ -76,6 +79,11 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
     // Junk in a stored file reads as collapsed. Only a stored `true` opens the cards,
     // so a hand-edited or older value cannot leave the preference stuck open.
     thoughtsExpanded: candidate.thoughtsExpanded === true,
+    // A file written before the density preference existed carries no key and keeps
+    // the previous default. Junk also falls back instead of breaking the settings load.
+    toolViewMode: isToolViewMode(candidate.toolViewMode)
+      ? candidate.toolViewMode
+      : DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: parseNotificationPreferences(
       candidate.notificationPreferences,
     ),
@@ -119,6 +127,10 @@ export class SettingsStore {
     if (thoughtsExpanded !== undefined && typeof thoughtsExpanded !== 'boolean') {
       throw new Error('Thought card expansion must be a boolean')
     }
+    const toolViewMode = (value as Partial<AgentControlPreferences> | null)?.toolViewMode
+    if (toolViewMode !== undefined && !isToolViewMode(toolViewMode)) {
+      throw new Error('Tool view mode must be basic, reasoning, or detailed')
+    }
 
     return preferences
   }
@@ -143,6 +155,16 @@ export class SettingsStore {
     this.persist(preferences)
     this.preferences = preferences
     return this.preferences.thoughtsExpanded
+  }
+
+  /** Conversation density, saved without the runtime confirmation. */
+  setToolViewMode(value: unknown): ToolViewMode {
+    if (!isToolViewMode(value))
+      throw new Error('Tool view mode must be basic, reasoning, or detailed')
+    const preferences = { ...this.preferences, toolViewMode: value }
+    this.persist(preferences)
+    this.preferences = preferences
+    return this.preferences.toolViewMode
   }
 
   /** Enter behavior while a turn runs, saved without the runtime confirmation. */

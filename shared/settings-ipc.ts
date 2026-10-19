@@ -6,6 +6,7 @@ export const SETTINGS_IPC = {
   discardAttachments: "agent-control:settings:discard-attachments",
   setWorkspaceLabel: "agent-control:settings:set-workspace-label",
   setThoughtsExpanded: "agent-control:settings:set-thoughts-expanded",
+  setToolViewMode: "agent-control:settings:set-tool-view-mode",
   setNotificationPreferences:
     "agent-control:settings:set-notification-preferences",
   setRunningSubmission: "agent-control:settings:set-running-submission",

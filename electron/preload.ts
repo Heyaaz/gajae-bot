@@ -13,6 +13,7 @@ import type {
   EffectiveRuntimeState,
   SettingsDesktopBridge,
   ToolDecision,
+  ToolViewMode,
   TranscriptItem,
   ManagementDesktopBridge,
   McpServerInput,
@@ -383,6 +384,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
     ipcRenderer.invoke(SETTINGS_IPC.setWorkspaceLabel, label),
   setThoughtsExpanded: (expanded: boolean) =>
     ipcRenderer.invoke(SETTINGS_IPC.setThoughtsExpanded, expanded),
+  setToolViewMode: (mode: ToolViewMode) =>
+    ipcRenderer.invoke(SETTINGS_IPC.setToolViewMode, mode),
   setNotificationPreferences: (preferences: NotificationPreferences) =>
     ipcRenderer.invoke(
       SETTINGS_IPC.setNotificationPreferences,

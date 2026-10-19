@@ -2,6 +2,7 @@ import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import {
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
+  DEFAULT_TOOL_VIEW_MODE,
   NOTIFICATION_SOUNDS,
 } from "../../shared/agent-contract";
 import type {
@@ -174,6 +175,7 @@ export function SettingsDialog({
     permissionHandling: "prompt",
     gjcExecutable: "",
     thoughtsExpanded,
+    toolViewMode: DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
     runningSubmission: "queue",
   };
