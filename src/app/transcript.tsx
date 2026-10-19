@@ -25,6 +25,7 @@ import {
   Check,
   ChevronDown,
   Clock3,
+  Copy,
   GitFork,
   ListChecks,
   Paperclip,
@@ -34,7 +35,16 @@ import {
   TerminalSquare,
   X,
 } from "lucide-react";
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  isValidElement,
+  memo,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 import { httpUrls, humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
 import { DiffView, LinkPreviewCard, MessageCopyButton } from "./primitives";
 import { SkillInvocation, SkillPromptCard } from "./skill-activity";
@@ -70,6 +80,74 @@ const TODO_CLOCK_LABEL = new Intl.DateTimeFormat("en", {
   minute: "2-digit",
   hour12: false,
 });
+
+/**
+ * A fenced code block's own text, read back out of its single text-node child.
+ *
+ * react-markdown hands the renderer React children (so inline formatting inside a
+ * code span still works), not the raw string -- but a fenced block is never inline
+ * formatted, so its child is reliably one string and copying it is exactly copying
+ * what was fenced.
+ */
+function codeBlockText(children: ReactNode): string {
+  if (typeof children === "string") return children.replace(/\n$/u, "");
+  if (Array.isArray(children))
+    return children.map((child) => codeBlockText(child)).join("");
+  return "";
+}
+
+/**
+ * Replaces ReactMarkdown's default `pre`/`code` pair for a fenced block with one
+ * that names the fence's language and offers a one-click copy of the block's own
+ * text -- distinct from the message-level copy button, which copies the whole
+ * reply and loses which part was code.
+ *
+ * ReactMarkdown calls `pre` for every `pre` node, fenced or not (an indented code
+ * block has no language and renders through the same path), so the header is
+ * skipped for a block GFM did not tag with a language rather than printing an
+ * empty one.
+ */
+function MarkdownPre({
+  children,
+  ...rest
+}: ComponentPropsWithoutRef<"pre">) {
+  const codeChild =
+    isValidElement<{ className?: string; children?: ReactNode }>(children) &&
+    typeof children.props.className === "string"
+      ? children
+      : null;
+  const language = codeChild?.props.className?.match(/language-(\S+)/u)?.[1];
+  const text = codeBlockText(codeChild?.props.children ?? children);
+  const [copied, setCopied] = useState(false);
+  async function copy(): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch {
+      setCopied(false);
+    }
+  }
+  if (!language) return <pre {...rest}>{children}</pre>;
+  return (
+    <div className="code-block">
+      <header>
+        <span className="code-block-lang">{language}</span>
+        <button
+          type="button"
+          className={`code-block-copy ${copied ? "is-copied" : ""}`}
+          title={copied ? "복사되" : "복사"}
+          onClick={() => void copy()}
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+        </button>
+      </header>
+      <pre {...rest}>{children}</pre>
+    </div>
+  );
+}
+
+const MARKDOWN_COMPONENTS = { pre: MarkdownPre };
 
 /** A mounted transcript row, in the unzoomed layout pixels the virtualizer positions it with. */
 export interface TranscriptAnchorRow {
@@ -1145,14 +1223,14 @@ export function CompactionCard({
       </button>
       {expanded ? (
         <div className="compaction-summary markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
             {item.summary}
           </ReactMarkdown>
         </div>
       ) : (
         preview && (
           <div className="compaction-short markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{preview}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{preview}</ReactMarkdown>
           </div>
         )
       )}
@@ -1182,7 +1260,7 @@ export function BranchSummaryCard({
       </button>
       {expanded && (
         <div className="compaction-summary markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
             {item.summary}
           </ReactMarkdown>
         </div>
@@ -1226,7 +1304,7 @@ export function SystemNoticeCard({
         <span className="runtime-row-source">{sourceType ?? item.title}</span>
         {expanded ? (
           <div className="system-card-body markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{
               item.content
             }</ReactMarkdown>
           </div>
@@ -1256,7 +1334,7 @@ export function SystemNoticeCard({
         )}
       </header>
       <div className="system-card-body markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
           {expanded ? item.content : preview}
         </ReactMarkdown>
       </div>
@@ -1426,7 +1504,7 @@ export function TodoCard({
         )}
         {expanded && (
           <div className="todo-card-raw markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
               {item.content}
             </ReactMarkdown>
           </div>
@@ -1563,7 +1641,7 @@ export function ThoughtCard({
           {item.streaming ? (
             item.content
           ) : (
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
               {item.content}
             </ReactMarkdown>
           )}
@@ -1612,7 +1690,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
                 item.streaming ? (
                   item.content
                 ) : (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                     {item.content}
                   </ReactMarkdown>
                 )

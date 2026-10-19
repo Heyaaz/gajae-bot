@@ -1706,6 +1706,49 @@
   border: 1px solid var(--border);
   border-radius: 8px;
 }
+.code-block {
+  margin: 12px 0;
+}
+.code-block pre {
+  margin: 0;
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.code-block > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  color: var(--text-tertiary);
+  background: #17171a;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+}
+.code-block-lang {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.code-block-copy {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.code-block-copy:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.code-block-copy.is-copied {
+  color: var(--success);
+}
 .markdown-body pre code {
   padding: 0;
   color: inherit;
