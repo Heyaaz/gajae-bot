@@ -2606,24 +2606,23 @@
 .tool-view-mode-toggle {
   display: flex;
   align-items: center;
-  width: auto;
-  padding: 0 8px;
-  gap: 4px;
-  grid-auto-flow: column;
-  align-items: center;
-}
-.tool-view-mode-toggle small {
-  font-size: 10px;
-  color: inherit;
-}
-.tool-view-mode-toggle select {
-  max-width: 190px;
-  padding: 4px;
+  gap: 6px;
   color: var(--text-secondary);
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font-size: 11px;
+  -webkit-app-region: no-drag;
+}
+.tool-view-mode-toggle .dropdown-trigger {
+  width: 180px;
+  height: 30px;
+  background: var(--bg-raised);
+}
+.tool-view-mode-toggle .dropdown-menu {
+  left: auto;
+  right: 0;
+  width: 220px;
+}
+.tool-view-mode-toggle .dropdown-menu button {
+  padding: 9px 10px;
+  font-size: 12px;
 }
 .tool-run--collapsed {
   padding: 0;

@@ -58,6 +58,7 @@ import { Sidebar } from "./sidebar";
 import { sessionListModel } from "./sidebar-model";
 import { ProjectList } from "./project-list";
 import { RepoView } from "./repo-view";
+import { Dropdown } from "./primitives";
 import {
   ALL_PROJECTS_ID,
   buildProjectGroups,
@@ -1750,14 +1751,15 @@ export default function App() {
               </span>
             </div>
             <div className="chat-header__actions">
-              <label className="tool-view-mode-toggle">
+              <div className="tool-view-mode-toggle">
                 <Layers size={16} aria-hidden="true" />
-                <select aria-label="대화 표시 방식" value={toolViewMode} onChange={(event) => setToolViewMode(event.target.value as "basic" | "reasoning" | "detailed")}>
-                  <option value="basic">간단히 · 도구 요약</option>
-                  <option value="reasoning">기본 · 도구 카드</option>
-                  <option value="detailed">상세 · 추론까지 펼침</option>
-                </select>
-              </label>
+                <Dropdown ariaLabel="대화 표시 방식" value={toolViewMode} onChange={setToolViewMode}
+                  options={[
+                    { value: "basic", label: "간단히 · 도구 요약" },
+                    { value: "reasoning", label: "기본 · 도구 카드" },
+                    { value: "detailed", label: "상세 · 추론까지 펼침" },
+                  ]} />
+              </div>
               <button
                 className={`icon-button ${diffOpen ? "is-active" : ""}`}
                 type="button"

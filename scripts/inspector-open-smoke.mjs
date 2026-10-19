@@ -1711,10 +1711,22 @@ app.whenReady().then(async () => {
     const button = document.querySelector('.recent-requests-timeline-toggle');
     if (button.scrollWidth > button.clientWidth + 1) issues.push('timeline toggle clips count');
     popup.querySelector('header button').click();
-    const mode = document.querySelector('select[aria-label="대화 표시 방식"]');
-    if (!mode || mode.options.length !== 3) issues.push('view mode choices missing');
-    if (mode && getComputedStyle(mode).getPropertyValue('-webkit-app-region') !== 'no-drag') issues.push('view mode select intercepts clicks as window dragging');
-    if (mode && [...mode.options].some(option => /기미|추맠/.test(option.text))) issues.push('corrupted mode text');
+    const mode = document.querySelector('button[aria-label="대화 표시 방식"]');
+    if (!mode) issues.push('view mode trigger missing');
+    else {
+      if (getComputedStyle(mode).getPropertyValue('-webkit-app-region') !== 'no-drag') issues.push('view mode trigger intercepts clicks as window dragging');
+      mode.click();
+      await wait(100);
+      const menu = document.querySelector('[role="listbox"][aria-label="대화 표시 방식"]');
+      if (!menu || menu.querySelectorAll('[role="option"]').length !== 3) issues.push('view mode choices missing');
+      if (menu) {
+        const bounds = menu.getBoundingClientRect();
+        if (bounds.top < mode.getBoundingClientRect().bottom || bounds.right > innerWidth) issues.push('view mode menu misaligned');
+        menu.querySelector('[role="option"]').click();
+        await wait(100);
+        if (!mode.textContent.includes('간단히')) issues.push('view mode selection not applied');
+      }
+    }
     const note = document.querySelector('.inspector-section > p');
     if (note && parseFloat(getComputedStyle(note).fontSize) > 12) issues.push('inspector note oversized');
     if (document.body.textContent.includes('시간 확인 불가')) issues.push('unknown timing placeholder visible');
