@@ -20,6 +20,7 @@ import {
   summarizeToolRun,
   streamingMarkdownParts,
   turnStartBlockIds,
+  turnSummaries,
   updateTranscriptItem,
 } from "./transcript-utils";
 
@@ -52,6 +53,19 @@ describe("currentWorkLabel", () => {
     expect(currentWorkLabel([call])).toBe("Running tests");
     expect(currentWorkLabel([{ ...call, status: "completed" }])).toBe("응답 대기 중");
     expect(currentWorkLabel([{ ...call, status: "approval-required" }])).toBe("승인 대기 중");
+  });
+});
+describe("turnSummaries", () => {
+  type ToolItem = Extract<TranscriptItem, { kind: "tool" }>;
+  const fixtureTool = (id: string): ToolItem => ({ id, sessionId: "session-1", kind: "tool", name: "bash", description: "bash", status: "completed", createdAt: "now" });
+  const fixtureMessage: TranscriptItem = { id: "message-1", sessionId: "session-1", kind: "message", role: "assistant", content: "Hello", createdAt: "now" };
+  it("measures duration from valid timestamps and reports live work", () => {
+    const request = { ...fixtureMessage, id: "u1", role: "user" as const, createdAt: "2026-10-19T00:00:00.000Z" };
+    const reply = { ...fixtureMessage, id: "a1", createdAt: "2026-10-19T00:00:04.000Z" };
+    const turns = turnSummaries(groupTranscriptItems([request, reply, { ...fixtureTool("t1"), status: "running" }]));
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.durationMs).toBe(4000);
+    expect(turns[0]?.live).toBe(true);
   });
 });
 

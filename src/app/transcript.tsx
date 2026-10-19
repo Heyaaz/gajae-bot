@@ -11,6 +11,7 @@ import {
   attachmentSummaryText,
   copyableMessageText,
   groupTranscriptItems,
+  turnSummaries,
   parseSkillInvocation,
   shouldFollowTranscript,
   recentUserRequests,
@@ -414,6 +415,9 @@ export function Transcript({
   emptyStateMeta,
   onRevealInspector,
 }: TranscriptProps) {
+  const turnViews = useMemo(() => turnSummaries(groupTranscriptItems(items)), [items]);
+  const [collapsedTurns, setCollapsedTurns] = useState<ReadonlySet<string>>(() => new Set());
+  const collapsedBlockIds = useMemo(() => new Set(turnViews.filter((turn) => collapsedTurns.has(turn.requestId)).flatMap((turn) => turn.blockIds.slice(1))), [collapsedTurns, turnViews]);
   // `detailed` absorbs the reasoning toggle: it always shows thought cards open
   // regardless of the persisted preference, rather than requiring a second control.
   const effectiveThoughtsExpanded = toolViewMode === "detailed" || thoughtsExpanded;
@@ -1225,34 +1229,19 @@ export function Transcript({
                 ref={virtualizer.measureElement}
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                {block.kind === "item" ? (
-                  <div
-                    className="transcript-entry"
-                    id={`transcript-${encodeURIComponent(block.item.id)}`}
-                  >
-                    <TranscriptItemView
-                      item={block.item}
-                      thoughtsExpanded={effectiveThoughtsExpanded}
-                      onToggleThoughtsExpanded={onToggleThoughtsExpanded}
-                      onResolveTool={onResolveTool}
-                      onReadArtifact={onReadArtifact}
-                      autoDenyHint={autoDenyHint}
-                      onRetryLastRequest={onRetryLastRequest}
-                      onRevealInspector={onRevealInspector}
-                    />
+                {turnStarts.has(block.id) && (() => {
+                  const turn = turnViews.find((candidate) => candidate.requestId === block.id);
+                  const seconds = turn?.durationMs === undefined ? undefined : Math.max(1, Math.round(turn.durationMs / 1000));
+                  const collapsed = collapsedTurns.has(block.id);
+                  return <header className="turn-header"><button type="button" onClick={() => setCollapsedTurns((current) => { const next = new Set(current); if (next.has(block.id)) next.delete(block.id); else next.add(block.id); return next; })}>{collapsed ? "펼치기" : "접기"}</button><span>{turn?.live ? "진행 중" : seconds === undefined ? "시간 확인 불가" : `${seconds}초`}</span></header>;
+                })()}
+                {!collapsedBlockIds.has(block.id) && (block.kind === "item" ? (
+                  <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
+                    <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
                 ) : (
-                  <ToolRunBlockView
-                    items={block.items}
-                    toolViewMode={toolViewMode}
-                    thoughtsExpanded={effectiveThoughtsExpanded}
-                    onToggleThoughtsExpanded={onToggleThoughtsExpanded}
-                    onResolveTool={onResolveTool}
-                    onReadArtifact={onReadArtifact}
-                    autoDenyHint={autoDenyHint}
-                    onRevealInspector={onRevealInspector}
-                  />
-                )}
+                  <ToolRunBlockView items={block.items} toolViewMode={toolViewMode} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRevealInspector={onRevealInspector} />
+                ))}
               </div>
             );
           })}

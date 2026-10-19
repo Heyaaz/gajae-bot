@@ -109,6 +109,8 @@
 .transcript-slot[data-turn-start="true"]:not([data-index="0"]) {
   padding-top: 22px;
 }
+.turn-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: var(--text-secondary); font-size: 11px; }
+.turn-header button { color: inherit; background: transparent; border: 0; cursor: pointer; }
 /* Nothing follows the final block, so its padding would only push the newest message away
    from the composer. Keyed off an explicit attribute, not `:last-child`: mounted slots are
    in arbitrary DOM order, so `:last-child` stripped the padding from a random middle row. */

@@ -301,6 +301,43 @@ export function pendingToolApprovals(
       item.kind === "tool" && item.status === "approval-required",
   );
 }
+export interface TurnSummary {
+  requestId: string;
+  blockIds: readonly string[];
+  durationMs?: number;
+  live: boolean;
+}
+
+function timestampMs(value: string): number | undefined {
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function turnSummaries(blocks: readonly TranscriptBlock[]): readonly TurnSummary[] {
+  const turns: TurnSummary[] = [];
+  for (const block of blocks) {
+    if (block.kind === "item" && block.item.kind === "message" && block.item.role === "user") {
+      turns.push({ requestId: block.item.id, blockIds: [block.id], live: false });
+      continue;
+    }
+    const current = turns.at(-1);
+    if (!current) continue;
+    current.blockIds = [...current.blockIds, block.id];
+    const live = block.kind === "item"
+      ? (block.item.kind === "message" && block.item.streaming === true) || (block.item.kind === "thought" && block.item.streaming)
+      : block.items.some((item) => item.status === "running" || item.status === "pending" || item.status === "approval-required");
+    current.live ||= live;
+  }
+  return turns.map((turn) => {
+    const times = turn.blockIds.flatMap((id) => {
+      const block = blocks.find((candidate) => candidate.id === id);
+      const values = block?.kind === "item" ? [block.item.createdAt] : block?.items.map((item) => item.createdAt) ?? [];
+      return values.flatMap((value) => timestampMs(value) ?? []);
+    });
+    const duration = times.length > 1 ? Math.max(...times) - Math.min(...times) : undefined;
+    return { ...turn, durationMs: duration };
+  });
+}
 
 /**
  * Which blocks open a new turn, for a wider visual gap between a user's request and
