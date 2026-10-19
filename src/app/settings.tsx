@@ -13,13 +13,15 @@ import type {
 } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
 import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Palette, Server, ShieldCheck, Smartphone, Sparkles, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { readStoredTheme, setThemeMode, type ThemeMode } from "../theme";
 import { getLanguage, setLanguageMode, t, useLanguageMode } from "../i18n";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
-import { RemoteAccessPanel } from "./remote-access-panel";
+const RemoteAccessPanel = lazy(() =>
+  import("./remote-access-panel").then((mod) => ({ default: mod.RemoteAccessPanel })),
+);
 
 export interface SettingsDialogProps {
   connection: BackendConnection;
@@ -841,7 +843,11 @@ export function SettingsDialog({
             />
           )}
 
-          {tab === "remote" && <RemoteAccessPanel />}
+          {tab === "remote" && (
+            <Suspense fallback={null}>
+              <RemoteAccessPanel />
+            </Suspense>
+          )}
 
           {tab === "workspace" && (
             <div className="settings-stack">
