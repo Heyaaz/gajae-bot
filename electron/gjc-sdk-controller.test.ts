@@ -6,8 +6,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   GjcSdkController,
+  COMMAND_REFRESH_RETRY_BASE_MS,
   LIVE_EVIDENCE_GRACE_MS,
   TAIL_WINDOW_MS,
+  TODO_EVENT_POLL_BASE_MS,
   busyPromptError,
   cancelledOperationError,
   gitBranchFromHeader,
@@ -82,11 +84,47 @@ describe("runtime version probe", () => {
     } as never);
     (controller as any).recoverOwnedSessions = vi.fn(async () => undefined);
     try {
-      await expect(controller.getConnection()).resolves.toMatchObject({
-        state: "connected",
-        version: "0.18.12",
+      const connection = await controller.getConnection();
+      expect(connection.state).toBe("connected");
+      await vi.waitFor(async () => {
+        expect((await controller.getConnection()).version).toBe("0.18.12");
       });
     } finally {
+      controller.dispose();
+      list.mockRestore();
+      version.mockRestore();
+    }
+  });
+
+  it("does not wait for --version before reporting the broker connected", async () => {
+    let releaseVersion: (version: string) => void = () => undefined;
+    const list = vi
+      .spyOn(GjcSdkCli.prototype, "listSessions")
+      .mockResolvedValue([]);
+    const version = vi
+      .spyOn(GjcSdkCli.prototype, "version")
+      .mockImplementation(
+        () => new Promise((resolve) => {
+          releaseVersion = resolve;
+        }),
+      );
+    const controller = new GjcSdkController({
+      workspace: "/repo",
+      executable: "/bin/true",
+      emit: vi.fn(),
+    } as never);
+    (controller as any).recoverOwnedSessions = vi.fn(async () => undefined);
+    try {
+      const connection = await controller.getConnection();
+      expect(connection.state).toBe("connected");
+      expect(connection.version).toBeUndefined();
+      expect(version).toHaveBeenCalledOnce();
+      releaseVersion("0.18.12");
+      await vi.waitFor(async () => {
+        expect((await controller.getConnection()).version).toBe("0.18.12");
+      });
+    } finally {
+      releaseVersion("0.18.12");
       controller.dispose();
       list.mockRestore();
       version.mockRestore();
@@ -1569,6 +1607,77 @@ describe("SDK slash commands", () => {
     ).not.toContain("skill:other");
   });
 
+  it("does not emit a command palette that matches the last one", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("session.metadata", "session.stats"),
+    );
+    await controller.refreshSessionContext("s1");
+    const first = emit.mock.calls.filter(
+      ([event]) => event.type === "session.commands",
+    );
+    expect(first).toHaveLength(1);
+    emit.mockClear();
+    await controller.refreshSessionContext("s1");
+    expect(
+      emit.mock.calls.filter(([event]) => event.type === "session.commands"),
+    ).toHaveLength(0);
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map(
+        (command) => command.name,
+      ),
+    ).toContain("session");
+  });
+
+  it("retries a failed command refresh and then publishes the new list", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.sessionCommands.set("s1", [
+      { name: "old", description: "stale", hint: "" },
+    ]);
+    let capabilityAttempts = 0;
+    (cli.queryItems as any).mockImplementation(async (_id: string, query: string) => {
+      if (query !== "runtime.capabilities") return [];
+      capabilityAttempts += 1;
+      if (capabilityAttempts === 1) throw new Error("capabilities down");
+      return capabilityRows("session.metadata", "session.stats");
+    });
+    try {
+      await internals.refreshSdkCommands("s1");
+      expect(
+        (internals.sessionCommands.get("s1") as Array<{ name: string }>).map(
+          (command) => command.name,
+        ),
+      ).toEqual(["old"]);
+      expect(
+        emit.mock.calls.some(([event]) => event.type === "session.commands"),
+      ).toBe(false);
+      await vi.advanceTimersByTimeAsync(COMMAND_REFRESH_RETRY_BASE_MS);
+      expect(capabilityAttempts).toBe(2);
+      expect(
+        (internals.sessionCommands.get("s1") as Array<{ name: string }>).map(
+          (command) => command.name,
+        ),
+      ).toContain("session");
+      expect(
+        emit.mock.calls.some(
+          ([event]) =>
+            event.type === "session.commands" &&
+            event.commands.some((command: { name: string }) => command.name === "session"),
+        ),
+      ).toBe(true);
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("honors a session config that disables skills", async () => {
     const { cli, internals } = harness();
     internals.sessions.set("s1", session());
@@ -2020,6 +2129,16 @@ describe("runtime activity visibility", () => {
       const goal = await controller.getGoal("s1");
       expect(goal.enabled).toBe(false);
       expect(goal.total).toBe(1);
+      const todoListsBefore = (cli.queryItems as any).mock.calls.filter(
+        ([, query]: [string, string]) => query === "todo.list",
+      ).length;
+      internals.attachedSessions.add("s1");
+      await controller.getGoal("s1");
+      await controller.getGoal("s1");
+      const todoListsAfter = (cli.queryItems as any).mock.calls.filter(
+        ([, query]: [string, string]) => query === "todo.list",
+      ).length;
+      expect(todoListsAfter).toBe(todoListsBefore);
 
       // A durable rebuild does not delete the source-backed snapshot row.
       await internals.refreshTranscriptFromFile("s1");
@@ -2033,6 +2152,39 @@ describe("runtime activity visibility", () => {
       if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
       else process.env.GJC_CODING_AGENT_DIR = previous;
       await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("backs off todo.list when the session has no live todo channel", async () => {
+    vi.useFakeTimers();
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    let todoLists = 0;
+    (cli.queryItems as any).mockImplementation(async (_id: string, query: string) => {
+      if (query === "todo.list") {
+        todoLists += 1;
+        return [{ id: "task-1", status: "pending" }];
+      }
+      return [];
+    });
+    try {
+      await controller.getGoal("s1");
+      await controller.getGoal("s1");
+      await controller.getGoal("s1");
+      expect(todoLists).toBe(1);
+      await vi.advanceTimersByTimeAsync(TODO_EVENT_POLL_BASE_MS - 1);
+      expect(todoLists).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(todoLists).toBe(2);
+      internals.attachedSessions.add("s1");
+      await controller.getGoal("s1");
+      await vi.advanceTimersByTimeAsync(TODO_EVENT_POLL_BASE_MS * 4);
+      expect(todoLists).toBe(2);
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
     }
   });
 

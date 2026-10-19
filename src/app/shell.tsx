@@ -57,11 +57,13 @@ import {
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
-import { SettingsDialog } from "./settings";
+import {
+  DeferredProjectList,
+  DeferredRepoView,
+  DeferredSettingsDialog,
+} from "./deferred-views";
 import { Sidebar } from "./sidebar";
 import { sessionListModel } from "./sidebar-model";
-import { ProjectList } from "./project-list";
-import { RepoView } from "./repo-view";
 import { Dropdown } from "./primitives";
 import {
   ALL_PROJECTS_ID,
@@ -398,9 +400,13 @@ export default function App() {
 
   useEffect(() => {
     if (updateCheckedRef.current) return;
+    // `gjc update --check` is its own process. Starting it while the broker
+    // index is still the reachability probe competes with the first session
+    // list, so it waits until that connection attempt has settled.
+    if (connection.state === "connecting") return;
     updateCheckedRef.current = true;
     queueMicrotask(() => void checkForUpdate());
-  }, [checkForUpdate]);
+  }, [checkForUpdate, connection.state]);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
@@ -563,8 +569,11 @@ export default function App() {
     };
     loadSessions(true);
     // A full scan costs seconds on a large broker index, so polling faster than
-    // that just queues overlapping scans. Focus refresh covers the case where the
-    // user switches to this window right after starting a CLI session.
+    // that just queues overlapping scans. The controller skips `session list`
+    // while `sessions/index.jsonl` is unchanged; this beat still runs so a
+    // transcript-only run-state change can move the fingerprint. Focus refresh
+    // covers the case where the user switches to this window right after
+    // starting a CLI session.
     //
     // The scan is skipped while the window is hidden. Run state now arrives on its
     // own from the transcript watchers, so the only thing polling still discovers is
@@ -1826,7 +1835,7 @@ export default function App() {
           </div>
         </main>
       ) : centerView === "projects" ? (
-        <ProjectList
+        <DeferredProjectList
           projects={projectGroups}
           activeId={activeProjectId}
           onSelect={changeProject}
@@ -1834,7 +1843,7 @@ export default function App() {
           onClose={openConversation}
         />
       ) : centerView === "repository" && activeProject ? (
-        <RepoView
+        <DeferredRepoView
           project={{ root: activeProject.root, name: activeProject.name }}
           sessions={activeProject.sessions}
           backend={backend}
@@ -2105,7 +2114,7 @@ export default function App() {
         />
       )}
       {settingsOpen && (
-        <SettingsDialog
+        <DeferredSettingsDialog
           connection={connection}
           thoughtsExpanded={preferences.thoughtsExpanded}
           onClose={() => setSettingsOpen(false)}

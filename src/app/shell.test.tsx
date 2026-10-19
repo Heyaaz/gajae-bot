@@ -169,6 +169,20 @@ vi.mock("./inspector", () => ({
   Inspector: () => null,
 }));
 vi.mock("./settings", () => ({ SettingsDialog: () => null }));
+// Static markup cannot wait for the real lazy screens. The stand-ins below are
+// the same modules the shell used to import directly.
+vi.mock("./deferred-views", async () => {
+  const [{ ProjectList }, { RepoView }, { SettingsDialog }] = await Promise.all([
+    import("./project-list"),
+    import("./repo-view"),
+    import("./settings"),
+  ]);
+  return {
+    DeferredProjectList: ProjectList,
+    DeferredRepoView: RepoView,
+    DeferredSettingsDialog: SettingsDialog,
+  };
+});
 vi.mock("./repo-view", () => ({
   RepoView: (props: { project: { root: string } }) => {
     actionProbe.repo = props;

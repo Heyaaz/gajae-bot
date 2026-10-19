@@ -17,7 +17,6 @@ import path from "node:path";
 import {
   type AgentEvent,
   announcesSessionActivity,
-  eventSessionId,
   notificationDelivery,
   sessionActivityBody,
 } from "../shared/agent-contract.js";
@@ -33,6 +32,7 @@ import { setHostLanguage } from "./host-text.js";
 import { ManagementService } from "./desktop-services.js";
 import { registerDesktopServicesIpcHandlers } from "./desktop-services-ipc-handlers.js";
 import { ProductivityService } from "./productivity-service.js";
+import { applySearchInvalidation } from "./search-invalidation.js";
 import { registerProductivityIpcHandlers } from "./productivity-ipc-handlers.js";
 import { AutomationService } from "./automation-service.js";
 import { registerAutomationIpcHandlers } from "./automation-ipc-handlers.js";
@@ -103,25 +103,9 @@ let lastNotification: { body: string; at: number } | undefined;
 const viewedSessions = new Map<number, string>();
 
 function broadcastAgentEvent(event: AgentEvent): void {
-  if (
-    event.type === "session.created" ||
-    event.type === "session.updated" ||
-    event.type === "session.deleted" ||
-    event.type === "transcript.appended" ||
-    event.type === "transcript.synced" ||
-    event.type === "message.delta" ||
-    event.type === "message.updated" ||
-    event.type === "thought.delta" ||
-    event.type === "plan.updated" ||
-    event.type === "tool.updated"
-  ) {
-    const sessionId = eventSessionId(event);
-    if (sessionId) productivityService?.invalidateSearch(sessionId);
-    else
-      console.warn(
-        `[search] ${event.type} carried no session id; skipping targeted invalidation`,
-      );
-  }
+  applySearchInvalidation(event, (sessionId) => {
+    productivityService?.invalidateSearch(sessionId);
+  });
   const windows = BrowserWindow.getAllWindows();
   // The windows on this machine read the same events from the loopback stream. Nothing
   // is pushed over IPC as well: a second delivery path is how one event becomes two.

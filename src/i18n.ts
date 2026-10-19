@@ -1,6 +1,4 @@
 import { useSyncExternalStore } from "react";
-import { MESSAGES } from "./i18n-messages";
-export { MESSAGES };
 
 export type LanguageMode = "ko" | "en" | "system";
 export type ResolvedLanguage = "ko" | "en";
@@ -8,11 +6,9 @@ export type ResolvedLanguage = "ko" | "en";
 const STORAGE_KEY = "gajae:language";
 
 /**
- * English copy for every user-visible string.
- *
- * Korean is the source language and stays at the call site, so a missing entry
- * falls back to a readable Korean string instead of a raw key. `i18n.test.ts`
- * checks that every `t("...")` call in production source has an entry here.
+ * Korean is the source language and stays at the call site, so a missing English
+ * entry falls back to a readable Korean string instead of a raw key.
+ * `i18n.test.ts` checks that every `t("...")` call has an entry in the dictionary.
  */
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -75,6 +71,48 @@ export function storeLanguageMode(
 
 let currentMode: LanguageMode = readLanguageMode();
 let currentLanguage: ResolvedLanguage = resolveLanguage(currentMode);
+let englishMessages: Readonly<Record<string, string>> | null = null;
+let englishLoad: Promise<void> | null = null;
+
+/**
+ * Installs an English dictionary that is already in memory.
+ *
+ * The production app loads that module only after the language resolves to
+ * English. Tests install it up front so a language change and the translated
+ * string can be asserted in the same turn.
+ */
+export function installEnglishDictionary(
+  messages: Readonly<Record<string, string>>,
+): void {
+  englishMessages = messages;
+  englishLoad = Promise.resolve();
+}
+
+/** Drops the cached dictionary so a test can observe the load. */
+export function unloadEnglishDictionary(): void {
+  englishMessages = null;
+  englishLoad = null;
+}
+
+/**
+ * Loads the English dictionary if this session is going to use it.
+ *
+ * Korean stays on the source strings, so the dictionary is not part of the
+ * initial chunk. When it arrives for a session that is still set to English,
+ * listeners render again with the translated copy.
+ */
+export function ensureEnglishDictionary(): Promise<void> {
+  if (englishMessages) return Promise.resolve();
+  englishLoad ??= import("./i18n-messages").then((mod) => {
+    englishMessages = mod.MESSAGES;
+    if (resolveLanguage(currentMode) === "en" && currentLanguage !== "en") {
+      currentLanguage = "en";
+      applyDocumentLanguage("en");
+      for (const listener of listeners) listener();
+    }
+  });
+  return englishLoad;
+}
 
 function applyDocumentLanguage(language: ResolvedLanguage): void {
   if (typeof document !== "undefined") document.documentElement.lang = language;
@@ -91,7 +129,16 @@ export function getLanguage(): ResolvedLanguage {
 export function setLanguageMode(mode: LanguageMode): ResolvedLanguage {
   currentMode = mode;
   storeLanguageMode(mode);
-  currentLanguage = resolveLanguage(mode);
+  const resolved = resolveLanguage(mode);
+  // The preference has to record English immediately. The visible copy stays on
+  // the Korean source until the dictionary arrives, then the language snapshot
+  // changes and subscribers render the translation.
+  if (resolved === "en" && englishMessages === null) {
+    void ensureEnglishDictionary();
+    for (const listener of listeners) listener();
+    return resolved;
+  }
+  currentLanguage = resolved;
   applyDocumentLanguage(currentLanguage);
   for (const listener of listeners) listener();
   return currentLanguage;
@@ -101,6 +148,7 @@ export function initializeLanguage(): void {
   currentMode = readLanguageMode();
   currentLanguage = resolveLanguage(currentMode);
   applyDocumentLanguage(currentLanguage);
+  if (currentLanguage === "en") void ensureEnglishDictionary();
 }
 
 function subscribe(listener: Listener): () => void {
@@ -127,8 +175,12 @@ function interpolate(
   });
 }
 
+function englishTemplate(key: string): string {
+  return englishMessages?.[key] ?? key;
+}
+
 function translate(key: string, params?: Readonly<Record<string, string | number>>): string {
-  const template = currentLanguage === "en" ? MESSAGES[key] ?? key : key;
+  const template = currentLanguage === "en" ? englishTemplate(key) : key;
   return interpolate(template, params);
 }
 
@@ -161,7 +213,7 @@ export function t(
     "",
   );
   const params = Object.fromEntries(values.map((value, index) => [String(index), String(value)]));
-  const template = currentLanguage === "en" ? MESSAGES[key] ?? key : key;
+  const template = currentLanguage === "en" ? englishTemplate(key) : key;
   return template.replace(/\{(\d+)\}/gu, (match, index) => params[index] ?? match);
 }
 
