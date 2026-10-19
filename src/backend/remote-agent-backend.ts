@@ -42,8 +42,6 @@ function desktopOnlyError(): string {
   return t("이 작업은 Gajae 데스크톱 앱에서만 할 수 있습니다.");
 }
 
-/** The session an event belongs to, so replay repair can tell stale data from live. */
-
 export class RemoteAgentBackend implements AgentBackend {
   readonly client: RemoteClient;
   readonly remoteAccess: RemoteAccessBridge;

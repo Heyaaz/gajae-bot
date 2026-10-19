@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { GjcSdkController } from "./gjc-sdk-controller.js";
 import { GjcSdkCli } from "./gjc-sdk-cli.js";
@@ -180,5 +183,46 @@ describe("session read performance", () => {
     expect(rawGlobal).not.toHaveBeenCalled();
     expect(state.attachedSessions.size).toBe(0);
     expect(state.transcriptAttachments.size).toBe(0);
+  });
+
+  it("skips session list while the broker index revision is unchanged", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "broker-index-"));
+    const previous = process.env.GJC_CODING_AGENT_DIR;
+    process.env.GJC_CODING_AGENT_DIR = root;
+    const index = path.join(root, "sessions", "index.jsonl");
+    await mkdir(path.dirname(index), { recursive: true });
+    await writeFile(index, "{\"sessionId\":\"s1\"}\n");
+    const { controller, state } = harness();
+    state.resolveExecutable = vi.fn(async () => "/gjc");
+    state.recoverOwnedSessions = vi.fn(async () => undefined);
+    state.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    state.discoveredRunState = vi.fn(async () => "idle");
+    state.sessionParentId = vi.fn(async () => undefined);
+    const list = vi.spyOn(GjcSdkCli.prototype, "listSessions").mockResolvedValue([
+      { sessionId: "s1", repo: "/repo", live: true, deleted: false, endpointGeneration: 1 },
+    ]);
+    const version = vi.spyOn(GjcSdkCli.prototype, "version").mockResolvedValue("0.0.0");
+    try {
+      await controller.getConnection();
+      expect(list).toHaveBeenCalledTimes(1);
+      await controller.listSessions();
+      await controller.listSessions();
+      expect(list).toHaveBeenCalledTimes(1);
+      await writeFile(index, "{\"sessionId\":\"s1\"}\n{\"sessionId\":\"s2\"}\n");
+      await controller.listSessions();
+      expect(list).toHaveBeenCalledTimes(2);
+      // A delete or fork still has to see the broker, not the discovery cache.
+      expect(await state.brokerSessions()).toEqual([
+        expect.objectContaining({ sessionId: "s1" }),
+      ]);
+      expect(list).toHaveBeenCalledTimes(3);
+    } finally {
+      controller.dispose();
+      list.mockRestore();
+      version.mockRestore();
+      if (previous === undefined) delete process.env.GJC_CODING_AGENT_DIR;
+      else process.env.GJC_CODING_AGENT_DIR = previous;
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
