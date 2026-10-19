@@ -169,6 +169,33 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
+  it("joins streaming deltas into one publish per frame", async () => {
+    const frame = (delta: string, seq: number) =>
+      `event: agent\ndata: ${JSON.stringify({
+        seq,
+        event: {
+          type: "message.delta",
+          sessionId: "s-1",
+          messageId: "m-1",
+          delta,
+          streaming: true,
+        },
+      })}\n\n`;
+    const { instance } = backend((call) =>
+      call.url.includes(REMOTE_API.events)
+        ? streamResponse([frame("one ", 1), frame("two", 2)])
+        : undefined,
+    );
+    const deltas: string[] = [];
+    instance.subscribe((event) => {
+      if (event.type === "message.delta") deltas.push(event.delta);
+    });
+    await vi.waitFor(() => expect(deltas).toEqual(["one two"]));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(deltas).toEqual(["one two"]);
+    instance.dispose();
+  });
+
   it("replaces cached transcripts after an SSE replay gap", async () => {
     const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
     const transcript = [{ id: "m-1", role: "assistant", content: "complete snapshot" }];

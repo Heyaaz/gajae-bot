@@ -16,9 +16,11 @@ import {
   resolveTurnProgress,
   shouldFollowTranscript,
   recentUserRequests,
+  completeMarkdownBlocks,
   searchTranscriptItems,
   summarizeToolRun,
   streamingMarkdownParts,
+  TRANSCRIPT_BOTTOM_EPSILON_PX as BOTTOM_EPSILON_PX,
   transcriptBlockIndexForItem,
   transcriptRowEstimate,
   turnStartBlockIds,
@@ -69,12 +71,7 @@ import { locale, t, useLanguage } from "../i18n";
 // How long a gesture keeps its say over the follow decision. Long enough to cover the
 // smooth-scroll animation one notch triggers -- measured at ~157ms from the wheel event to
 // the last scroll event -- so the position the gesture started from cannot cancel it.
-const GESTURE_WINDOW_MS = 400;
-
-// How close to the content bottom counts as having arrived at it, in layout pixels. A
-// fraction of a pixel of rounding in scrollTop is not a position, and it is deliberately
-// not the slack for unmounted rows: that is a separate, much wider rule.
-const BOTTOM_EPSILON_PX = 3;
+export const GESTURE_WINDOW_MS = 400;
 
 // How many frames in a row the position, the measured total, and the viewport height have
 // to agree before a resize restoration is finished. Landing on the current bottom is not
@@ -163,12 +160,32 @@ function MarkdownPre({
 
 const MARKDOWN_COMPONENTS = { pre: MarkdownPre };
 
+// One array for every document. The synchronous renderer parses on each call, so a
+// fresh array would not by itself skip a parse, but a memoized document skips the
+// call. The same array is what the hooks renderer keys its effect on.
+const REMARK_PLUGINS = [remarkGfm];
+
+const MarkdownBody = memo(function MarkdownBody({ children }: { children: string }) {
+  return (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
+      {children}
+    </ReactMarkdown>
+  );
+});
+
 function StreamingMarkdown({ content }: { content: string }) {
   const parts = streamingMarkdownParts(content);
-  return <>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{parts.complete}</ReactMarkdown>
-    <span style={{ whiteSpace: "pre-wrap" }}>{parts.pending}</span>
-  </>;
+  const blocks = completeMarkdownBlocks(parts.complete);
+  return (
+    <>
+      {blocks.map((block, index) => (
+        <MarkdownBody key={index}>{block}</MarkdownBody>
+      ))}
+      {parts.pending ? (
+        <span style={{ whiteSpace: "pre-wrap" }}>{parts.pending}</span>
+      ) : null}
+    </>
+  );
 }
 
 /** A mounted transcript row, in the unzoomed layout pixels the virtualizer positions it with. */
@@ -245,7 +262,7 @@ export function transcriptRestoreSettled(
   follow: boolean,
 ): boolean {
   if (!frame.landed || frame.measuring || !frame.unchangedGeometry) return false;
-  return follow ? frame.remaining <= 3 : true;
+  return follow ? frame.remaining <= BOTTOM_EPSILON_PX : true;
 }
 
 /**
@@ -319,6 +336,7 @@ export function transcriptGestureClaimsView(
  * slack band. The one exception is the window: a gesture's opening scroll events report the
  * position it started from, so at the bottom they read as "arrived" before the gesture has
  * moved anything, and that would erase the gesture that took the view before it took it.
+ * Once the window has ended, a landing inside the bottom epsilon is arrived.
  */
 export function transcriptFollowDecision(frame: {
   scrollHeight: number;
@@ -332,7 +350,7 @@ export function transcriptFollowDecision(frame: {
   const remaining = frame.scrollHeight - frame.scrollTop - frame.clientHeight;
   const arrived =
     remaining <= BOTTOM_EPSILON_PX &&
-    (!frame.reading || frame.gestureAgeMs > GESTURE_WINDOW_MS);
+    (!frame.reading || frame.gestureAgeMs >= GESTURE_WINDOW_MS);
   const reading = frame.reading && !arrived;
   return {
     reading,
@@ -454,6 +472,12 @@ export function Transcript({
   // bottom: arriving there is a real arrival, and stamping this would delay it by the window
   // while the corrections stood down behind a claim the user had already spent.
   const gestureAtRef = useRef(0);
+  // Where an upward gesture started. The window exists so that gesture's own opening
+  // events cannot cancel it. When the window ends, a landing that never left the
+  // bottom epsilon is not reading, even if content grew underneath and no further
+  // scroll event asked again.
+  const gestureLandingRef = useRef<{ scrollTop: number; remaining: number } | null>(null);
+  const gestureReleaseTimerRef = useRef(0);
   const touchYRef = useRef<number | undefined>(undefined);
   const sessionRef = useRef(sessionId);
   // Frames of the in-flight resize restoration, so a gesture, a session switch, or the
@@ -561,10 +585,6 @@ export function Transcript({
     };
   }
 
-  useLayoutEffect(() => {
-    rememberViewport();
-  });
-
   useEffect(() => {
     const prepare = (event: Event): void => {
       const target = event.target;
@@ -595,6 +615,9 @@ export function Transcript({
     followingRef.current = true;
     scrolledAwayRef.current = false;
     gestureAtRef.current = 0;
+    gestureLandingRef.current = null;
+    window.clearTimeout(gestureReleaseTimerRef.current);
+    gestureReleaseTimerRef.current = 0;
     touchYRef.current = undefined;
     selfScrollingRef.current = true;
     setFollowing(true);
@@ -979,6 +1002,7 @@ export function Transcript({
   useEffect(
     () => () => {
       window.clearTimeout(settleTimerRef.current);
+      window.clearTimeout(gestureReleaseTimerRef.current);
       cancelAnimationFrame(latestFrameRef.current);
     },
     [],
@@ -1032,22 +1056,47 @@ export function Transcript({
     cancelHandBack();
     scrolledAwayRef.current = true;
     // Only the upward claim needs the window; see gestureAtRef.
-    if (deltaY < 0) gestureAtRef.current = performance.now();
+    if (deltaY < 0) {
+      gestureAtRef.current = performance.now();
+      gestureLandingRef.current = {
+        scrollTop: scroller?.scrollTop ?? 0,
+        remaining,
+      };
+      window.clearTimeout(gestureReleaseTimerRef.current);
+      gestureReleaseTimerRef.current = window.setTimeout(() => {
+        gestureReleaseTimerRef.current = 0;
+        updateScrollFollowing(true);
+      }, GESTURE_WINDOW_MS);
+    }
   }
 
-  function updateScrollFollowing(): void {
+  function updateScrollFollowing(gestureWindowEnded = false): void {
     const transcript = transcriptRef.current;
     if (!transcript) return;
     if (selfScrollingRef.current || handingBackRef.current) return;
     const readingWidth = transcriptReadingWidth(transcript);
     if (stableViewportRef.current && stableViewportRef.current.width !== readingWidth) return;
-    const decision = transcriptFollowDecision({
-      scrollHeight: transcript.scrollHeight,
-      scrollTop: transcript.scrollTop,
-      clientHeight: transcript.clientHeight,
-      reading: scrolledAwayRef.current,
-      gestureAgeMs: performance.now() - gestureAtRef.current,
-    });
+    // onScroll passes the event as the first argument. Only an explicit true from the
+    // gesture-window timer means the window ended; a truthy event must not.
+    const windowEnded = gestureWindowEnded === true;
+    const landing = gestureLandingRef.current;
+    if (windowEnded) gestureLandingRef.current = null;
+    const heldAtBottom =
+      windowEnded &&
+      landing !== null &&
+      landing.remaining <= BOTTOM_EPSILON_PX &&
+      Math.abs(transcript.scrollTop - landing.scrollTop) <= BOTTOM_EPSILON_PX;
+    const decision = heldAtBottom
+      ? { reading: false, following: true }
+      : transcriptFollowDecision({
+          scrollHeight: transcript.scrollHeight,
+          scrollTop: transcript.scrollTop,
+          clientHeight: transcript.clientHeight,
+          reading: scrolledAwayRef.current,
+          gestureAgeMs: windowEnded
+            ? GESTURE_WINDOW_MS
+            : performance.now() - gestureAtRef.current,
+        });
     scrolledAwayRef.current = decision.reading;
     followingRef.current = decision.following;
     setFollowing(decision.following);
@@ -1093,6 +1142,9 @@ export function Transcript({
     // the newest content, so the reading intent and its gesture window go with the request.
     scrolledAwayRef.current = false;
     gestureAtRef.current = 0;
+    gestureLandingRef.current = null;
+    window.clearTimeout(gestureReleaseTimerRef.current);
+    gestureReleaseTimerRef.current = 0;
     cancelHandBack();
     if (rows.length === 0) return;
     // Scrolling by index rather than to scrollHeight: rows above are unmounted, so the
@@ -1227,7 +1279,9 @@ export function Transcript({
       className="transcript"
       aria-live="polite"
       ref={transcriptRef}
-      onScroll={updateScrollFollowing}
+      onScroll={() => {
+        updateScrollFollowing();
+      }}
       // Input direction carries intent: upward means "reading older content", downward means
       // "moving toward the newest content". Neither direction is a hand-back -- arriving at
       // the newest content is, and so is asking for it outright. The resulting position
@@ -1330,14 +1384,12 @@ export function CompactionCard({
       </button>
       {expanded ? (
         <div className="compaction-summary markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-            {item.summary}
-          </ReactMarkdown>
+          <MarkdownBody>{item.summary}</MarkdownBody>
         </div>
       ) : (
         preview && (
           <div className="compaction-short markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{preview}</ReactMarkdown>
+            <MarkdownBody>{preview}</MarkdownBody>
           </div>
         )
       )}
@@ -1367,9 +1419,7 @@ export function BranchSummaryCard({
       </button>
       {expanded && (
         <div className="compaction-summary markdown-body">
-          <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-            {item.summary}
-          </ReactMarkdown>
+          <MarkdownBody>{item.summary}</MarkdownBody>
         </div>
       )}
     </article>
@@ -1411,9 +1461,7 @@ export function SystemNoticeCard({
         <span className="runtime-row-source">{sourceType ?? item.title}</span>
         {expanded ? (
           <div className="system-card-body markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{
-              item.content
-            }</ReactMarkdown>
+            <MarkdownBody>{item.content}</MarkdownBody>
           </div>
         ) : (
           <span className="runtime-row-text" title={item.content}>
@@ -1441,9 +1489,7 @@ export function SystemNoticeCard({
         )}
       </header>
       <div className="system-card-body markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-          {expanded ? item.content : preview}
-        </ReactMarkdown>
+        <MarkdownBody>{expanded ? item.content : preview}</MarkdownBody>
       </div>
       {truncated && (
         <button
@@ -1611,9 +1657,7 @@ export function TodoCard({
         )}
         {expanded && (
           <div className="todo-card-raw markdown-body">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-              {item.content}
-            </ReactMarkdown>
+            <MarkdownBody>{item.content}</MarkdownBody>
           </div>
         )}
       </div>
@@ -1752,9 +1796,7 @@ export function ThoughtCard({
           {item.streaming ? (
             item.content
           ) : (
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-              {item.content}
-            </ReactMarkdown>
+            <MarkdownBody>{item.content}</MarkdownBody>
           )}
         </div>
       )}
@@ -1808,9 +1850,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
                 item.streaming ? (
                   <StreamingMarkdown content={item.content} />
                 ) : (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-                    {item.content}
-                  </ReactMarkdown>
+                  <MarkdownBody>{item.content}</MarkdownBody>
                 )
               ) : (
                 copyText || item.content

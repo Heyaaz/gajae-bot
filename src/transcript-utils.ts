@@ -328,24 +328,59 @@ export function appendProgressBlock(
   return [...blocks, progress];
 }
 
-/** Commit blank-line-delimited Markdown blocks only outside fenced code. */
-export function streamingMarkdownParts(content: string): { complete: string; pending: string } {
+/**
+ * How close to the content bottom still counts as having arrived, in layout pixels.
+ *
+ * Fractional scrollTop and a zoomed layout can stop a real landing this far short.
+ * The follow latch and the resize settle both read this one value.
+ */
+export const TRANSCRIPT_BOTTOM_EPSILON_PX = 3;
+
+/**
+ * Closed markdown blocks, and the index where the uncommitted tail begins.
+ *
+ * A blank line commits only outside a fence. A fence commits on its closing
+ * marker. Blocks are append-only: an earlier block's text does not change when
+ * a later one closes, which is what lets a streaming row parse only the new one.
+ */
+export function commitMarkdownBlocks(content: string): {
+  boundary: number;
+  blocks: readonly string[];
+} {
   let fence: { marker: string; length: number } | undefined;
   let offset = 0;
   let boundary = 0;
+  let blockStart = 0;
+  const blocks: string[] = [];
+  const commit = (next: number): void => {
+    boundary = next;
+    blocks.push(content.slice(blockStart, next));
+    blockStart = next;
+  };
   for (const line of content.split(/(?<=\n)/u)) {
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)/u.exec(line);
     if (marker) {
       if (!fence) fence = { marker: marker[1][0], length: marker[1].length };
       else if (marker[1][0] === fence.marker && marker[1].length >= fence.length && !marker[2].trim()) {
         fence = undefined;
-        if (line.endsWith("\n")) boundary = offset + line.length;
+        if (line.endsWith("\n")) commit(offset + line.length);
       }
     }
     offset += line.length;
-    if (!fence && /^\s*\n$/u.test(line)) boundary = offset;
+    if (!fence && /^\s*\n$/u.test(line)) commit(offset);
   }
+  return { boundary, blocks };
+}
+
+/** Commit blank-line-delimited Markdown blocks only outside fenced code. */
+export function streamingMarkdownParts(content: string): { complete: string; pending: string } {
+  const { boundary } = commitMarkdownBlocks(content);
   return { complete: content.slice(0, boundary), pending: content.slice(boundary) };
+}
+
+/** Closed blocks inside an already-committed prefix. Joining them reproduces it. */
+export function completeMarkdownBlocks(complete: string): readonly string[] {
+  return commitMarkdownBlocks(complete).blocks;
 }
 
 export function parseSkillInvocation(text: string): { name: string; args: string } | undefined {
@@ -711,8 +746,7 @@ export function shouldFollowTranscript(
   threshold = clientHeight,
 ): boolean {
   const remaining = scrollHeight - scrollTop - clientHeight;
-  // Fractional scrollTop and zoomed layout can stop a real landing 2-3px short.
-  if (scrolledAway) return remaining <= 3;
+  if (scrolledAway) return remaining <= TRANSCRIPT_BOTTOM_EPSILON_PX;
   return remaining < threshold;
 }
 

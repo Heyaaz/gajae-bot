@@ -25,7 +25,9 @@ import {
   recentUserRequests,
   searchTranscriptItems,
   summarizeToolRun,
+  completeMarkdownBlocks,
   streamingMarkdownParts,
+  TRANSCRIPT_BOTTOM_EPSILON_PX,
   turnStartBlockIds,
   updateTranscriptItem,
   type TurnActivityKind,
@@ -51,6 +53,28 @@ describe("streamingMarkdownParts", () => {
   it("does not close a fence with a shorter or different marker", () => {
     const content = "````ts\nx\n```\n\n~~~\n";
     expect(streamingMarkdownParts(content).complete).toBe("");
+  });
+
+  it("keeps earlier closed blocks stable when a later block commits", () => {
+    const first = streamingMarkdownParts("**a**\n\n");
+    const second = streamingMarkdownParts("**a**\n\n**b**\n\npartial");
+    const firstBlocks = completeMarkdownBlocks(first.complete);
+    const secondBlocks = completeMarkdownBlocks(second.complete);
+    expect(firstBlocks).toEqual(["**a**\n\n"]);
+    expect(secondBlocks).toEqual(["**a**\n\n", "**b**\n\n"]);
+    expect(secondBlocks[0]).toBe(firstBlocks[0]);
+    expect(second.complete).toBe(secondBlocks.join(""));
+    expect(second.pending).toBe("partial");
+  });
+
+  it("keeps a fence with internal blank lines as one block", () => {
+    const content = "para\n\n```\nline\n\nline\n```\n";
+    const parts = streamingMarkdownParts(content);
+    expect(completeMarkdownBlocks(parts.complete)).toEqual([
+      "para\n\n",
+      "```\nline\n\nline\n```\n",
+    ]);
+    expect(parts.pending).toBe("");
   });
 });
 
@@ -1326,8 +1350,8 @@ describe("shouldFollowTranscript", () => {
     expect(at(40, true)).toBe(false);
     // A few fractional pixels are a landing, not a reading position: browser zoom and
     // scrollTop rounding can leave the visual bottom 2-3px away.
-    expect(at(4, true)).toBe(false);
-    expect(at(3, true)).toBe(true);
+    expect(at(TRANSCRIPT_BOTTOM_EPSILON_PX + 1, true)).toBe(false);
+    expect(at(TRANSCRIPT_BOTTOM_EPSILON_PX, true)).toBe(true);
   });
 
   it("still absorbs the estimation error from unmounted rows", () => {
