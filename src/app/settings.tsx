@@ -12,7 +12,7 @@ import type {
   NotificationPreferences,
 } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { Bell, CalendarClock, Check, Command, FolderOpen, Palette, ShieldCheck, Smartphone, X } from "lucide-react";
+import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Palette, Server, ShieldCheck, Smartphone, Sparkles, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { readStoredTheme, setThemeMode, type ThemeMode } from "../theme";
@@ -479,21 +479,21 @@ export function SettingsDialog({
             className={tab === "mcp" ? "is-active" : ""}
             onClick={() => setTab("mcp")}
           >
-            MCP
+            <Server size={17} /> MCP
           </button>
           <button
             type="button"
             className={tab === "skills" ? "is-active" : ""}
             onClick={() => setTab("skills")}
           >
-            Skills/Plugins
+            <Sparkles size={17} /> Skills/Plugins
           </button>
           <button
             type="button"
             className={tab === "usage" ? "is-active" : ""}
             onClick={() => setTab("usage")}
           >
-            Usage
+            <ChartNoAxesColumn size={17} /> Usage
           </button>
           <button
             type="button"
