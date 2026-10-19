@@ -27,7 +27,8 @@ AuthKey_*.p8
 notarytool-profile*
 release
 .gajae-artifacts
-docs
+docs/*
+!docs/features/
 .gjc
 
 # Editor directories and files
