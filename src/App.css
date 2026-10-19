@@ -1142,7 +1142,9 @@
   border-bottom: 1px solid var(--border);
   -webkit-app-region: drag;
 }
-.chat-header button {
+.chat-header button,
+.chat-header select,
+.chat-header label {
   -webkit-app-region: no-drag;
 }
 .chat-identity {

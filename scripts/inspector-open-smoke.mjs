@@ -1713,6 +1713,7 @@ app.whenReady().then(async () => {
     popup.querySelector('header button').click();
     const mode = document.querySelector('select[aria-label="대화 표시 방식"]');
     if (!mode || mode.options.length !== 3) issues.push('view mode choices missing');
+    if (mode && getComputedStyle(mode).getPropertyValue('-webkit-app-region') !== 'no-drag') issues.push('view mode select intercepts clicks as window dragging');
     if (mode && [...mode.options].some(option => /기미|추맠/.test(option.text))) issues.push('corrupted mode text');
     const note = document.querySelector('.inspector-section > p');
     if (note && parseFloat(getComputedStyle(note).fontSize) > 12) issues.push('inspector note oversized');
