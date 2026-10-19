@@ -14,6 +14,7 @@ import {
   mergeTranscriptItem,
   pendingToolApprovals,
   recentUserRequests,
+  searchTranscriptItems,
   summarizeToolRun,
   turnStartBlockIds,
   updateTranscriptItem,
@@ -843,6 +844,41 @@ describe("groupTranscriptItems", () => {
       { kind: "item", id: message.id, item: message },
       { kind: "item", id: notice.id, item: notice },
     ]);
+  });
+});
+
+describe("searchTranscriptItems", () => {
+  it("matches message content case-insensitively", () => {
+    const items = [
+      { ...message, id: "m1", content: "Check the Gajae README" },
+      { ...message, id: "m2", content: "unrelated" },
+    ];
+    expect(searchTranscriptItems(items, "gajae")).toEqual(["m1"]);
+  });
+
+  it("matches tool description, command, output, and target path", () => {
+    const byDescription = { ...tool("a"), description: "find the config file" };
+    const byCommand = { ...tool("b"), command: "grep -rn TODO src" };
+    const byOutput = { ...tool("c"), output: "3 matches found" };
+    const byPath = { ...tool("d"), targetPath: "src/App.tsx" };
+    expect(searchTranscriptItems([byDescription], "config")).toEqual(["a"]);
+    expect(searchTranscriptItems([byCommand], "TODO")).toEqual(["b"]);
+    expect(searchTranscriptItems([byOutput], "matches")).toEqual(["c"]);
+    expect(searchTranscriptItems([byPath], "App.tsx")).toEqual(["d"]);
+  });
+
+  it("returns no matches for an empty or blank query", () => {
+    expect(searchTranscriptItems([message], "")).toEqual([]);
+    expect(searchTranscriptItems([message], "   ")).toEqual([]);
+  });
+
+  it("preserves transcript order across mixed item kinds", () => {
+    const items = [
+      { ...message, id: "m1", content: "needle one" },
+      tool("t1"),
+      { ...message, id: "m2", content: "needle two" },
+    ];
+    expect(searchTranscriptItems(items, "needle")).toEqual(["m1", "m2"]);
   });
 });
 

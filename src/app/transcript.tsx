@@ -14,6 +14,7 @@ import {
   parseSkillInvocation,
   shouldFollowTranscript,
   recentUserRequests,
+  searchTranscriptItems,
   summarizeToolRun,
   transcriptBlockIndexForItem,
   turnStartBlockIds,
@@ -27,9 +28,11 @@ import {
   GitFork,
   ListChecks,
   Paperclip,
+  Search,
   ShieldCheck,
   Shrink,
   TerminalSquare,
+  X,
 } from "lucide-react";
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { httpUrls, humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
@@ -1930,13 +1933,29 @@ export function RecentRequestStrip({
   items: TranscriptItem[];
   onReveal: (id: string) => void;
 }) {
+  const [timelineOpen, setTimelineOpen] = useState(false);
   const requests = useMemo(() => recentUserRequests(items), [items]);
+  // The full timeline covers every user prompt the chips cannot: it is only worth
+  // offering once there is a prompt the chip strip left out.
+  const timeline = useMemo(
+    () => recentUserRequests(items, Number.POSITIVE_INFINITY),
+    [items],
+  );
   if (requests.length === 0) return null;
   return (
-    <section className="recent-requests" aria-label="최신 요정">
+    <section className="recent-requests" aria-label="최근 요청">
       <header>
         <Clock3 size={11} />
-        <strong>최신 요정</strong>
+        <strong>최근 요청</strong>
+        {timeline.length > requests.length && (
+          <button
+            type="button"
+            className="recent-requests-timeline-toggle"
+            onClick={() => setTimelineOpen((open) => !open)}
+          >
+            타임라인 ({timeline.length})
+          </button>
+        )}
       </header>
       <div>
         {requests.map((request, index) => (
@@ -1952,6 +1971,38 @@ export function RecentRequestStrip({
           </button>
         ))}
       </div>
+      {timelineOpen && (
+        <div className="prompt-timeline" role="dialog" aria-label="전사용자 프롬트 타임라인">
+          <header>
+            <strong>프롬트 타임라인</strong>
+            <button
+              type="button"
+              aria-label="닫기"
+              onClick={() => setTimelineOpen(false)}
+            >
+              <X size={13} />
+            </button>
+          </header>
+          <ol>
+            {timeline.map((request, index) => (
+              <li key={request.id}>
+                <button
+                  type="button"
+                  title={request.text}
+                  onClick={() => {
+                    onReveal(request.id);
+                    setTimelineOpen(false);
+                  }}
+                >
+                  <span>{index + 1}</span>
+                  <strong>{request.text}</strong>
+                  <time>{request.createdAt}</time>
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
     </section>
   );
 }
@@ -2010,6 +2061,95 @@ export function ApprovalBanner({
           다음 대기 ({pending.length})
         </button>
       )}
+    </div>
+  );
+}
+
+export interface ConversationFindBarProps {
+  items: TranscriptItem[];
+  onClose: () => void;
+  onReveal: (itemId: string) => void;
+}
+
+/**
+ * ⌘F: find within the open conversation, distinct from ⌘K's cross-session global
+ * search. Matches run entirely over the items already held in memory
+ * (`searchTranscriptItems`), so a hit outside the mounted virtualized window is
+ * still found and reached through the existing reveal/highlight path -- the same
+ * one the global search dialog and the approval banner's jump button use.
+ */
+export function ConversationFindBar({
+  items,
+  onClose,
+  onReveal,
+}: ConversationFindBarProps) {
+  const [query, setQuery] = useState("");
+  const [index, setIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const matches = useMemo(() => searchTranscriptItems(items, query), [items, query]);
+
+  useEffect(() => {
+    setIndex(0);
+  }, [query]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (matches.length === 0) return;
+    const bounded = Math.min(index, matches.length - 1);
+    onReveal(matches[bounded]!);
+  }, [matches, index, onReveal]);
+
+  function step(delta: number): void {
+    if (matches.length === 0) return;
+    setIndex((current) => (current + delta + matches.length) % matches.length);
+  }
+
+  return (
+    <div className="conversation-find" role="search">
+      <Search size={14} />
+      <input
+        ref={inputRef}
+        type="text"
+        value={query}
+        placeholder="이 대화에서 찾기"
+        onChange={(event) => setQuery(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onClose();
+            return;
+          }
+          if (event.key === "Enter") {
+            event.preventDefault();
+            step(event.shiftKey ? -1 : 1);
+          }
+        }}
+      />
+      <span className="conversation-find-count">
+        {query.trim() ? `${matches.length === 0 ? 0 : index + 1}/${matches.length}` : ""}
+      </span>
+      <button
+        type="button"
+        aria-label="이전 결과"
+        disabled={matches.length === 0}
+        onClick={() => step(-1)}
+      >
+        ↑
+      </button>
+      <button
+        type="button"
+        aria-label="다음 결과"
+        disabled={matches.length === 0}
+        onClick={() => step(1)}
+      >
+        ↓
+      </button>
+      <button type="button" aria-label="닫기" onClick={onClose}>
+        <X size={14} />
+      </button>
     </div>
   );
 }

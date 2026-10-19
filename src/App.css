@@ -1234,7 +1234,59 @@
   flex: 1;
   flex-direction: column;
 }
+.conversation-find {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: min(760px, calc(100% - 48px));
+  margin: 0 auto 8px;
+  padding: 6px 9px;
+  color: var(--text-secondary);
+  background: rgba(27, 27, 30, 0.96);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+}
+.conversation-find input {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  outline: 0;
+}
+.conversation-find-count {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.conversation-find button {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.conversation-find button:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.conversation-find button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
 .recent-requests {
+  position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
@@ -1253,6 +1305,101 @@
 .recent-requests > header strong {
   font-size: 8.5px;
   font-weight: 600;
+}
+.recent-requests-timeline-toggle {
+  margin-left: auto;
+  padding: 1px 6px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.recent-requests-timeline-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.prompt-timeline {
+  position: absolute;
+  z-index: 6;
+  top: 100%;
+  right: 0;
+  left: 0;
+  max-height: min(60vh, 480px);
+  margin: 4px 0 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: rgba(27, 27, 30, 0.98);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+}
+.prompt-timeline > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.prompt-timeline > header strong {
+  font-size: 11px;
+}
+.prompt-timeline > header button {
+  display: inline-grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.prompt-timeline > ol {
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  list-style: none;
+}
+.prompt-timeline > ol > li + li {
+  margin-top: 2px;
+}
+.prompt-timeline > ol button {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.prompt-timeline > ol button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.prompt-timeline > ol button > span {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.prompt-timeline > ol button > strong {
+  overflow: hidden;
+  font-size: 11.5px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-timeline > ol button > time {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  white-space: nowrap;
 }
 .recent-requests > div {
   display: grid;

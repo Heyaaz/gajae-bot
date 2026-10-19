@@ -192,6 +192,46 @@ export function summarizeToolRun(
   };
 }
 
+/** Plain, searchable text an item carries, or an empty string if it carries none. */
+function searchableItemText(item: TranscriptItem): string {
+  switch (item.kind) {
+    case "message":
+      return copyableMessageText(item.content);
+    case "thought":
+      return item.content;
+    case "tool":
+      return [item.description, item.command, item.output, item.targetPath]
+        .filter((value): value is string => Boolean(value))
+        .join("\n");
+    case "notice":
+      return [item.title, item.content].filter(Boolean).join("\n");
+    case "plan":
+      return item.entries.map((entry) => entry.content).join("\n");
+    default:
+      return "";
+  }
+}
+
+/**
+ * Item ids matching a case-insensitive, in-conversation find, in transcript order.
+ *
+ * This is the current conversation's own find (⌘F), distinct from the cross-session
+ * global search (⌘K, `productivity.searchTranscripts`): it runs entirely over the
+ * items already held in memory, so it works whether or not a global search index is
+ * available and matches content the global index may not cover (reasoning, tool
+ * command/output).
+ */
+export function searchTranscriptItems(
+  items: readonly TranscriptItem[],
+  query: string,
+): string[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return [];
+  return items
+    .filter((item) => searchableItemText(item).toLowerCase().includes(needle))
+    .map((item) => item.id);
+}
+
 /**
  * Tool calls currently waiting on an approval decision, in transcript order.
  *

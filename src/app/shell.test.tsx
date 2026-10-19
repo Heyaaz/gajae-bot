@@ -159,6 +159,7 @@ vi.mock("./dialogs", () => ({
 vi.mock("./composer", () => ({ Composer: () => null }));
 vi.mock("./transcript", () => ({
   ApprovalBanner: () => null,
+  ConversationFindBar: () => null,
   RecentRequestStrip: () => null,
   Transcript: () => null,
 }));

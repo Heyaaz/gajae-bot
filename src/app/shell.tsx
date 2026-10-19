@@ -65,7 +65,12 @@ import {
 } from "./project-model";
 import type { RepoDesktopBridge } from "../../shared/repo-ipc";
 import type { ProjectPathResolution } from "../../shared/repo-ipc";
-import { ApprovalBanner, RecentRequestStrip, Transcript } from "./transcript";
+import {
+  ApprovalBanner,
+  ConversationFindBar,
+  RecentRequestStrip,
+  Transcript,
+} from "./transcript";
 import {
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
@@ -252,6 +257,7 @@ export default function App() {
   const [focusedApprovalId, setFocusedApprovalId] = useState<string | undefined>(
     undefined,
   );
+  const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [diff, setDiff] = useState<DiffSnapshot | null>(null);
   const [selectedGit, setSelectedGit] = useState<GitStatusSnapshot | null>(
@@ -1009,6 +1015,9 @@ export default function App() {
     navigationGenerationRef.current += 1;
     setSelectedId(sessionId);
     setNavOpen(false);
+    // A find query scoped to the previous conversation's content has nothing to
+    // do with the one just opened.
+    setFindOpen(false);
     // Picking a session always returns to its conversation, and the project filter
     // is left exactly as the user set it: the point of the project selector is
     // that the context outlives any one session.
@@ -1114,6 +1123,7 @@ export default function App() {
     newSessionOpen ||
     resumeOpen ||
     settingsOpen ||
+    findOpen ||
     deleteCandidate !== null;
 
   useEffect(() => {
@@ -1198,6 +1208,22 @@ export default function App() {
     window.addEventListener("keydown", onApprovalShortcut);
     return () => window.removeEventListener("keydown", onApprovalShortcut);
   }, [dismissibleSurfaceOpen, pendingApprovals, focusedApprovalId, resolveToolCall]);
+
+  // ⌘F: find within the open conversation. Distinct from ⌘K (sidebar's cross-session
+  // global search, opened by focusing its own input) -- this one does not compete
+  // with a browser/OS find because the window never ships its own, and it is
+  // deliberately allowed through from inside a text field the same way a native
+  // find shortcut is.
+  useEffect(() => {
+    function onFindShortcut(event: globalThis.KeyboardEvent): void {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
+      if (!selectedSessionRef.current) return;
+      event.preventDefault();
+      setFindOpen(true);
+    }
+    window.addEventListener("keydown", onFindShortcut);
+    return () => window.removeEventListener("keydown", onFindShortcut);
+  }, []);
 
   async function sendMessage(
     sessionId: string,
@@ -1750,6 +1776,15 @@ export default function App() {
             <section
               className={`conversation conversation--${selectedSession.phase === "compacting" ? "compacting" : selectedSession.status}`}
             >
+              {findOpen && (
+                <ConversationFindBar
+                  items={selectedTranscript}
+                  onClose={() => setFindOpen(false)}
+                  onReveal={(itemId) =>
+                    setRevealTarget({ sessionId: selectedSession.id, itemId })
+                  }
+                />
+              )}
               <RecentRequestStrip
                 items={selectedTranscript}
                 onReveal={(itemId) =>
