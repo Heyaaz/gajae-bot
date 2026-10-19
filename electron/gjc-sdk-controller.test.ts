@@ -1533,6 +1533,70 @@ describe("SDK slash commands", () => {
     }
   });
 
+  it("does not query model profiles while reading an attached transcript", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.attachedSessions.add("s1");
+    internals.activePromptSessions.add("s1");
+    internals.transcripts.set("s1", [
+      {
+        id: "m1",
+        kind: "message",
+        sessionId: "s1",
+        role: "assistant",
+        content: "hi",
+        createdAt: "t",
+      },
+    ]);
+    try {
+      await expect(controller.getTranscript("s1")).resolves.toMatchObject([
+        { id: "m1", content: "hi" },
+      ]);
+      expect(cli.queryItems).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("ships only changed rows after the first transcript read", async () => {
+    const { controller, internals } = harness();
+    const message = (content: string, id = "m1") => ({
+      id,
+      kind: "message" as const,
+      sessionId: "s1",
+      role: "assistant" as const,
+      content,
+      createdAt: "t",
+    });
+    let rows = [message("one")];
+    internals.sessions.set("s1", session());
+    internals.readSharedTranscript = vi.fn(async () =>
+      rows.map((row) => ({ ...row })),
+    );
+    try {
+      const first = await controller.getTranscriptChanges("s1");
+      expect(first.kind).toBe("full");
+      if (first.kind !== "full") return;
+      expect(first.items.map((item) => item.id)).toEqual(["m1"]);
+
+      rows = [message("one"), message("two", "m2")];
+      const appended = await controller.getTranscriptChanges("s1");
+      expect(appended).toMatchObject({
+        kind: "patch",
+        items: [{ id: "m2", content: "two" }],
+      });
+
+      rows = [message("ONE"), message("two", "m2")];
+      const edited = await controller.getTranscriptChanges("s1");
+      expect(edited).toMatchObject({
+        kind: "patch",
+        items: [{ id: "m1", content: "ONE" }],
+      });
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("discovers skills on attach and lets a later pass remove one", async () => {
     const { cli, internals } = harness();
     internals.sessions.set("s1", session());

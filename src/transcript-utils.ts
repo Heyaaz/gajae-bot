@@ -1,5 +1,12 @@
 import type { SessionStatus, TranscriptItem } from "./backend/types";
 import { t } from "./i18n";
+import {
+  transcriptDelivery,
+  transcriptItemEqual,
+  transcriptItemsEqual,
+} from "../shared/transcript-item-equal.js";
+
+export { transcriptDelivery, transcriptItemEqual, transcriptItemsEqual };
 
 
 export const MAX_CACHED_TRANSCRIPTS = 3;
@@ -833,164 +840,6 @@ function isLocalEcho(id: string): boolean {
   return id.startsWith("local-prompt-");
 }
 
-function sameList<T>(
-  left: readonly T[] | undefined,
-  right: readonly T[] | undefined,
-  same: (leftItem: T, rightItem: T) => boolean,
-): boolean {
-  if (left === right) return true;
-  const leftLength = left?.length ?? 0;
-  const rightLength = right?.length ?? 0;
-  if (leftLength !== rightLength) return false;
-  if (leftLength === 0) return true;
-  return left!.every((item, index) => same(item, right![index]!));
-}
-
-/**
- * Whether two transcript rows are the same record.
- *
- * A safety-net read rebuilds every row. Comparing the fields that the view
- * reads avoids serialising the whole row, which on a long session repeated the
- * conversation once per unchanged line.
- */
-export function transcriptItemEqual(
-  left: TranscriptItem,
-  right: TranscriptItem,
-): boolean {
-  if (left === right) return true;
-  if (left.kind !== right.kind || left.id !== right.id || left.sessionId !== right.sessionId)
-    return false;
-  switch (left.kind) {
-    case "message":
-      return (
-        right.kind === "message" &&
-        left.role === right.role &&
-        left.content === right.content &&
-        left.createdAt === right.createdAt &&
-        left.streaming === right.streaming &&
-        sameList(left.images, right.images, (image, other) =>
-          image.id === other.id &&
-          image.name === other.name &&
-          image.mimeType === other.mimeType &&
-          image.data === other.data,
-        )
-      );
-    case "tool":
-      return (
-        right.kind === "tool" &&
-        left.name === right.name &&
-        left.description === right.description &&
-        left.command === right.command &&
-        left.status === right.status &&
-        left.createdAt === right.createdAt &&
-        left.output === right.output &&
-        left.inputArtifactId === right.inputArtifactId &&
-        left.outputArtifactId === right.outputArtifactId &&
-        left.diff === right.diff &&
-        left.targetPath === right.targetPath &&
-        sameList(left.artifactRefs, right.artifactRefs, (ref, other) => ref === other) &&
-        sameList(
-          left.permissionOptions,
-          right.permissionOptions,
-          (option, other) =>
-            option.optionId === other.optionId &&
-            option.kind === other.kind &&
-            option.name === other.name,
-        ) &&
-        sameList(
-          left.images,
-          right.images,
-          (image, other) =>
-            image.mimeType === other.mimeType &&
-            image.dataUrl === other.dataUrl &&
-            image.blobId === other.blobId,
-        ) &&
-        sameList(
-          left.subagents,
-          right.subagents,
-          (agent, other) =>
-            agent.id === other.id &&
-            agent.label === other.label &&
-            agent.status === other.status &&
-            agent.role === other.role &&
-            agent.objective === other.objective &&
-            agent.detail === other.detail,
-        )
-      );
-    case "notice":
-      return (
-        right.kind === "notice" &&
-        left.title === right.title &&
-        left.content === right.content &&
-        left.tone === right.tone &&
-        left.createdAt === right.createdAt
-      );
-    case "thought":
-      return (
-        right.kind === "thought" &&
-        left.content === right.content &&
-        left.createdAt === right.createdAt &&
-        left.streaming === right.streaming
-      );
-    case "plan":
-      return (
-        right.kind === "plan" &&
-        left.createdAt === right.createdAt &&
-        sameList(
-          left.entries,
-          right.entries,
-          (entry, other) => entry.content === other.content && entry.status === other.status,
-        )
-      );
-    case "compaction":
-      return (
-        right.kind === "compaction" &&
-        left.tokensBefore === right.tokensBefore &&
-        left.summary === right.summary &&
-        left.shortSummary === right.shortSummary &&
-        left.createdAt === right.createdAt
-      );
-    case "branch_summary":
-      return (
-        right.kind === "branch_summary" &&
-        left.summary === right.summary &&
-        left.createdAt === right.createdAt
-      );
-    case "system":
-      return (
-        right.kind === "system" &&
-        left.title === right.title &&
-        left.content === right.content &&
-        left.createdAt === right.createdAt &&
-        left.sourceType === right.sourceType &&
-        left.runtimeHidden === right.runtimeHidden &&
-        left.observedAt === right.observedAt &&
-        sameList(left.todoPhases, right.todoPhases, (phase, other) =>
-          phase.name === other.name &&
-          sameList(
-            phase.tasks,
-            other.tasks,
-            (task, otherTask) =>
-              task.content === otherTask.content &&
-              task.status === otherTask.status &&
-              sameList(task.notes, otherTask.notes, (note, otherNote) => note === otherNote),
-          ),
-        )
-      );
-    default: {
-      const exhaustive: never = left;
-      return exhaustive === right;
-    }
-  }
-}
-
-export function transcriptItemsEqual(
-  left: readonly TranscriptItem[],
-  right: readonly TranscriptItem[],
-): boolean {
-  return sameList(left, right, transcriptItemEqual);
-}
-
 export function cacheTranscript(
   transcripts: Record<string, TranscriptItem[]>,
   sessionId: string,
@@ -1154,6 +1003,30 @@ export function applyTranscriptRead(
     keys.length <= MAX_CACHED_TRANSCRIPTS
   )
     return transcripts;
+  return cacheTranscript(transcripts, sessionId, items);
+}
+
+/**
+ * Install a safety-net patch.
+ *
+ * An empty patch keeps the rendered state. Each changed row replaces the one
+ * with the same id, and a new id is appended.
+ */
+export function applyTranscriptPatch(
+  transcripts: Record<string, TranscriptItem[]>,
+  sessionId: string,
+  patch: readonly TranscriptItem[],
+): Record<string, TranscriptItem[]> {
+  const previous = transcripts[sessionId];
+  if (patch.length === 0) {
+    if (!previous) return transcripts;
+    const keys = Object.keys(transcripts);
+    if (keys.at(-1) === sessionId && keys.length <= MAX_CACHED_TRANSCRIPTS)
+      return transcripts;
+    return cacheTranscript(transcripts, sessionId, previous);
+  }
+  let items = previous ?? [];
+  for (const item of patch) items = mergeTranscriptItem(items, item);
   return cacheTranscript(transcripts, sessionId, items);
 }
 

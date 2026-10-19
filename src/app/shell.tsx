@@ -22,6 +22,7 @@ import type {
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
+  applyTranscriptPatch,
   applyTranscriptRead,
   cacheTranscript,
   initialSessionId,
@@ -539,7 +540,8 @@ export default function App() {
     // session list poll alone would then leave the selected conversation frozen at
     // an old row and an idle header. Re-read the selected transcript on the same
     // low-frequency beat so the durable session file is a safety net, not only the
-    // event stream. getTranscript returns the controller's merged view, including
+    // event stream. A later read sends only changed rows. The first read, and a
+    // backend without that method, still returns the merged view, including
     // app-owned plan/todo rows, so replacing the cache does not discard them.
     let refreshingTranscript = false;
     const refreshSelectedTranscript = (): void => {
@@ -552,13 +554,31 @@ export default function App() {
           readRevision: backend.getTranscriptRevision
             ? () => backend.getTranscriptRevision!(id)
             : undefined,
-          readItems: () => backend.getTranscript(id),
+          readItems: () =>
+            backend.getTranscriptChanges
+              ? backend.getTranscriptChanges(id)
+              : backend.getTranscript(id),
         });
         if (!active || outcome.kind === "skipped") return;
+        let missedPatch = false;
+        setTranscripts((current) => {
+          if (outcome.change.kind === "patch") {
+            if (!current[id]) {
+              missedPatch = true;
+              return current;
+            }
+            return applyTranscriptPatch(current, id, outcome.change.items);
+          }
+          return applyTranscriptRead(current, id, outcome.change.items);
+        });
+        if (missedPatch) {
+          const items = await backend.getTranscript(id);
+          if (!active) return;
+          setTranscripts((current) =>
+            current[id] ? current : applyTranscriptRead(current, id, items),
+          );
+        }
         if (outcome.revision) transcriptRevisions.current.set(id, outcome.revision);
-        setTranscripts((current) =>
-          applyTranscriptRead(current, id, outcome.items),
-        );
       })()
         .catch(() => undefined)
         .finally(() => { refreshingTranscript = false; });

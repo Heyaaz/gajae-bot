@@ -28,6 +28,7 @@ import type {
   TodoSnapshotTask,
   ToolImage,
 } from "../shared/agent-contract.js";
+import { transcriptItemEqual } from "../shared/transcript-item-equal.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 
@@ -202,33 +203,17 @@ export function cloneTranscriptItem(item: TranscriptItem): TranscriptItem {
 
 /**
  * Whether a rescan produced an equivalent item, so it does not need to be
- * republished. Transcript items are plain JSON-shaped records, so a structural
- * compare is both correct and cheaper than the IPC hop it avoids.
+ * republished.
+ *
+ * Field comparison replaces `JSON.stringify` of the whole row. A tool output
+ * that changed without changing length still counts as a change, and an
+ * unchanged output is not serialised just to learn that.
  */
 export function sameTranscriptItem(
   left: TranscriptItem,
   right: TranscriptItem,
 ): boolean {
-  if (left === right) return true;
-  if (left.kind !== right.kind || left.id !== right.id) return false;
-  // A rebuilt row is never reference-equal to the one it replaces, so the cheap
-  // discriminators are checked before falling back to a structural compare.
-  if (left.kind === "message" && right.kind === "message") {
-    if (
-      left.content.length !== right.content.length ||
-      left.streaming !== right.streaming ||
-      left.role !== right.role
-    )
-      return false;
-  }
-  if (left.kind === "tool" && right.kind === "tool") {
-    if (
-      left.status !== right.status ||
-      left.output?.length !== right.output?.length
-    )
-      return false;
-  }
-  return JSON.stringify(left) === JSON.stringify(right);
+  return transcriptItemEqual(left, right);
 }
 
 // The prefixes the live wire names its own rows with, the same list the renderer

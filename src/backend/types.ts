@@ -29,4 +29,5 @@ export type {
   ToolViewMode,
   UiLanguage,
   TranscriptItem,
+  TranscriptChange,
 } from "../../shared/agent-contract";

@@ -312,6 +312,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.hideSession, sessionId),
   getTranscript: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.getTranscript, sessionId),
+  getTranscriptChanges: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.getTranscriptChanges, sessionId),
   getTranscriptRevision: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.getTranscriptRevision, sessionId),
   watchTranscripts: (sessionIds: readonly string[]) => {

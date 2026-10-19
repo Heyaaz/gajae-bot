@@ -5,6 +5,7 @@ import type {
   CreateSessionInput,
   MessageInput,
   ToolDecision,
+  TranscriptChange,
   TranscriptItem,
 } from "./types";
 import type {
@@ -41,6 +42,11 @@ export interface AgentBackend {
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  /**
+   * Safety-net read that returns changed rows when the caller already has the
+   * conversation. Omitted backends still use `getTranscript`.
+   */
+  getTranscriptChanges?(sessionId: string): Promise<TranscriptChange>;
   /**
    * Cheap revision of the selected transcript. The same value means the body has
    * not changed, so the safety net skips the read. A backend that omits it falls
