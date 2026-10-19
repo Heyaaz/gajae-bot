@@ -55,11 +55,13 @@ import {
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
-import { SettingsDialog } from "./settings";
+import {
+  DeferredProjectList,
+  DeferredRepoView,
+  DeferredSettingsDialog,
+} from "./deferred-views";
 import { Sidebar } from "./sidebar";
 import { sessionListModel } from "./sidebar-model";
-import { ProjectList } from "./project-list";
-import { RepoView } from "./repo-view";
 import { Dropdown } from "./primitives";
 import {
   ALL_PROJECTS_ID,
@@ -1797,7 +1799,7 @@ export default function App() {
           </div>
         </main>
       ) : centerView === "projects" ? (
-        <ProjectList
+        <DeferredProjectList
           projects={projectGroups}
           activeId={activeProjectId}
           onSelect={changeProject}
@@ -1805,7 +1807,7 @@ export default function App() {
           onClose={openConversation}
         />
       ) : centerView === "repository" && activeProject ? (
-        <RepoView
+        <DeferredRepoView
           project={{ root: activeProject.root, name: activeProject.name }}
           sessions={activeProject.sessions}
           backend={backend}
@@ -2076,7 +2078,7 @@ export default function App() {
         />
       )}
       {settingsOpen && (
-        <SettingsDialog
+        <DeferredSettingsDialog
           connection={connection}
           thoughtsExpanded={preferences.thoughtsExpanded}
           onClose={() => setSettingsOpen(false)}
