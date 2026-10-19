@@ -3173,34 +3173,36 @@
   background-image: linear-gradient(
     100deg,
     var(--accent) 0%,
-    #ff7a1a 28%,
-    #ffd7a1 46%,
-    #ff9a3c 58%,
-    var(--accent) 78%,
+    var(--accent) 30%,
+    #ffb15c 44%,
+    #fff0c8 50%,
+    #ff9a3c 56%,
+    var(--accent) 70%,
     var(--accent) 100%
   );
-  background-size: 240% 100%;
+  background-size: 260% 100%;
   background-position: 150% 0;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  filter: drop-shadow(0 0 7px rgba(255, 146, 56, 0.28));
+  filter: drop-shadow(0 0 6px rgba(255, 146, 56, 0.45));
 }
 .gajae-progress.is-motion:not(.is-paused) .gajae-progress-label.is-shimmer {
-  animation: gajae-label-wave 1.8s linear infinite;
+  animation: gajae-label-wave 2.2s ease-in-out infinite;
   will-change: background-position;
 }
 :root[data-theme="light"] .gajae-progress-label.is-shimmer {
   background-image: linear-gradient(
     100deg,
     var(--accent) 0%,
-    #c25a12 28%,
-    #8f3504 46%,
-    #b84a08 58%,
-    var(--accent) 78%,
+    var(--accent) 30%,
+    #e06a1a 44%,
+    #ff8a34 50%,
+    #e06a1a 56%,
+    var(--accent) 70%,
     var(--accent) 100%
   );
-  filter: none;
+  filter: drop-shadow(0 0 3px rgba(196, 76, 13, 0.2));
 }
 .gajae-progress-actions {
   display: flex;
@@ -4498,6 +4500,9 @@
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+.settings-panel:has(.dropdown.is-open) {
+  overflow: visible;
 }
 .settings-panel > div,
 .settings-panel > label {
@@ -6611,6 +6616,20 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+}
+.settings-panel > div.settings-toggle-row > span {
+  display: grid;
+  gap: 3px;
+}
+.settings-panel > div.settings-toggle-row > span strong {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 560;
+}
+.settings-panel > div.settings-toggle-row > span small {
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.45;
 }
 .settings-panel .notification-controls {
   display: flex;
