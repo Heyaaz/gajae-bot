@@ -161,7 +161,12 @@ const probe = `(async (seeded, ESTIMATED_ROW_PX) => {
       }
       return value
     }
-    const contentGap = Math.round(paintedEdge(next, 'top') - paintedEdge(current, 'bottom'))
+    // New user turns intentionally add top padding. Keep detecting accidental
+    // gaps within turns by removing only that measured, explicit contribution.
+    const scale = next.offsetHeight > 0 ? next.getBoundingClientRect().height / next.offsetHeight : 1;
+    const turnGap = next.dataset.turnStart === 'true'
+      ? Number.parseFloat(getComputedStyle(next).paddingTop) * scale : 0;
+    const contentGap = Math.round(paintedEdge(next, 'top') - paintedEdge(current, 'bottom') - turnGap)
     worstBlockGapPx = Math.max(worstBlockGapPx, contentGap)
     blockGaps.push(contentGap)
   }
