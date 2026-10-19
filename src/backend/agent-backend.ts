@@ -46,6 +46,8 @@ export interface AgentBackend {
    * backends omit it and keep the full-read fallback.
    */
   getTranscriptRevision?(sessionId: string): Promise<string | undefined>;
+  /** Loads command/todo context once when a session is opened, never on a poll. */
+  refreshSessionContext?(sessionId: string): Promise<void>;
   setSessionConfig(
     sessionId: string,
     configId: string,

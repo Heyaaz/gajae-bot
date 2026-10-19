@@ -25,6 +25,7 @@ export interface RemoteOperationsHost {
   listSessions(): Promise<AgentSession[]>;
   listHistorySessions(): Promise<HistorySession[]>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  refreshSessionContext(sessionId: string): Promise<void>;
   listQueuedMessages(sessionId: string): Promise<{ id: string; text: string; mode: string; label: string }[]>;
   getGoal(sessionId: string): Promise<unknown>;
   listSubagents(sessionId: string): Promise<unknown[]>;
@@ -89,6 +90,9 @@ export async function runRemoteOperation(
       return host.listHistorySessions();
     case "transcript":
       return host.getTranscript(sessionId!);
+    case "context":
+      await host.refreshSessionContext(sessionId!);
+      return { ok: true };
     case "queued":
       return host.listQueuedMessages(sessionId!);
     case "goal":

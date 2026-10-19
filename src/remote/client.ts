@@ -592,6 +592,10 @@ export class RemoteClient {
     return this.readResult<unknown[]>(REMOTE_API.transcript(sessionId));
   }
 
+  context(sessionId: string) {
+    return this.readResult<unknown>(REMOTE_API.context(sessionId));
+  }
+
   queued(sessionId: string) {
     return this.readResult<unknown[]>(REMOTE_API.queued(sessionId));
   }

@@ -61,6 +61,9 @@ function fakeHost(): FakeHost {
       calls.push(`transcript:${sessionId}`);
       return [];
     },
+    async refreshSessionContext(sessionId: string) {
+      calls.push(`context:${sessionId}`);
+    },
     async listQueuedMessages(sessionId: string) {
       calls.push(`queued:${sessionId}`);
       return [];

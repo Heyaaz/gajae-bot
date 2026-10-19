@@ -686,6 +686,8 @@ export interface GjcDesktopBridge {
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
   /** Cheap durable-file revision used by the selected-transcript safety net. */
   getTranscriptRevision(sessionId: string): Promise<string | undefined>;
+  /** Loads command/todo context once when a session is opened, never on a poll. */
+  refreshSessionContext(sessionId: string): Promise<void>;
   setSessionConfig(
     sessionId: string,
     configId: string,

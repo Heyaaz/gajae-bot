@@ -1637,12 +1637,14 @@ export class GjcSdkController {
     }
   }
 
-  async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
-    // The controller survives renderer reloads, while command discovery is a
-    // session event. Re-opening the transcript is the renderer's bootstrap, so
-    // replay the cached snapshot and then rebuild it from the runtime, which is the
-    // only source that still knows the session's commands when GJC has no reason to
-    // publish its bootstrap updates again.
+  /**
+   * Loads the session's command palette and todo row once, when the user opens it.
+   *
+   * These live outside the transcript file and have no push channel of their own,
+   * but tying them to getTranscript made every 5-second safety-net read spawn CLI
+   * queries even when the transcript had not changed.
+   */
+  async refreshSessionContext(sessionId: string): Promise<void> {
     const commands = this.sessionCommands.get(sessionId);
     if (commands)
       this.emitEvent({
@@ -1650,11 +1652,13 @@ export class GjcSdkController {
         sessionId,
         commands: commands.map((command) => ({ ...command })),
       });
-    void this.refreshSdkCommands(sessionId);
-    // Nothing pushes todo changes either, so the same bootstrap pass reads the
-    // store. It runs whether or not a goal is enabled: a todo list is its own
-    // runtime state, and gating it on goal mode is what hid it.
-    void this.readTodoRecords(sessionId);
+    await Promise.all([
+      this.refreshSdkCommands(sessionId),
+      this.readTodoRecords(sessionId),
+    ]);
+  }
+
+  async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     const externallyDriven = !this.activePromptSessions.has(sessionId);
     if (this.terminalOnlySessions.has(sessionId) || externallyDriven) {
       try {
@@ -3839,7 +3843,19 @@ export class GjcSdkController {
         ].map((command) => [command.name, command]),
       ).values(),
     ];
+    const previous = this.sessionCommands.get(sessionId);
     this.sessionCommands.set(sessionId, commands);
+    if (
+      previous &&
+      previous.length === commands.length &&
+      previous.every(
+        (command, index) =>
+          command.name === commands[index]?.name &&
+          command.description === commands[index]?.description &&
+          command.hint === commands[index]?.hint,
+      )
+    )
+      return;
     this.emitEvent({ type: "session.commands", sessionId, commands });
   }
 
@@ -5640,9 +5656,11 @@ export class GjcSdkController {
     let json = previous?.json;
     let observedAt = previous?.observedAt;
     if ("rows" in observed) {
+      const nextJson = boundedJson(observed.rows) ?? "[]";
+      if (previous?.json === nextJson) return;
       rows = observed.rows;
       observedAt = observed.observedAt;
-      json = boundedJson(observed.rows) ?? "[]";
+      json = nextJson;
       header.push(
         `- observed: ${observed.observedAt}`,
         `- records: ${observed.rows.length}`,

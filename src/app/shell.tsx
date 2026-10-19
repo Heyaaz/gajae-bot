@@ -745,6 +745,9 @@ export default function App() {
           setTranscripts((current) =>
             current[selectedId] ? current : cacheTranscript(current, selectedId, items),
           );
+          void transcriptReads.backend
+            .refreshSessionContext?.(selectedId)
+            .catch(() => undefined);
         }
       })
       .catch((error) => {

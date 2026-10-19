@@ -1414,6 +1414,26 @@ describe("GjcSdkController CLI seam", () => {
 describe("SDK slash commands", () => {
   const capabilityRows = (...operations: string[]) => [{ operations }];
 
+  it("keeps transcript reads free of command and todo queries", async () => {
+    const { controller, cli, internals } = harness();
+    const root = await mkdtemp(path.join(tmpdir(), "gjc-context-"));
+    const file = path.join(root, "session.jsonl");
+    await writeFile(file, "", "utf8");
+    internals.sessions.set("s1", session());
+    internals.terminalOnlySessions.add("s1");
+    internals.sharedSessionFiles.set("s1", file);
+    try {
+      await controller.getTranscript("s1");
+      expect(cli.queryItems).not.toHaveBeenCalled();
+
+      await controller.refreshSessionContext("s1");
+      expect(cli.queryItems).toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("discovers skills on attach and lets a later pass remove one", async () => {
     const { cli, internals } = harness();
     internals.sessions.set("s1", session());

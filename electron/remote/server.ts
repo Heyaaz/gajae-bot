@@ -852,6 +852,7 @@ const READ_OPERATIONS = new Set<RemoteOperationName>([
   "state",
   "history-sessions",
   "transcript",
+  "context",
   "queued",
   "goal",
   "subagents",
@@ -871,6 +872,7 @@ interface MatchedRoute {
 
 const SESSION_ROUTES: Record<string, RemoteOperationName> = {
   transcript: "transcript",
+  context: "context",
   queued: "queued",
   goal: "goal",
   subagents: "subagents",

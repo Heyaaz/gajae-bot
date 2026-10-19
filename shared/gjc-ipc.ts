@@ -24,6 +24,7 @@ export const GJC_IPC = {
   hideSession: "agent-control:gjc:hide-session",
   getTranscript: "agent-control:gjc:get-transcript",
   getTranscriptRevision: "agent-control:gjc:get-transcript-revision",
+  refreshSessionContext: "agent-control:gjc:refresh-session-context",
   setSessionConfig: "agent-control:gjc:set-session-config",
   cycleThinking: "agent-control:gjc:cycle-thinking",
   compactSession: "agent-control:gjc:compact-session",

@@ -221,6 +221,9 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.getTranscriptRevision, (_event, sessionId: unknown) =>
     controller.getTranscriptRevision(requiredId(sessionId, "Session ID")),
   );
+  handle(GJC_IPC.refreshSessionContext, (_event, sessionId: unknown) =>
+    controller.refreshSessionContext(requiredId(sessionId, "Session ID")),
+  );
   handle(
     GJC_IPC.setSessionConfig,
     (_event, sessionId: unknown, configId: unknown, value: unknown) => {

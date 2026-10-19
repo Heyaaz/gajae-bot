@@ -213,6 +213,10 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.client.transcript(sessionId) as Promise<TranscriptItem[]>;
   }
 
+  async refreshSessionContext(sessionId: string): Promise<void> {
+    await this.client.context(sessionId);
+  }
+
   async listHistorySessions(): Promise<HistorySession[]> {
     return (await this.client.historySessions()) as HistorySession[];
   }

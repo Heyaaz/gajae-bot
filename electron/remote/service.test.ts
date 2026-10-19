@@ -25,6 +25,7 @@ const OPERATIONS: RemoteOperationName[] = [
   "state",
   "history-sessions",
   "transcript",
+  "context",
   "queued",
   "goal",
   "subagents",
@@ -62,6 +63,9 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
     async getTranscript(sessionId: string) {
       calls.push(`transcript:${sessionId}`);
       return [];
+    },
+    async refreshSessionContext(sessionId: string) {
+      calls.push(`context:${sessionId}`);
     },
     async listQueuedMessages() {
       return [];
@@ -163,6 +167,8 @@ describe("remote operation surface", () => {
     const host = fakeHost();
     await runRemoteOperation(host, "transcript", { sessionId: "s-1" }, undefined);
     expect(host.calls).toEqual(["transcript:s-1"]);
+    await runRemoteOperation(host, "context", { sessionId: "s-1" }, undefined);
+    expect(host.calls).toEqual(["transcript:s-1", "context:s-1"]);
     await expect(
       runRemoteOperation(host, "transcript", { sessionId: "../../etc/passwd" }, undefined),
     ).rejects.toThrow("Session ID is invalid");
