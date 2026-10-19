@@ -3082,14 +3082,287 @@
   border: 1px solid rgba(227, 179, 106, 0.32);
   border-radius: 8px;
 }
-.conversation-progress {
+.gajae-progress {
+  display: grid;
+  align-items: center;
+  overflow: hidden;
+}
+.gajae-progress-live,
+.gajae-progress-summary {
+  grid-area: 1 / 1;
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0 0 6px;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+}
+.gajae-progress-summary {
+  gap: 7px;
   color: var(--text-secondary);
   font-size: 12px;
-  overflow-wrap: anywhere;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+}
+.gajae-progress.is-summary .gajae-progress-live {
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+}
+.gajae-progress.is-summary .gajae-progress-summary {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+.gajae-avatar {
+  position: relative;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+}
+.gajae-sprite {
+  display: block;
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.gajae-sprite--40 {
+  width: 40px;
+  height: 40px;
+}
+.gajae-sprite--20 {
+  width: 20px;
+  height: 20px;
+}
+.gajae-sprite img {
+  display: block;
+  max-width: none;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.gajae-sprite--40 img {
+  width: 200px;
+  height: 40px;
+}
+.gajae-sprite--20 img {
+  width: 100px;
+  height: 20px;
+}
+.gajae-progress.is-motion:not(.is-paused) .gajae-avatar--coding {
+  animation: gajae-bob 1.1s ease-in-out infinite;
+  will-change: transform;
+}
+.gajae-progress.is-motion:not(.is-paused) .gajae-avatar--surprised {
+  animation: gajae-shake 1.3s ease-in-out infinite;
+  transform-origin: 50% 90%;
+  will-change: transform;
+}
+.gajae-progress.is-motion:not(.is-paused) .gajae-avatar--celebrate {
+  animation: gajae-hop 0.6s cubic-bezier(0.3, 0.7, 0.4, 1) 1 both;
+  will-change: transform;
+}
+.gajae-progress-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gajae-progress-label.is-shimmer {
+  position: relative;
+}
+.gajae-progress.is-motion:not(.is-paused) .gajae-progress-label.is-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.72) 50%,
+    transparent 100%
+  );
+  transform: translateX(-120%);
+  animation: gajae-shimmer 1.8s linear infinite;
+  pointer-events: none;
+  will-change: transform;
+}
+.gajae-progress-time {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.gajae-progress-stop {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.gajae-progress-stop kbd {
+  padding: 0 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.gajae-progress-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: auto;
+}
+.gajae-progress-button {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  color: var(--text-primary);
+  font-size: 11px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.gajae-progress-button.is-allow {
+  color: #ffd894;
+  background: #3a2e14;
+  border-color: #6b5420;
+}
+.gajae-progress--waiting .gajae-avatar {
+  background: rgba(138, 180, 255, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 0 0 1.5px rgba(138, 180, 255, 0.55);
+}
+.gajae-progress--waiting .gajae-progress-label {
+  color: #8ab4ff;
+}
+.gajae-progress--waiting .gajae-progress-time {
+  color: #4f6a99;
+}
+.gajae-progress--approval .gajae-avatar {
+  background: rgba(227, 179, 106, 0.08);
+  border-radius: 10px;
+  box-shadow: 0 0 0 1.5px rgba(227, 179, 106, 0.6);
+}
+.gajae-progress--approval .gajae-progress-label {
+  color: var(--warning);
+}
+.gajae-progress--error .gajae-avatar {
+  background: rgba(238, 123, 123, 0.07);
+  border-radius: 10px;
+  box-shadow: 0 0 0 1.5px rgba(238, 123, 123, 0.55);
+}
+.gajae-progress--error .gajae-progress-label,
+.gajae-progress--error .gajae-progress-time {
+  color: var(--danger);
+}
+.gajae-progress--done .gajae-progress-label {
+  color: var(--success);
+}
+.gajae-z {
+  position: absolute;
+  color: #8ab4ff;
+  font-size: 11px;
+  font-weight: 800;
+  text-shadow: 0 0 6px rgba(138, 180, 255, 0.5);
+  opacity: 0;
+  pointer-events: none;
+}
+.gajae-progress--waiting:not(.is-paused) .gajae-z {
+  animation: gajae-z 2.4s ease-out infinite;
+  will-change: transform, opacity;
+}
+.gajae-z-1 {
+  top: 2px;
+  left: 32px;
+}
+.gajae-z-2 {
+  top: -2px;
+  left: 34px;
+  font-size: 12px;
+  animation-delay: 0.8s;
+}
+.gajae-z-3 {
+  top: -6px;
+  left: 38px;
+  font-size: 14px;
+  animation-delay: 1.6s;
+}
+@keyframes gajae-bob {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -3px, 0);
+  }
+}
+@keyframes gajae-shake {
+  0%,
+  55%,
+  100% {
+    transform: rotate(0deg);
+  }
+  62% {
+    transform: rotate(-7deg);
+  }
+  70% {
+    transform: rotate(6deg);
+  }
+  78% {
+    transform: rotate(-4deg);
+  }
+  86% {
+    transform: rotate(2deg);
+  }
+}
+@keyframes gajae-hop {
+  0% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  35% {
+    transform: translate3d(0, -10px, 0) scale(1.06);
+  }
+  65% {
+    transform: translate3d(0, 0, 0) scale(0.97, 1.03);
+  }
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+}
+@keyframes gajae-shimmer {
+  to {
+    transform: translateX(120%);
+  }
+}
+@keyframes gajae-z {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 4px, 0);
+  }
+  20% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(8px, -16px, 0);
+  }
+}
+.gajae-progress.is-paused,
+.gajae-progress.is-paused *,
+.gajae-progress.is-paused *::before,
+.gajae-progress.is-paused *::after {
+  animation-play-state: paused;
+  will-change: auto;
+}
+@media (prefers-reduced-motion: reduce) {
+  .gajae-progress,
+  .gajae-progress *,
+  .gajae-progress *::before,
+  .gajae-progress *::after {
+    animation: none;
+    will-change: auto;
+  }
+  .gajae-z {
+    display: none;
+  }
 }
 .approval-banner > span {
   flex: 1 1 auto;
@@ -4807,40 +5080,6 @@
 @keyframes blink {
   50% {
     opacity: 0;
-  }
-}
-@keyframes activity-scan {
-  0% {
-    background-position: -80% 0;
-    opacity: 0.45;
-  }
-  50% {
-    opacity: 1;
-  }
-  100% {
-    background-position: 180% 0;
-    opacity: 0.45;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .conversation--running::before,
-  .conversation--compacting::before,
-  .conversation--waiting::before,
-  .conversation--cancelling::before {
-    animation: none;
-  }
-}
-@keyframes typing {
-  0%,
-  60%,
-  100% {
-    opacity: 0.35;
-    transform: translateY(0);
-  }
-  30% {
-    opacity: 1;
-    transform: translateY(-2px);
   }
 }
 /* Slides in on the compositor. Animating width instead reflowed the shell on every

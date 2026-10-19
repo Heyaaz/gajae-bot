@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendProgressBlock,
+  GAJAE_PROGRESS_ROW_HEIGHT,
   groupTranscriptItems,
   isNearTranscriptBottom,
+  gajaeEmoticonFor,
+  resolveTurnProgress,
   transcriptBlockIndexForItem,
+  transcriptRowEstimate,
+  type TurnActivityKind,
 } from "../transcript-utils";
 import {
   transcriptAnchorScrollTop,
@@ -434,5 +440,75 @@ describe("keeping a small downward scroll from jumping to the bottom", () => {
     // starts, and the gesture window above is what keeps its opening event from releasing
     // the latch before it has moved anything.
     expect(transcriptGestureClaimsView(-109, 0)).toBe(true);
+  });
+});
+
+describe("gajae progress row height", () => {
+  const user = {
+    id: "user-1",
+    sessionId: "session-1",
+    kind: "message" as const,
+    role: "user" as const,
+    content: "고쳐 줘",
+    createdAt: "now",
+  };
+
+  it("keeps a fixed estimate when the progress row changes kind", () => {
+    // The row is the last virtual block, and it appears, hides while the answer
+    // streams, then comes back as a summary. A kind change that also changed
+    // the estimate would move every offset below it — there is nothing below
+    // it, but the total the follow loop chases would still jump. Every kind
+    // therefore reserves the same height the row actually paints.
+    const kinds: TurnActivityKind[] = [
+      "thinking",
+      "tool",
+      "waiting",
+      "approval",
+      "done",
+      "error",
+    ];
+    for (const kind of kinds) {
+      expect(transcriptRowEstimate("progress")).toBe(GAJAE_PROGRESS_ROW_HEIGHT);
+      expect(gajaeEmoticonFor(kind)).toBeTruthy();
+    }
+
+    const items = [user];
+    const grouped = groupTranscriptItems(items);
+    const running = resolveTurnProgress(
+      items,
+      { status: "running" },
+      "session-1",
+      undefined,
+      1_000,
+    );
+    const withProgress = appendProgressBlock(grouped, running.progress);
+    const height = (blocks: readonly { kind: string }[]) =>
+      blocks.reduce(
+        (sum, block) =>
+          sum +
+          transcriptRowEstimate(block.kind === "progress" ? "progress" : "item"),
+        0,
+      );
+    expect(height(withProgress) - height(grouped)).toBe(GAJAE_PROGRESS_ROW_HEIGHT);
+
+    const done = resolveTurnProgress(
+      items,
+      { status: "idle" },
+      "session-1",
+      running.stored,
+      4_000,
+    );
+    expect(done.progress?.work.kind).toBe("done");
+    expect(height(appendProgressBlock(grouped, done.progress))).toBe(
+      height(withProgress),
+    );
+    // Earlier rows keep their ids, so the virtualizer does not remount them
+    // when the progress row is added or its kind changes.
+    expect(withProgress.slice(0, grouped.length).map((block) => block.id)).toEqual(
+      grouped.map((block) => block.id),
+    );
+    expect(appendProgressBlock(grouped, done.progress).at(-1)?.id).toBe(
+      withProgress.at(-1)?.id,
+    );
   });
 });

@@ -23,7 +23,6 @@ import type {
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
   cacheTranscript,
-  currentWorkLabel,
   initialSessionId,
   discoveryRevisionIsFresh,
   lastUserRequestContent,
@@ -1857,6 +1856,10 @@ export default function App() {
                 sessionId={selectedSession.id}
                 items={selectedTranscript}
                 sentRequestToken={sentRequestToken}
+                turnSession={{
+                  status: selectedSession.status,
+                  phase: selectedSession.phase,
+                }}
                 compacting={selectedSession.phase === "compacting"}
                 thoughtsExpanded={preferences.thoughtsExpanded}
                 onToggleThoughtsExpanded={toggleThoughtsExpanded}
@@ -1892,12 +1895,6 @@ export default function App() {
                 }}
               />
               <div className="composer-wrap">
-                {(composerTurnLive(selectedSession, selectedTranscript) || selectedSession.phase === "compacting") && (
-                  <p className="conversation-progress" role="status">
-                    <span className="mini-spinner" aria-hidden="true" />
-                    {selectedSession.phase === "compacting" ? "세션 context 압축 중" : currentWorkLabel(selectedTranscript)}
-                  </p>
-                )}
                 <ApprovalBanner
                   pending={pendingApprovals}
                   focusedId={focusedApprovalId}
