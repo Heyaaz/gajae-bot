@@ -1752,12 +1752,11 @@ export default function App() {
             </div>
             <div className="chat-header__actions">
               <div className="tool-view-mode-toggle">
-                <Layers size={16} aria-hidden="true" />
-                <Dropdown ariaLabel="대화 표시 방식" value={toolViewMode} onChange={setToolViewMode}
+                <Dropdown ariaLabel="대화 표시 방식" icon={<Layers size={15} aria-hidden="true" />} value={toolViewMode} onChange={setToolViewMode}
                   options={[
-                    { value: "basic", shortLabel: "요약", label: "요약 · 도구 요약" },
-                    { value: "reasoning", shortLabel: "기본", label: "기본 · 도구 카드" },
-                    { value: "detailed", shortLabel: "상세", label: "상세 · 추론까지 펼침" },
+                    { value: "basic", label: "요약", description: "도구 요약" },
+                    { value: "reasoning", label: "기본", description: "도구 카드" },
+                    { value: "detailed", label: "상세", description: "추론까지 펼침" },
                   ]} />
               </div>
               <button

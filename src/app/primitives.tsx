@@ -1,12 +1,14 @@
 import type { LinkPreview } from "../../shared/productivity-ipc";
 import { Check, ChevronDown, Copy, ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { parseDiffFiles, parseDiffLines } from "./format";
 
 export interface SelectOption<T extends string> {
   value: T;
   label: string;
   shortLabel?: string;
+  description?: string;
 }
 
 export function Dropdown<T extends string>({
@@ -14,11 +16,13 @@ export function Dropdown<T extends string>({
   options,
   onChange,
   ariaLabel,
+  icon,
 }: {
   value: T;
   options: SelectOption<T>[];
   onChange: (value: T) => void;
   ariaLabel: string;
+  icon?: ReactNode;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -55,6 +59,7 @@ export function Dropdown<T extends string>({
         aria-expanded={open}
         onClick={() => setOpen((current) => !current)}
       >
+        {icon}
         <span>{selected?.shortLabel ?? selected?.label ?? value}</span>
         <ChevronDown size={13} />
       </button>
@@ -70,7 +75,10 @@ export function Dropdown<T extends string>({
               onClick={() => pick(option.value)}
             >
               <Check size={12} />
-              <span>{option.label}</span>
+              <span className={option.description ? "dropdown-option-copy" : undefined}>
+                {option.label}
+                {option.description && <small>{option.description}</small>}
+              </span>
             </button>
           ))}
         </div>
