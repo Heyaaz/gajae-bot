@@ -36,7 +36,7 @@ the GJC CLI uses, so a session that has no live broker row is still reachable.
   `전체 대화 검색` dialog with placeholder `메시지, 파일, 도구 실행 검색`. Clicking a
   result closes the dialog and reveals the matching message in its session.
 - History: the rail footer button `title="지난 세션 이어서 진행"`, or the empty-rail
-  `지난 세션 여기` button. The dialog `aria-label="지난 세션 이어서 진행"` searches by
+  `지난 세션 보기` button. The dialog `aria-label="지난 세션 이어서 진행"` searches by
   session ID prefix, title, or workspace; rows show a 12-character ID, time, and
   `N개 대화`, plus `진행 중` and `포크` badges. `더 보기 (N)` pages another 100 rows.
 - Resume: right-click a row that is not attached and choose `세션 이어서 진행`, or open

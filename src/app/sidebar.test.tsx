@@ -531,11 +531,11 @@ describe("Sidebar project selector", () => {
     );
     expect(empty).toContain("이 프로젝트에 세션이 없습니다");
     expect(empty).toContain("전체 프로젝트 보기");
-    expect(empty).not.toContain("지난 세션 여기");
+    expect(empty).not.toContain("지난 세션 보기");
 
     const allEmpty = renderToStaticMarkup(createElement(Sidebar, props([])));
     expect(allEmpty).toContain("세션이 없습니다");
-    expect(allEmpty).toContain("지난 세션 여기");
+    expect(allEmpty).toContain("지난 세션 보기");
   });
 
   it("keeps the repository entry point out of the row it belongs to", () => {

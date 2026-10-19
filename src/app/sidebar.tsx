@@ -541,7 +541,7 @@ function SidebarView({
             </span>
             {projectId === ALL_PROJECTS_ID ? (
               <button type="button" onClick={onResumePicker}>
-                지난 세션 여기
+                지난 세션 보기
               </button>
             ) : (
               <button
