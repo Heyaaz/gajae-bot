@@ -73,6 +73,19 @@ describe("Inspector", () => {
     expect(markup).toContain("실행된 서브 에이전트가 없습니다");
   });
 
+  it("offers native expandable details and keeps shell results after completion", () => {
+    const tool = { ...taskTool("shell-1", "completed"), name: "bash", output: "finished output" } as TranscriptItem;
+    const markup = renderToStaticMarkup(createElement(Inspector, props([tool])));
+    expect(markup).toContain("<details");
+    expect(markup).toContain("finished output");
+    expect(markup).toContain("완료");
+  });
+
+  it("does not mark a queued task complete", () => {
+    const markup = renderToStaticMarkup(createElement(Inspector, props([taskTool("queued", "pending")])));
+    expect(markup).toContain("subagent-card--waiting");
+  });
+
   it("clears a commit message only after success and only if it was not edited", () => {
     const submittedRevision = 3;
 

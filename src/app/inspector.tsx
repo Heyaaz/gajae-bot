@@ -27,7 +27,35 @@ export interface InspectorProps {
   resuming?: boolean;
   onResume?: () => void;
   onClose: () => void;
+  revealToolId?: string;
 }
+
+const InspectorWorkCard = memo(function InspectorWorkCard({
+  work,
+  highlighted,
+}: { work: SubagentSnapshot; highlighted: boolean }) {
+  const ref = useRef<HTMLDetailsElement>(null);
+  useEffect(() => {
+    if (!highlighted || !ref.current) return;
+    ref.current.open = true;
+    ref.current.scrollIntoView({ block: "nearest" });
+    ref.current.focus();
+  }, [highlighted]);
+  return (
+    <details ref={ref} tabIndex={-1}
+      className={`subagent-card subagent-card--${work.status}${highlighted ? " is-search-reveal" : ""}`}>
+      <summary>
+        <span className={`subagent-state subagent-state--${work.status}`} />
+        <strong>{work.label}</strong>
+        <em>{work.status === "running" ? "작업 중" : work.status === "waiting" ? "대기" : work.status === "failed" ? "실패" : "완료"}</em>
+      </summary>
+      <small>{[work.role, work.id].filter(Boolean).join(" · ")}</small>
+      {work.objective && <p>{work.objective}</p>}
+      {work.detail ? <pre className="inspector-work-output">{work.detail}</pre> :
+        <p>아직 보고된 상세 내용이 없습니다.</p>}
+    </details>
+  );
+});
 
 /**
  * Session detail panel.
@@ -44,7 +72,11 @@ function InspectorView({
   resuming = false,
   onResume,
   onClose,
+  revealToolId,
 }: InspectorProps) {
+  const shellWork = useMemo(() => transcript.filter(
+    (item): item is ToolActivity => item.kind === "tool" && /^(bash|shell|exec|execute)$/iu.test(item.name),
+  ), [transcript]);
   const subagents: SubagentSnapshot[] = useMemo(
     () =>
       liveSubagents.length > 0
@@ -60,9 +92,9 @@ function InspectorView({
               status:
                 tool.status === "running"
                   ? "running"
-                  : tool.status === "failed" || tool.status === "denied"
+                  : tool.status === "failed" || tool.status === "denied" || tool.status === "cancelled"
                     ? "failed"
-                    : tool.status === "approval-required"
+                    : tool.status === "approval-required" || tool.status === "pending"
                       ? "waiting"
                       : "completed",
               detail: tool.output,
@@ -113,34 +145,20 @@ function InspectorView({
         <h3>서브 에이전트</h3>
         {subagents.length > 0 ? (
           subagents.map((tool) => (
-            <article
-              className={`subagent-card subagent-card--${tool.status}`}
-              key={tool.id}
-            >
-              <header>
-                <span
-                  className={`subagent-state subagent-state--${tool.status}`}
-                />
-                <strong>{tool.label}</strong>
-                <em>
-                  {tool.status === "running"
-                    ? "작업 중"
-                    : tool.status === "waiting"
-                      ? "대기"
-                      : tool.status === "failed"
-                        ? "실패"
-                        : "완료"}
-                </em>
-              </header>
-              <small>{[tool.role, tool.id].filter(Boolean).join(" · ")}</small>
-              {(tool.objective || tool.detail) && (
-                <p>{tool.objective || tool.detail}</p>
-              )}
-            </article>
+            <InspectorWorkCard key={tool.id} work={tool} highlighted={tool.id === revealToolId} />
           ))
         ) : (
           <p>실행된 서브 에이전트가 없습니다.</p>
         )}
+      </section>
+      <section className="inspector-section">
+        <h3>셸 작업</h3>
+        <p>현재 대화에 보고된 명령입니다. 별도 백그라운드 작업 상태는 런타임에서 제공하지 않습니다.</p>
+        {shellWork.map((tool) => <InspectorWorkCard key={tool.id} highlighted={tool.id === revealToolId}
+          work={{ id: tool.id, label: tool.description,
+            status: tool.status === "running" ? "running" : tool.status === "pending" || tool.status === "approval-required" ? "waiting" : tool.status === "failed" || tool.status === "denied" || tool.status === "cancelled" ? "failed" : "completed",
+            objective: tool.command, detail: tool.output }} />)}
+        {shellWork.length === 0 && <p>보고된 셸 작업이 없습니다.</p>}
       </section>
     </aside>
   );

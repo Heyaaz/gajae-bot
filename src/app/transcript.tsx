@@ -381,6 +381,7 @@ export interface TranscriptProps {
   autoDenyHint?: { message: string; onOpenSettings?: () => void };
   /** Retries the session's own last user request, from a run-failure notice's 다시 시도 button. */
   onRetryLastRequest?: (sessionId: string) => void;
+  onRevealInspector?: (toolId: string) => void;
   /** What the empty-conversation state shows about the session it is about to run in. */
   emptyStateMeta?: {
     workspace: string;
@@ -405,6 +406,7 @@ export function Transcript({
   autoDenyHint,
   onRetryLastRequest,
   emptyStateMeta,
+  onRevealInspector,
 }: TranscriptProps) {
   // `detailed` absorbs the reasoning toggle: it always shows thought cards open
   // regardless of the persisted preference, rather than requiring a second control.
@@ -1230,6 +1232,7 @@ export function Transcript({
                       onReadArtifact={onReadArtifact}
                       autoDenyHint={autoDenyHint}
                       onRetryLastRequest={onRetryLastRequest}
+                      onRevealInspector={onRevealInspector}
                     />
                   </div>
                 ) : (
@@ -1241,6 +1244,7 @@ export function Transcript({
                     onResolveTool={onResolveTool}
                     onReadArtifact={onReadArtifact}
                     autoDenyHint={autoDenyHint}
+                    onRevealInspector={onRevealInspector}
                   />
                 )}
               </div>
@@ -1616,6 +1620,7 @@ function ToolRunBlockView({
   onResolveTool,
   onReadArtifact,
   autoDenyHint,
+  onRevealInspector,
 }: {
   items: Extract<TranscriptItem, { kind: "tool" }>[];
   toolViewMode: "basic" | "reasoning" | "detailed";
@@ -1624,6 +1629,7 @@ function ToolRunBlockView({
   onResolveTool: TranscriptProps["onResolveTool"];
   onReadArtifact: TranscriptProps["onReadArtifact"];
   autoDenyHint?: TranscriptProps["autoDenyHint"];
+  onRevealInspector?: TranscriptProps["onRevealInspector"];
 }) {
   const summary = useMemo(() => summarizeToolRun(items), [items]);
   const needsAttention = !summary.allCompleted;
@@ -1654,6 +1660,7 @@ function ToolRunBlockView({
               onResolveTool={onResolveTool}
               onReadArtifact={onReadArtifact}
               autoDenyHint={autoDenyHint}
+              onRevealInspector={onRevealInspector}
             />
           </div>
         ))}
@@ -1737,6 +1744,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   onReadArtifact,
   autoDenyHint,
   onRetryLastRequest,
+  onRevealInspector,
 }: {
   item: TranscriptItem;
   thoughtsExpanded?: boolean;
@@ -1745,6 +1753,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   onReadArtifact: TranscriptProps["onReadArtifact"];
   autoDenyHint?: TranscriptProps["autoDenyHint"];
   onRetryLastRequest?: TranscriptProps["onRetryLastRequest"];
+  onRevealInspector?: TranscriptProps["onRevealInspector"];
 }) {
   if (item.kind === "message") {
     const copyText = copyableMessageText(item.content);
@@ -1921,6 +1930,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
       onResolve={onResolveTool}
       onReadArtifact={onReadArtifact}
       autoDenyHint={item.kind === "tool" && item.status === "denied" ? autoDenyHint : undefined}
+      onRevealInspector={onRevealInspector}
     />
   );
 });
@@ -1936,15 +1946,24 @@ export interface ToolCardProps {
    * session not in "always allow" mode has every call auto-denied by GJC itself.
    */
   autoDenyHint?: { message: string; onOpenSettings?: () => void };
+  /**
+   * Opens the session info panel to this call's own card, for a task/subagent
+   * call -- that panel is where its step-by-step progress lives, not here.
+   */
+  onRevealInspector?: (toolId: string) => void;
 }
+
+const SUBAGENT_TOOL_NAME = /^(task|subagent)$/iu;
 
 export function ToolCard({
   tool,
   onResolve,
   onReadArtifact,
   autoDenyHint,
+  onRevealInspector,
 }: ToolCardProps) {
   const approvalRequired = tool.status === "approval-required";
+  const isSubagentCall = SUBAGENT_TOOL_NAME.test(tool.name);
   const [expanded, setExpanded] = useState(false);
   const [artifact, setArtifact] = useState<ArtifactContent | null>(null);
   const [artifactError, setArtifactError] = useState("");
@@ -1975,6 +1994,15 @@ export function ToolCard({
             {toolStatusLabel(tool.status)}
           </span>
         </header>
+        {isSubagentCall && onRevealInspector && (
+          <button
+            type="button"
+            className="tool-reveal-inspector"
+            onClick={() => onRevealInspector(tool.id)}
+          >
+            세션 정보에서 보기
+          </button>
+        )}
         {tool.subagents && tool.subagents.length > 0 && (
           <div className="tool-full-details">
             <section>

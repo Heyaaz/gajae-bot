@@ -247,6 +247,7 @@ export default function App() {
   >(null);
   const [updateError, setUpdateError] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorToolId, setInspectorToolId] = useState<string>();
   const [resumingId, setResumingId] = useState<string | null>(null);
   // Not persisted: a per-window reading preference, cycled with a header button.
   // basic -> tool-run blocks collapse to a summary; reasoning -> every tool card
@@ -1821,6 +1822,10 @@ export default function App() {
                 onResolveTool={resolveToolCall}
                 onReadArtifact={readArtifact}
                 onRetryLastRequest={retryLastRequest}
+                onRevealInspector={(toolId) => {
+                  setInspectorToolId(toolId);
+                  setInspectorOpen(true);
+                }}
                 autoDenyHint={
                   preferences.permissionHandling !== "always-allow" &&
                   preferences.permissionHandling !== "auto"
@@ -1897,6 +1902,7 @@ export default function App() {
                 liveSubagents={liveSubagents}
                 resuming={resumingId === selectedSession.id}
                 onResume={resumeSelectedSession}
+                revealToolId={inspectorToolId}
                 onClose={closeInspector}
               />
             )}
