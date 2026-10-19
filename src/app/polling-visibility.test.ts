@@ -47,14 +47,16 @@ describe("shell polling while the window is hidden", () => {
 
   it("catches up when the window comes back", () => {
     // Gating alone would leave a window stale for a whole interval after it is
-    // shown again, so each gated poll registers a visibility listener.
+    // shown again. One listener now catches up both beats in the same effect, so
+    // assert the listener exists, calls the shared refresh, and is torn down.
     const listeners = source.match(
       /document\.addEventListener\("visibilitychange"/gu,
     );
     const removals = source.match(
       /document\.removeEventListener\("visibilitychange"/gu,
     );
-    expect(listeners?.length ?? 0).toBe(intervalBodies(source).length);
+    expect(listeners?.length ?? 0).toBeGreaterThanOrEqual(1);
+    expect(source).toContain("if (!document.hidden) refreshVisibleState();");
     // Every listener is torn down with its effect.
     expect(removals?.length ?? 0).toBe(listeners?.length ?? 0);
   });

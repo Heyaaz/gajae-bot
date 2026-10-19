@@ -523,6 +523,35 @@ export default function App() {
         .catch(() => undefined)
         .finally(() => { listing = false; });
     };
+    // A live tail can miss a file write when a watcher or endpoint drops. The
+    // session list poll alone would then leave the selected conversation frozen at
+    // an old row and an idle header. Re-read the selected transcript on the same
+    // low-frequency beat so the durable session file is a safety net, not only the
+    // event stream. getTranscript returns the controller's merged view, including
+    // app-owned plan/todo rows, so replacing the cache does not discard them.
+    let refreshingTranscript = false;
+    const refreshSelectedTranscript = (): void => {
+      const id = selectedIdRef.current;
+      if (!id || refreshingTranscript) return;
+      refreshingTranscript = true;
+      void backend
+        .getTranscript(id)
+        .then((items) => {
+          if (!active) return;
+          setTranscripts((current) => {
+            const existing = current[id];
+            if (!existing || JSON.stringify(existing) === JSON.stringify(items))
+              return current;
+            return cacheTranscript(current, id, items);
+          });
+        })
+        .catch(() => undefined)
+        .finally(() => { refreshingTranscript = false; });
+    };
+    const refreshVisibleState = (): void => {
+      loadSessions(false);
+      refreshSelectedTranscript();
+    };
     loadSessions(true);
     // A full scan costs seconds on a large broker index, so polling faster than
     // that just queues overlapping scans. Focus refresh covers the case where the
@@ -534,14 +563,19 @@ export default function App() {
     // visible again, and the focus listener below already refreshes for that.
     const discoveryTimer = window.setInterval(() => {
       if (document.hidden) return;
-      loadSessions(false);
+      refreshVisibleState();
     }, 15_000);
-    const refreshOnFocus = (): void => loadSessions(false);
+    // The event stream is still the primary path; this second beat only repairs a
+    // frozen selected conversation, so it can be shorter than session discovery.
+    const transcriptTimer = window.setInterval(() => {
+      if (!document.hidden) refreshSelectedTranscript();
+    }, 5_000);
+    const refreshOnFocus = (): void => refreshVisibleState();
     window.addEventListener("focus", refreshOnFocus);
     // `focus` does not fire when the window is merely un-occluded on macOS, so
     // visibility is tracked separately to catch up after a hidden stretch.
     const refreshOnVisible = (): void => {
-      if (!document.hidden) loadSessions(false);
+      if (!document.hidden) refreshVisibleState();
     };
     document.addEventListener("visibilitychange", refreshOnVisible);
 
@@ -664,6 +698,7 @@ export default function App() {
     return () => {
       active = false;
       window.clearInterval(discoveryTimer);
+      window.clearInterval(transcriptTimer);
       window.removeEventListener("focus", refreshOnFocus);
       document.removeEventListener("visibilitychange", refreshOnVisible);
       unsubscribeReleaseRetry();
