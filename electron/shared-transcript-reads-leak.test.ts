@@ -103,7 +103,7 @@ describe("sharedTranscriptReads bounds", () => {
       emit: () => undefined,
     });
     const internals = controller as unknown as {
-      sharedTranscriptReads: Map<string, { envelopes: unknown[] }>;
+      sharedTranscriptReads: Map<string, { envelopes: unknown[]; bytesRead: number }>;
       readTranscriptEnvelopes: (
         file: string,
         info: Awaited<ReturnType<typeof stat>>,
@@ -111,19 +111,15 @@ describe("sharedTranscriptReads bounds", () => {
     };
     try {
       const file = path.join(directory, "session.jsonl");
-      await writeFile(file, `${JSON.stringify({ type: "message", id: 1 })}\n`);
+      const firstLine = `${JSON.stringify({ type: "message", id: 1 })}\n`;
+      const secondLine = `${JSON.stringify({ type: "message", id: 2 })}\n`;
+      await writeFile(file, firstLine);
       const first = await internals.readTranscriptEnvelopes(
         file,
         await stat(file),
       );
 
-      await writeFile(
-        file,
-        `${JSON.stringify({ type: "message", id: 1 })}\n${JSON.stringify({
-          type: "message",
-          id: 2,
-        })}\n`,
-      );
+      await writeFile(file, firstLine + secondLine);
       const second = await internals.readTranscriptEnvelopes(
         file,
         await stat(file),
@@ -132,6 +128,10 @@ describe("sharedTranscriptReads bounds", () => {
       expect(first).toHaveLength(1);
       expect(second).toHaveLength(2);
       expect(internals.sharedTranscriptReads.size).toBe(1);
+      // One appended line reads that line's bytes, not the history already parsed.
+      expect(internals.sharedTranscriptReads.get(file)?.bytesRead).toBe(
+        Buffer.byteLength(secondLine),
+      );
       controller.dispose();
     } finally {
       await rm(directory, { recursive: true, force: true });

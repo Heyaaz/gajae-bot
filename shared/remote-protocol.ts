@@ -174,6 +174,7 @@ export type RemoteOperationName =
   | "state"
   | "history-sessions"
   | "transcript"
+  | "transcript-revision"
   | "context"
   | "queued"
   | "goal"
@@ -193,6 +194,7 @@ export const REMOTE_OPERATION_ACCESS: Record<RemoteOperationName, RemotePermissi
   state: "view",
   "history-sessions": "view",
   transcript: "view",
+  "transcript-revision": "view",
   context: "view",
   queued: "view",
   goal: "view",
@@ -232,6 +234,8 @@ export const REMOTE_API = {
   sessions: "/api/sessions",
   session: (sessionId: string) => `/api/sessions/${encodeURIComponent(sessionId)}`,
   transcript: (sessionId: string) => `${REMOTE_API.session(sessionId)}/transcript`,
+  transcriptRevision: (sessionId: string) =>
+    `${REMOTE_API.session(sessionId)}/transcript-revision`,
   context: (sessionId: string) => `${REMOTE_API.session(sessionId)}/context`,
   queued: (sessionId: string) => `${REMOTE_API.session(sessionId)}/queued`,
   goal: (sessionId: string) => `${REMOTE_API.session(sessionId)}/goal`,

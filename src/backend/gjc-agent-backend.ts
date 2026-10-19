@@ -130,6 +130,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.getTranscriptRevision(sessionId);
   }
 
+  watchTranscripts(sessionIds: readonly string[]): void {
+    this.bridge.watchTranscripts(sessionIds);
+  }
+
   refreshSessionContext(sessionId: string): Promise<void> {
     return this.bridge.refreshSessionContext(sessionId);
   }

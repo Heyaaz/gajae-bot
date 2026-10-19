@@ -225,9 +225,20 @@ function handleEventFrame(frame: string): void {
   }
 }
 
+/**
+ * Sessions the renderer is actually showing or holding in its transcript cache.
+ *
+ * A replay gap used to read every session's transcript. The cache keeps three,
+ * so the rest of that work was discarded. Unset means the renderer has not
+ * reported a cache yet, and the gap still reads every session.
+ */
+let watchedTranscriptIds: ReadonlySet<string> | undefined;
+let watchedTranscriptKey: string | undefined;
+
 async function resyncAfterReplayGap(): Promise<void> {
   try {
     const sessions = (await ipcRenderer.invoke(GJC_IPC.listSessions)) as AgentSession[];
+    const watched = watchedTranscriptIds;
     for (const session of sessions) {
       for (const listener of [...eventListeners]) {
         try {
@@ -236,6 +247,7 @@ async function resyncAfterReplayGap(): Promise<void> {
           console.error("Desktop event listener failed during resync", error);
         }
       }
+      if (watched && !watched.has(session.id)) continue;
       const items = (await ipcRenderer.invoke(
         GJC_IPC.getTranscript,
         session.id,
@@ -302,6 +314,12 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.getTranscript, sessionId),
   getTranscriptRevision: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.getTranscriptRevision, sessionId),
+  watchTranscripts: (sessionIds: readonly string[]) => {
+    const key = sessionIds.join("\0");
+    if (key === watchedTranscriptKey) return;
+    watchedTranscriptKey = key;
+    watchedTranscriptIds = new Set(sessionIds);
+  },
   refreshSessionContext: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.refreshSessionContext, sessionId),
   setSessionConfig: (sessionId: string, configId: string, value: string) =>

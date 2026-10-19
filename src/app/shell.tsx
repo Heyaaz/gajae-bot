@@ -22,6 +22,7 @@ import type {
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
+  applyTranscriptRead,
   cacheTranscript,
   initialSessionId,
   discoveryRevisionIsFresh,
@@ -31,6 +32,7 @@ import {
   pendingToolApprovals,
   updateTranscriptItem,
 } from "../transcript-utils";
+import { readTranscriptForSafetyNet } from "../transcript-sync";
 import { getLanguage, t, useLanguage } from "../i18n";
 import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -539,14 +541,18 @@ export default function App() {
       if (!id || refreshingTranscript) return;
       refreshingTranscript = true;
       void (async () => {
-        const revision = await backend
-          .getTranscriptRevision?.(id)
-          .catch(() => undefined);
-        if (revision && transcriptRevisions.current.get(id) === revision) return;
-        const items = await backend.getTranscript(id);
-        if (!active) return;
-        if (revision) transcriptRevisions.current.set(id, revision);
-        setTranscripts((current) => cacheTranscript(current, id, items));
+        const outcome = await readTranscriptForSafetyNet({
+          knownRevision: transcriptRevisions.current.get(id),
+          readRevision: backend.getTranscriptRevision
+            ? () => backend.getTranscriptRevision!(id)
+            : undefined,
+          readItems: () => backend.getTranscript(id),
+        });
+        if (!active || outcome.kind === "skipped") return;
+        if (outcome.revision) transcriptRevisions.current.set(id, outcome.revision);
+        setTranscripts((current) =>
+          applyTranscriptRead(current, id, outcome.items),
+        );
       })()
         .catch(() => undefined)
         .finally(() => { refreshingTranscript = false; });
@@ -718,32 +724,55 @@ export default function App() {
   selectedIdRef.current = selectedId;
   const cachedSelectedTranscript = selectedId ? transcripts[selectedId] : undefined;
   const transcriptReads = useMemo(
-    () => ({ backend, pending: new Map<string, Promise<TranscriptItem[]>>() }),
+    () => ({
+      backend,
+      pending: new Map<
+        string,
+        Promise<{ items: TranscriptItem[]; revision: string | undefined }>
+      >(),
+    }),
     [backend],
   );
   const transcriptRevisions = useRef(new Map<string, string>());
+
+  useEffect(() => {
+    const ids = Object.keys(transcripts);
+    if (selectedId && !ids.includes(selectedId)) ids.push(selectedId);
+    backend.watchTranscripts?.(ids);
+  }, [backend, transcripts, selectedId]);
 
   useEffect(() => {
     if (!selectedId || cachedSelectedTranscript) return;
     let active = true;
     let read = transcriptReads.pending.get(selectedId);
     if (!read) {
-      read = transcriptReads.backend.getTranscript(selectedId).finally(() => {
-        if (transcriptReads.pending.get(selectedId) === read)
+      read = readTranscriptForSafetyNet({
+        knownRevision: undefined,
+        readRevision: transcriptReads.backend.getTranscriptRevision
+          ? () => transcriptReads.backend.getTranscriptRevision!(selectedId)
+          : undefined,
+        readItems: () => transcriptReads.backend.getTranscript(selectedId),
+      }).then((outcome) =>
+        outcome.kind === "loaded"
+          ? { items: outcome.items, revision: outcome.revision }
+          : { items: [], revision: undefined },
+      );
+      const current = read;
+      void current.finally(() => {
+        if (transcriptReads.pending.get(selectedId) === current)
           transcriptReads.pending.delete(selectedId);
       });
       transcriptReads.pending.set(selectedId, read);
     }
     void read
-      .then(async (items) => {
-        const revision = await transcriptReads.backend
-          .getTranscriptRevision?.(selectedId)
-          .catch(() => undefined);
+      .then((loaded) => {
         if (active) {
-          if (revision)
-            transcriptRevisions.current.set(selectedId, revision);
+          if (loaded.revision)
+            transcriptRevisions.current.set(selectedId, loaded.revision);
           setTranscripts((current) =>
-            current[selectedId] ? current : cacheTranscript(current, selectedId, items),
+            current[selectedId]
+              ? current
+              : cacheTranscript(current, selectedId, loaded.items),
           );
           void transcriptReads.backend
             .refreshSessionContext?.(selectedId)

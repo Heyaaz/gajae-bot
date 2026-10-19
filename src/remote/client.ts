@@ -592,6 +592,13 @@ export class RemoteClient {
     return this.readResult<unknown[]>(REMOTE_API.transcript(sessionId));
   }
 
+  async transcriptRevision(sessionId: string): Promise<string | undefined> {
+    const revision = await this.readResult<string | null>(
+      REMOTE_API.transcriptRevision(sessionId),
+    );
+    return revision ?? undefined;
+  }
+
   context(sessionId: string) {
     return this.readResult<unknown>(REMOTE_API.context(sessionId));
   }
