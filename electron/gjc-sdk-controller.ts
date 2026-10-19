@@ -201,6 +201,39 @@ import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
 
 export * from "./gjc-sdk-foundation.js";
 
+/** Fallback todo read when the session has no live todo event channel. */
+export const TODO_EVENT_POLL_BASE_MS = 30_000;
+export const TODO_EVENT_POLL_MAX_MS = 120_000;
+/** Command palette refresh after a failed read, doubled until the cap. */
+export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
+export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
+
+/**
+ * Durable broker session index.
+ *
+ * `gjc sdk session list` projects this file. Its device, inode, size, and
+ * mtime are the revision a discovery poll compares so an unchanged index does
+ * not spawn another list process.
+ */
+function brokerSessionIndexPath(): string {
+  return path.join(
+    path.resolve(
+      process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
+    ),
+    "sessions",
+    "index.jsonl",
+  );
+}
+
+function commandPublicationKey(commands: readonly AgentCommand[]): string {
+  return commands
+    .map(
+      (command) =>
+        `${command.name}\0${command.description}\0${command.hint ?? ""}`,
+    )
+    .join("\n");
+}
+
 export class GjcSdkController {
   private workspace: string;
   private configuredExecutable?: string;
@@ -333,6 +366,19 @@ export class GjcSdkController {
   /** Delay between broker polls while recovering a fork's session id. */
   private forkRecoveryIntervalMs = 250;
   private readonly sessionCommands = new Map<string, AgentCommand[]>();
+  /** Last command palette actually handed to the renderer, so an identical reopen is silent. */
+  private readonly publishedCommandKeys = new Map<string, string>();
+  private readonly commandRefreshTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly commandRefreshAttempts = new Map<string, number>();
+  /** Long todo reads used only while a session has no live todo event channel. */
+  private readonly todoPollTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly todoPollAttempts = new Map<string, number>();
   /**
    * Commands the runtime itself advertised (`available_commands_update`).
    *
@@ -551,6 +597,9 @@ export class GjcSdkController {
   // The startup reachability check is also the first complete global index.
   // Only discovery consumes it; lifecycle operations always ask for fresh evidence.
   private startupSessionRows: SdkSessionRow[] | undefined;
+  /** Last full broker list whose index file revision was stable across the read. */
+  private cachedBrokerRows: SdkSessionRow[] | undefined;
+  private cachedBrokerRevision: string | undefined;
   // The session map is a durable cache keyed by every id ever seen, including
   // rows discovery later filtered out. Yielding must replay the last discovered
   // list instead, or skipping a scan resurrects dead sessions in the sidebar.
@@ -1409,12 +1458,61 @@ export class GjcSdkController {
         this.startupSessionRows = undefined;
         return rows;
       }
-      return await cli.listSessions({
+      // Lifecycle reads (delete, fork recovery, create) always ask the broker.
+      // Discovery is the 15s poll: an unchanged index file has nothing new to list.
+      if (options?.initialDiscovery && (await this.brokerIndexUnchanged()))
+        return this.cachedBrokerRows!.map((row) => ({ ...row }));
+      const before = options?.initialDiscovery
+        ? await this.brokerIndexRevision()
+        : undefined;
+      const rows = await cli.listSessions({
         scope: options?.scope ?? "all",
       });
+      if (options?.initialDiscovery)
+        this.noteBrokerIndex(rows, before, await this.brokerIndexRevision());
+      return rows;
     } catch {
       return undefined;
     }
+  }
+
+  private invalidateBrokerIndexCache(): void {
+    this.cachedBrokerRows = undefined;
+    this.cachedBrokerRevision = undefined;
+  }
+
+  private async brokerIndexRevision(): Promise<string | undefined> {
+    try {
+      const info = await stat(brokerSessionIndexPath());
+      if (!info.isFile()) return undefined;
+      return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async brokerIndexUnchanged(): Promise<boolean> {
+    if (!this.cachedBrokerRevision || !this.cachedBrokerRows) return false;
+    return (await this.brokerIndexRevision()) === this.cachedBrokerRevision;
+  }
+
+  /**
+   * Keeps a discovery list only when the index file did not move during the read.
+   *
+   * A revision that changes mid-scan belongs to a newer index than the rows just
+   * returned, so the next poll has to read again instead of treating them as current.
+   */
+  private noteBrokerIndex(
+    rows: readonly SdkSessionRow[],
+    before: string | undefined,
+    after: string | undefined,
+  ): void {
+    if (before && before === after) {
+      this.cachedBrokerRevision = after;
+      this.cachedBrokerRows = rows.map((row) => ({ ...row }));
+      return;
+    }
+    this.invalidateBrokerIndexCache();
   }
 
   async createSession(input: CreateSessionInput): Promise<AgentSession> {
@@ -1539,6 +1637,7 @@ export class GjcSdkController {
     // The startup scan predates this mutation and would hide the new session on
     // the first list call, even though create already announced it to the UI.
     this.startupSessionRows = undefined;
+    this.invalidateBrokerIndexCache();
     const createdSessionId = response.sessionId;
     const session: AgentSession = {
       id: createdSessionId,
@@ -1646,16 +1745,31 @@ export class GjcSdkController {
    */
   async refreshSessionContext(sessionId: string): Promise<void> {
     const commands = this.sessionCommands.get(sessionId);
-    if (commands)
-      this.emitEvent({
-        type: "session.commands",
-        sessionId,
-        commands: commands.map((command) => ({ ...command })),
-      });
+    if (commands) this.publishSessionCommands(sessionId, commands);
     await Promise.all([
       this.refreshSdkCommands(sessionId),
       this.readTodoRecords(sessionId),
     ]);
+  }
+
+  /**
+   * Hands the renderer a command palette once per distinct content.
+   *
+   * Reopening a session used to emit the cached palette on every visit, and the
+   * shell replaced its state with a new array of the same commands.
+   */
+  private publishSessionCommands(
+    sessionId: string,
+    commands: readonly AgentCommand[],
+  ): void {
+    const key = commandPublicationKey(commands);
+    if (this.publishedCommandKeys.get(sessionId) === key) return;
+    this.publishedCommandKeys.set(sessionId, key);
+    this.emitEvent({
+      type: "session.commands",
+      sessionId,
+      commands: commands.map((command) => ({ ...command })),
+    });
   }
 
   async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
@@ -3816,24 +3930,38 @@ export class GjcSdkController {
     if (advertised) this.sessionAdvertisedCommands.set(sessionId, advertised);
     // A capability query that answers nothing is not the same as one that answered
     // "no": the cached set is reused when there is one, and the adapter specs stay
-    // out of the palette rather than reporting a guess either way.
-    const operations = await this.sdkOperations(sessionId);
+    // out of the palette rather than reporting a guess either way. A query that
+    // fails is neither: the palette already on screen stays, and the read is
+    // retried with backoff instead of being abandoned until the next open.
+    let operations: Set<string>;
+    try {
+      operations = await this.sdkOperations(sessionId, { strict: true });
+    } catch {
+      this.scheduleCommandRefreshRetry(sessionId);
+      return;
+    }
     const authoritative = this.sessionAdvertisedCommands.get(sessionId);
-    const discovered =
-      authoritative === undefined
-        ? await this.discoverDynamicCommands(sessionId, operations).catch(
-            () => undefined,
-          )
-        : undefined;
+    let discovered: AgentCommand[] | undefined;
+    if (authoritative === undefined) {
+      try {
+        discovered = await this.discoverDynamicCommands(sessionId, operations);
+      } catch {
+        this.scheduleCommandRefreshRetry(sessionId);
+        return;
+      }
+    }
     if (discovered) this.sessionDiscoveredCommands.set(sessionId, discovered);
     else this.sessionDiscoveredCommands.delete(sessionId);
     if (
       operations.size === 0 &&
       authoritative === undefined &&
       discovered === undefined
-    )
+    ) {
       // Nothing to rebuild from: never publish an empty palette over a good cache.
+      // An empty answer is still an answer, so a previous failure stops retrying.
+      this.clearCommandRefreshRetry(sessionId);
       return;
+    }
     const commands = [
       ...new Map(
         [
@@ -3843,20 +3971,37 @@ export class GjcSdkController {
         ].map((command) => [command.name, command]),
       ).values(),
     ];
-    const previous = this.sessionCommands.get(sessionId);
     this.sessionCommands.set(sessionId, commands);
+    this.clearCommandRefreshRetry(sessionId);
+    this.publishSessionCommands(sessionId, commands);
+  }
+
+  private scheduleCommandRefreshRetry(sessionId: string): void {
     if (
-      previous &&
-      previous.length === commands.length &&
-      previous.every(
-        (command, index) =>
-          command.name === commands[index]?.name &&
-          command.description === commands[index]?.description &&
-          command.hint === commands[index]?.hint,
-      )
+      this.disposed ||
+      !this.sessions.has(sessionId) ||
+      this.commandRefreshTimers.has(sessionId)
     )
       return;
-    this.emitEvent({ type: "session.commands", sessionId, commands });
+    const attempt = this.commandRefreshAttempts.get(sessionId) ?? 0;
+    const delay = Math.min(
+      COMMAND_REFRESH_RETRY_MAX_MS,
+      COMMAND_REFRESH_RETRY_BASE_MS * 2 ** attempt,
+    );
+    this.commandRefreshAttempts.set(sessionId, attempt + 1);
+    const timer = setTimeout(() => {
+      this.commandRefreshTimers.delete(sessionId);
+      if (this.disposed || !this.sessions.has(sessionId)) return;
+      void this.refreshSdkCommands(sessionId);
+    }, delay);
+    this.commandRefreshTimers.set(sessionId, timer);
+  }
+
+  private clearCommandRefreshRetry(sessionId: string): void {
+    const timer = this.commandRefreshTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.commandRefreshTimers.delete(sessionId);
+    this.commandRefreshAttempts.delete(sessionId);
   }
 
   /**
@@ -3881,9 +4026,14 @@ export class GjcSdkController {
   ): Promise<AgentCommand[] | undefined> {
     if (!operations.has("skill.list/state")) return undefined;
     const [skills, config] = await Promise.all([
-      this.querySessionItems(sessionId, "skill.list/state"),
+      this.querySessionItems(sessionId, "skill.list/state", {}, { strict: true }),
       operations.has("config.list/get")
-        ? this.querySessionItems(sessionId, "config.list/get")
+        ? this.querySessionItems(
+            sessionId,
+            "config.list/get",
+            {},
+            { strict: true },
+          )
         : Promise.resolve([]),
     ]);
     if (skillsDisabledByConfig(config)) return [];
@@ -3913,12 +4063,17 @@ export class GjcSdkController {
     return [...commands.values()];
   }
 
-  private async sdkOperations(sessionId: string): Promise<Set<string>> {
+  private async sdkOperations(
+    sessionId: string,
+    options?: { strict?: boolean },
+  ): Promise<Set<string>> {
     const cached = this.sessionSdkOperations.get(sessionId);
     if (cached) return cached;
     const rows = await this.querySessionItems(
       sessionId,
       "runtime.capabilities",
+      {},
+      options?.strict ? { strict: true } : undefined,
     );
     const operations = new Set(
       rows.flatMap((row) => {
@@ -3938,9 +4093,12 @@ export class GjcSdkController {
   async getGoal(sessionId: string): Promise<GoalSnapshot> {
     // The todo read is shared with the transcript snapshot row, so the counters here
     // and the row a user can expand are the same observation of the same store.
+    // A live tail already re-reads the store when a todo tool finishes, so this
+    // poll must not call `todo.list` on the goal cadence. Without that channel the
+    // fallback below is a long backoff, not another 4s/10s query.
     const [goalRows, todoRows] = await Promise.all([
       this.querySessionItems(sessionId, "goal.list/get"),
-      this.readTodoRecords(sessionId),
+      this.todoRowsForGoal(sessionId),
     ]);
     const state =
       goalRows[0] &&
@@ -4441,6 +4599,9 @@ export class GjcSdkController {
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
+    this.publishedCommandKeys.delete(sessionId);
+    this.clearCommandRefreshRetry(sessionId);
+    this.clearTodoPoll(sessionId);
     this.sessionAdvertisedCommands.delete(sessionId);
     this.sessionDiscoveredCommands.delete(sessionId);
     this.sessionPlans.delete(sessionId);
@@ -4468,6 +4629,7 @@ export class GjcSdkController {
     // Removing a row changes what the next scan should produce even though the
     // broker's live set is untouched, so the reuse fingerprint is invalidated.
     this.lastLiveFingerprint = undefined;
+    this.invalidateBrokerIndexCache();
     this.lastDiscovered = this.lastDiscovered.filter(
       (session) => session.id !== sessionId,
     );
@@ -4493,6 +4655,14 @@ export class GjcSdkController {
     this.cli = undefined;
     this.startup = undefined;
     this.startupSessionRows = undefined;
+    this.invalidateBrokerIndexCache();
+    for (const timer of this.commandRefreshTimers.values()) clearTimeout(timer);
+    this.commandRefreshTimers.clear();
+    this.commandRefreshAttempts.clear();
+    for (const timer of this.todoPollTimers.values()) clearTimeout(timer);
+    this.todoPollTimers.clear();
+    this.todoPollAttempts.clear();
+    this.publishedCommandKeys.clear();
     this.transcriptAttachments.clear();
     this.permissionModeApplied.clear();
     this.windowHostedSessions.clear();
@@ -4592,6 +4762,7 @@ export class GjcSdkController {
   private async start(): Promise<void> {
     const generation = ++this.generation;
     this.startupSessionRows = undefined;
+    this.invalidateBrokerIndexCache();
     this.setConnection({
       state: "connecting",
       backend: "gjc",
@@ -4626,11 +4797,11 @@ export class GjcSdkController {
     });
     // The broker index doubles as the reachability check: it fails closed with a
     // typed operational error when the broker cannot be started at all.
+    const beforeIndex = await this.brokerIndexRevision();
     const rows = await cli.listSessions({ scope: "all" });
-    // The version is informational: a runtime that cannot answer --version is not
-    // treated as unreachable when the broker already answered the session list.
-    const version = await cli.version().catch(() => undefined);
+    const afterIndex = await this.brokerIndexRevision();
     if (generation !== this.generation || this.disposed) return;
+    this.noteBrokerIndex(rows, beforeIndex, afterIndex);
     this.startupSessionRows = rows;
     this.cli = cli;
     this.permissionModeApplied.clear();
@@ -4641,13 +4812,25 @@ export class GjcSdkController {
       detail: `SDK session CLI · ${this.modelPreset}`,
       workspace: this.workspace,
       modelPreset: this.modelPreset,
-      ...(version ? { version } : {}),
       generation,
     });
     this.reconnectAttempt = 0;
     queueMicrotask(() => {
       void this.recoverOwnedSessions();
     });
+    // Version is informational. Waiting for it held the first paint behind a
+    // second process after the broker had already answered.
+    void this.publishRuntimeVersion(cli, generation);
+  }
+
+  private async publishRuntimeVersion(
+    cli: GjcSdkCli,
+    generation: number,
+  ): Promise<void> {
+    const version = await cli.version().catch(() => undefined);
+    if (!version || generation !== this.generation || this.disposed) return;
+    if (this.connectionState.state !== "connected") return;
+    this.setConnection({ ...this.connectionState, version });
   }
 
   /**
@@ -5131,6 +5314,7 @@ export class GjcSdkController {
     );
     this.tailReads.set(sessionId, follow);
     void follow.catch(() => undefined);
+    this.clearTodoPoll(sessionId);
     this.startToolObserver(sessionId);
   }
 
@@ -5598,6 +5782,73 @@ export class GjcSdkController {
    * query is strict -- a runtime that cannot answer is recorded as unreadable,
    * which is not the same thing as an empty list.
    */
+  /**
+   * Todo rows for the goal counters.
+   *
+   * An attached session hears todo changes from the tail (`todo_write` reads the
+   * store back). Polling `todo.list` on the goal interval repeated that read.
+   * A session with no tail still needs a fallback, and that fallback waits longer
+   * after each quiet pass.
+   */
+  private async todoRowsForGoal(sessionId: string): Promise<unknown[]> {
+    const snapshot = this.sessionTodoSnapshots.get(sessionId);
+    if (this.attachedSessions.has(sessionId)) {
+      this.clearTodoPoll(sessionId);
+      if (snapshot) return snapshot.rows ?? [];
+      return (await this.readTodoRecords(sessionId)) ?? [];
+    }
+    // A failed read still leaves a snapshot, and that must not turn the goal
+    // poll back into a `todo.list` on every pass. The backoff timer retries it.
+    if (snapshot) {
+      this.armTodoPoll(sessionId);
+      return snapshot.rows ?? [];
+    }
+    const rows = (await this.readTodoRecords(sessionId)) ?? [];
+    this.armTodoPoll(sessionId);
+    return rows;
+  }
+
+  private armTodoPoll(sessionId: string): void {
+    if (
+      this.disposed ||
+      this.attachedSessions.has(sessionId) ||
+      !this.sessions.has(sessionId) ||
+      this.todoPollTimers.has(sessionId)
+    )
+      return;
+    const attempt = this.todoPollAttempts.get(sessionId) ?? 0;
+    const delay = Math.min(
+      TODO_EVENT_POLL_MAX_MS,
+      TODO_EVENT_POLL_BASE_MS * 2 ** attempt,
+    );
+    const timer = setTimeout(() => {
+      this.todoPollTimers.delete(sessionId);
+      if (
+        this.disposed ||
+        !this.sessions.has(sessionId) ||
+        this.attachedSessions.has(sessionId)
+      )
+        return;
+      this.todoPollAttempts.set(sessionId, attempt + 1);
+      void this.readTodoRecords(sessionId).finally(() => {
+        if (
+          !this.disposed &&
+          this.sessions.has(sessionId) &&
+          !this.attachedSessions.has(sessionId)
+        )
+          this.armTodoPoll(sessionId);
+      });
+    }, delay);
+    this.todoPollTimers.set(sessionId, timer);
+  }
+
+  private clearTodoPoll(sessionId: string): void {
+    const timer = this.todoPollTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.todoPollTimers.delete(sessionId);
+    this.todoPollAttempts.delete(sessionId);
+  }
+
   private async readTodoRecords(
     sessionId: string,
   ): Promise<unknown[] | undefined> {
@@ -6659,6 +6910,9 @@ export class GjcSdkController {
     } catch (error) {
       if (!isLifecycleUncertain(error)) throw error;
     }
+    // The fork changes the broker index. A discovery cache taken before it
+    // would omit the new session until the index file's revision moved.
+    this.invalidateBrokerIndexCache();
     if (!forkedId)
       forkedId = await this.recoverForkedSession(
         cwd,
