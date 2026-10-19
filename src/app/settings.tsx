@@ -12,9 +12,10 @@ import type {
   NotificationPreferences,
 } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { Bell, CalendarClock, Check, Command, FolderOpen, ShieldCheck, Smartphone, X } from "lucide-react";
+import { Bell, CalendarClock, Check, Command, FolderOpen, Palette, ShieldCheck, Smartphone, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
+import { readStoredTheme, setThemeMode, type ThemeMode } from "../theme";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
 import { RemoteAccessPanel } from "./remote-access-panel";
@@ -181,6 +182,7 @@ export function SettingsDialog({
   };
   const [tab, setTab] = useState<
     | "gjc"
+    | "appearance"
     | "workspace"
     | "remote"
     | "mcp"
@@ -189,6 +191,7 @@ export function SettingsDialog({
     | "notifications"
     | "automations"
   >("gjc");
+  const [themeMode, setThemeModeState] = useState<ThemeMode>(() => readStoredTheme());
   const [management, setManagement] = useState<ManagementSnapshot | null>(null);
   const [managementError, setManagementError] = useState("");
   const [managementLoading, setManagementLoading] = useState(false);
@@ -215,6 +218,7 @@ export function SettingsDialog({
     preferences.gjcExecutable !== original.gjcExecutable;
   const tabTitle = {
     gjc: "GJC",
+    appearance: "모양",
     workspace: "Workspace 범위",
     remote: "원격 접속",
     mcp: "MCP 서버",
@@ -225,6 +229,7 @@ export function SettingsDialog({
   }[tab];
   const tabDescription = {
     gjc: "GJC 실행 파일과 새 세션이 시작될 모델 프로필·도구 승인 방식을 설정합니다.",
+    appearance: "앱의 테마와 표시 언어를 설정합니다.",
     workspace: "GJC가 확인하고 수정할 폴더를 선택합니다.",
     remote: "휴대폰과 다른 개인 기기에서 이 컴퓨터의 세션을 조회·조작합니다.",
     mcp: "GJC가 자동으로 로드할 MCP 서버를 관리합니다.",
@@ -443,6 +448,13 @@ export function SettingsDialog({
           </button>
           <button
             type="button"
+            className={tab === "appearance" ? "is-active" : ""}
+            onClick={() => setTab("appearance")}
+          >
+            <Palette size={17} /> 모양
+          </button>
+          <button
+            type="button"
             className={tab === "workspace" ? "is-active" : ""}
             onClick={() => setTab("workspace")}
           >
@@ -519,6 +531,37 @@ export function SettingsDialog({
             <p className="diff-error" role="alert">
               설정을 저장하지 못했습니다: {saveError}
             </p>
+          )}
+
+          {tab === "appearance" && (
+            <div className="settings-stack">
+              <div className="settings-panel">
+                <div className="settings-toggle-row">
+                  <span>
+                    <strong>테마</strong>
+                    <small>앱 전체의 밝기 모드를 선택합니다.</small>
+                  </span>
+                  <Dropdown
+                    ariaLabel="테마"
+                    value={themeMode}
+                    options={[
+                      { value: "light", label: "화이트" },
+                      { value: "dark", label: "블랙" },
+                      { value: "system", label: "시스템" },
+                    ]}
+                    onChange={(value) => {
+                      const mode = value as ThemeMode;
+                      setThemeMode(mode);
+                      setThemeModeState(mode);
+                    }}
+                  />
+                </div>
+              </div>
+              <p className="settings-note">
+                시스템은 macOS의 화면 모드를 따르며, 변경 즉시 앱 전체에
+                적용됩니다.
+              </p>
+            </div>
           )}
 
           {tab === "notifications" && (
@@ -803,7 +846,7 @@ export function SettingsDialog({
 
           {/* Remote access applies each change immediately and carries its own
               footnote, so the preferences save bar would be dead weight there. */}
-          {tab !== "automations" && tab !== "remote" && (
+          {tab !== "automations" && tab !== "remote" && tab !== "appearance" && (
             <footer className="settings-footer">
               <span>
                 {!loaded

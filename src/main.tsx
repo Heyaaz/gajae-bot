@@ -6,7 +6,10 @@ import { BackendProvider } from './backend/backend-provider'
 import { GjcAgentBackend } from './backend/gjc-agent-backend'
 import { MockAgentBackend } from './backend/mock-agent-backend'
 import { RemoteAgentBackend } from './backend/remote-agent-backend'
+import { initializeTheme } from './theme'
 import './index.css'
+
+initializeTheme()
 
 /**
  * Chooses the backend this window will run on.
