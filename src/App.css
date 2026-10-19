@@ -2622,6 +2622,7 @@
   right: 0;
   width: max-content;
   min-width: 176px;
+  max-width: min(320px, calc(100vw - 24px));
   gap: 0;
   padding: 3px;
 }
@@ -2640,7 +2641,7 @@
   grid-column: 1;
   grid-row: 1;
   display: grid;
-  grid-template-columns: 2em auto;
+  grid-template-columns: max-content auto;
   align-items: baseline;
   gap: 12px;
 }
@@ -4674,13 +4675,14 @@
 .settings-panel .dropdown-menu {
   left: auto;
   right: 0;
-  width: 100%;
-  min-width: 0;
+  width: max-content;
+  min-width: 100%;
+  max-width: min(320px, calc(100vw - 24px));
 }
 .dropdown-menu button > span {
   min-width: 0;
   white-space: normal;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .inspector-section > p {
   margin: 4px 0 12px;
