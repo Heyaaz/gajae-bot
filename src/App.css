@@ -2604,23 +2604,30 @@
 .tool-view-mode-toggle {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   color: var(--text-secondary);
   -webkit-app-region: no-drag;
 }
 .tool-view-mode-toggle .dropdown-trigger {
-  width: 78px;
-  height: 30px;
-  background: var(--bg-raised);
+  width: 62px;
+  height: 26px;
+  padding: 0 6px;
+  gap: 4px;
+  background: transparent;
+  font-size: 11px;
 }
 .tool-view-mode-toggle .dropdown-menu {
   left: auto;
   right: 0;
-  width: 200px;
+  width: 166px;
+  gap: 0;
+  padding: 3px;
 }
 .tool-view-mode-toggle .dropdown-menu button {
-  padding: 9px 10px;
-  font-size: 12px;
+  padding: 5px 7px;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.4;
 }
 .tool-run--collapsed {
   padding: 0;
