@@ -43,8 +43,6 @@ function desktopOnlyError(): string {
   return t("이 작업은 Gajae 데스크톱 앱에서만 할 수 있습니다.");
 }
 
-/** The session an event belongs to, so replay repair can tell stale data from live. */
-
 export class RemoteAgentBackend implements AgentBackend {
   readonly client: RemoteClient;
   readonly remoteAccess: RemoteAccessBridge;
@@ -57,6 +55,13 @@ export class RemoteAgentBackend implements AgentBackend {
   private lastConnection?: BackendConnection;
   private replayRepair?: Promise<void>;
   private repairRequested = false;
+  /**
+   * Sessions the shell is showing or has cached. A gap reloads only these.
+   * Unset until the shell reports, so a repair that races the first paint still
+   * covers every session in the snapshot.
+   */
+  private watchedTranscriptIds?: ReadonlySet<string>;
+  private watchedTranscriptKey?: string;
 
   constructor(options: RemoteClientOptions = {}) {
     this.client = new RemoteClient({
@@ -144,8 +149,12 @@ export class RemoteAgentBackend implements AgentBackend {
       const snapshot = await this.client.snapshot().catch(() => undefined);
       if (snapshot) {
         this.lastConnection = snapshot.connection;
+        const watched = this.watchedTranscriptIds;
+        const sessions = watched
+          ? snapshot.sessions.filter((session) => watched.has(session.id))
+          : snapshot.sessions;
         const applied = await Promise.all(
-          snapshot.sessions.map(async (session) => {
+          sessions.map(async (session) => {
             // A transcript read can take long enough for the live stream to deliver
             // newer deltas. Replacing the cache with that older read erased them, so
             // a read is only applied when its session saw no live event meanwhile.
@@ -207,6 +216,17 @@ export class RemoteAgentBackend implements AgentBackend {
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     return this.client.transcript(sessionId) as Promise<TranscriptItem[]>;
+  }
+
+  getTranscriptRevision(sessionId: string): Promise<string | undefined> {
+    return this.client.transcriptRevision(sessionId);
+  }
+
+  watchTranscripts(sessionIds: readonly string[]): void {
+    const key = sessionIds.join("\0");
+    if (key === this.watchedTranscriptKey) return;
+    this.watchedTranscriptKey = key;
+    this.watchedTranscriptIds = new Set(sessionIds);
   }
 
   async refreshSessionContext(sessionId: string): Promise<void> {

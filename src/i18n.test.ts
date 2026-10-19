@@ -2,17 +2,24 @@ import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import ts from "typescript";
 import { afterEach, describe, expect, it } from "vitest";
+import { MESSAGES } from "./i18n-messages";
 import {
-  MESSAGES,
+  ensureEnglishDictionary,
+  getLanguage,
+  installEnglishDictionary,
   readLanguageMode,
   resolveLanguage,
   setLanguageMode,
   storeLanguageMode,
   systemLanguage,
   t,
+  unloadEnglishDictionary,
 } from "./i18n";
 
-afterEach(() => setLanguageMode("ko"));
+afterEach(async () => {
+  installEnglishDictionary(MESSAGES);
+  setLanguageMode("ko");
+});
 
 function productionSources(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -82,6 +89,16 @@ describe("i18n", () => {
   it("keeps Korean as the source language", () => {
     setLanguageMode("ko");
     expect(t("세션이 없습니다")).toBe("세션이 없습니다");
+  });
+
+  it("keeps the Korean source until the English dictionary arrives", async () => {
+    unloadEnglishDictionary();
+    expect(setLanguageMode("en")).toBe("en");
+    expect(getLanguage()).toBe("ko");
+    expect(t("세션이 없습니다")).toBe("세션이 없습니다");
+    await ensureEnglishDictionary();
+    expect(getLanguage()).toBe("en");
+    expect(t("세션이 없습니다")).toBe("No sessions");
   });
 
   it("interpolates tagged templates in either language", () => {

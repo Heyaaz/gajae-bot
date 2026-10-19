@@ -59,6 +59,11 @@ export default defineConfig({
   base: '/',
   publicDir: 'web',
   plugins: [react(), cspPlugin],
+  // A phone never needs the fabricated backend. Leaving the flag false lets the
+  // production web build drop that chunk.
+  define: {
+    __GAJAE_INCLUDE_MOCK__: 'false',
+  },
   build: {
     outDir: 'dist/web',
     emptyOutDir: true,

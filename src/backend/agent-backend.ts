@@ -42,10 +42,17 @@ export interface AgentBackend {
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
   /**
-   * Cheap durable-file revision used by the selected transcript safety net. Remote
-   * backends omit it and keep the full-read fallback.
+   * Cheap revision of the selected transcript. The same value means the body has
+   * not changed, so the safety net skips the read. A backend that omits it falls
+   * back to reading the body and keeping the previous state when the rows match.
    */
   getTranscriptRevision?(sessionId: string): Promise<string | undefined>;
+  /**
+   * Sessions a replay gap may reload: the one on screen and any transcript this
+   * window already cached. Unset means every session, which is the fallback for a
+   * caller that has not reported a cache yet.
+   */
+  watchTranscripts?(sessionIds: readonly string[]): void;
   /** Loads command/todo context once when a session is opened, never on a poll. */
   refreshSessionContext?(sessionId: string): Promise<void>;
   setSessionConfig(

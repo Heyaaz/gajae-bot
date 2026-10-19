@@ -4,13 +4,15 @@ import App from './App'
 import type { AgentBackend } from './backend/agent-backend'
 import { BackendProvider } from './backend/backend-provider'
 import { GjcAgentBackend } from './backend/gjc-agent-backend'
-import { MockAgentBackend } from './backend/mock-agent-backend'
 import { RemoteAgentBackend } from './backend/remote-agent-backend'
 import { initializeTheme } from './theme'
-import { initializeLanguage, getLanguage } from './i18n'
+import { ensureEnglishDictionary, initializeLanguage, getLanguage } from './i18n'
 import './index.css'
 
 initializeLanguage()
+// English copy is a separate chunk. Wait for it before the first paint so a
+// session that is already set to English does not flash the Korean source.
+if (getLanguage() === 'en') await ensureEnglishDictionary()
 const settingsBridge = window.agentControlDesktop?.settings
 if (settingsBridge) void settingsBridge.setLanguage(getLanguage()).catch(() => undefined)
 initializeTheme()
@@ -31,23 +33,31 @@ initializeTheme()
  * the source of truth about the agent, which makes a silent swap to fiction the
  * worst thing it can do.
  *
+ * The implementation is a separate chunk, loaded only on that explicit path.
+ * Desktop builds keep the chunk so `--smoke` can open `dist/index.html?backend=mock`.
+ * The web production build omits it.
+ *
  * A backend that cannot connect is returned anyway. It reports its own failure
  * through `getConnection`, and the shell renders that state with a retry, which
  * is what lets a user recover once the runtime is back.
  */
-function selectBackend(): AgentBackend {
+async function selectBackend(): Promise<AgentBackend> {
   const params = new URLSearchParams(window.location.search)
   const forceMock = params.get('backend') === 'mock'
   const desktop = window.agentControlDesktop?.gjc
   const browserOrigin =
     window.location.protocol === 'http:' || window.location.protocol === 'https:'
   if (forceMock || (!desktop && !browserOrigin)) {
-    const mock = new MockAgentBackend()
-    // The inspector smoke needs a session long enough that mounting every row would be
-    // visible, to prove the transcript is windowed.
-    const seed = Number.parseInt(params.get('seedTranscript') ?? '', 10)
-    if (Number.isFinite(seed) && seed > 0) mock.seedLargeTranscript(seed)
-    return mock
+    if (import.meta.env.DEV || __GAJAE_INCLUDE_MOCK__) {
+      const { MockAgentBackend } = await import('./backend/mock-agent-backend')
+      const mock = new MockAgentBackend()
+      // The inspector smoke needs a session long enough that mounting every row would be
+      // visible, to prove the transcript is windowed.
+      const seed = Number.parseInt(params.get('seedTranscript') ?? '', 10)
+      if (Number.isFinite(seed) && seed > 0) mock.seedLargeTranscript(seed)
+      return mock
+    }
+    throw new Error('Mock backend is not included in this build')
   }
   if (desktop) return new GjcAgentBackend(desktop)
   const remote = new RemoteAgentBackend()
@@ -71,7 +81,7 @@ function registerRemoteServiceWorker(): void {
   })
 }
 
-const backend = selectBackend()
+const backend = await selectBackend()
 const mount = document.getElementById('root')
 
 if (!mount) {

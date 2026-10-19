@@ -142,6 +142,7 @@ import {
   gitBranchFromHeader,
   hasLivePrefix,
   historySessionSummary,
+  sessionCwdFromLines,
   imageFromContent,
   inferToolName,
   isLiveOnlyRow,
@@ -200,6 +201,39 @@ import {
 import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
 
 export * from "./gjc-sdk-foundation.js";
+
+/** Fallback todo read when the session has no live todo event channel. */
+export const TODO_EVENT_POLL_BASE_MS = 30_000;
+export const TODO_EVENT_POLL_MAX_MS = 120_000;
+/** Command palette refresh after a failed read, doubled until the cap. */
+export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
+export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
+
+/**
+ * Durable broker session index.
+ *
+ * `gjc sdk session list` projects this file. Its device, inode, size, and
+ * mtime are the revision a discovery poll compares so an unchanged index does
+ * not spawn another list process.
+ */
+function brokerSessionIndexPath(): string {
+  return path.join(
+    path.resolve(
+      process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
+    ),
+    "sessions",
+    "index.jsonl",
+  );
+}
+
+function commandPublicationKey(commands: readonly AgentCommand[]): string {
+  return commands
+    .map(
+      (command) =>
+        `${command.name}\0${command.description}\0${command.hint ?? ""}`,
+    )
+    .join("\n");
+}
 
 export class GjcSdkController {
   private workspace: string;
@@ -321,6 +355,12 @@ export class GjcSdkController {
   /** Monotonic per-session lifecycle generation for async status reads and IPC merges. */
   private readonly runRevisions = new Map<string, number>();
   /**
+   * Bumps when this process changes a transcript the file has not recorded yet:
+   * a streamed row, a plan, a todo snapshot. The file stat cannot see those, so
+   * the safety-net revision includes this counter.
+   */
+  private readonly transcriptEpoch = new Map<string, number>();
+  /**
    * Transcript-derived run state per session, keyed by the file size it was read at.
    *
    * `runningJobIds` records the launch markers the verdict at that size rests on,
@@ -333,6 +373,19 @@ export class GjcSdkController {
   /** Delay between broker polls while recovering a fork's session id. */
   private forkRecoveryIntervalMs = 250;
   private readonly sessionCommands = new Map<string, AgentCommand[]>();
+  /** Last command palette actually handed to the renderer, so an identical reopen is silent. */
+  private readonly publishedCommandKeys = new Map<string, string>();
+  private readonly commandRefreshTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly commandRefreshAttempts = new Map<string, number>();
+  /** Long todo reads used only while a session has no live todo event channel. */
+  private readonly todoPollTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
+  private readonly todoPollAttempts = new Map<string, number>();
   /**
    * Commands the runtime itself advertised (`available_commands_update`).
    *
@@ -394,6 +447,8 @@ export class GjcSdkController {
       size: number;
       envelopes: Record<string, unknown>[];
       partial: string;
+      /** Bytes this read took from disk. Zero when the cached parse was reused. */
+      bytesRead: number;
     }
   >();
   private readonly sharedSessionWatchers = new Map<string, FSWatcher>();
@@ -551,6 +606,9 @@ export class GjcSdkController {
   // The startup reachability check is also the first complete global index.
   // Only discovery consumes it; lifecycle operations always ask for fresh evidence.
   private startupSessionRows: SdkSessionRow[] | undefined;
+  /** Last full broker list whose index file revision was stable across the read. */
+  private cachedBrokerRows: SdkSessionRow[] | undefined;
+  private cachedBrokerRevision: string | undefined;
   // The session map is a durable cache keyed by every id ever seen, including
   // rows discovery later filtered out. Yielding must replay the last discovered
   // list instead, or skipping a scan resurrects dead sessions in the sidebar.
@@ -1409,12 +1467,61 @@ export class GjcSdkController {
         this.startupSessionRows = undefined;
         return rows;
       }
-      return await cli.listSessions({
+      // Lifecycle reads (delete, fork recovery, create) always ask the broker.
+      // Discovery is the 15s poll: an unchanged index file has nothing new to list.
+      if (options?.initialDiscovery && (await this.brokerIndexUnchanged()))
+        return this.cachedBrokerRows!.map((row) => ({ ...row }));
+      const before = options?.initialDiscovery
+        ? await this.brokerIndexRevision()
+        : undefined;
+      const rows = await cli.listSessions({
         scope: options?.scope ?? "all",
       });
+      if (options?.initialDiscovery)
+        this.noteBrokerIndex(rows, before, await this.brokerIndexRevision());
+      return rows;
     } catch {
       return undefined;
     }
+  }
+
+  private invalidateBrokerIndexCache(): void {
+    this.cachedBrokerRows = undefined;
+    this.cachedBrokerRevision = undefined;
+  }
+
+  private async brokerIndexRevision(): Promise<string | undefined> {
+    try {
+      const info = await stat(brokerSessionIndexPath());
+      if (!info.isFile()) return undefined;
+      return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async brokerIndexUnchanged(): Promise<boolean> {
+    if (!this.cachedBrokerRevision || !this.cachedBrokerRows) return false;
+    return (await this.brokerIndexRevision()) === this.cachedBrokerRevision;
+  }
+
+  /**
+   * Keeps a discovery list only when the index file did not move during the read.
+   *
+   * A revision that changes mid-scan belongs to a newer index than the rows just
+   * returned, so the next poll has to read again instead of treating them as current.
+   */
+  private noteBrokerIndex(
+    rows: readonly SdkSessionRow[],
+    before: string | undefined,
+    after: string | undefined,
+  ): void {
+    if (before && before === after) {
+      this.cachedBrokerRevision = after;
+      this.cachedBrokerRows = rows.map((row) => ({ ...row }));
+      return;
+    }
+    this.invalidateBrokerIndexCache();
   }
 
   async createSession(input: CreateSessionInput): Promise<AgentSession> {
@@ -1539,6 +1646,7 @@ export class GjcSdkController {
     // The startup scan predates this mutation and would hide the new session on
     // the first list call, even though create already announced it to the UI.
     this.startupSessionRows = undefined;
+    this.invalidateBrokerIndexCache();
     const createdSessionId = response.sessionId;
     const session: AgentSession = {
       id: createdSessionId,
@@ -1646,16 +1754,31 @@ export class GjcSdkController {
    */
   async refreshSessionContext(sessionId: string): Promise<void> {
     const commands = this.sessionCommands.get(sessionId);
-    if (commands)
-      this.emitEvent({
-        type: "session.commands",
-        sessionId,
-        commands: commands.map((command) => ({ ...command })),
-      });
+    if (commands) this.publishSessionCommands(sessionId, commands);
     await Promise.all([
       this.refreshSdkCommands(sessionId),
       this.readTodoRecords(sessionId),
     ]);
+  }
+
+  /**
+   * Hands the renderer a command palette once per distinct content.
+   *
+   * Reopening a session used to emit the cached palette on every visit, and the
+   * shell replaced its state with a new array of the same commands.
+   */
+  private publishSessionCommands(
+    sessionId: string,
+    commands: readonly AgentCommand[],
+  ): void {
+    const key = commandPublicationKey(commands);
+    if (this.publishedCommandKeys.get(sessionId) === key) return;
+    this.publishedCommandKeys.set(sessionId, key);
+    this.emitEvent({
+      type: "session.commands",
+      sessionId,
+      commands: commands.map((command) => ({ ...command })),
+    });
   }
 
   async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
@@ -1711,20 +1834,37 @@ export class GjcSdkController {
   }
 
   /**
-   * Revision of the durable transcript file, used by the renderer's low-frequency
-   * safety net. A stat is orders of magnitude cheaper than re-reading and cloning
-   * every row, and the inode catches a re-host that reuses the same path.
+   * Revision of the transcript the safety net compares.
+   *
+   * The file half is a stat: inode, size, and nanosecond mtime. The tail is this
+   * process's run generation and transcript epoch, so an in-memory plan, todo, or
+   * streamed row changes the revision before the file does. A stat alone pinned
+   * the old body to a new mtime when the sample happened after the read, and it
+   * missed memory that had moved on while the file had not.
    */
   async getTranscriptRevision(sessionId: string): Promise<string | undefined> {
+    const memory = `${this.currentRunRevision(sessionId)}:${this.transcriptEpoch.get(sessionId) ?? 0}`;
     const filePath = await this.locateSharedTranscriptFile(sessionId);
-    if (!filePath) return undefined;
+    if (!filePath) return `mem:${memory}`;
     try {
       const info = await stat(filePath);
-      if (!info.isFile()) return undefined;
-      return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+      if (!info.isFile()) return `mem:${memory}`;
+      // Nanoseconds distinguish two writes that share a millisecond and a size.
+      // The type bundled with this repo still names only `mtimeMs`.
+      const mtimeNs = (info as Stats & { mtimeNs?: bigint }).mtimeNs;
+      const mtime = mtimeNs === undefined ? String(info.mtimeMs) : mtimeNs.toString();
+      return `${info.dev}:${info.ino}:${info.size}:${mtime}:${memory}`;
     } catch {
-      return undefined;
+      return `mem:${memory}`;
     }
+  }
+
+  /** Marks an in-memory transcript change the durable file has not caught up to. */
+  private noteTranscriptEpoch(sessionId: string): void {
+    this.transcriptEpoch.set(
+      sessionId,
+      (this.transcriptEpoch.get(sessionId) ?? 0) + 1,
+    );
   }
 
   private async readSharedTranscript(
@@ -1788,6 +1928,7 @@ export class GjcSdkController {
       // An unchanged file is still a read, and the eviction order is what decides
       // which transcript survives. Returning early without touching it made the
       // most frequently polled session look like the stalest one.
+      previous.bytesRead = 0;
       this.rememberTranscriptRead(filePath, previous);
       return previous.envelopes.slice();
     }
@@ -1810,6 +1951,7 @@ export class GjcSdkController {
           size: info.size,
           envelopes,
           partial,
+          bytesRead: length,
         });
         return envelopes.slice();
       } finally {
@@ -1825,6 +1967,7 @@ export class GjcSdkController {
       size: info.size,
       envelopes,
       partial,
+      bytesRead: info.size,
     });
     return envelopes.slice();
   }
@@ -1838,6 +1981,7 @@ export class GjcSdkController {
       size: number;
       envelopes: Record<string, unknown>[];
       partial: string;
+      bytesRead: number;
     },
   ): void {
     // Re-inserting moves the key to the end, so the first key is always the one
@@ -3816,24 +3960,38 @@ export class GjcSdkController {
     if (advertised) this.sessionAdvertisedCommands.set(sessionId, advertised);
     // A capability query that answers nothing is not the same as one that answered
     // "no": the cached set is reused when there is one, and the adapter specs stay
-    // out of the palette rather than reporting a guess either way.
-    const operations = await this.sdkOperations(sessionId);
+    // out of the palette rather than reporting a guess either way. A query that
+    // fails is neither: the palette already on screen stays, and the read is
+    // retried with backoff instead of being abandoned until the next open.
+    let operations: Set<string>;
+    try {
+      operations = await this.sdkOperations(sessionId, { strict: true });
+    } catch {
+      this.scheduleCommandRefreshRetry(sessionId);
+      return;
+    }
     const authoritative = this.sessionAdvertisedCommands.get(sessionId);
-    const discovered =
-      authoritative === undefined
-        ? await this.discoverDynamicCommands(sessionId, operations).catch(
-            () => undefined,
-          )
-        : undefined;
+    let discovered: AgentCommand[] | undefined;
+    if (authoritative === undefined) {
+      try {
+        discovered = await this.discoverDynamicCommands(sessionId, operations);
+      } catch {
+        this.scheduleCommandRefreshRetry(sessionId);
+        return;
+      }
+    }
     if (discovered) this.sessionDiscoveredCommands.set(sessionId, discovered);
     else this.sessionDiscoveredCommands.delete(sessionId);
     if (
       operations.size === 0 &&
       authoritative === undefined &&
       discovered === undefined
-    )
+    ) {
       // Nothing to rebuild from: never publish an empty palette over a good cache.
+      // An empty answer is still an answer, so a previous failure stops retrying.
+      this.clearCommandRefreshRetry(sessionId);
       return;
+    }
     const commands = [
       ...new Map(
         [
@@ -3843,20 +4001,37 @@ export class GjcSdkController {
         ].map((command) => [command.name, command]),
       ).values(),
     ];
-    const previous = this.sessionCommands.get(sessionId);
     this.sessionCommands.set(sessionId, commands);
+    this.clearCommandRefreshRetry(sessionId);
+    this.publishSessionCommands(sessionId, commands);
+  }
+
+  private scheduleCommandRefreshRetry(sessionId: string): void {
     if (
-      previous &&
-      previous.length === commands.length &&
-      previous.every(
-        (command, index) =>
-          command.name === commands[index]?.name &&
-          command.description === commands[index]?.description &&
-          command.hint === commands[index]?.hint,
-      )
+      this.disposed ||
+      !this.sessions.has(sessionId) ||
+      this.commandRefreshTimers.has(sessionId)
     )
       return;
-    this.emitEvent({ type: "session.commands", sessionId, commands });
+    const attempt = this.commandRefreshAttempts.get(sessionId) ?? 0;
+    const delay = Math.min(
+      COMMAND_REFRESH_RETRY_MAX_MS,
+      COMMAND_REFRESH_RETRY_BASE_MS * 2 ** attempt,
+    );
+    this.commandRefreshAttempts.set(sessionId, attempt + 1);
+    const timer = setTimeout(() => {
+      this.commandRefreshTimers.delete(sessionId);
+      if (this.disposed || !this.sessions.has(sessionId)) return;
+      void this.refreshSdkCommands(sessionId);
+    }, delay);
+    this.commandRefreshTimers.set(sessionId, timer);
+  }
+
+  private clearCommandRefreshRetry(sessionId: string): void {
+    const timer = this.commandRefreshTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.commandRefreshTimers.delete(sessionId);
+    this.commandRefreshAttempts.delete(sessionId);
   }
 
   /**
@@ -3881,9 +4056,14 @@ export class GjcSdkController {
   ): Promise<AgentCommand[] | undefined> {
     if (!operations.has("skill.list/state")) return undefined;
     const [skills, config] = await Promise.all([
-      this.querySessionItems(sessionId, "skill.list/state"),
+      this.querySessionItems(sessionId, "skill.list/state", {}, { strict: true }),
       operations.has("config.list/get")
-        ? this.querySessionItems(sessionId, "config.list/get")
+        ? this.querySessionItems(
+            sessionId,
+            "config.list/get",
+            {},
+            { strict: true },
+          )
         : Promise.resolve([]),
     ]);
     if (skillsDisabledByConfig(config)) return [];
@@ -3913,12 +4093,17 @@ export class GjcSdkController {
     return [...commands.values()];
   }
 
-  private async sdkOperations(sessionId: string): Promise<Set<string>> {
+  private async sdkOperations(
+    sessionId: string,
+    options?: { strict?: boolean },
+  ): Promise<Set<string>> {
     const cached = this.sessionSdkOperations.get(sessionId);
     if (cached) return cached;
     const rows = await this.querySessionItems(
       sessionId,
       "runtime.capabilities",
+      {},
+      options?.strict ? { strict: true } : undefined,
     );
     const operations = new Set(
       rows.flatMap((row) => {
@@ -3938,9 +4123,12 @@ export class GjcSdkController {
   async getGoal(sessionId: string): Promise<GoalSnapshot> {
     // The todo read is shared with the transcript snapshot row, so the counters here
     // and the row a user can expand are the same observation of the same store.
+    // A live tail already re-reads the store when a todo tool finishes, so this
+    // poll must not call `todo.list` on the goal cadence. Without that channel the
+    // fallback below is a long backoff, not another 4s/10s query.
     const [goalRows, todoRows] = await Promise.all([
       this.querySessionItems(sessionId, "goal.list/get"),
-      this.readTodoRecords(sessionId),
+      this.todoRowsForGoal(sessionId),
     ]);
     const state =
       goalRows[0] &&
@@ -4441,6 +4629,9 @@ export class GjcSdkController {
     this.echoedPromptTexts.delete(sessionId);
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
+    this.publishedCommandKeys.delete(sessionId);
+    this.clearCommandRefreshRetry(sessionId);
+    this.clearTodoPoll(sessionId);
     this.sessionAdvertisedCommands.delete(sessionId);
     this.sessionDiscoveredCommands.delete(sessionId);
     this.sessionPlans.delete(sessionId);
@@ -4468,6 +4659,7 @@ export class GjcSdkController {
     // Removing a row changes what the next scan should produce even though the
     // broker's live set is untouched, so the reuse fingerprint is invalidated.
     this.lastLiveFingerprint = undefined;
+    this.invalidateBrokerIndexCache();
     this.lastDiscovered = this.lastDiscovered.filter(
       (session) => session.id !== sessionId,
     );
@@ -4493,6 +4685,14 @@ export class GjcSdkController {
     this.cli = undefined;
     this.startup = undefined;
     this.startupSessionRows = undefined;
+    this.invalidateBrokerIndexCache();
+    for (const timer of this.commandRefreshTimers.values()) clearTimeout(timer);
+    this.commandRefreshTimers.clear();
+    this.commandRefreshAttempts.clear();
+    for (const timer of this.todoPollTimers.values()) clearTimeout(timer);
+    this.todoPollTimers.clear();
+    this.todoPollAttempts.clear();
+    this.publishedCommandKeys.clear();
     this.transcriptAttachments.clear();
     this.permissionModeApplied.clear();
     this.windowHostedSessions.clear();
@@ -4525,6 +4725,7 @@ export class GjcSdkController {
     this.pendingAsyncWorkSessions.clear();
     this.asyncJobReconciliations.clear();
     this.runRevisions.clear();
+    this.transcriptEpoch.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -4592,6 +4793,7 @@ export class GjcSdkController {
   private async start(): Promise<void> {
     const generation = ++this.generation;
     this.startupSessionRows = undefined;
+    this.invalidateBrokerIndexCache();
     this.setConnection({
       state: "connecting",
       backend: "gjc",
@@ -4626,11 +4828,11 @@ export class GjcSdkController {
     });
     // The broker index doubles as the reachability check: it fails closed with a
     // typed operational error when the broker cannot be started at all.
+    const beforeIndex = await this.brokerIndexRevision();
     const rows = await cli.listSessions({ scope: "all" });
-    // The version is informational: a runtime that cannot answer --version is not
-    // treated as unreachable when the broker already answered the session list.
-    const version = await cli.version().catch(() => undefined);
+    const afterIndex = await this.brokerIndexRevision();
     if (generation !== this.generation || this.disposed) return;
+    this.noteBrokerIndex(rows, beforeIndex, afterIndex);
     this.startupSessionRows = rows;
     this.cli = cli;
     this.permissionModeApplied.clear();
@@ -4641,13 +4843,25 @@ export class GjcSdkController {
       detail: `SDK session CLI · ${this.modelPreset}`,
       workspace: this.workspace,
       modelPreset: this.modelPreset,
-      ...(version ? { version } : {}),
       generation,
     });
     this.reconnectAttempt = 0;
     queueMicrotask(() => {
       void this.recoverOwnedSessions();
     });
+    // Version is informational. Waiting for it held the first paint behind a
+    // second process after the broker had already answered.
+    void this.publishRuntimeVersion(cli, generation);
+  }
+
+  private async publishRuntimeVersion(
+    cli: GjcSdkCli,
+    generation: number,
+  ): Promise<void> {
+    const version = await cli.version().catch(() => undefined);
+    if (!version || generation !== this.generation || this.disposed) return;
+    if (this.connectionState.state !== "connected") return;
+    this.setConnection({ ...this.connectionState, version });
   }
 
   /**
@@ -4869,8 +5083,9 @@ export class GjcSdkController {
       throw new Error(`세션 기록을 찾지 못했습니다: ${sessionId}`);
     let cwd: string | undefined;
     try {
-      const text = await readFile(filePath, "utf8");
-      cwd = historySessionSummary(text.split("\n"))?.cwd;
+      // The envelope is in the head. The body is read later, when the transcript
+      // itself is opened, so picking a session does not load the whole JSONL.
+      cwd = sessionCwdFromLines(await transcriptHeadLines(filePath));
     } catch {
       /* the workspace falls back below */
     }
@@ -5131,6 +5346,7 @@ export class GjcSdkController {
     );
     this.tailReads.set(sessionId, follow);
     void follow.catch(() => undefined);
+    this.clearTodoPoll(sessionId);
     this.startToolObserver(sessionId);
   }
 
@@ -5421,6 +5637,7 @@ export class GjcSdkController {
       );
       if (!thought) return;
       thought.content += text;
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({
         type: "thought.delta",
         sessionId,
@@ -5453,6 +5670,7 @@ export class GjcSdkController {
     );
     if (thought) {
       thought.streaming = false;
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({
         type: "thought.delta",
         sessionId,
@@ -5485,8 +5703,10 @@ export class GjcSdkController {
       })),
       createdAt: existing?.createdAt ?? nowLabel(),
     };
-    if (existing) Object.assign(existing, plan);
-    else this.appendTranscript(plan);
+    if (existing) {
+      Object.assign(existing, plan);
+      this.noteTranscriptEpoch(sessionId);
+    } else this.appendTranscript(plan);
     // The row the session actually carries is the retained one, so a later durable
     // rebuild composes the same plan state instead of an earlier copy of it. An
     // update with no entries is still an update: it clears them.
@@ -5598,6 +5818,73 @@ export class GjcSdkController {
    * query is strict -- a runtime that cannot answer is recorded as unreadable,
    * which is not the same thing as an empty list.
    */
+  /**
+   * Todo rows for the goal counters.
+   *
+   * An attached session hears todo changes from the tail (`todo_write` reads the
+   * store back). Polling `todo.list` on the goal interval repeated that read.
+   * A session with no tail still needs a fallback, and that fallback waits longer
+   * after each quiet pass.
+   */
+  private async todoRowsForGoal(sessionId: string): Promise<unknown[]> {
+    const snapshot = this.sessionTodoSnapshots.get(sessionId);
+    if (this.attachedSessions.has(sessionId)) {
+      this.clearTodoPoll(sessionId);
+      if (snapshot) return snapshot.rows ?? [];
+      return (await this.readTodoRecords(sessionId)) ?? [];
+    }
+    // A failed read still leaves a snapshot, and that must not turn the goal
+    // poll back into a `todo.list` on every pass. The backoff timer retries it.
+    if (snapshot) {
+      this.armTodoPoll(sessionId);
+      return snapshot.rows ?? [];
+    }
+    const rows = (await this.readTodoRecords(sessionId)) ?? [];
+    this.armTodoPoll(sessionId);
+    return rows;
+  }
+
+  private armTodoPoll(sessionId: string): void {
+    if (
+      this.disposed ||
+      this.attachedSessions.has(sessionId) ||
+      !this.sessions.has(sessionId) ||
+      this.todoPollTimers.has(sessionId)
+    )
+      return;
+    const attempt = this.todoPollAttempts.get(sessionId) ?? 0;
+    const delay = Math.min(
+      TODO_EVENT_POLL_MAX_MS,
+      TODO_EVENT_POLL_BASE_MS * 2 ** attempt,
+    );
+    const timer = setTimeout(() => {
+      this.todoPollTimers.delete(sessionId);
+      if (
+        this.disposed ||
+        !this.sessions.has(sessionId) ||
+        this.attachedSessions.has(sessionId)
+      )
+        return;
+      this.todoPollAttempts.set(sessionId, attempt + 1);
+      void this.readTodoRecords(sessionId).finally(() => {
+        if (
+          !this.disposed &&
+          this.sessions.has(sessionId) &&
+          !this.attachedSessions.has(sessionId)
+        )
+          this.armTodoPoll(sessionId);
+      });
+    }, delay);
+    this.todoPollTimers.set(sessionId, timer);
+  }
+
+  private clearTodoPoll(sessionId: string): void {
+    const timer = this.todoPollTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.todoPollTimers.delete(sessionId);
+    this.todoPollAttempts.delete(sessionId);
+  }
+
   private async readTodoRecords(
     sessionId: string,
   ): Promise<unknown[] | undefined> {
@@ -5725,6 +6012,7 @@ export class GjcSdkController {
       if (index >= 0) items[index] = row;
       else items.push(row);
     }
+    this.noteTranscriptEpoch(sessionId);
     this.emitEvent({
       type: "transcript.appended",
       item: cloneTranscriptItem(row),
@@ -6186,6 +6474,7 @@ export class GjcSdkController {
       message.content += text;
       if (image) message.images = [...(message.images ?? []), image];
       message.streaming = role === "assistant";
+      this.noteTranscriptEpoch(sessionId);
       if (image)
         this.emitEvent({
           type: "message.updated",
@@ -6333,6 +6622,7 @@ export class GjcSdkController {
     }
     if (existing) {
       Object.assign(existing, patch);
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({ type: "tool.updated", tool: { ...existing } });
     } else {
       this.appendTranscript(patch);
@@ -6346,6 +6636,7 @@ export class GjcSdkController {
       const settled = existing ?? patch;
       void this.resolveToolImages([settled])
         .then(() => {
+          this.noteTranscriptEpoch(sessionId);
           this.emitEvent({ type: "tool.updated", tool: { ...settled } });
         })
         .catch(() => undefined);
@@ -6435,6 +6726,7 @@ export class GjcSdkController {
         tool.status !== "approval-required" &&
         patch.status === "approval-required";
       Object.assign(tool, patch);
+      this.noteTranscriptEpoch(tool.sessionId);
       this.emitEvent({ type: "tool.updated", tool: { ...tool } });
       if (waiting) this.emitActivity(tool.sessionId, "permission");
       return;
@@ -6659,6 +6951,9 @@ export class GjcSdkController {
     } catch (error) {
       if (!isLifecycleUncertain(error)) throw error;
     }
+    // The fork changes the broker index. A discovery cache taken before it
+    // would omit the new session until the index file's revision moved.
+    this.invalidateBrokerIndexCache();
     if (!forkedId)
       forkedId = await this.recoverForkedSession(
         cwd,
@@ -6907,6 +7202,7 @@ export class GjcSdkController {
     const items = this.transcripts.get(item.sessionId) ?? [];
     items.push(item);
     this.transcripts.set(item.sessionId, items);
+    this.noteTranscriptEpoch(item.sessionId);
     this.emitEvent({
       type: "transcript.appended",
       item: cloneTranscriptItem(item),
@@ -6941,6 +7237,7 @@ export class GjcSdkController {
     const message = items.find((item) => item.id === messageId);
     if (message?.kind === "message") {
       message.streaming = false;
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({
         type: "message.delta",
         sessionId,
@@ -6954,9 +7251,11 @@ export class GjcSdkController {
 
   private finalizeAllMessages(sessionId: string): void {
     const items = this.transcripts.get(sessionId) ?? [];
+    let changed = false;
     for (const item of items) {
       if (item.kind !== "message" || !item.streaming) continue;
       item.streaming = false;
+      changed = true;
       this.emitEvent({
         type: "message.delta",
         sessionId,
@@ -6965,6 +7264,7 @@ export class GjcSdkController {
         streaming: false,
       });
     }
+    if (changed) this.noteTranscriptEpoch(sessionId);
     this.activeAssistantMessages.delete(sessionId);
   }
 

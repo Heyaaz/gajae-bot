@@ -37,4 +37,8 @@ const cspPlugin = {
 export default defineConfig({
   base: './',
   plugins: [react(), cspPlugin],
+  // The unpackaged smoke run loads this production bundle with ?backend=mock.
+  define: {
+    __GAJAE_INCLUDE_MOCK__: 'true',
+  },
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TranscriptItem } from "./backend/types";
 import {
+  applyTranscriptRead,
   cacheTranscript,
   appendProgressBlock,
   copyableMessageText,
@@ -1032,6 +1033,21 @@ describe("cacheTranscript", () => {
     ]);
     expect(firstChanged["session-1"][0]).toBe(first);
     expect(firstChanged["session-1"][1]).toBe(changedSecond);
+
+    const sameLength = cacheTranscript({ "session-1": [first] }, "session-1", [
+      { ...first, content: "첫 글자" },
+    ]);
+    expect(sameLength["session-1"][0]).not.toBe(first);
+    expect(sameLength["session-1"][0]).toMatchObject({ content: "첫 글자" });
+
+    const source = { "session-1": [first, second] };
+    const kept = applyTranscriptRead(source, "session-1", [{ ...first }, { ...second }]);
+    expect(kept).toBe(source);
+    const olderSource = { "session-2": [first], "session-1": [second] };
+    const older = applyTranscriptRead(olderSource, "session-2", [{ ...first }]);
+    expect(older).not.toBe(olderSource);
+    expect(Object.keys(older)).toEqual(["session-1", "session-2"]);
+    expect(older["session-2"]?.[0]).toBe(first);
 
     const changedFirst = { ...first, content: "바뀐 첫 번째" };
     const secondUnchanged = cacheTranscript(

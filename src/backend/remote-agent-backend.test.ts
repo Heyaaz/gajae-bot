@@ -34,7 +34,7 @@ function storage() {
 
 function backend(
   respond: (call: Call) => Response | undefined,
-  options: { permission?: RemotePermission } = {},
+  options: { permission?: RemotePermission; sessionIds?: string[] } = {},
 ) {
   const calls: Call[] = [];
   const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -56,22 +56,20 @@ function backend(
             detail: "원격",
             workspace: "/tmp/ws",
           },
-          sessions: [
-            {
-              id: "s-1",
-              title: "세션",
-              subtitle: "",
-              workspace: "/tmp/ws",
-              runtime: "gjc",
-              status: "idle",
-              updatedAt: new Date(0).toISOString(),
-              pinned: false,
-              unread: false,
-              accent: "#fff",
-              ownership: "gajae",
-              attachment: "attached",
-            },
-          ],
+          sessions: (options.sessionIds ?? ["s-1"]).map((id) => ({
+            id,
+            title: "세션",
+            subtitle: "",
+            workspace: "/tmp/ws",
+            runtime: "gjc",
+            status: "idle",
+            updatedAt: new Date(0).toISOString(),
+            pinned: false,
+            unread: false,
+            accent: "#fff",
+            ownership: "gajae",
+            attachment: "attached",
+          })),
           device: { id: "d-1", name: "iPhone", permission: options.permission ?? "control" },
           server: { version: "0.1.0", time: new Date(0).toISOString(), workspace: "/tmp/ws", protocol: 1 },
         }),
@@ -193,6 +191,45 @@ describe("remote agent backend", () => {
     await vi.waitFor(() => expect(deltas).toEqual(["one two"]));
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(deltas).toEqual(["one two"]);
+    instance.dispose();
+  });
+
+  it("reads a transcript revision without the transcript body", async () => {
+    const { instance, calls } = backend((call) => {
+      if (call.url.endsWith("/transcript-revision"))
+        return new Response(JSON.stringify({ result: "rev-9" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      return undefined;
+    });
+    await expect(instance.getTranscriptRevision("s-1")).resolves.toBe("rev-9");
+    expect(calls.map((call) => call.url)).toContain(REMOTE_API.transcriptRevision("s-1"));
+    expect(calls.map((call) => call.url)).not.toContain(REMOTE_API.transcript("s-1"));
+    instance.dispose();
+  });
+
+  it("reloads only watched transcripts after a replay gap", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const { instance, calls } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
+      if (call.url.includes("/transcript"))
+        return new Response(JSON.stringify({ result: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      return undefined;
+    }, { sessionIds: ["s-1", "s-2", "s-3"] });
+    instance.watchTranscripts(["s-2"]);
+    const synced: string[] = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.synced") synced.push(event.sessionId);
+    });
+    await vi.waitFor(() => expect(synced).toEqual(["s-2"]));
+    const transcripts = calls
+      .map((call) => call.url)
+      .filter((url) => url.includes("/transcript"));
+    expect(transcripts).toEqual([REMOTE_API.transcript("s-2")]);
     instance.dispose();
   });
 

@@ -61,6 +61,10 @@ function fakeHost(): FakeHost {
       calls.push(`transcript:${sessionId}`);
       return [];
     },
+    async getTranscriptRevision(sessionId: string) {
+      calls.push(`transcript-revision:${sessionId}`);
+      return "rev";
+    },
     async refreshSessionContext(sessionId: string) {
       calls.push(`context:${sessionId}`);
     },
@@ -432,6 +436,12 @@ describe("remote server permissions", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ result: [] });
     expect(base.host.calls).toContain("transcript:s-1");
+    const revision = await fetch(base.url(REMOTE_API.transcriptRevision("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(revision.status).toBe(200);
+    expect(await revision.json()).toEqual({ result: "rev" });
+    expect(base.host.calls).toContain("transcript-revision:s-1");
   });
 
   it("refuses every control operation for a view-only device", async () => {

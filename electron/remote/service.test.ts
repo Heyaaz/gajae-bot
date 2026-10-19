@@ -25,6 +25,7 @@ const OPERATIONS: RemoteOperationName[] = [
   "state",
   "history-sessions",
   "transcript",
+  "transcript-revision",
   "context",
   "queued",
   "goal",
@@ -63,6 +64,10 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
     async getTranscript(sessionId: string) {
       calls.push(`transcript:${sessionId}`);
       return [];
+    },
+    async getTranscriptRevision(sessionId: string) {
+      calls.push(`transcript-revision:${sessionId}`);
+      return "rev";
     },
     async refreshSessionContext(sessionId: string) {
       calls.push(`context:${sessionId}`);
