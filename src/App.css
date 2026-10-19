@@ -4522,7 +4522,13 @@
 }
 .settings-panel label > span {
   display: grid;
+  min-width: 0;
+  flex: 1 1 0;
   gap: 3px;
+}
+.settings-panel > div.settings-toggle-row > span:first-child {
+  min-width: 0;
+  flex: 1 1 0;
 }
 .settings-panel label > span strong {
   color: var(--text-primary);
@@ -4611,9 +4617,14 @@
   cursor: pointer;
 }
 .settings-panel .dropdown {
-  min-width: 170px;
+  width: 200px;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 200px;
 }
 .settings-panel .dropdown-trigger {
+  width: 100%;
+  min-width: 0;
   padding: 0 9px;
   background: var(--bg-input);
 }
