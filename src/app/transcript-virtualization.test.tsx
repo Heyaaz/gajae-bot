@@ -417,6 +417,11 @@ describe("keeping a small downward scroll from jumping to the bottom", () => {
     const openingEvent = transcriptFollowDecision(reading(0, true, 150));
     expect(openingEvent.reading).toBe(true);
 
+    // Fractional scrollTop at a zoomed layout can leave the visual bottom 2-3px short.
+    // That is still a landing: keep the chip off even while the gesture window is open.
+    expect(transcriptFollowDecision(reading(2, true, 150)).following).toBe(true);
+    expect(transcriptFollowDecision(reading(4, true, 150)).following).toBe(false);
+
     // The 최신 내용으로 button is the other hand-back: it clears the latch outright, so the
     // position it scrolls to is following from its first frame.
     const asked = transcriptFollowDecision(reading(0, false));

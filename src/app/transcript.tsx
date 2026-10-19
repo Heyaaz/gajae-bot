@@ -74,7 +74,7 @@ const GESTURE_WINDOW_MS = 400;
 // How close to the content bottom counts as having arrived at it, in layout pixels. A
 // fraction of a pixel of rounding in scrollTop is not a position, and it is deliberately
 // not the slack for unmounted rows: that is a separate, much wider rule.
-const BOTTOM_EPSILON_PX = 1;
+const BOTTOM_EPSILON_PX = 3;
 
 // How many frames in a row the position, the measured total, and the viewport height have
 // to agree before a resize restoration is finished. Landing on the current bottom is not
@@ -245,7 +245,7 @@ export function transcriptRestoreSettled(
   follow: boolean,
 ): boolean {
   if (!frame.landed || frame.measuring || !frame.unchangedGeometry) return false;
-  return follow ? frame.remaining <= 1 : true;
+  return follow ? frame.remaining <= 3 : true;
 }
 
 /**
@@ -666,7 +666,15 @@ export function Transcript({
     // user was scrolling up, pulling the view up to 96px past where they had stopped.
     let interrupted = false;
     const noteForeignScroll = (): void => {
-      if (!selfScrollingRef.current && !handingBackRef.current) interrupted = true;
+      if (selfScrollingRef.current || handingBackRef.current) return;
+      const element = transcriptRef.current;
+      if (
+        element &&
+        element.scrollHeight - element.scrollTop - element.clientHeight <=
+          BOTTOM_EPSILON_PX
+      )
+        return;
+      interrupted = true;
     };
     transcriptRef.current.addEventListener("scroll", noteForeignScroll, {
       passive: true,
@@ -682,8 +690,10 @@ export function Transcript({
       // scroll was silently overwritten.
       if (interrupted) {
         selfScrollingRef.current = false;
-        followingRef.current = false;
-        setFollowing(false);
+        // A foreign event can be the tail of the gesture that just landed on the
+        // bottom. Re-read the position instead of freezing following off: the chip
+        // stayed on screen after the user was already at the newest content.
+        updateScrollFollowing();
         return;
       }
       // A gesture that claimed the view while this correction was pending owns it. The
@@ -701,7 +711,7 @@ export function Transcript({
       element.scrollTop = element.scrollHeight - element.clientHeight;
       attempts += 1;
       const settled =
-        element.scrollHeight - element.scrollTop - element.clientHeight <= 1;
+        element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_EPSILON_PX;
       if ((settled && attempts > 2) || attempts > 30) {
         selfScrollingRef.current = false;
         return;
@@ -1057,7 +1067,7 @@ export function Transcript({
       if (!scroller || !followingRef.current || scrolledAwayRef.current) return;
       const remaining =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-      if (remaining <= 1) return;
+      if (remaining <= BOTTOM_EPSILON_PX) return;
       selfScrollingRef.current = true;
       scroller.scrollTop = scroller.scrollHeight - scroller.clientHeight;
       requestAnimationFrame(() => {
@@ -1132,7 +1142,7 @@ export function Transcript({
       previous = geometry;
       const landed =
         Math.abs(scroller.scrollTop - wanted) <= 0.5 &&
-        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= 1;
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_EPSILON_PX;
       stableFrames = landed && unchangedGeometry ? stableFrames + 1 : 0;
       if (stableFrames >= RESTORE_STABLE_FRAMES) {
         finish();

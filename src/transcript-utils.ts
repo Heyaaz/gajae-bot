@@ -711,7 +711,8 @@ export function shouldFollowTranscript(
   threshold = clientHeight,
 ): boolean {
   const remaining = scrollHeight - scrollTop - clientHeight;
-  if (scrolledAway) return remaining <= 1;
+  // Fractional scrollTop and zoomed layout can stop a real landing 2-3px short.
+  if (scrolledAway) return remaining <= 3;
   return remaining < threshold;
 }
 

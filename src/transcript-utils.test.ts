@@ -1324,8 +1324,10 @@ describe("shouldFollowTranscript", () => {
     // showed up on small scrolls.
     expect(at(109, true)).toBe(false);
     expect(at(40, true)).toBe(false);
-    // Any distance at all, once it was asked for.
-    expect(at(2, true)).toBe(false);
+    // A few fractional pixels are a landing, not a reading position: browser zoom and
+    // scrollTop rounding can leave the visual bottom 2-3px away.
+    expect(at(4, true)).toBe(false);
+    expect(at(3, true)).toBe(true);
   });
 
   it("still absorbs the estimation error from unmounted rows", () => {
