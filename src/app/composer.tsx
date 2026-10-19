@@ -36,7 +36,7 @@ import {
   Zap,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { configOptionGroups, directoryName, httpUrls, humanErrorMessage } from "./format";
 import { LinkPreviewCard } from "./primitives";
@@ -598,7 +598,7 @@ export interface ComposerProps {
   readOnly?: boolean;
 }
 
-export function Composer({
+export const Composer = memo(function Composer({
   sessionId,
   running,
   sessionTitle,
@@ -2039,4 +2039,4 @@ export function Composer({
       </div>
     </form>
   );
-}
+});

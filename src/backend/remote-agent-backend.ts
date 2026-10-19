@@ -25,6 +25,7 @@ import type {
   TranscriptItem,
 } from "./types";
 import { RemoteClient, type RemoteClientOptions } from "../remote/client";
+import { StreamDeltaCoalescer } from "./stream-delta-coalescer";
 import { t } from "../i18n";
 
 
@@ -46,6 +47,10 @@ export class RemoteAgentBackend implements AgentBackend {
   readonly client: RemoteClient;
   readonly remoteAccess: RemoteAccessBridge;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
+  /** Same 16ms join the desktop uses, so a remote chunk does not parse on its own. */
+  private readonly coalescer = new StreamDeltaCoalescer((event) => {
+    this.publish(event);
+  });
 
   private lastConnection?: BackendConnection;
   private replayRepair?: Promise<void>;
@@ -61,7 +66,7 @@ export class RemoteAgentBackend implements AgentBackend {
   constructor(options: RemoteClientOptions = {}) {
     this.client = new RemoteClient({
       ...options,
-      onEvent: (event) => this.emit(event),
+      onEvent: (event) => this.ingest(event),
       onResync: () => this.requestReplayRepair(),
     });
     this.remoteAccess = {
@@ -87,13 +92,24 @@ export class RemoteAgentBackend implements AgentBackend {
   /** Bumped by every live event, so a replay read can see whether it went stale. */
   private readonly eventVersions = new Map<string, number>();
 
-  private emit(event: AgentEvent): void {
+  /**
+   * Counts the event as soon as it arrives, then publishes text on the frame clock.
+   *
+   * Replay repair treats any live event during a transcript read as stale. Waiting
+   * to count until the joined delta is published would let that read land, and the
+   * delta that followed would append onto the snapshot it had just replaced.
+   */
+  private ingest(event: AgentEvent): void {
     const sessionId = eventSessionId(event);
     if (sessionId)
       this.eventVersions.set(
         sessionId,
         (this.eventVersions.get(sessionId) ?? 0) + 1,
       );
+    this.coalescer.receive(event);
+  }
+
+  private publish(event: AgentEvent): void {
     for (const listener of this.listeners) listener(event);
   }
 
@@ -149,7 +165,7 @@ export class RemoteAgentBackend implements AgentBackend {
             // unrepaired so this attempt fails and retries; treating it as applied
             // reported success while the gap's history was still missing.
             if ((this.eventVersions.get(session.id) ?? 0) !== version) return false;
-            this.emit({
+            this.ingest({
               type: "transcript.synced",
               sessionId: session.id,
               items: items as TranscriptItem[],
@@ -168,7 +184,7 @@ export class RemoteAgentBackend implements AgentBackend {
   private reportIncompleteRepair(): void {
     const connection = this.lastConnection;
     if (!connection) return;
-    this.emit({
+    this.ingest({
       type: "connection.updated",
       connection: {
         ...connection,
@@ -284,6 +300,7 @@ export class RemoteAgentBackend implements AgentBackend {
   }
 
   dispose(): void {
+    this.coalescer.dispose();
     this.client.dispose();
     this.listeners.clear();
   }

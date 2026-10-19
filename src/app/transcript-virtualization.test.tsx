@@ -8,9 +8,11 @@ import {
   resolveTurnProgress,
   transcriptBlockIndexForItem,
   transcriptRowEstimate,
+  TRANSCRIPT_BOTTOM_EPSILON_PX,
   type TurnActivityKind,
 } from "../transcript-utils";
 import {
+  GESTURE_WINDOW_MS,
   transcriptAnchorScrollTop,
   transcriptFollowDecision,
   transcriptGestureClaimsView,
@@ -252,6 +254,18 @@ describe("holding the reading position across a width change", () => {
     // Following is only done once the bottom is actually reached...
     expect(transcriptRestoreSettled({ ...settled, remaining: 902 }, true)).toBe(false);
     expect(transcriptRestoreSettled({ ...settled, remaining: 1 }, true)).toBe(true);
+    expect(
+      transcriptRestoreSettled(
+        { ...settled, remaining: TRANSCRIPT_BOTTOM_EPSILON_PX },
+        true,
+      ),
+    ).toBe(true);
+    expect(
+      transcriptRestoreSettled(
+        { ...settled, remaining: TRANSCRIPT_BOTTOM_EPSILON_PX + 1 },
+        true,
+      ),
+    ).toBe(false);
     // ...while an anchor only has to sit on its offset, however far off the bottom it is.
     expect(transcriptRestoreSettled({ ...settled, remaining: 109_274 }, false)).toBe(
       true,
@@ -420,7 +434,19 @@ describe("keeping a small downward scroll from jumping to the bottom", () => {
     // Fractional scrollTop at a zoomed layout can leave the visual bottom 2-3px short.
     // That is still a landing: keep the chip off even while the gesture window is open.
     expect(transcriptFollowDecision(reading(2, true, 150)).following).toBe(true);
+    expect(transcriptFollowDecision(reading(2, true, 150)).reading).toBe(true);
     expect(transcriptFollowDecision(reading(4, true, 150)).following).toBe(false);
+    // The window ending is itself the re-check. A 2px landing stops counting as
+    // reading, so a later chunk can follow without another scroll event.
+    const windowEnded = transcriptFollowDecision(
+      reading(TRANSCRIPT_BOTTOM_EPSILON_PX - 1, true, GESTURE_WINDOW_MS),
+    );
+    expect(windowEnded.following).toBe(true);
+    expect(windowEnded.reading).toBe(false);
+    const stillInside = transcriptFollowDecision(
+      reading(TRANSCRIPT_BOTTOM_EPSILON_PX - 1, true, GESTURE_WINDOW_MS - 1),
+    );
+    expect(stillInside.reading).toBe(true);
 
     // The 최신 내용으로 button is the other hand-back: it clears the latch outright, so the
     // position it scrolls to is following from its first frame.

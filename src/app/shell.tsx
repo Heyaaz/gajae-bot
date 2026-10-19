@@ -1064,35 +1064,41 @@ export default function App() {
       ).values(),
     ];
   }, [commands, selectedId, language]);
-  const selectedConfigOptions = selectedId
-    ? (configOptions[selectedId] ?? [])
-    : [];
-  const composerConfigOptions = selectedConfigOptions.some(
-    (option) => option.category === "model" || option.id === "model",
-  )
-    ? selectedConfigOptions
-    : [
-        {
-          id: "model",
-          name: t("프리셋"),
-          category: "model",
-          type: "select" as const,
-          currentValue:
-            selectedSession?.model ??
-            connection.modelPreset ??
-            DEFAULT_MODEL_PRESET,
-          options: [
-            {
-              value:
-                selectedSession?.model ??
-                connection.modelPreset ??
-                DEFAULT_MODEL_PRESET,
-              name: selectedSession?.modelDisplay ?? t("모델 확인 중…"),
-            },
-          ],
-        },
-        ...selectedConfigOptions,
-      ];
+  const selectedConfigOptions = useMemo(
+    () => (selectedId && configOptions[selectedId]) || [],
+    [configOptions, selectedId],
+  );
+  const composerModelPreset =
+    selectedSession?.model ?? connection.modelPreset ?? DEFAULT_MODEL_PRESET;
+  const composerConfigOptions = useMemo(() => {
+    if (
+      selectedConfigOptions.some(
+        (option) => option.category === "model" || option.id === "model",
+      )
+    )
+      return selectedConfigOptions;
+    return [
+      {
+        id: "model",
+        name: t("프리셋"),
+        category: "model",
+        type: "select" as const,
+        currentValue: composerModelPreset,
+        options: [
+          {
+            value: composerModelPreset,
+            name: selectedSession?.modelDisplay ?? t("모델 확인 중…"),
+          },
+        ],
+      },
+      ...selectedConfigOptions,
+    ];
+  }, [
+    composerModelPreset,
+    language,
+    selectedConfigOptions,
+    selectedSession?.modelDisplay,
+  ]);
   const recentWorkspaces = useMemo(
     () => [
       ...new Set(sessions.map((session) => session.workspace).filter(Boolean)),
@@ -1336,14 +1342,18 @@ export default function App() {
   // A run-failure notice's 다시 시도 button: resends the session's own last request
   // rather than making the user retype it. Text only -- the transcript does not
   // keep the original attachments to resend alongside it.
-  const retryLastRequest = useCallback(
-    (sessionId: string): void => {
-      const text = lastUserRequestContent(transcripts[sessionId] ?? []);
-      if (!text) return;
-      void sendMessage(sessionId, { text, images: [], files: [] });
-    },
-    [transcripts],
-  );
+  // The transcript changes on every streaming chunk. Reading it through a ref keeps
+  // this callback — and the memoized row that receives it — the same across those
+  // chunks. The text is read when the button is pressed, not when the row rendered.
+  const transcriptsRef = useRef(transcripts);
+  transcriptsRef.current = transcripts;
+  const sendMessageRef = useRef(sendMessage);
+  sendMessageRef.current = sendMessage;
+  const retryLastRequest = useCallback((sessionId: string): void => {
+    const text = lastUserRequestContent(transcriptsRef.current[sessionId] ?? []);
+    if (!text) return;
+    void sendMessageRef.current(sessionId, { text, images: [], files: [] });
+  }, []);
 
   async function setSessionConfig(
     sessionId: string,
@@ -1523,7 +1533,7 @@ export default function App() {
    * whichever one arrives first -- and the event that follows an optimistic delete
    * finds nothing left to move.
    */
-  function forgetSession(sessionId: string): void {
+  const forgetSession = useCallback((sessionId: string): void => {
     setSessions((current) => {
       const remaining = current.filter((session) => session.id !== sessionId);
       setSelectedId((selected) =>
@@ -1536,7 +1546,7 @@ export default function App() {
       delete next[sessionId];
       return next;
     });
-  }
+  }, []);
 
   /**
    * Hides a session from the rail without deleting anything GJC owns.
@@ -1546,7 +1556,7 @@ export default function App() {
    * the row and transcript in place), so this is the only removal that finishes.
    * It is offered as its own action; the delete path above stays as it was.
    */
-  function hideSession(sessionId: string): void {
+  const hideSession = useCallback((sessionId: string): void => {
     const removed = sessions.find((candidate) => candidate.id === sessionId);
     forgetSession(sessionId);
     void backend.hideSession(sessionId).catch((error: unknown) => {
@@ -1560,7 +1570,14 @@ export default function App() {
         );
       setAppError(error instanceof Error ? error.message : String(error));
     });
-  }
+  }, [backend, forgetSession, sessions]);
+
+  const onHideSession = useCallback(
+    (session: AgentSession) => {
+      hideSession(session.id);
+    },
+    [hideSession],
+  );
 
   async function deleteSession(sessionId: string): Promise<void> {
     // The user is the first to know: the backend's delete walks close, broker
@@ -1743,6 +1760,89 @@ export default function App() {
   }, [repoBridge, projectRoot]);
   const updateBusyFlag = Boolean(updateBusy);
 
+  // Streaming re-renders the shell on every joined delta. These callbacks stay
+  // the same object so the memoized composer does not run again while a reply grows.
+  const composerActionsRef = useRef({
+    sendMessage,
+    cancelRun,
+    flushQueuedNow,
+    compactSession,
+    createSession,
+    setSessionConfig,
+    cycleThinking,
+    session: selectedSession,
+  });
+  composerActionsRef.current = {
+    sendMessage,
+    cancelRun,
+    flushQueuedNow,
+    compactSession,
+    createSession,
+    setSessionConfig,
+    cycleThinking,
+    session: selectedSession,
+  };
+  const onComposerSend = useCallback((input: MessageInput) => {
+    const current = composerActionsRef.current;
+    const session = current.session;
+    if (!session) return Promise.resolve(undefined);
+    return current.sendMessage(session.id, input);
+  }, []);
+  const onComposerCancel = useCallback(() => {
+    const session = composerActionsRef.current.session;
+    if (!session) return Promise.resolve();
+    return composerActionsRef.current.cancelRun(session.id);
+  }, []);
+  const onComposerFlushQueued = useCallback(() => {
+    const session = composerActionsRef.current.session;
+    if (!session) return Promise.resolve();
+    return composerActionsRef.current.flushQueuedNow(session.id);
+  }, []);
+  const onComposerCompact = useCallback(() => {
+    const session = composerActionsRef.current.session;
+    if (!session) return;
+    void composerActionsRef.current.compactSession(session.id);
+  }, []);
+  const onComposerNewSession = useCallback(() => {
+    const session = composerActionsRef.current.session;
+    if (!session) return;
+    composerActionsRef.current.createSession({
+      title: "새 Gajae 세션",
+      workspace: session.workspace,
+    });
+  }, []);
+  const onComposerWorkspaceChange = useCallback((workspace: string) => {
+    composerActionsRef.current.createSession({
+      title: "새 Gajae 세션",
+      workspace,
+    });
+  }, []);
+  const onComposerConfigChange = useCallback((configId: string, value: string) => {
+    const session = composerActionsRef.current.session;
+    if (!session) return;
+    void composerActionsRef.current.setSessionConfig(session.id, configId, value);
+  }, []);
+  const onComposerCycleThinking = useCallback(() => {
+    const session = composerActionsRef.current.session;
+    if (!session) return;
+    void composerActionsRef.current.cycleThinking(session.id);
+  }, []);
+  const onRevealInspector = useCallback((toolId: string) => {
+    setInspectorToolId(toolId);
+    setInspectorOpen(true);
+  }, []);
+  const autoDenyHint = useMemo(() => {
+    if (
+      preferences.permissionHandling === "always-allow" ||
+      preferences.permissionHandling === "auto"
+    )
+      return undefined;
+    return {
+      message: t("현재 권한 모드 때문에 자동 거부됨"),
+      onOpenSettings: openSettings,
+    };
+  }, [language, openSettings, preferences.permissionHandling]);
+
   const remoteViewOnly = remoteStatus?.permission === "view";
 
   if (remoteBridge && remoteGateNeeded(remoteStatus)) {
@@ -1798,7 +1898,7 @@ export default function App() {
         onResumePicker={openResumePickerStable}
         onRename={startRename}
         onDelete={setDeleteCandidate}
-        onHide={(session) => hideSession(session.id)}
+        onHide={onHideSession}
         onSettings={openSettings}
         workspaceLabel={workspaceLabel}
         onWorkspaceLabelChange={startWorkspaceRename}
@@ -1961,19 +2061,8 @@ export default function App() {
                 onResolveTool={resolveToolCall}
                 onReadArtifact={readArtifact}
                 onRetryLastRequest={retryLastRequest}
-                onRevealInspector={(toolId) => {
-                  setInspectorToolId(toolId);
-                  setInspectorOpen(true);
-                }}
-                autoDenyHint={
-                  preferences.permissionHandling !== "always-allow" &&
-                  preferences.permissionHandling !== "auto"
-                    ? {
-                        message: t("현재 권한 모드 때문에 자동 거부됨"),
-                        onOpenSettings: openSettings,
-                      }
-                    : undefined
-                }
+                onRevealInspector={onRevealInspector}
+                autoDenyHint={autoDenyHint}
                 emptyStateMeta={{
                   workspace: selectedSession.workspace,
                   modelDisplay: selectedSession.modelDisplay,
@@ -2013,23 +2102,14 @@ export default function App() {
                   usagePercent={selectedSession.usagePercent}
                   serviceTier={selectedSession.serviceTier}
                   runningSubmission={preferences.runningSubmission}
-                  onSend={(input) => sendMessage(selectedSession.id, input)}
-                  onCancel={() => cancelRun(selectedSession.id)}
-                  onFlushQueued={() => flushQueuedNow(selectedSession.id)}
-                  onCompact={() => void compactSession(selectedSession.id)}
-                  onNewSession={() =>
-                    createSession({
-                      title: "새 Gajae 세션",
-                      workspace: selectedSession.workspace,
-                    })
-                  }
-                  onWorkspaceChange={(workspace) =>
-                    createSession({ title: "새 Gajae 세션", workspace })
-                  }
-                  onConfigChange={(configId, value) =>
-                    void setSessionConfig(selectedSession.id, configId, value)
-                  }
-                  onCycleThinking={() => void cycleThinking(selectedSession.id)}
+                  onSend={onComposerSend}
+                  onCancel={onComposerCancel}
+                  onFlushQueued={onComposerFlushQueued}
+                  onCompact={onComposerCompact}
+                  onNewSession={onComposerNewSession}
+                  onWorkspaceChange={onComposerWorkspaceChange}
+                  onConfigChange={onComposerConfigChange}
+                  onCycleThinking={onComposerCycleThinking}
                   readOnly={remoteViewOnly}
                 />
               </div>

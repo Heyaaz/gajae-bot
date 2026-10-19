@@ -23,58 +23,22 @@ import type {
   SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
+import { StreamDeltaCoalescer } from "./stream-delta-coalescer";
 
 export class GjcAgentBackend implements AgentBackend {
   private readonly bridge: GjcDesktopBridge;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly unsubscribeBridge: () => void;
-  private readonly pendingDeltas = new Map<
-    string,
-    Extract<AgentEvent, { type: "message.delta" | "thought.delta" }>
-  >();
-  private flushTimer?: ReturnType<typeof setTimeout>;
+  private readonly coalescer = new StreamDeltaCoalescer((event) => {
+    this.emit(event);
+  });
   private disposed = false;
 
   constructor(bridge: GjcDesktopBridge) {
     this.bridge = bridge;
     this.unsubscribeBridge = bridge.onEvent((event) => {
-      this.receiveEvent(event);
+      this.coalescer.receive(event);
     });
-  }
-
-  private receiveEvent(event: AgentEvent): void {
-    if (event.type !== "message.delta" && event.type !== "thought.delta") {
-      this.flushPendingDeltas();
-      this.emit(event);
-      return;
-    }
-
-    const itemId =
-      event.type === "message.delta" ? event.messageId : event.thoughtId;
-    const key = `${event.type}:${event.sessionId}:${itemId}`;
-    const pending = this.pendingDeltas.get(key);
-    const combined =
-      pending && pending.type === event.type
-        ? { ...event, delta: pending.delta + event.delta }
-        : event;
-    this.pendingDeltas.set(key, combined);
-
-    if (!event.streaming) {
-      this.flushPendingDeltas();
-      return;
-    }
-    if (this.flushTimer) return;
-    // GJC can deliver many tiny chunks per frame. Rendering every chunk makes the
-    // desktop fall behind the CLI, especially while a long Markdown response grows.
-    this.flushTimer = setTimeout(() => this.flushPendingDeltas(), 16);
-  }
-
-  private flushPendingDeltas(): void {
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = undefined;
-    const events = [...this.pendingDeltas.values()];
-    this.pendingDeltas.clear();
-    for (const event of events) this.emit(event);
   }
 
   private emit(event: AgentEvent): void {
@@ -250,9 +214,7 @@ export class GjcAgentBackend implements AgentBackend {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribeBridge();
-    if (this.flushTimer) clearTimeout(this.flushTimer);
-    this.flushTimer = undefined;
-    this.pendingDeltas.clear();
+    this.coalescer.dispose();
     this.listeners.clear();
   }
 }
