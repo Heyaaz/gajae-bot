@@ -1266,10 +1266,6 @@ export function Transcript({
                   <GajaeProgressRow
                     kind={block.work.kind}
                     label={block.work.label}
-                    ticking={block.work.ticking}
-                    startedAt={block.clock.zeroAt}
-                    pausedMs={block.clock.pausedMs}
-                    heldAt={block.clock.heldAt}
                     approval={block.approval}
                     onResolve={onResolveTool}
                     onRetry={onRetryLastRequest ? retryProgress : undefined}

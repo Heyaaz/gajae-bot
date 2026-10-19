@@ -3169,41 +3169,26 @@
   white-space: nowrap;
 }
 .gajae-progress-label.is-shimmer {
-  position: relative;
-}
-.gajae-progress.is-motion:not(.is-paused) .gajae-progress-label.is-shimmer::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(255, 255, 255, 0.72) 50%,
-    transparent 100%
+  color: transparent;
+  background-image: linear-gradient(
+    100deg,
+    var(--accent) 0%,
+    #ff7a1a 28%,
+    #ffd7a1 46%,
+    #ff9a3c 58%,
+    var(--accent) 78%,
+    var(--accent) 100%
   );
-  transform: translateX(-120%);
-  animation: gajae-shimmer 1.8s linear infinite;
-  pointer-events: none;
-  will-change: transform;
+  background-size: 240% 100%;
+  background-position: 150% 0;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 0 7px rgba(255, 146, 56, 0.28));
 }
-.gajae-progress-time {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.gajae-progress-stop {
-  flex: 0 0 auto;
-  color: var(--text-tertiary);
-  font-size: 11px;
-  white-space: nowrap;
-}
-.gajae-progress-stop kbd {
-  padding: 0 4px;
-  color: var(--text-secondary);
-  font: inherit;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+.gajae-progress.is-motion:not(.is-paused) .gajae-progress-label.is-shimmer {
+  animation: gajae-label-wave 1.8s linear infinite;
+  will-change: background-position;
 }
 .gajae-progress-actions {
   display: flex;
@@ -3233,9 +3218,6 @@
 .gajae-progress--waiting .gajae-progress-label {
   color: #8ab4ff;
 }
-.gajae-progress--waiting .gajae-progress-time {
-  color: #4f6a99;
-}
 .gajae-progress--approval .gajae-avatar {
   background: rgba(227, 179, 106, 0.08);
   border-radius: 10px;
@@ -3249,8 +3231,7 @@
   border-radius: 10px;
   box-shadow: 0 0 0 1.5px rgba(238, 123, 123, 0.55);
 }
-.gajae-progress--error .gajae-progress-label,
-.gajae-progress--error .gajae-progress-time {
+.gajae-progress--error .gajae-progress-label {
   color: var(--danger);
 }
 .gajae-progress--done .gajae-progress-label {
@@ -3327,9 +3308,12 @@
     transform: translate3d(0, 0, 0) scale(1);
   }
 }
-@keyframes gajae-shimmer {
+@keyframes gajae-label-wave {
+  from {
+    background-position: 150% 0;
+  }
   to {
-    transform: translateX(120%);
+    background-position: -150% 0;
   }
 }
 @keyframes gajae-z {

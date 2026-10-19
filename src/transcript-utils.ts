@@ -9,7 +9,7 @@ export const MAX_CACHED_TRANSCRIPTS = 3;
  * phrases. `waiting` is the session asking the user for input, distinct from
  * the agent still working. `done` is a finished turn — the view only draws it
  * once a clock was actually started, so an old session does not invent a
- * duration. Assistant text that is still streaming is not a kind: the text is
+ * completion row. Assistant text that is still streaming is not a kind: the text is
  * the progress signal, and `currentTurnWork` returns null so the row steps aside.
  */
 export type TurnActivityKind =
@@ -24,8 +24,6 @@ export interface TurnWork {
   kind: TurnActivityKind;
   /** Fixed phrase. Absent on working states, which rotate `ROTATING_WORK_LABELS`. */
   label?: string;
-  /** False holds the elapsed clock (input, approval, summary, error). */
-  ticking: boolean;
 }
 
 export interface TurnSessionHint {
@@ -100,23 +98,6 @@ export function elapsedTurnMs(
 ): number {
   const end = clock.heldAt ?? now;
   return Math.max(0, end - clock.zeroAt - clock.pausedMs);
-}
-
-/** Live clock, `m:ss`. */
-export function formatElapsedClock(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  return `${minutes}:${String(seconds).padStart(2, "0")}`;
-}
-
-/** Summary line, `N분 N초 작업` (seconds only while under a minute). */
-export function formatWorkedSummary(ms: number): string {
-  const total = Math.max(0, Math.floor(ms / 1000));
-  const minutes = Math.floor(total / 60);
-  const seconds = total % 60;
-  if (minutes <= 0) return `${seconds}초 작업`;
-  return `${minutes}분 ${seconds}초 작업`;
 }
 
 /**
@@ -228,32 +209,32 @@ export function currentTurnWork(
   session?: TurnSessionHint | null,
 ): TurnWork | null {
   if (session?.phase === "compacting")
-    return { kind: "thinking", label: "세션 context 압축 중", ticking: true };
+    return { kind: "thinking", label: "세션 context 압축 중" };
 
   const signal = tailSignal(items);
   if (signal.kind === "approval")
-    return { kind: "approval", label: "승인이 필요해요", ticking: false };
+    return { kind: "approval", label: "승인이 필요해요" };
   if (session?.status === "failed")
-    return { kind: "error", label: "오류가 났어요", ticking: false };
+    return { kind: "error", label: "오류가 났어요" };
   if (signal.kind === "answering") return null;
-  if (signal.kind === "tool") return { kind: "tool", ticking: true };
-  if (signal.kind === "thinking") return { kind: "thinking", ticking: true };
+  if (signal.kind === "tool") return { kind: "tool" };
+  if (signal.kind === "thinking") return { kind: "thinking" };
   if (session?.status === "waiting")
-    return { kind: "waiting", label: "입력을 기다리고 있어요", ticking: false };
-  if (session?.status === "running") return { kind: "thinking", ticking: true };
+    return { kind: "waiting", label: "입력을 기다리고 있어요" };
+  if (session?.status === "running") return { kind: "thinking" };
   if (
     (session == null || session.status === undefined || session.status === "idle") &&
     hasUserTurn(items)
   )
-    return { kind: "done", ticking: false };
+    return { kind: "done" };
   return null;
 }
 
 /**
  * Whether the elapsed clock should advance.
  *
- * `null` means there is nothing to time. Answering is hidden but still runs:
- * the summary at the end includes the time the answer spent streaming.
+ * `null` means there is nothing to track. Answering is hidden but still runs so
+ * the row knows a turn was watched when its completion arrives.
  */
 export function turnClockRuns(
   items: readonly TranscriptItem[],
@@ -295,8 +276,8 @@ export interface StoredTurnClock {
 /**
  * Progress row for this render, and the clock to keep for the next one.
  *
- * A finished session that was never watched returns neither: there is no
- * honest duration. A streaming answer returns no row but keeps the clock.
+ * A finished session that was never watched returns neither: the view does not
+ * invent a completion row. A streaming answer returns no row but keeps the clock.
  */
 export function resolveTurnProgress(
   items: readonly TranscriptItem[],
@@ -310,7 +291,7 @@ export function resolveTurnProgress(
   const mode = turnClockRuns(items, session);
   const work = currentTurnWork(items, session);
   if (mode === null) return { progress: null, stored: undefined };
-  // Done without a clock we started would print "0초 작업" for every old
+  // Done without a clock we started would show a completion row for every old
   // session. Waiting, approval, and error may be the first thing we see, and
   // a stopped clock at zero is honest for those.
   if (mode === false && !prior && (work == null || work.kind === "done"))
@@ -319,8 +300,8 @@ export function resolveTurnProgress(
   const clock = stepTurnClock(prior, now, mode);
   const stored: StoredTurnClock = { turnId, clock };
   if (!work) return { progress: null, stored };
-  // A finished turn we never saw running has no duration to print. The held
-  // clock from an approval or a waiting row we opened mid-way is not one.
+  // A finished turn we never saw running is not a completion row we witnessed.
+  // The held clock from an approval or a waiting row we opened mid-way is not one.
   if (work.kind === "done" && !clock.ran)
     return { progress: null, stored: undefined };
   return {

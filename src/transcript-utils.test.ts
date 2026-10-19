@@ -6,7 +6,6 @@ import {
   copyableMessageText,
   currentTurnWork,
   elapsedTurnMs,
-  formatWorkedSummary,
   gajaeEmoticonFor,
   GAJAE_PROGRESS_ROW_HEIGHT,
   groupTranscriptItems,
@@ -84,7 +83,7 @@ describe("currentTurnWork", () => {
 
   it("maps a running or pending tool to the coding emoticon", () => {
     const running = currentTurnWork([user, call], { status: "running" });
-    expect(running).toMatchObject({ kind: "tool", ticking: true });
+    expect(running).toMatchObject({ kind: "tool" });
     expect(gajaeEmoticonFor(running!.kind)).toBe("coding");
     const pending = currentTurnWork(
       [user, { ...call, status: "pending" }],
@@ -109,13 +108,12 @@ describe("currentTurnWork", () => {
       ],
       { status: "running" },
     );
-    expect(thought).toMatchObject({ kind: "thinking", ticking: true });
+    expect(thought).toMatchObject({ kind: "thinking" });
     expect(gajaeEmoticonFor("thinking")).toBe("coding");
     // The old default was "응답 대기 중". A running turn with nothing live yet
     // is the agent thinking, not a paused wait.
     expect(currentTurnWork([user], { status: "running" })).toMatchObject({
       kind: "thinking",
-      ticking: true,
     });
     expect(currentTurnWork([user], { status: "running" })?.label).toBeUndefined();
   });
@@ -148,7 +146,6 @@ describe("currentTurnWork", () => {
     expect(work).toMatchObject({
       kind: "approval",
       label: "승인이 필요해요",
-      ticking: false,
     });
     expect(gajaeEmoticonFor("approval")).toBe("surprised");
     expect(work?.label).not.toContain("승인 대기");
@@ -179,7 +176,6 @@ describe("currentTurnWork", () => {
     expect(work).toMatchObject({
       kind: "waiting",
       label: "입력을 기다리고 있어요",
-      ticking: false,
     });
     expect(gajaeEmoticonFor("waiting")).toBe("sleepy");
   });
@@ -200,14 +196,13 @@ describe("currentTurnWork", () => {
       ],
       { status: "failed" },
     );
-    expect(work).toMatchObject({ kind: "error", label: "오류가 났어요", ticking: false });
+    expect(work).toMatchObject({ kind: "error", label: "오류가 났어요" });
     expect(gajaeEmoticonFor("error")).toBe("crying");
   });
 
   it("maps a finished turn to celebrate, and ignores a completed tool from the previous turn", () => {
     expect(currentTurnWork([user, { ...call, status: "completed" }], { status: "idle" })).toMatchObject({
       kind: "done",
-      ticking: false,
     });
     expect(gajaeEmoticonFor("done")).toBe("celebrate");
     const next = currentTurnWork(
@@ -221,7 +216,6 @@ describe("currentTurnWork", () => {
     expect(currentTurnWork([], { status: "idle", phase: "compacting" })).toEqual({
       kind: "thinking",
       label: "세션 context 압축 중",
-      ticking: true,
     });
   });
 
@@ -288,7 +282,6 @@ describe("currentTurnWork", () => {
     );
     expect(finished.progress?.work.kind).toBe("done");
     expect(finished.progress && elapsedTurnMs(finished.progress.clock, 70_000)).toBe(69_000);
-    expect(formatWorkedSummary(69_000)).toBe("1분 9초 작업");
     expect(estimate(appendProgressBlock(grouped, finished.progress)) - estimate(grouped)).toBe(
       GAJAE_PROGRESS_ROW_HEIGHT,
     );

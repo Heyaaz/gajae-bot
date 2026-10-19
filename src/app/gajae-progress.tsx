@@ -4,9 +4,6 @@ import {
   GAJAE_EMOTICONS,
   GAJAE_PROGRESS_ROW_HEIGHT,
   ROTATING_WORK_LABELS,
-  elapsedTurnMs,
-  formatElapsedClock,
-  formatWorkedSummary,
   gajaeEmoticonFor,
   gajaeEmoticonFrame,
   type GajaeEmoticon,
@@ -82,45 +79,25 @@ function GajaeSprite({
 export interface GajaeProgressRowProps {
   kind: TurnActivityKind;
   label?: string;
-  ticking: boolean;
-  startedAt: number;
-  pausedMs: number;
-  heldAt?: number;
   approval?: TurnApproval;
   onResolve?: (toolId: string, optionId: string) => void;
   onRetry?: () => void;
 }
 
-function clockText(
-  clock: { zeroAt: number; pausedMs: number; heldAt?: number },
-  ticking: boolean,
-  pausedMark: boolean,
-): string {
-  const now = ticking ? Date.now() : (clock.heldAt ?? Date.now());
-  const elapsed = formatElapsedClock(elapsedTurnMs(clock, now));
-  return pausedMark ? `Ⅱ ${elapsed}` : elapsed;
-}
-
 /**
  * The gajae at the end of the current turn.
  *
- * Kind and label are the only inputs that come from the transcript. The clock
- * text and the rotating phrase update inside this row, writing the time node
- * directly, so a ticking second does not re-render the conversation.
+ * Kind and label are the only inputs that come from the transcript. The rotating
+ * phrase updates inside this row, so a label swap does not re-render the conversation.
  */
 export const GajaeProgressRow = memo(function GajaeProgressRow({
   kind,
   label,
-  ticking,
-  startedAt,
-  pausedMs,
-  heldAt,
   approval,
   onResolve,
   onRetry,
 }: GajaeProgressRowProps) {
   const rootRef = useRef<HTMLDivElement>(null);
-  const timeRef = useRef<HTMLSpanElement>(null);
   const [spriteReady, setSpriteReady] = useState(false);
   const [labelIndex, setLabelIndex] = useState(0);
   const [summary, setSummary] = useState(
@@ -139,12 +116,9 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
     kind === "tool" ||
     kind === "approval" ||
     (kind === "done" && !summary);
-  const pausedMark = kind === "waiting" || kind === "approval";
-  const clock = { zeroAt: startedAt, pausedMs, heldAt };
   const shownLabel = rotates
     ? ROTATING_WORK_LABELS[labelIndex] ?? ROTATING_WORK_LABELS[0]
     : (label ?? (kind === "done" ? "완료" : ""));
-  const summaryText = `${formatWorkedSummary(elapsedTurnMs(clock, heldAt ?? startedAt))} ▸`;
 
   useEffect(() => {
     let live = true;
@@ -164,23 +138,12 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
 
   useEffect(() => {
     const root = rootRef.current;
-    const timeNode = timeRef.current;
-    if (!root || !timeNode) return;
-    let timer = 0;
+    if (!root) return;
     let rotateTimer = 0;
     let onScreen = true;
 
-    const paintTime = (): void => {
-      timeNode.textContent = clockText(
-        { zeroAt: startedAt, pausedMs, heldAt },
-        ticking,
-        pausedMark,
-      );
-    };
     const stopTimers = (): void => {
-      window.clearInterval(timer);
       window.clearInterval(rotateTimer);
-      timer = 0;
       rotateTimer = 0;
     };
     const sync = (): void => {
@@ -188,13 +151,10 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
       const paused = tabHidden || !onScreen;
       root.classList.toggle("is-paused", paused);
       stopTimers();
-      paintTime();
-      if (paused) return;
-      if (ticking) timer = window.setInterval(paintTime, 1000);
-      if (rotates)
-        rotateTimer = window.setInterval(() => {
-          setLabelIndex((index) => (index + 1) % ROTATING_WORK_LABELS.length);
-        }, LABEL_ROTATE_MS);
+      if (paused || !rotates) return;
+      rotateTimer = window.setInterval(() => {
+        setLabelIndex((index) => (index + 1) % ROTATING_WORK_LABELS.length);
+      }, LABEL_ROTATE_MS);
     };
 
     const onVisibility = (): void => sync();
@@ -213,7 +173,7 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
       document.removeEventListener("visibilitychange", onVisibility);
       observer?.disconnect();
     };
-  }, [heldAt, pausedMark, pausedMs, rotates, startedAt, ticking]);
+  }, [rotates]);
 
   return (
     <div
@@ -247,14 +207,6 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
         >
           {shownLabel}
         </span>
-        <span ref={timeRef} className="gajae-progress-time" aria-hidden="true">
-          {clockText(clock, ticking, pausedMark)}
-        </span>
-        {(kind === "thinking" || kind === "tool") && (
-          <span className="gajae-progress-stop">
-            <kbd>Esc</kbd> 중단
-          </span>
-        )}
         {kind === "approval" && approval && (approval.deny || approval.allow) && (
           <span className="gajae-progress-actions">
             {approval.deny && (
@@ -295,7 +247,7 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
         aria-live={summary ? "polite" : undefined}
       >
         <GajaeSprite emoticon="celebrate" size={20} ready={spriteReady} />
-        <span>{summaryText}</span>
+        <span>완료</span>
       </div>
     </div>
   );
