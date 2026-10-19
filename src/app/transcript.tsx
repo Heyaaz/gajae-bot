@@ -2324,6 +2324,10 @@ export function ConversationFindBar({
   const [index, setIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const matches = useMemo(() => searchTranscriptItems(items, query), [items, query]);
+  const revealRef = useRef(onReveal);
+  revealRef.current = onReveal;
+  const boundedIndex = matches.length ? Math.min(index, matches.length - 1) : 0;
+  const matchedId = matches[boundedIndex];
 
   useEffect(() => {
     setIndex(0);
@@ -2334,14 +2338,12 @@ export function ConversationFindBar({
   }, []);
 
   useEffect(() => {
-    if (matches.length === 0) return;
-    const bounded = Math.min(index, matches.length - 1);
-    onReveal(matches[bounded]!);
-  }, [matches, index, onReveal]);
+    if (matchedId) revealRef.current(matchedId);
+  }, [matchedId]);
 
   function step(delta: number): void {
     if (matches.length === 0) return;
-    setIndex((current) => (current + delta + matches.length) % matches.length);
+    setIndex((current) => (Math.min(current, matches.length - 1) + delta + matches.length) % matches.length);
   }
 
   return (
@@ -2366,7 +2368,7 @@ export function ConversationFindBar({
         }}
       />
       <span className="conversation-find-count">
-        {query.trim() ? `${matches.length === 0 ? 0 : index + 1}/${matches.length}` : ""}
+        {query.trim() ? `${matches.length === 0 ? 0 : boundedIndex + 1}/${matches.length}` : ""}
       </span>
       <button
         type="button"
