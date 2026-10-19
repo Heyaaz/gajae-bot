@@ -167,6 +167,27 @@ export function historySessionSummary(
   };
 }
 
+/**
+ * Workspace on the session envelope.
+ *
+ * That line is the head of the file. Opening a saved session only needs this
+ * one field, so the caller passes the bounded head rather than every row.
+ */
+export function sessionCwdFromLines(lines: readonly string[]): string | undefined {
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    let row: Record<string, unknown>;
+    try {
+      row = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+    if (row.type === "session" && typeof row.cwd === "string" && row.cwd)
+      return row.cwd;
+  }
+  return undefined;
+}
+
 export function thinkingOptionsForModelCatalog(
   items: unknown[],
   selectedModel: string,

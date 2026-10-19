@@ -713,6 +713,11 @@ export interface GjcDesktopBridge {
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
   /** Cheap durable-file revision used by the selected-transcript safety net. */
   getTranscriptRevision(sessionId: string): Promise<string | undefined>;
+  /**
+   * Sessions whose transcripts a desktop replay gap may re-read. The renderer
+   * reports the selected session and the transcripts it has cached.
+   */
+  watchTranscripts(sessionIds: readonly string[]): void;
   /** Loads command/todo context once when a session is opened, never on a poll. */
   refreshSessionContext(sessionId: string): Promise<void>;
   setSessionConfig(

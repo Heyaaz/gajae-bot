@@ -20,6 +20,7 @@ import {
   toolStatus,
   readableModelLabel,
   historySessionSummary,
+  sessionCwdFromLines,
   parentSessionOf,
   todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
@@ -254,6 +255,62 @@ describe("history opening with an unavailable endpoint", () => {
     await expect(controller.openHistorySession("s1")).rejects.toBe(failure);
     expect(internals.readPersistedTranscript).not.toHaveBeenCalled();
     controller.dispose();
+  });
+
+  it("reads a saved session's cwd from the file head", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gajae-history-cwd-"));
+    const { controller, cli, internals } = harness();
+    try {
+      const file = path.join(root, "s1.jsonl");
+      const head = [
+        JSON.stringify({ type: "session", id: "s1", cwd: "/head", timestamp: "2026-01-01T00:00:00Z" }),
+        JSON.stringify({
+          type: "message",
+          id: "m",
+          timestamp: "2026-01-01T00:00:01Z",
+          message: { role: "user", content: [{ type: "text", text: "hello" }] },
+        }),
+      ].join("\n");
+      await writeFile(file, `${head}\n${"x".repeat(128 * 1024)}\n${JSON.stringify({ type: "session", id: "s1", cwd: "/tail" })}\n`);
+      internals.locateSharedTranscriptFile = vi.fn(async () => file);
+      internals.refreshSdkCommands = vi.fn(async () => undefined);
+      internals.readTodoRecords = vi.fn(async () => undefined);
+      internals.refreshSessionSettings = vi.fn(async () => undefined);
+      cli.queryItems.mockRejectedValue(new SdkCliError("endpoint_stale", "The SDK endpoint is stale or unavailable."));
+      const opened = await controller.openHistorySession("s1");
+      expect(opened.workspace).toBe("/head");
+    } finally {
+      const writes = [...internals.artifactWrites.values()];
+      controller.dispose();
+      await Promise.allSettled(writes);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("changes the transcript revision when memory moves and the file does not", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gajae-revision-memory-"));
+    const { controller, internals } = harness();
+    try {
+      const file = path.join(root, "s1.jsonl");
+      await writeFile(file, `${JSON.stringify({ type: "session", id: "s1", cwd: "/repo" })}\n`);
+      internals.locateSharedTranscriptFile = vi.fn(async () => file);
+      const first = await controller.getTranscriptRevision("s1");
+      internals.appendTranscript({
+        id: "todo-1",
+        kind: "system",
+        sessionId: "s1",
+        title: "Todos",
+        content: "ship it",
+        createdAt: "now",
+      });
+      const second = await controller.getTranscriptRevision("s1");
+      expect(second).not.toBe(first);
+      const fileHalf = (revision: string) => revision.split(":").slice(0, -2).join(":");
+      expect(fileHalf(String(second))).toBe(fileHalf(String(first)));
+    } finally {
+      controller.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("does not resurrect a disposed controller after a delayed history read", async () => {
@@ -588,6 +645,10 @@ describe("protocol-neutral helpers", () => {
     expect(readableModelLabel("gpt-5-codex")).toContain("GPT");
     expect(persistedTranscriptRunning([{ type: "message", message: { role: "user" } }])).toBe(true);
     expect(historySessionSummary([JSON.stringify({ type: "message", message: { role: "user", content: "Hello" } })])?.title).toBe("Hello");
+    expect(sessionCwdFromLines([
+      JSON.stringify({ type: "session", cwd: "/head" }),
+      JSON.stringify({ type: "session", cwd: "/tail" }),
+    ])).toBe("/head");
   });
 });
 

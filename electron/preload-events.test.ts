@@ -59,7 +59,10 @@ function createHarness(invoke: IpcInvoke, fetchMock: typeof fetch) {
     TextDecoder,
   });
   return exposed.agentControlDesktop as {
-    gjc: { onEvent: (listener: (event: AgentEvent) => void) => () => void };
+    gjc: {
+      onEvent: (listener: (event: AgentEvent) => void) => () => void;
+      watchTranscripts: (sessionIds: readonly string[]) => void;
+    };
   };
 }
 
@@ -173,6 +176,34 @@ describe("preload SSE event handling", () => {
     unsubscribe();
     stream.controller.close();
     vi.useRealTimers();
+  });
+
+  it("reloads only the watched transcripts after a replay gap", async () => {
+    const stream = responseStream();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
+      ok: true,
+      status: 200,
+      body: stream.body,
+    } as Response);
+    const sessions = [{ id: "visible" }, { id: "cached" }, { id: "idle" }];
+    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+      if (channel === GJC_IPC.eventStream) return { port: 4321, token: "secret", seq: 0 };
+      if (channel === GJC_IPC.listSessions) return sessions;
+      if (channel === GJC_IPC.getTranscript) return [{ id: args[0] }];
+      throw new Error(`Unexpected IPC: ${channel}`);
+    });
+    const bridge = createHarness(invoke, fetchMock);
+    bridge.gjc.watchTranscripts(["visible", "cached"]);
+    const received: AgentEvent[] = [];
+    const unsubscribe = bridge.gjc.onEvent((event) => received.push(event));
+    await waitFor(() => fetchMock.mock.calls.length === 1);
+    stream.controller.enqueue(bytes('id: 9\nevent: resync\ndata: {"resync":true}\n\n'));
+    await waitFor(() => received.filter((event) => event.type === "transcript.synced").length === 2);
+    const transcripts = invoke.mock.calls.filter(([channel]) => channel === GJC_IPC.getTranscript);
+    expect(transcripts.map(([, sessionId]) => sessionId)).toEqual(["visible", "cached"]);
+    expect(received.filter((event) => event.type === "session.updated")).toHaveLength(3);
+    unsubscribe();
+    stream.controller.close();
   });
 
   it("retries event-stream IPC discovery after its initial failure", async () => {

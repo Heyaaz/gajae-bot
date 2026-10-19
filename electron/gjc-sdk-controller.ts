@@ -142,6 +142,7 @@ import {
   gitBranchFromHeader,
   hasLivePrefix,
   historySessionSummary,
+  sessionCwdFromLines,
   imageFromContent,
   inferToolName,
   isLiveOnlyRow,
@@ -354,6 +355,12 @@ export class GjcSdkController {
   /** Monotonic per-session lifecycle generation for async status reads and IPC merges. */
   private readonly runRevisions = new Map<string, number>();
   /**
+   * Bumps when this process changes a transcript the file has not recorded yet:
+   * a streamed row, a plan, a todo snapshot. The file stat cannot see those, so
+   * the safety-net revision includes this counter.
+   */
+  private readonly transcriptEpoch = new Map<string, number>();
+  /**
    * Transcript-derived run state per session, keyed by the file size it was read at.
    *
    * `runningJobIds` records the launch markers the verdict at that size rests on,
@@ -440,6 +447,8 @@ export class GjcSdkController {
       size: number;
       envelopes: Record<string, unknown>[];
       partial: string;
+      /** Bytes this read took from disk. Zero when the cached parse was reused. */
+      bytesRead: number;
     }
   >();
   private readonly sharedSessionWatchers = new Map<string, FSWatcher>();
@@ -1825,20 +1834,37 @@ export class GjcSdkController {
   }
 
   /**
-   * Revision of the durable transcript file, used by the renderer's low-frequency
-   * safety net. A stat is orders of magnitude cheaper than re-reading and cloning
-   * every row, and the inode catches a re-host that reuses the same path.
+   * Revision of the transcript the safety net compares.
+   *
+   * The file half is a stat: inode, size, and nanosecond mtime. The tail is this
+   * process's run generation and transcript epoch, so an in-memory plan, todo, or
+   * streamed row changes the revision before the file does. A stat alone pinned
+   * the old body to a new mtime when the sample happened after the read, and it
+   * missed memory that had moved on while the file had not.
    */
   async getTranscriptRevision(sessionId: string): Promise<string | undefined> {
+    const memory = `${this.currentRunRevision(sessionId)}:${this.transcriptEpoch.get(sessionId) ?? 0}`;
     const filePath = await this.locateSharedTranscriptFile(sessionId);
-    if (!filePath) return undefined;
+    if (!filePath) return `mem:${memory}`;
     try {
       const info = await stat(filePath);
-      if (!info.isFile()) return undefined;
-      return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+      if (!info.isFile()) return `mem:${memory}`;
+      // Nanoseconds distinguish two writes that share a millisecond and a size.
+      // The type bundled with this repo still names only `mtimeMs`.
+      const mtimeNs = (info as Stats & { mtimeNs?: bigint }).mtimeNs;
+      const mtime = mtimeNs === undefined ? String(info.mtimeMs) : mtimeNs.toString();
+      return `${info.dev}:${info.ino}:${info.size}:${mtime}:${memory}`;
     } catch {
-      return undefined;
+      return `mem:${memory}`;
     }
+  }
+
+  /** Marks an in-memory transcript change the durable file has not caught up to. */
+  private noteTranscriptEpoch(sessionId: string): void {
+    this.transcriptEpoch.set(
+      sessionId,
+      (this.transcriptEpoch.get(sessionId) ?? 0) + 1,
+    );
   }
 
   private async readSharedTranscript(
@@ -1902,6 +1928,7 @@ export class GjcSdkController {
       // An unchanged file is still a read, and the eviction order is what decides
       // which transcript survives. Returning early without touching it made the
       // most frequently polled session look like the stalest one.
+      previous.bytesRead = 0;
       this.rememberTranscriptRead(filePath, previous);
       return previous.envelopes.slice();
     }
@@ -1924,6 +1951,7 @@ export class GjcSdkController {
           size: info.size,
           envelopes,
           partial,
+          bytesRead: length,
         });
         return envelopes.slice();
       } finally {
@@ -1939,6 +1967,7 @@ export class GjcSdkController {
       size: info.size,
       envelopes,
       partial,
+      bytesRead: info.size,
     });
     return envelopes.slice();
   }
@@ -1952,6 +1981,7 @@ export class GjcSdkController {
       size: number;
       envelopes: Record<string, unknown>[];
       partial: string;
+      bytesRead: number;
     },
   ): void {
     // Re-inserting moves the key to the end, so the first key is always the one
@@ -4695,6 +4725,7 @@ export class GjcSdkController {
     this.pendingAsyncWorkSessions.clear();
     this.asyncJobReconciliations.clear();
     this.runRevisions.clear();
+    this.transcriptEpoch.clear();
     this.discoveredRunStates.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
@@ -5052,8 +5083,9 @@ export class GjcSdkController {
       throw new Error(`세션 기록을 찾지 못했습니다: ${sessionId}`);
     let cwd: string | undefined;
     try {
-      const text = await readFile(filePath, "utf8");
-      cwd = historySessionSummary(text.split("\n"))?.cwd;
+      // The envelope is in the head. The body is read later, when the transcript
+      // itself is opened, so picking a session does not load the whole JSONL.
+      cwd = sessionCwdFromLines(await transcriptHeadLines(filePath));
     } catch {
       /* the workspace falls back below */
     }
@@ -5605,6 +5637,7 @@ export class GjcSdkController {
       );
       if (!thought) return;
       thought.content += text;
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({
         type: "thought.delta",
         sessionId,
@@ -5637,6 +5670,7 @@ export class GjcSdkController {
     );
     if (thought) {
       thought.streaming = false;
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({
         type: "thought.delta",
         sessionId,
@@ -5669,8 +5703,10 @@ export class GjcSdkController {
       })),
       createdAt: existing?.createdAt ?? nowLabel(),
     };
-    if (existing) Object.assign(existing, plan);
-    else this.appendTranscript(plan);
+    if (existing) {
+      Object.assign(existing, plan);
+      this.noteTranscriptEpoch(sessionId);
+    } else this.appendTranscript(plan);
     // The row the session actually carries is the retained one, so a later durable
     // rebuild composes the same plan state instead of an earlier copy of it. An
     // update with no entries is still an update: it clears them.
@@ -5976,6 +6012,7 @@ export class GjcSdkController {
       if (index >= 0) items[index] = row;
       else items.push(row);
     }
+    this.noteTranscriptEpoch(sessionId);
     this.emitEvent({
       type: "transcript.appended",
       item: cloneTranscriptItem(row),
@@ -6437,6 +6474,7 @@ export class GjcSdkController {
       message.content += text;
       if (image) message.images = [...(message.images ?? []), image];
       message.streaming = role === "assistant";
+      this.noteTranscriptEpoch(sessionId);
       if (image)
         this.emitEvent({
           type: "message.updated",
@@ -6584,6 +6622,7 @@ export class GjcSdkController {
     }
     if (existing) {
       Object.assign(existing, patch);
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({ type: "tool.updated", tool: { ...existing } });
     } else {
       this.appendTranscript(patch);
@@ -6597,6 +6636,7 @@ export class GjcSdkController {
       const settled = existing ?? patch;
       void this.resolveToolImages([settled])
         .then(() => {
+          this.noteTranscriptEpoch(sessionId);
           this.emitEvent({ type: "tool.updated", tool: { ...settled } });
         })
         .catch(() => undefined);
@@ -6686,6 +6726,7 @@ export class GjcSdkController {
         tool.status !== "approval-required" &&
         patch.status === "approval-required";
       Object.assign(tool, patch);
+      this.noteTranscriptEpoch(tool.sessionId);
       this.emitEvent({ type: "tool.updated", tool: { ...tool } });
       if (waiting) this.emitActivity(tool.sessionId, "permission");
       return;
@@ -7161,6 +7202,7 @@ export class GjcSdkController {
     const items = this.transcripts.get(item.sessionId) ?? [];
     items.push(item);
     this.transcripts.set(item.sessionId, items);
+    this.noteTranscriptEpoch(item.sessionId);
     this.emitEvent({
       type: "transcript.appended",
       item: cloneTranscriptItem(item),
@@ -7195,6 +7237,7 @@ export class GjcSdkController {
     const message = items.find((item) => item.id === messageId);
     if (message?.kind === "message") {
       message.streaming = false;
+      this.noteTranscriptEpoch(sessionId);
       this.emitEvent({
         type: "message.delta",
         sessionId,
@@ -7208,9 +7251,11 @@ export class GjcSdkController {
 
   private finalizeAllMessages(sessionId: string): void {
     const items = this.transcripts.get(sessionId) ?? [];
+    let changed = false;
     for (const item of items) {
       if (item.kind !== "message" || !item.streaming) continue;
       item.streaming = false;
+      changed = true;
       this.emitEvent({
         type: "message.delta",
         sessionId,
@@ -7219,6 +7264,7 @@ export class GjcSdkController {
         streaming: false,
       });
     }
+    if (changed) this.noteTranscriptEpoch(sessionId);
     this.activeAssistantMessages.delete(sessionId);
   }
 
