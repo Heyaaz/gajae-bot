@@ -2,6 +2,26 @@ import type { TranscriptItem } from "./backend/types";
 
 export const MAX_CACHED_TRANSCRIPTS = 3;
 
+/** Commit blank-line-delimited Markdown blocks only outside fenced code. */
+export function streamingMarkdownParts(content: string): { complete: string; pending: string } {
+  let fence: { marker: string; length: number } | undefined;
+  let offset = 0;
+  let boundary = 0;
+  for (const line of content.split(/(?<=\n)/u)) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)/u.exec(line);
+    if (marker) {
+      if (!fence) fence = { marker: marker[1][0], length: marker[1].length };
+      else if (marker[1][0] === fence.marker && marker[1].length >= fence.length && !marker[2].trim()) {
+        fence = undefined;
+        if (line.endsWith("\n")) boundary = offset + line.length;
+      }
+    }
+    offset += line.length;
+    if (!fence && /^\s*\n$/u.test(line)) boundary = offset;
+  }
+  return { complete: content.slice(0, boundary), pending: content.slice(boundary) };
+}
+
 export function parseSkillInvocation(text: string): { name: string; args: string } | undefined {
   const match = /^\/skill:([\p{L}\p{N}][\p{L}\p{N}_.-]*)(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (!match) return undefined;

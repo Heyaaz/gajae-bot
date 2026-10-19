@@ -16,6 +16,7 @@ import {
   recentUserRequests,
   searchTranscriptItems,
   summarizeToolRun,
+  streamingMarkdownParts,
   transcriptBlockIndexForItem,
   turnStartBlockIds,
 } from "../transcript-utils";
@@ -110,17 +111,15 @@ function codeBlockText(children: ReactNode): string {
  * reply and loses which part was code.
  *
  * ReactMarkdown calls `pre` for every `pre` node, fenced or not (an indented code
- * block has no language and renders through the same path), so the header is
- * skipped for a block GFM did not tag with a language rather than printing an
- * empty one.
+ * block has no language and renders through the same path). Untagged blocks use
+ * a text label and retain the same block-level copy control.
  */
 function MarkdownPre({
   children,
   ...rest
 }: ComponentPropsWithoutRef<"pre">) {
   const codeChild =
-    isValidElement<{ className?: string; children?: ReactNode }>(children) &&
-    typeof children.props.className === "string"
+    isValidElement<{ className?: string; children?: ReactNode }>(children)
       ? children
       : null;
   const language = codeChild?.props.className?.match(/language-(\S+)/u)?.[1];
@@ -135,15 +134,14 @@ function MarkdownPre({
       setCopied(false);
     }
   }
-  if (!language) return <pre {...rest}>{children}</pre>;
   return (
     <div className="code-block">
       <header>
-        <span className="code-block-lang">{language}</span>
+        <span className="code-block-lang">{language ?? "text"}</span>
         <button
           type="button"
           className={`code-block-copy ${copied ? "is-copied" : ""}`}
-          title={copied ? "복사되" : "복사"}
+          title={copied ? "복사됨" : "복사"}
           onClick={() => void copy()}
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}
@@ -155,6 +153,14 @@ function MarkdownPre({
 }
 
 const MARKDOWN_COMPONENTS = { pre: MarkdownPre };
+
+function StreamingMarkdown({ content }: { content: string }) {
+  const parts = streamingMarkdownParts(content);
+  return <>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>{parts.complete}</ReactMarkdown>
+    <span style={{ whiteSpace: "pre-wrap" }}>{parts.pending}</span>
+  </>;
+}
 
 /** A mounted transcript row, in the unzoomed layout pixels the virtualizer positions it with. */
 export interface TranscriptAnchorRow {
@@ -1772,14 +1778,14 @@ export const TranscriptItemView = memo(function TranscriptItemView({
         )}
         {(item.content || item.streaming) && (
           <div
-            className={`message-body ${item.role === "assistant" && !item.streaming ? "markdown-body" : ""}`}
+            className={`message-body ${item.role === "assistant" ? "markdown-body" : ""}`}
           >
             {skill ? (
               <SkillInvocation name={skill.name} args={skill.args} />
             ) : item.content ? (
               item.role === "assistant" ? (
                 item.streaming ? (
-                  item.content
+                  <StreamingMarkdown content={item.content} />
                 ) : (
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                     {item.content}

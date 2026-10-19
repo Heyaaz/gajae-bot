@@ -17,9 +17,33 @@ import {
   recentUserRequests,
   searchTranscriptItems,
   summarizeToolRun,
+  streamingMarkdownParts,
   turnStartBlockIds,
   updateTranscriptItem,
 } from "./transcript-utils";
+
+describe("streamingMarkdownParts", () => {
+  it("renders completed paragraphs while retaining unfinished text", () => {
+    expect(streamingMarkdownParts("**done**\n\npartial")).toEqual({ complete: "**done**\n\n", pending: "partial" });
+  });
+
+  it("does not split on blank lines inside an open fence", () => {
+    const content = "```ts\nconst x = 1;\n\nstill code";
+    expect(streamingMarkdownParts(content)).toEqual({ complete: "", pending: content });
+  });
+
+  it("commits closed fences and preserves all characters", () => {
+    const content = "~~~js\nx\n~~~\nremaining";
+    const parts = streamingMarkdownParts(content);
+    expect(parts.complete).toBe("~~~js\nx\n~~~\n");
+    expect(parts.complete + parts.pending).toBe(content);
+  });
+
+  it("does not close a fence with a shorter or different marker", () => {
+    const content = "````ts\nx\n```\n\n~~~\n";
+    expect(streamingMarkdownParts(content).complete).toBe("");
+  });
+});
 
 const tool = (id: string): TranscriptItem => ({
   id,

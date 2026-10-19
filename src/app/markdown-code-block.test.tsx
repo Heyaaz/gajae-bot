@@ -28,6 +28,16 @@ function render(content: string): string {
 }
 
 describe("fenced code block rendering", () => {
+  it("renders complete markdown during streaming without parsing the unfinished tail", () => {
+    const markup = renderToStaticMarkup(createElement(TranscriptItemView, {
+      item: { ...assistantMessage("**done**\n\n**unfinished"), streaming: true },
+      onResolveTool: noop,
+      onReadArtifact: noop,
+    } as never));
+    expect(markup).toContain("<strong>done</strong>");
+    expect(markup).toContain("**unfinished");
+    expect(markup).toContain("streaming-caret");
+  });
   it("shows the fence's language and a copy control", () => {
     const markup = render("```ts\nconst x = 1;\n```");
     expect(markup).toContain("code-block-lang");
@@ -35,9 +45,10 @@ describe("fenced code block rendering", () => {
     expect(markup).toContain("code-block-copy");
   });
 
-  it("falls back to a plain pre for a fence with no language", () => {
+  it("offers copying for a fence with no language", () => {
     const markup = render("```\nplain text\n```");
-    expect(markup).not.toContain("code-block-lang");
+    expect(markup).toContain(">text<");
+    expect(markup).toContain("code-block-copy");
     expect(markup).toContain("plain text");
   });
 
