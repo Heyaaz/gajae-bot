@@ -1,15 +1,16 @@
-import type {
-  ArtifactContent,
-  DiffSnapshot,
-  EffectiveRuntimeState,
-  GeneratedFilePreview,
-  GitStatusSnapshot,
-  GoalOperation,
-  GoalSnapshot,
-  HistorySession,
-  MessageDelivery,
-  QueuedMessage,
-  SubagentSnapshot,
+import {
+  eventSessionId,
+  type ArtifactContent,
+  type DiffSnapshot,
+  type EffectiveRuntimeState,
+  type GeneratedFilePreview,
+  type GitStatusSnapshot,
+  type GoalOperation,
+  type GoalSnapshot,
+  type HistorySession,
+  type MessageDelivery,
+  type QueuedMessage,
+  type SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
 import type { RemoteAccessBridge, RemoteClientStatus } from "../../shared/remote-protocol";
@@ -42,27 +43,6 @@ function desktopOnlyError(): string {
 }
 
 /** The session an event belongs to, so replay repair can tell stale data from live. */
-export function eventSessionId(event: AgentEvent): string | undefined {
-  switch (event.type) {
-    case "connection.updated":
-      return undefined;
-    case "session.created":
-    case "session.updated":
-      return event.session.id;
-    case "transcript.appended":
-      return event.item.sessionId;
-    case "message.updated":
-      return event.message.sessionId;
-    case "plan.updated":
-      return event.plan.sessionId;
-    case "tool.updated":
-      return event.tool.sessionId;
-    default:
-      return "sessionId" in event && typeof event.sessionId === "string"
-        ? event.sessionId
-        : undefined;
-  }
-}
 
 export class RemoteAgentBackend implements AgentBackend {
   readonly client: RemoteClient;

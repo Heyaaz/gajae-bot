@@ -17,6 +17,7 @@ import path from "node:path";
 import {
   type AgentEvent,
   announcesSessionActivity,
+  eventSessionId,
   notificationDelivery,
   sessionActivityBody,
 } from "../shared/agent-contract.js";
@@ -101,14 +102,6 @@ let lastNotification: { body: string; at: number } | undefined;
 // alone cannot tell: a focused window may be showing a different session.
 const viewedSessions = new Map<number, string>();
 
-function eventSessionId(event: AgentEvent): string | undefined {
-  if ("sessionId" in event && typeof event.sessionId === "string")
-    return event.sessionId;
-  if (event.type === "session.created" || event.type === "session.updated")
-    return event.session.id;
-  return undefined;
-}
-
 function broadcastAgentEvent(event: AgentEvent): void {
   if (
     event.type === "session.created" ||
@@ -121,8 +114,14 @@ function broadcastAgentEvent(event: AgentEvent): void {
     event.type === "thought.delta" ||
     event.type === "plan.updated" ||
     event.type === "tool.updated"
-  )
-    productivityService?.invalidateSearch(eventSessionId(event));
+  ) {
+    const sessionId = eventSessionId(event);
+    if (sessionId) productivityService?.invalidateSearch(sessionId);
+    else
+      console.warn(
+        `[search] ${event.type} carried no session id; skipping targeted invalidation`,
+      );
+  }
   const windows = BrowserWindow.getAllWindows();
   // The windows on this machine read the same events from the loopback stream. Nothing
   // is pushed over IPC as well: a second delivery path is how one event becomes two.

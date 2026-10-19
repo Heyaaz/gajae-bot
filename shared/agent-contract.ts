@@ -627,6 +627,33 @@ export type AgentEvent =
       runtimeState: EffectiveRuntimeState;
     };
 
+/**
+ * The session an event belongs to. Search invalidation and remote replay repair
+ * must use the same rule: several events carry the id inside their row, not at
+ * the envelope's top level.
+ */
+export function eventSessionId(event: AgentEvent): string | undefined {
+  switch (event.type) {
+    case "connection.updated":
+      return undefined;
+    case "session.created":
+    case "session.updated":
+      return event.session.id;
+    case "transcript.appended":
+      return event.item.sessionId;
+    case "message.updated":
+      return event.message.sessionId;
+    case "plan.updated":
+      return event.plan.sessionId;
+    case "tool.updated":
+      return event.tool.sessionId;
+    default:
+      return "sessionId" in event && typeof event.sessionId === "string"
+        ? event.sessionId
+        : undefined;
+  }
+}
+
 export interface CreateSessionInput {
   title?: string;
   workspace: string;
