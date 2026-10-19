@@ -1750,25 +1750,18 @@ export default function App() {
               </span>
             </div>
             <div className="chat-header__actions">
-              <button
-                className="icon-button tool-view-mode-toggle"
-                type="button"
-                title={`표시 모드: ${toolViewMode === "basic" ? "기미" : toolViewMode === "reasoning" ? "추맠" : "상세"} (클릭하여 전환)`}
-                onClick={() =>
-                  setToolViewMode((mode) =>
-                    mode === "basic" ? "reasoning" : mode === "reasoning" ? "detailed" : "basic",
-                  )
-                }
-              >
-                <Layers size={18} />
-                <small>
-                  {toolViewMode === "basic" ? "기미" : toolViewMode === "reasoning" ? "추맠" : "상세"}
-                </small>
-              </button>
+              <label className="tool-view-mode-toggle">
+                <Layers size={16} aria-hidden="true" />
+                <select aria-label="대화 표시 방식" value={toolViewMode} onChange={(event) => setToolViewMode(event.target.value as "basic" | "reasoning" | "detailed")}>
+                  <option value="basic">간단히 · 도구 요약</option>
+                  <option value="reasoning">기본 · 도구 카드</option>
+                  <option value="detailed">상세 · 추론까지 펼침</option>
+                </select>
+              </label>
               <button
                 className={`icon-button ${diffOpen ? "is-active" : ""}`}
                 type="button"
-                title="변개료 랡"
+                title="변경 파일 보기"
                 onClick={() => {
                   setDiffOpen((open) => !open);
                   if (!diffOpen) void refreshDiff();

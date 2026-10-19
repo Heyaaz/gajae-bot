@@ -153,7 +153,7 @@ function InspectorView({
       </section>
       <section className="inspector-section">
         <h3>셸 작업</h3>
-        <p>현재 대화에 보고된 명령입니다. 별도 백그라운드 작업 상태는 런타임에서 제공하지 않습니다.</p>
+        <p>이 대화의 셸 실행 기록입니다.</p>
         {shellWork.map((tool) => <InspectorWorkCard key={tool.id} highlighted={tool.id === revealToolId}
           work={{ id: tool.id, label: tool.description,
             status: tool.status === "running" ? "running" : tool.status === "pending" || tool.status === "approval-required" ? "waiting" : tool.status === "failed" || tool.status === "denied" || tool.status === "cancelled" ? "failed" : "completed",

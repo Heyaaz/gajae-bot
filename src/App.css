@@ -1359,6 +1359,7 @@
   cursor: pointer;
 }
 .prompt-timeline > ol {
+  min-height: 0;
   margin: 0;
   padding: 4px;
   overflow-y: auto;
@@ -1403,13 +1404,13 @@
   font-size: 10px;
   white-space: nowrap;
 }
-.recent-requests > div {
+.recent-request-chips {
   display: grid;
   min-width: 0;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 5px;
 }
-.recent-requests button {
+.recent-request-chips > button {
   display: grid;
   min-width: 0;
   height: 27px;
@@ -1423,12 +1424,12 @@
   border: 1px solid rgba(255, 255, 255, 0.045);
   border-radius: 5px;
 }
-.recent-requests button:hover {
+.recent-request-chips > button:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
   border-color: var(--border-strong);
 }
-.recent-requests button > span {
+.recent-request-chips > button > span {
   display: grid;
   width: 15px;
   height: 15px;
@@ -1442,14 +1443,14 @@
   background: rgba(255, 138, 52, 0.08);
   border-radius: 4px;
 }
-.recent-requests button > strong {
+.recent-request-chips > button > strong {
   overflow: hidden;
   font-size: 11px;
   font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.recent-requests button > time {
+.recent-request-chips > button > time {
   color: var(--text-tertiary);
   font-size: 10px;
   white-space: nowrap;
@@ -2601,6 +2602,8 @@
   overflow-wrap: anywhere;
 }
 .tool-view-mode-toggle {
+  display: flex;
+  align-items: center;
   width: auto;
   padding: 0 8px;
   gap: 4px;
@@ -2610,6 +2613,15 @@
 .tool-view-mode-toggle small {
   font-size: 10px;
   color: inherit;
+}
+.tool-view-mode-toggle select {
+  max-width: 190px;
+  padding: 4px;
+  color: var(--text-secondary);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 11px;
 }
 .tool-run--collapsed {
   padding: 0;
@@ -4369,6 +4381,24 @@
   background: transparent;
   border: 0;
 }
+.settings-panel .dropdown-menu {
+  left: auto;
+  right: 0;
+  width: 100%;
+  min-width: 0;
+}
+.dropdown-menu button > span {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.inspector-section > p {
+  margin: 4px 0 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .dropdown-menu button svg {
   opacity: 0;
   color: var(--accent-bright);
@@ -5730,10 +5760,10 @@
   .recent-requests {
     padding-inline: 12px;
   }
-  .recent-requests > div {
+  .recent-request-chips {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .recent-requests button {
+  .recent-request-chips > button {
     overflow: hidden;
   }
 }

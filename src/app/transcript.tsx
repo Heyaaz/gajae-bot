@@ -1231,9 +1231,9 @@ export function Transcript({
               >
                 {turnStarts.has(block.id) && (() => {
                   const turn = turnViews.find((candidate) => candidate.requestId === block.id);
-                  const seconds = turn?.durationMs === undefined ? undefined : Math.max(1, Math.round(turn.durationMs / 1000));
+                  const seconds = turn?.durationMs === undefined ? undefined : Math.round(turn.durationMs / 1000);
                   const collapsed = collapsedTurns.has(block.id);
-                  return <header className="turn-header"><button type="button" onClick={() => setCollapsedTurns((current) => { const next = new Set(current); if (next.has(block.id)) next.delete(block.id); else next.add(block.id); return next; })}>{collapsed ? "펼치기" : "접기"}</button><span>{turn?.live ? "진행 중" : seconds === undefined ? "시간 확인 불가" : `${seconds}초`}</span></header>;
+                  return <header className="turn-header"><button type="button" aria-expanded={!collapsed} aria-label={collapsed ? "이 요청의 응답 펼치기" : "이 요청의 응답 접기"} onClick={() => setCollapsedTurns((current) => { const next = new Set(current); if (next.has(block.id)) next.delete(block.id); else next.add(block.id); return next; })}>{collapsed ? "응답 펼치기" : "응답 접기"}</button>{!turn?.live && seconds !== undefined && <span title="요청과 마지막 기록의 시각 차이이며 실제 실행 시간과 다를 수 있습니다">기록 간격 {seconds}초</span>}</header>;
                 })()}
                 {!collapsedBlockIds.has(block.id) && (block.kind === "item" ? (
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
@@ -2161,7 +2161,7 @@ export function RecentRequestStrip({
           </button>
         )}
       </header>
-      <div>
+      <div className="recent-request-chips">
         {requests.map((request, index) => (
           <button
             type="button"
@@ -2176,9 +2176,9 @@ export function RecentRequestStrip({
         ))}
       </div>
       {timelineOpen && (
-        <div className="prompt-timeline" role="dialog" aria-label="전사용자 프롬트 타임라인">
+        <div className="prompt-timeline" role="dialog" aria-label="전체 요청 타임라인" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setTimelineOpen(false); } }}>
           <header>
-            <strong>프롬트 타임라인</strong>
+            <strong>요청 타임라인</strong>
             <button
               type="button"
               aria-label="닫기"

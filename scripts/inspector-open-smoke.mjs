@@ -1693,6 +1693,52 @@ app.whenReady().then(async () => {
   }
 
   clearTimeout(failAfter)
+  const uiRegression = await win.webContents.executeJavaScript(`(async () => {
+    const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const issues = [];
+    document.querySelector('.session-row').click();
+    await wait(500);
+    const toggle = document.querySelector('.recent-requests-timeline-toggle');
+    if (!toggle) return ['timeline toggle missing'];
+    toggle.click();
+    await wait(100);
+    const popup = document.querySelector('.prompt-timeline');
+    if (!popup) return ['timeline did not open'];
+    if (getComputedStyle(popup).display !== 'flex') issues.push('timeline inherited chip grid');
+    const header = popup.querySelector('header').getBoundingClientRect();
+    const list = popup.querySelector('ol').getBoundingClientRect();
+    if (list.top < header.bottom - 1 || Math.abs(list.left - popup.getBoundingClientRect().left) > 12) issues.push('timeline header/list misaligned');
+    const button = document.querySelector('.recent-requests-timeline-toggle');
+    if (button.scrollWidth > button.clientWidth + 1) issues.push('timeline toggle clips count');
+    popup.querySelector('header button').click();
+    const mode = document.querySelector('select[aria-label="대화 표시 방식"]');
+    if (!mode || mode.options.length !== 3) issues.push('view mode choices missing');
+    if (mode && [...mode.options].some(option => /기미|추맠/.test(option.text))) issues.push('corrupted mode text');
+    const note = document.querySelector('.inspector-section > p');
+    if (note && parseFloat(getComputedStyle(note).fontSize) > 12) issues.push('inspector note oversized');
+    if (document.body.textContent.includes('시간 확인 불가')) issues.push('unknown timing placeholder visible');
+    const settings = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === '설정');
+    if (!settings) issues.push('settings entry missing');
+    else {
+      settings.click();
+      await wait(400);
+      const trigger = document.querySelector('button[aria-label="실행 중 Enter 동작"]');
+      if (!trigger) issues.push('running Enter dropdown missing');
+      else {
+        trigger.click();
+        await wait(100);
+        const menu = document.querySelector('[role="listbox"][aria-label="실행 중 Enter 동작"]');
+        if (!menu) issues.push('running Enter menu did not open');
+        else for (const label of menu.querySelectorAll('button > span')) {
+          const text = label.getBoundingClientRect();
+          const bounds = menu.getBoundingClientRect();
+          if (text.right > bounds.right + 1 || text.left < bounds.left - 1 || label.scrollWidth > label.clientWidth + 1) issues.push('running Enter option overflows');
+        }
+      }
+    }
+    return issues;
+  })()`)
+  failures.push(...uiRegression)
   for (const failure of failures) console.error(`  ${failure}`)
   console.log(
     failures.length === 0
