@@ -49,6 +49,10 @@ describe("queued message Send now", () => {
         expect.objectContaining({ text: expected, mode }),
       ]);
       expect(test.node.querySelector(".composer-queue-text")?.textContent).toBe(expected);
+      const queue = test.node.querySelector(".composer-queue")!;
+      expect(queue.closest("form")).toBeNull();
+      expect(queue.nextElementSibling).toBe(test.node.querySelector("form.composer"));
+      expect(queue.querySelector("strong, small, em")).toBeNull();
       expect(test.node.querySelector(".composer-queue-send")).not.toBeNull();
       expect(input.value).toBe("");
       await act(async () => (test.node.querySelector(".composer-queue-send") as HTMLButtonElement).click());

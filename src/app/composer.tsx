@@ -560,7 +560,7 @@ export function QueueChip({ entry, onPull, onDiscard, onSendNow, disabled = fals
     <span className={`composer-queue-item composer-queue-item--${entry.mode}${entry.blocked ? " composer-queue-item--blocked" : ""}`}>
       <button type="button" className="composer-queue-pull" onClick={onPull} disabled={disabled}
         title={entry.blocked ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요.") : undefined}>
-        <em>{entry.blocked ? t("확인 필요") : entry.mode === "steer" ? "Steer" : t("대기")}</em>
+        {entry.blocked && <em>{t("확인 필요")}</em>}
         <span className="composer-queue-text">{entry.text}</span>
       </button>
       <button
@@ -1691,6 +1691,23 @@ export const Composer = memo(function Composer({
   }
 
   return (
+    <>
+      {pendingQueue.length > 0 && (
+        <div className={`composer-queue${pendingQueue[0]?.blocked ? " composer-queue--blocked" : ""}`}>
+          <div className="composer-queue-items">
+            {pendingQueue.map((entry) => (
+              <QueueChip key={entry.id} entry={entry}
+                onPull={() => pullQueuedEntry({ id: entry.id })}
+                onDiscard={() => discardQueuedEntry(entry.id)}
+                onSendNow={() => { void sendQueuedEntryNow(entry.id); }}
+                disabled={readOnly} />
+            ))}
+          </div>
+          {pendingQueue[0]?.blocked && <small role="status">
+            {t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요.")}
+          </small>}
+        </div>
+      )}
     <form
       ref={composerRef}
       className={`composer ${dragActive ? "is-dragging" : ""}`}
@@ -1747,28 +1764,6 @@ export const Composer = memo(function Composer({
       )}
       {attachmentError && (
         <small className="composer-error">{attachmentError}</small>
-      )}
-      {pendingQueue.length > 0 && (
-        <span className={`composer-queue${pendingQueue[0]?.blocked ? " composer-queue--blocked" : ""}`}>
-          <strong>{pendingQueue[0]?.blocked ? t("자동 전송 중지") : t`${pendingQueue.length}개 대기 중`}</strong>
-          <span className="composer-queue-items">
-            {pendingQueue.map((entry) => (
-              <QueueChip
-                key={entry.id}
-                entry={entry}
-                onPull={() => pullQueuedEntry({ id: entry.id })}
-                onDiscard={() => discardQueuedEntry(entry.id)}
-                onSendNow={() => { void sendQueuedEntryNow(entry.id); }}
-                disabled={readOnly}
-              />
-            ))}
-          </span>
-          <small role={pendingQueue[0]?.blocked ? "status" : undefined}>
-            {pendingQueue[0]?.blocked
-              ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요.")
-              : t("현재 작업 후 자동 전송 · 지금 보내기는 작업을 중지하지 않고 전달합니다")}
-          </small>
-        </span>
       )}
       {draftUrl && <LinkPreviewCard url={draftUrl} compact />}
       <textarea
@@ -2065,5 +2060,6 @@ export const Composer = memo(function Composer({
         </div>
       </div>
     </form>
+    </>
   );
 });

@@ -4015,33 +4015,17 @@
   grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 7px;
-  margin: 0 10px 6px;
+  margin: 0 0 6px;
   padding: 0;
   color: var(--text-tertiary);
   background: none;
   border: 0;
   border-radius: 7px;
 }
-.composer-queue strong {
-  color: var(--accent-bright);
-  font-size: 10px;
-  white-space: nowrap;
-}
-.composer-queue > span {
-  overflow: hidden;
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .composer-queue small {
   font-size: 10px;
   white-space: normal;
 }
-.composer-queue--blocked {
-  grid-template-columns: minmax(0, 1fr);
-  border-color: var(--warning);
-}
-.composer-queue--blocked strong,
 .composer-queue-item--blocked em {
   color: var(--warning);
 }
