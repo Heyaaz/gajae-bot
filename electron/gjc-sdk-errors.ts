@@ -145,6 +145,13 @@ export function brokerFailureMessage(error: unknown): string {
 // names the route and the retry rather than the process that might hold the
 // session: a live row the broker cannot route to is not proof that a terminal owns
 // it, and the session itself is never closed, resumed, or replaced by this message.
+// Shown when GJC accepted a prompt, dropped it before the agent started -- the
+// previous run's context maintenance outlived the host's wait -- and also refused
+// it as a follow-up. The record proves the text never ran, so the user is told
+// to send it again.
+export const PROMPT_NOT_EXECUTED_MESSAGE =
+  "GJC가 메시지를 받았지만 실행을 시작하기 전에 취소했습니다(이전 작업이나 컨텍스트 압축이 끝나지 않음). 메시지는 실행되지 않았으니 다시 보내 주세요.";
+
 export const SHARED_ROUTE_UNAVAILABLE_MESSAGE =
   "이 세션의 공유 제어 경로를 확인할 수 없습니다. 세션과 기록은 그대로 유지됩니다. GJC에서 세션을 다시 열거나 잠시 뒤 다시 시도하면 이어서 제어할 수 있습니다.";
 

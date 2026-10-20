@@ -671,6 +671,8 @@ export class GjcSdkCli {
   ): Promise<{
     status: string;
     completed: boolean;
+    /** The agent began the run (`startedAt`); a failed record without it never ran. */
+    started: boolean;
     error?: { code?: string; message?: string };
   }> {
     const envelope = await this.run(
@@ -685,6 +687,7 @@ export class GjcSdkCli {
     return {
       status: typeof status?.status === "string" ? status.status : "unknown",
       completed: summary?.completed === true,
+      started: typeof status?.startedAt === "number",
       ...(error
         ? {
             error: {

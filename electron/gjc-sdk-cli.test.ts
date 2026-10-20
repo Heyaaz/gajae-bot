@@ -444,6 +444,27 @@ describe("GjcSdkCli.promptStatus", () => {
     expect(status.status).toBe("failed");
     expect(status.completed).toBe(true);
     expect(status.error?.code).toBe("agent_error");
+    // No startedAt: the agent never ran this prompt.
+    expect(status.started).toBe(false);
+  });
+
+  it("reports a record the agent started as started", async () => {
+    const { client } = cli([
+      JSON.stringify({
+        ok: true,
+        result: {
+          operationRef: "op1",
+          status: {
+            status: "failed",
+            acceptedAt: 1,
+            startedAt: 2,
+            error: { code: "cancelled", message: "Agent run failed after execution started." },
+          },
+          summary: { completed: true },
+        },
+      }),
+    ]);
+    expect((await client.promptStatus("s1", "op1")).started).toBe(true);
   });
 
   it("reports an unretained record as unknown rather than as success", async () => {

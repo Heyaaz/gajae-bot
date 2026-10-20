@@ -840,6 +840,72 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.sessions.get("s1")?.status).toBe("running");
   });
 
+  it("queues a prompt the host dropped before it ran as a follow-up", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []); internals.messageKeys.set("s1", new Map());
+    internals.attachedSessions.add("s1");
+    internals.awaitPromptSettlement = vi.fn(async () => "not_executed");
+    await expect(
+      controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
+    ).resolves.toBe("prompt");
+    // Resending the prompt would race the same maintenance; the follow-up waits it out.
+    expect(cli.send).toHaveBeenCalledTimes(1);
+    expect(cli.rawControl).toHaveBeenCalledWith("s1", "turn.follow_up", { text: "hello" }, expect.anything());
+    expect(internals.transcripts.get("s1").filter((item: any) => item.kind === "notice")).toEqual([]);
+    // The request is echoed once, not once per delivery.
+    expect(internals.transcripts.get("s1").filter((item: any) => item.role === "user")).toHaveLength(1);
+    // The run the follow-up starts is reported by the transcript watcher.
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+  });
+
+  it("tells the user when a dropped prompt cannot be queued either", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []); internals.messageKeys.set("s1", new Map());
+    internals.attachedSessions.add("s1");
+    internals.refreshContextUsage = vi.fn(async () => undefined);
+    internals.awaitPromptSettlement = vi.fn(async () => "not_executed");
+    (cli.rawControl as any).mockRejectedValue(new Error("refused"));
+    await expect(
+      controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
+    ).rejects.toThrow(/실행되지 않았으니 다시 보내 주세요/u);
+    expect(internals.transcripts.get("s1").at(-1)).toMatchObject({ kind: "notice", title: "GJC run failed" });
+    expect(internals.sessions.get("s1")?.status).toBe("idle");
+  });
+
+  it("classifies prompt records by whether the agent ever ran them", async () => {
+    vi.useFakeTimers();
+    try {
+      const { cli, internals } = harness();
+      const settle = async (record: Record<string, unknown>) => {
+        (cli.promptStatus as any).mockResolvedValueOnce(record);
+        const pending = internals.awaitPromptSettlement("s1", "op1");
+        // Observed now; the rejection lands while the timers advance.
+        pending.catch(() => undefined);
+        await vi.advanceTimersByTimeAsync(1_000);
+        return await pending;
+      };
+      // Dropped before execution: safe to deliver again.
+      await expect(
+        settle({ status: "failed", completed: true, started: false, error: { code: "internal", message: "Prompt submission failed." } }),
+      ).resolves.toBe("not_executed");
+      // Interrupted by a newer message: the host's generic text is not a failure.
+      await expect(
+        settle({ status: "failed", completed: true, started: true, error: { code: "cancelled", message: "Agent run failed after execution started." } }),
+      ).resolves.toBe("terminal");
+      // A run that really failed is still reported.
+      const failed = settle({ status: "failed", completed: true, started: true, error: { code: "agent_error", message: "provider exploded" } });
+      await expect(failed).rejects.toThrow("provider exploded");
+      // A Stop pressed meanwhile owns the outcome, so nothing is redelivered.
+      internals.locallyAbortedSessions.add("s1");
+      (cli.promptStatus as any).mockResolvedValueOnce({ status: "failed", completed: true, started: false });
+      await expect(internals.awaitPromptSettlement("s1", "op1")).resolves.toBe("unknown");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("falls back from busy send to turn.steer", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", { ...session(), status: "running" }); internals.sessionCwds.set("s1", "/repo");

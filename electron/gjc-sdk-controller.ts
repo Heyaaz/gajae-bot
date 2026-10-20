@@ -104,6 +104,7 @@ import {
   SDK_SCOPED_FAST_SERVICE_TIERS,
   SDK_SERVICE_TIER_OFF,
   SDK_SLASH_COMMAND_SPECS,
+  PROMPT_NOT_EXECUTED_MESSAGE,
   SHARED_ROUTE_UNAVAILABLE_MESSAGE,
   STARTUP_TIMEOUT_MS,
   SdkSlashCommandSpec,
@@ -3375,7 +3376,7 @@ export class GjcSdkController {
       // never recycle one.
       const operationRef = freshOperationRef();
       let accepted: Awaited<ReturnType<GjcSdkCli["send"]>> | undefined;
-      let alreadySettled = false;
+      let uncertain = false;
       try {
         accepted = await cli.send(sessionId, promptText, {
           repo: this.repoFor(sessionId),
@@ -3383,20 +3384,10 @@ export class GjcSdkController {
         });
       } catch (error) {
         if (!uncertainAfterSendError(error)) throw error;
-        // The frame may already have reached the host. Never retry the logical
-        // prompt or reuse its reference; reconcile that exact reference instead.
-        const outcome = await this.awaitPromptSettlement(
-          sessionId,
-          operationRef,
-        );
-        if (outcome === "unknown") {
-          // This send may have been cancelled and replaced while its settlement
-          // was being read. Only the original admission may publish the run state.
-          if (this.activePromptAdmissions.get(sessionId) === admission)
-            this.updateSessionStatus(sessionId, "running");
-          return "prompt";
-        }
-        alreadySettled = true;
+        // The frame may already have reached the host. Never resend while the
+        // outcome is unknown or reuse its reference; reconcile that exact
+        // reference instead.
+        uncertain = true;
       }
       if (accepted?.status === "failed")
         throw new Error("GJC rejected the prompt");
@@ -3405,9 +3396,33 @@ export class GjcSdkController {
       // and keeps appending to the transcript, so closing the row here reported 완료
       // over live work. The prompt record and the session's own transcript are the
       // accounts that cover what a single CLI call cannot see, so they decide.
-      const settlement = alreadySettled
-        ? "terminal"
-        : await this.awaitPromptSettlement(sessionId, operationRef);
+      let settlement = await this.awaitPromptSettlement(sessionId, operationRef);
+      if (settlement === "unknown" && uncertain) {
+        // This send may have been cancelled and replaced while its settlement
+        // was being read. Only the original admission may publish the run state.
+        if (this.activePromptAdmissions.get(sessionId) === admission)
+          this.updateSessionStatus(sessionId, "running");
+        return "prompt";
+      }
+      if (settlement === "not_executed") {
+        if (this.activePromptAdmissions.get(sessionId) !== admission)
+          return "prompt";
+        // The host accepted the prompt but dropped it before the agent started:
+        // gjc/0.18.12 waits 30s for the previous run's context maintenance and then
+        // fails the prompt ("Timed out waiting for prior agent run to finish"), or
+        // cancels its preflight. The record proves the text never ran. A follow-up
+        // is queued behind that maintenance instead of racing it (verified on a
+        // TUI-hosted session: two prompts failed while a follow-up ran at once),
+        // and the transcript watcher reports the run it starts.
+        try {
+          await this.controlSession(sessionId, "turn.follow_up", {
+            text: promptText,
+          });
+        } catch {
+          throw new Error(PROMPT_NOT_EXECUTED_MESSAGE);
+        }
+        settlement = "unknown";
+      }
       if (settlement === "unknown") {
         // Poll exhaustion or unavailable evidence is not a terminal event. The
         // file watcher and tail follower remain responsible for the later state.
@@ -3512,11 +3527,14 @@ export class GjcSdkController {
    * A prompt that is still running when the poll budget ends is left running. This
    * never forces the row idle and never reports a cancel, because `unknown` and
    * "still going" are both uncertainty, not proof the work stopped.
+   *
+   * `not_executed` is a failed record that never started: the host dropped the
+   * request before the agent ran it, so the caller may deliver it again.
    */
   private async awaitPromptSettlement(
     sessionId: string,
     operationRef: string,
-  ): Promise<"terminal" | "unknown"> {
+  ): Promise<"terminal" | "unknown" | "not_executed"> {
     const generation = this.generation;
     for (let attempt = 0; attempt < PROMPT_SETTLE_ATTEMPTS; attempt += 1) {
       // A cancel or a newer turn owns the row now; stop following this one.
@@ -3543,10 +3561,17 @@ export class GjcSdkController {
       }
       if (!record.completed) continue;
       if (record.status === "failed") {
+        // A Stop pressed while this was read owns the outcome.
+        if (this.locallyAbortedSessions.has(sessionId)) return "unknown";
+        if (!record.started) return "not_executed";
         const message = record.error?.message ?? "GJC run failed";
-        // A cancel is the user's own action and settles quietly upstream.
+        // An interrupted run -- the user's Stop or a newer message that took over
+        // the turn -- is not a failure. The host records it as `cancelled` with a
+        // generic message, which read as "GJC run failed" and published idle over
+        // the turn the newer message had started.
         if (
           record.error?.code === "aborted" ||
+          record.error?.code === "cancelled" ||
           /abort|cancel/iu.test(message)
         )
           return "terminal";
