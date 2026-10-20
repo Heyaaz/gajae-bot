@@ -116,7 +116,7 @@ export function uncertainAfterSendError(error: unknown): boolean {
   if (error instanceof SdkCliError && error.code === "uncertain_after_send")
     return true;
   const text = error instanceof Error ? error.message : String(error);
-  return /uncertain_after_send|SDK request outcome is uncertain after the frame was sent/iu.test(
+  return /uncertain_after_send|SDK request outcome is uncertain after the frame was sent|request was sent but its outcome is uncertain/iu.test(
     text,
   );
 }

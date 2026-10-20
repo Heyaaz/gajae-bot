@@ -819,7 +819,7 @@ export class GjcSdkCli {
           : []),
         ...(options?.confirm ? ["--confirm"] : []),
         "--timeout-ms",
-        String(this.requestTimeoutMs),
+        String(options?.timeoutMs ?? this.requestTimeoutMs),
       ],
       operation,
       {

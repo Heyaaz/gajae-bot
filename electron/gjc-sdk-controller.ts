@@ -250,6 +250,13 @@ function statsRevision(info: Stats): string {
   return `${info.dev}:${info.ino}:${info.size}:${mtime}:${ctime}`;
 }
 
+/**
+ * Manual compaction summarizes a whole context with the model. A 278k-token
+ * session took 88 seconds on the installed runtime, so the ordinary 8-second
+ * control deadline reports a false uncertainty while the host is still working.
+ */
+const COMPACTION_TIMEOUT_MS = 300_000;
+
 function commandPublicationKey(commands: readonly AgentCommand[]): string {
   return commands
     .map(
@@ -2619,7 +2626,9 @@ export class GjcSdkController {
       status: "running",
     });
     try {
-      await this.controlSession(sessionId, "compaction.run", {});
+      await this.controlSession(sessionId, "compaction.run", {}, {
+        timeoutMs: COMPACTION_TIMEOUT_MS,
+      });
       // GJC intentionally reports null usage after compaction until a later model
       // response provides a trustworthy provider anchor. Never leave the stale
       // pre-compaction percentage visible while that new value is pending.
@@ -2629,6 +2638,16 @@ export class GjcSdkController {
       });
       await this.refreshContextUsage(sessionId);
     } catch (error) {
+      if (uncertainAfterSendError(error)) {
+        // The host accepted the request and is still summarizing. Keep the
+        // compaction markers so the durable receipt can settle the phase; clearing
+        // them here left the session running forever even though the record landed.
+        this.patchSessionRuntime(sessionId, {
+          usagePercent: undefined,
+          usagePending: true,
+        });
+        return;
+      }
       // Compaction marked the row running. Leaving it there after a failure keeps
       // the composer queueing behind a turn that never started, so the status it
       // replaced is restored -- and only that one, or a real turn running
@@ -2785,7 +2804,7 @@ export class GjcSdkController {
       | "auth.login"
       | "btw.ask",
     input: Record<string, unknown>,
-    options?: { confirm?: boolean; idempotencyKey?: string },
+    options?: { confirm?: boolean; idempotencyKey?: string; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined> {
     const cli = await this.requireCli();
     // A terminal abort is the only operation that needs a key of its own, and the
@@ -2799,6 +2818,7 @@ export class GjcSdkController {
       return await cli.rawControl(sessionId, operation, input, {
         repo: this.repoFor(sessionId),
         ...(idempotencyKey ? { idempotencyKey } : {}),
+        ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
         // An operator terminal abort is destructive and the host requires the flag.
         confirm: options?.confirm === true || input.operator === true,
       });

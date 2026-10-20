@@ -3747,3 +3747,48 @@ describe("quiet live evidence", () => {
     }
   });
 });
+
+describe("manual compaction", () => {
+  it("uses the long compaction deadline and keeps the phase after a sent-but-uncertain outcome", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    cli.rawControl.mockRejectedValueOnce(
+      new SdkCliError(
+        "uncertain_after_send",
+        "The request was sent but its outcome is uncertain. Reconcile before any replay.",
+      ),
+    );
+
+    await expect(controller.compactSession("s1")).resolves.toBeUndefined();
+
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "compaction.run",
+      {},
+      expect.objectContaining({ timeoutMs: 300_000 }),
+    );
+    // The durable compaction record is still the completion receipt; clearing
+    // these markers here made the later record invisible and left the row running.
+    expect(internals.compactingSessions.has("s1")).toBe(true);
+    expect(internals.sessions.get("s1").phase).toBe("compacting");
+    expect(internals.sessions.get("s1").status).toBe("running");
+  });
+
+  it("restores the previous row when GJC refuses the compaction", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    cli.rawControl.mockRejectedValueOnce(
+      new SdkCliError(
+        "operation_failed",
+        "The operation failed. Its outcome could not be established.",
+      ),
+    );
+
+    await expect(controller.compactSession("s1")).rejects.toThrow(
+      "The operation failed",
+    );
+    expect(internals.compactingSessions.has("s1")).toBe(false);
+    expect(internals.sessions.get("s1").phase).toBeUndefined();
+    expect(internals.sessions.get("s1").status).toBe("idle");
+  });
+});

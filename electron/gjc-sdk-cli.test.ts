@@ -541,6 +541,24 @@ describe("GjcSdkCli.rawControl", () => {
     expect(args).toContain("--json");
   });
 
+  it("passes a caller timeout through to the CLI request deadline", async () => {
+    const { client, calls } = cli([
+      JSON.stringify({
+        type: "control_response",
+        ok: true,
+        result: { started: true },
+      }),
+    ]);
+    await client.rawControl(
+      "s1",
+      "compaction.run",
+      {},
+      { timeoutMs: 300_000 },
+    );
+    const args = calls[0] ?? [];
+    expect(args[args.indexOf("--timeout-ms") + 1]).toBe("300000");
+  });
+
   it("sets always-allow through permission_mode.set", async () => {
     const { client, calls } = cli([
       JSON.stringify({
