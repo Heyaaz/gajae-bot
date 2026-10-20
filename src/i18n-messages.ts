@@ -1,5 +1,8 @@
 /** English copy for every translated source string. */
 export const MESSAGES: Readonly<Record<string, string>> = {
+  "지금 보내기": "Send now",
+  "대기 메시지 수정": "Edit queued message",
+  "현재 작업 후 자동 전송 · 지금 보내기는 작업을 중지하지 않고 전달합니다": "Sent after the current task · Send now steers without stopping it",
   " · 예약 {0}": " · Queued {0}",
   " · 최근 {0}": " · Recent {0}",
   "(미완료)": "(incomplete)",

@@ -101,17 +101,21 @@ Type a request and press Enter. Files and images are sent as local paths. Images
 | --------------------- | ----------------------------------------------------------------------------------------------------------- |
 | Text + Enter          | Hold follow-up work visibly in the Composer. It waits until the current turn ends, unless you press empty Enter again |
 | Empty Enter (with work held) | Interrupt the current turn and immediately release the held work through steering                         |
-| `/steer …`            | Mark the held work as steering intent; it still takes the visible held-work step and does not interrupt on this Enter |
+| Send now on a held row | Send that instruction as a steer without stopping the current turn; other held rows keep waiting |
+| Edit / × on a held row | Restore that request to the draft / discard only that request |
+| `/steer …`            | Send the instruction immediately to the open turn without holding it locally |
 | `/queue …`            | Mark the held work to wait until the current turn ends                                                    |
 | Esc or Stop           | Stop the current turn and owned background/subagent work. The session stays open                          |
 
 The submit slot holds one button, not two: the send arrow whenever there is
 something to send, otherwise Stop. The Composer owns one local held-work queue;
-`/steer` and `/queue` do not create separate remote queues.
+`/queue` holds work locally; `/steer` sends directly to the runtime.
 
 GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait
-queue. Submissions are held locally as follow-up/Steer work; empty Enter aborts
-the current turn and releases the held work through steering in order.
+queue. Held requests appear as full-width rows above the input, with Send now,
+edit, and discard controls. Send now does not abort; empty Enter retains its
+separate interrupt-and-release behavior. Failed deliveries remain visible for
+review rather than being automatically resent.
 
 ### Model / effort
 

@@ -32,6 +32,7 @@ import {
   FolderGit2,
   FolderOpen,
   Paperclip,
+  Pencil,
   Sparkles,
   Zap,
   X,
@@ -542,20 +543,22 @@ export interface QueueChipProps {
   entry: PendingRequest;
   onPull: () => void;
   onDiscard: () => void;
+  onSendNow?: () => void;
+  disabled?: boolean;
 }
 
 /**
- * One held request and its two gestures.
+ * One held request with explicit send, edit, and discard controls.
  *
  * The chip body pulls the request back into the draft, where the exact text can be
  * edited or sent on its own; the × beside it discards that one entry. `type` is
  * explicit on both: the composer is a form, so a bare button here would submit the
  * draft the user is trying to take a request out of.
  */
-export function QueueChip({ entry, onPull, onDiscard }: QueueChipProps) {
+export function QueueChip({ entry, onPull, onDiscard, onSendNow, disabled = false }: QueueChipProps) {
   return (
     <span className={`composer-queue-item composer-queue-item--${entry.mode}${entry.blocked ? " composer-queue-item--blocked" : ""}`}>
-      <button type="button" className="composer-queue-pull" onClick={onPull}
+      <button type="button" className="composer-queue-pull" onClick={onPull} disabled={disabled}
         title={entry.blocked ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요.") : undefined}>
         <em>{entry.blocked ? t("확인 필요") : entry.mode === "steer" ? t("즉시") : t("대기")}</em>
         <span className="composer-queue-text">{entry.text}</span>
@@ -563,11 +566,18 @@ export function QueueChip({ entry, onPull, onDiscard }: QueueChipProps) {
       <button
         type="button"
         className="composer-queue-discard"
+        disabled={disabled}
         aria-label={t("대기 항목 버리기")}
         onClick={onDiscard}
       >
         <X size={10} />
       </button>
+      {onSendNow && (
+        <button type="button" className="composer-queue-send" disabled={disabled || entry.blocked}
+          onClick={onSendNow}>{t("지금 보내기")}</button>
+      )}
+      <button type="button" className="composer-queue-edit" disabled={disabled}
+        aria-label={t("대기 메시지 수정")} onClick={onPull}><Pencil size={12} /></button>
     </span>
   );
 }
@@ -1245,6 +1255,27 @@ export const Composer = memo(function Composer({
     setPendingQueue(remaining);
   }
 
+  async function sendQueuedEntryNow(id: string): Promise<void> {
+    if (readOnly || releasingQueues.has(sessionId)) return;
+    const entry = pendingQueueRef.current.find((request) => request.id === id);
+    if (!entry || entry.blocked) return;
+    const owner = sessionId;
+    releasingQueues.add(owner);
+    try {
+      await onSend({ text: running ? `/steer ${entry.text}` : entry.text, images: entry.images, files: entry.files });
+      saveComposerQueue(owner, withoutReleasedRequest(composerQueue(owner), id));
+    } catch (error) {
+      saveComposerQueue(owner, composerQueue(owner).map((request) =>
+        request.id === id ? { ...request, blocked: true } : request,
+      ));
+      if (mountedRef.current && draftSessionRef.current === owner)
+        setAttachmentError(humanErrorMessage(error));
+    } finally {
+      releasingQueues.delete(owner);
+      requestQueueReleaseRetry(owner, composerQueue(owner));
+    }
+  }
+
   // Held requests exist only because a turn was open. Once that turn ends they
   // are sent without waiting for another gesture -- otherwise the queue is
   // unreachable (submit() keeps appending while anything is held) and every later
@@ -1733,13 +1764,15 @@ export const Composer = memo(function Composer({
                 entry={entry}
                 onPull={() => pullQueuedEntry({ id: entry.id })}
                 onDiscard={() => discardQueuedEntry(entry.id)}
+                onSendNow={() => { void sendQueuedEntryNow(entry.id); }}
+                disabled={readOnly}
               />
             ))}
           </span>
           <small role={pendingQueue[0]?.blocked ? "status" : undefined}>
             {pendingQueue[0]?.blocked
               ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요.")
-              : t("Enter 한 번 더 = 바로 실행 · ⌥↑/⌥↓ = 꺼내기 · 항목 클릭 = 꺼내기")}
+              : t("현재 작업 후 자동 전송 · 지금 보내기는 작업을 중지하지 않고 전달합니다")}
           </small>
         </span>
       )}

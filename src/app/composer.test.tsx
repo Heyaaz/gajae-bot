@@ -625,6 +625,25 @@ describe("Composer queue pull-back", () => {
 });
 
 describe("stop queue ownership", () => {
+  it("offers explicit steer and edit actions without submitting the composer", () => {
+    const send = vi.fn();
+    const pull = vi.fn();
+    const chip = QueueChip({ entry: heldRequest("a", "new direction"), onPull: pull, onDiscard: vi.fn(), onSendNow: send }) as unknown as TestElement;
+    const buttons = childButtons(chip);
+    expect(buttons).toHaveLength(4);
+    expect(buttons.every((button) => button.props.type === "button")).toBe(true);
+    buttons[2]?.props.onClick!();
+    expect(send).toHaveBeenCalledOnce();
+    expect(pull).not.toHaveBeenCalled();
+    buttons[3]?.props.onClick!();
+    expect(pull).toHaveBeenCalledOnce();
+    const blocked = renderToStaticMarkup(createElement(QueueChip, {
+      entry: { ...heldRequest("b", "uncertain send"), blocked: true },
+      onPull: pull, onDiscard: vi.fn(), onSendNow: send,
+    }));
+    expect(blocked).toMatch(/class="composer-queue-send" disabled/);
+  });
+
   it("discards held work only after cancellation resolves", async () => {
     let resolveCancel!: () => void;
     const cancel = vi.fn(() => new Promise<void>((resolve) => { resolveCancel = resolve; }));

@@ -2837,10 +2837,13 @@
   display: flex;
   min-width: 0;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
+  padding: 9px 12px;
+  background: rgba(128, 128, 128, 0.12);
+  border-radius: 14px;
   overflow: hidden;
   color: var(--text-secondary);
-  font-size: 10.5px;
+  font-size: 12px;
   white-space: nowrap;
 }
 /* The chip body is the pull-back control and has to be a real button for that,
@@ -2877,6 +2880,22 @@
 .composer-queue-discard:hover {
   color: var(--text-secondary);
 }
+.composer-queue-discard { order: 3; }
+.composer-queue-send,
+.composer-queue-edit {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 4px 7px;
+  color: var(--text-secondary);
+  font: inherit;
+  cursor: pointer;
+  background: rgba(128, 128, 128, 0.12);
+  border: 0;
+  border-radius: 7px;
+}
+.composer-queue-edit { background: none; }
+.composer-queue-item button:disabled { opacity: 0.45; cursor: default; }
 .composer-queue-item em {
   flex: 0 0 auto;
   color: var(--accent-bright);
@@ -3993,14 +4012,14 @@
 }
 .composer-queue {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: 7px;
   margin: 0 10px 6px;
-  padding: 6px 8px;
+  padding: 0;
   color: var(--text-tertiary);
-  background: rgba(240, 100, 22, 0.055);
-  border: 1px solid rgba(240, 100, 22, 0.14);
+  background: none;
+  border: 0;
   border-radius: 7px;
 }
 .composer-queue strong {
@@ -4016,10 +4035,10 @@
 }
 .composer-queue small {
   font-size: 10px;
-  white-space: nowrap;
+  white-space: normal;
 }
 .composer-queue--blocked {
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   border-color: var(--warning);
 }
 .composer-queue--blocked strong,
