@@ -1352,7 +1352,9 @@ export default function App() {
       const echo: TranscriptItem = {
         id: `local-prompt-renderer-${crypto.randomUUID()}`,
         sessionId, kind: "message", role: "user", content: prompt,
-        createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        // Same clock format as the controller's rows, so the label does not
+        // change (오후 01:22 -> 13:22) when the confirmed row replaces this one.
+        createdAt: new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()),
         streaming: false,
         ...(input.images.length ? { images: input.images } : {}),
       };

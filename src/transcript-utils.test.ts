@@ -892,6 +892,16 @@ describe("cacheTranscript", () => {
     expect(mergeTranscriptItem(merged, repeat)).toHaveLength(2);
   });
 
+  it("retires the renderer prompt when a controller transcript carries its echo", () => {
+    const renderer = { ...message, id: "local-prompt-renderer-1", role: "user" as const, content: "너가 해결해줘 송수신 제대로 안돼" };
+    const controllerEcho = { ...renderer, id: "local-prompt-7" };
+    const synced = cacheTranscript({ "session-1": [renderer] }, "session-1", [controllerEcho]);
+    expect(synced["session-1"].map((item) => item.id)).toEqual(["local-prompt-7"]);
+    const durable = { ...renderer, id: "shared-message-1" };
+    const settled = cacheTranscript(synced, "session-1", [durable]);
+    expect(settled["session-1"].map((item) => item.id)).toEqual(["shared-message-1"]);
+  });
+
   it("does not multiply an unconfirmed echo on repeated incremental cache writes", () => {
     const echo = { ...message, id: "local-prompt-1", role: "user" as const, content: "멍텔모아만 타겟으로 열어야해" };
     let cached: Record<string, TranscriptItem[]> = { "session-1": [echo] };

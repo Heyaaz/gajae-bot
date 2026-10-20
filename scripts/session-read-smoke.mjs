@@ -30,7 +30,15 @@ window.agentControlDesktop = {
  onCycleEffort: () => () => {},
  gjc: {
  getConnection: async () => ({ state: 'connected', backend: 'gjc', label: 'Read test', workspace: '/repo' }),
- sendMessage: async () => new Promise(() => {}),
+ sendMessage: (id, input) => new Promise(done => { window.__reads.ack = () => {
+  // What the controller really does: echo the prompt as a local row, then a
+  // full sync that still carries that echo, then the durable rebuild.
+  const echo = { id: 'local-prompt-7', sessionId: id, kind: 'message', role: 'user', content: input.text, createdAt: '13:22' };
+  listeners.forEach(fn => fn({ type: 'transcript.appended', item: echo }));
+  listeners.forEach(fn => fn({ type: 'transcript.synced', sessionId: id, items: [echo] }));
+  listeners.forEach(fn => fn({ type: 'transcript.synced', sessionId: id, items: [{ ...echo, id: 'shared-message-7' }] }));
+  done('prompt');
+ }; }),
  listSessions: () => { counts.list++; return new Promise(done => { finishList = done; }); },
  getTranscript: id => { counts.transcript[id] = (counts.transcript[id] || 0) + 1; return new Promise(done => { waiting[id] = done; }); },
  getTranscriptRevision: async () => undefined,
@@ -104,7 +112,11 @@ try {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     await wait(40);
     input.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    await until(() => [...document.querySelectorAll('.message')].some(row => row.textContent.includes('VISIBLE-BEFORE-BACKEND-ACK')));
+    const bubbles = () => [...document.querySelectorAll('.message')].filter(row => row.textContent.includes('VISIBLE-BEFORE-BACKEND-ACK')).length;
+    await until(() => bubbles() === 1);
+    __reads.ack();
+    await wait(150);
+    assert(bubbles() === 1, 'prompt rendered ' + bubbles() + ' times after the controller confirmed it');
     return { passed: true, counts: __reads.counts };
   })()`);
   console.log(JSON.stringify(result));

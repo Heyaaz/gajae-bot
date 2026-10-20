@@ -860,6 +860,10 @@ function isLocalEcho(id: string): boolean {
   return id.startsWith("local-prompt-");
 }
 
+function isRendererEcho(id: string): boolean {
+  return id.startsWith("local-prompt-renderer-");
+}
+
 export function cacheTranscript(
   transcripts: Record<string, TranscriptItem[]>,
   sessionId: string,
@@ -921,10 +925,16 @@ export function cacheTranscript(
         )
           occurrence += 1;
       }
+      // The renderer shows a request before the controller has echoed it. The
+      // controller's own echo (still local) confirms that renderer row too;
+      // excluding it left both bubbles on screen as if the prompt went twice.
+      const confirmsLocal = (id: string): boolean =>
+        !isLocalEcho(id) ||
+        (isRendererEcho(local.id) && !isRendererEcho(id));
       const candidates = items.flatMap((item, index) =>
         item.kind === "message" &&
         item.role === "user" &&
-        !isLocalEcho(item.id) &&
+        confirmsLocal(item.id) &&
         sameUserRequest(item, local)
           ? [index]
           : [],
