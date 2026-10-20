@@ -1553,9 +1553,11 @@ describe("SDK slash commands", () => {
         { id: "m1", content: "hi" },
       ]);
       await vi.waitFor(() => {
-        expect(cli.queryItems.mock.calls.map((call) => call[1])).toEqual([
-          "workflow.gates.list",
-        ]);
+        expect(
+          cli.queryItems.mock.calls.map(
+            (call) => (call as readonly unknown[])[1],
+          ),
+        ).toEqual(["workflow.gates.list"]);
       });
     } finally {
       controller.dispose();

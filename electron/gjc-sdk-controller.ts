@@ -4847,6 +4847,8 @@ export class GjcSdkController {
     this.sessionQuestions.clear();
     this.acceptedQuestions.clear();
     this.observedQuestions.clear();
+    this.questionRefreshes.clear();
+    this.questionAnswers.clear();
     this.sessionTodoSnapshots.clear();
     this.todoReads.clear();
     this.sessionSdkOperations.clear();

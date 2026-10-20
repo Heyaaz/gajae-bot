@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { QuestionSubmission } from "../shared/agent-contract.js";
 import { GjcSdkController } from "./gjc-sdk-controller.js";
@@ -55,15 +57,20 @@ function harness(gates: unknown[] = [gateRow()]) {
   const controller = new GjcSdkController({
     workspace: "/repo",
     emit,
+    artifactDirectory: path.join(tmpdir(), "gajae-question-artifacts"),
   } as never);
   const cli = {
     listSessions: vi.fn(async () => []),
     inspectSession: vi.fn(async () => ({ live: true, repo: "/repo" })),
     rawGlobal: vi.fn(async () => ({ ok: true })),
-    rawControl: vi.fn(async () => ({ status: "accepted" })),
+    rawControl: vi.fn(
+      async (..._args: unknown[]): Promise<Record<string, unknown>> => ({
+        status: "accepted",
+      }),
+    ),
     rawQuery: vi.fn(async () => ({ items: [] })),
-    queryItems: vi.fn(async (_id: string, query: string) =>
-      query === "workflow.gates.list" ? gates : [],
+    queryItems: vi.fn(async (...args: unknown[]) =>
+      args[1] === "workflow.gates.list" ? gates : [],
     ),
     send: vi.fn(async () => ({ status: "accepted" })),
     promptStatus: vi.fn(async () => ({ status: "completed" })),
@@ -426,10 +433,9 @@ describe("workflow question controller", () => {
     try {
       await controller.listPendingQuestions("s1");
       await controller.answerQuestion("s1", "g1", { selected: ["Yes"] }, "gajae-gate-12345678");
-      expect(internals.questionById("s1", "g1")).toMatchObject({
-        status: "pending",
-        error: undefined,
-      });
+      const settled = internals.questionById("s1", "g1");
+      expect(settled.status).toBe("pending");
+      expect(settled.error).toBeUndefined();
       expect(cli.queryItems.mock.calls.filter((call) => call[1] === "workflow.gates.list").length).toBeGreaterThan(1);
     } finally {
       controller.dispose();
