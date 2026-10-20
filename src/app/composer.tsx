@@ -560,7 +560,7 @@ export function QueueChip({ entry, onPull, onDiscard, onSendNow, disabled = fals
     <span className={`composer-queue-item composer-queue-item--${entry.mode}${entry.blocked ? " composer-queue-item--blocked" : ""}`}>
       <button type="button" className="composer-queue-pull" onClick={onPull} disabled={disabled}
         title={entry.blocked ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요.") : undefined}>
-        <em>{entry.blocked ? t("확인 필요") : entry.mode === "steer" ? t("즉시") : t("대기")}</em>
+        <em>{entry.blocked ? t("확인 필요") : entry.mode === "steer" ? "Steer" : t("대기")}</em>
         <span className="composer-queue-text">{entry.text}</span>
       </button>
       <button
@@ -1356,25 +1356,19 @@ export const Composer = memo(function Composer({
       commands,
       images.length > 0 || files.length > 0,
     );
-    const holdForTurn =
-      liveTurn &&
-      !immediateSdkCommand &&
-      liveTurnSubmissionMode(
-        content,
-        runningSubmission,
-        pendingQueue.length > 0,
-      ) === "queue";
+    const holdForTurn = liveTurn && !immediateSdkCommand;
     if (holdForTurn) {
-      // Held locally, not sent. The default is queue until the user chooses
-      // steer; an explicit `/queue` still holds even after that choice, and an
-      // explicit `/steer` is handed to the runtime below.
+      // Steer intent is held visibly too. Only Send now releases an individual
+      // instruction into the running turn; submitting must not skip this row.
       const preview = composerQueuePreview(content, files, images);
+      const mode = liveTurnSubmissionMode(content, runningSubmission, false) === "steer"
+        ? "steer" : "followUp";
       setPendingQueue((current) =>
         appendPendingRequest(current, {
           id: `local-${crypto.randomUUID()}`,
           text: preview.text,
-          mode: preview.mode,
-          label: preview.mode === "steer" ? "Steer" : "Queued",
+          mode,
+          label: mode === "steer" ? "Steer" : "Queued",
           images,
           files,
         }),

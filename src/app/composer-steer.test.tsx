@@ -28,6 +28,34 @@ async function mount(overrides: Partial<ComposerProps> = {}) {
 }
 
 describe("queued message Send now", () => {
+  it.each([
+    { text: "/steer change course", preference: "queue" as const, mode: "steer", expected: "change course" },
+    { text: "change course", preference: "steer" as const, mode: "steer", expected: "change course" },
+    { text: "/queue wait for me", preference: "steer" as const, mode: "followUp", expected: "wait for me" },
+  ])("shows submitted $text above the input without sending it", async ({ text, preference, mode, expected }) => {
+    const test = await mount({ runningSubmission: preference });
+    try {
+      await act(async () => saveComposerQueue(test.sessionId, []));
+      const input = test.node.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => {
+        input.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      expect(test.send).not.toHaveBeenCalled();
+      expect(composerQueue(test.sessionId)).toEqual([
+        expect.objectContaining({ text: expected, mode }),
+      ]);
+      expect(test.node.querySelector(".composer-queue-text")?.textContent).toBe(expected);
+      expect(test.node.querySelector(".composer-queue-send")).not.toBeNull();
+      expect(input.value).toBe("");
+      await act(async () => (test.node.querySelector(".composer-queue-send") as HTMLButtonElement).click());
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: `/steer ${expected}`, images: [], files: [] });
+    } finally { await test.close(); }
+  });
+
   it("keeps the row until acceptance, steers only that entry, and never stops the turn", async () => {
     let accept!: () => void;
     const send = vi.fn(() => new Promise<undefined>((resolve) => { accept = () => resolve(undefined); }));
