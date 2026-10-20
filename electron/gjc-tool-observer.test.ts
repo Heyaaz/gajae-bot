@@ -14,6 +14,23 @@ async function fixture(source: string) {
 }
 
 describe("SDK tool observer transport", () => {
+  it("forwards SDK live reply snapshots instead of filtering them out", async () => {
+    const test = await fixture(`
+      process.stdout.write('{"type":"hello"}\\n');
+      process.stdin.once('data', chunk => {
+        const request = JSON.parse(String(chunk));
+        process.stdout.write(JSON.stringify({type:'event_replay_result',id:request.id,ok:true})+'\\n');
+        process.stdout.write(JSON.stringify({type:'event',kind:'turn_stream',payload:{type:'turn_stream',sessionId:'s1',phase:'live',text:'answer growing',messageRef:'42'}})+'\\n');
+        process.exit(0);
+      });
+    `);
+    const events: unknown[] = [];
+    try {
+      await test.client.observeTools("s1", (kind, payload) => events.push({ kind, payload }), new AbortController().signal);
+      expect(events).toEqual([{ kind: "turn_stream", payload: { type: "turn_stream", sessionId: "s1", phase: "live", text: "answer growing", messageRef: "42" } }]);
+    } finally { await test.cleanup(); }
+  });
+
   it("negotiates both observer capabilities and reads fragmented JSONL snapshots", async () => {
     const test = await fixture(`
       process.stdout.write('{"type":"hello"}\\n');

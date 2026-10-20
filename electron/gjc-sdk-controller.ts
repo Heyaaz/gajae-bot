@@ -5458,6 +5458,26 @@ export class GjcSdkController {
   }
 
   private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
+    // The installed SDK publishes reply snapshots as turn_stream, not ACP
+    // agent_message_chunk. They are cumulative text, never append-only deltas.
+    if (kind === "turn_stream") {
+      if (payload.sessionId !== sessionId || typeof payload.text !== "string" ||
+        typeof payload.messageRef !== "string" ||
+        (payload.phase !== "live" && payload.phase !== "finalized")) return;
+      const id = `gjc-message-stream-${payload.messageRef}`;
+      const existing = this.transcripts.get(sessionId)?.find((item) => item.id === id);
+      if (existing?.kind === "message" && existing.streaming === false && payload.phase === "live") return;
+      const message: ChatMessage = {
+        id, kind: "message", sessionId, role: "assistant", content: payload.text,
+        createdAt: existing?.createdAt ?? nowLabel(), streaming: payload.phase === "live",
+      };
+      if (existing?.kind === "message") {
+        Object.assign(existing, message);
+        this.noteTranscriptEpoch(sessionId);
+        this.emitEvent({ type: "message.updated", message: { ...message } });
+      } else this.appendTranscript(message);
+      return;
+    }
     const event = payload.event;
     if (!event || typeof event !== "object" || Array.isArray(event)) return;
     const value = event as Record<string, unknown>;

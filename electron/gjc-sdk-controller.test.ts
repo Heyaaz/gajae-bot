@@ -403,6 +403,25 @@ describe("0.18.12 tool stream", () => {
     } finally { controller.dispose(); }
   });
 
+  it("projects SDK turn_stream snapshots without duplication or terminal regression", () => {
+    const { controller, internals } = streamHarness();
+    const frame = (text: string, phase = "live", sessionId = "s1") =>
+      internals.projectToolStream("s1", "turn_stream", { type: "turn_stream", sessionId, messageRef: "42", phase, text });
+    try {
+      frame("first");
+      frame("first second");
+      expect(internals.transcripts.get("s1")).toEqual([
+        expect.objectContaining({ kind: "message", content: "first second", streaming: true }),
+      ]);
+      frame("final", "finalized");
+      frame("stale");
+      frame("wrong session", "finalized", "other");
+      expect(internals.transcripts.get("s1")).toEqual([
+        expect.objectContaining({ content: "final", streaming: false }),
+      ]);
+    } finally { controller.dispose(); }
+  });
+
   it("accepts a late snapshot without start, tail replacement and empty error result", () => {
     const { controller, event, tool } = streamHarness();
     try {

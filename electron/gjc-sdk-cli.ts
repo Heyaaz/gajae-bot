@@ -452,7 +452,7 @@ export class GjcSdkCli {
               clearTimeout(handshake);
             } else if (frame?.type === "event" && typeof frame.kind === "string") {
               const payload = asRecord(frame.payload);
-              if (payload && ["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
+              if (payload && ["turn_stream", "tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
                 onEvent(frame.kind, payload);
             }
           } catch (error) {
