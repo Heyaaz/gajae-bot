@@ -457,7 +457,7 @@ export class GjcSdkCli {
               onEvent("turn_stream", frame);
             } else if (frame?.type === "event" && typeof frame.kind === "string") {
               const payload = asRecord(frame.payload);
-              if (payload && ["turn_stream", "tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
+              if (payload && ["message_update", "message_end", "turn_stream", "tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
                 onEvent(frame.kind, payload);
             }
           } catch (error) {

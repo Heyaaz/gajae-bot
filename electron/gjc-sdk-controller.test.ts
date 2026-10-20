@@ -422,6 +422,23 @@ describe("0.18.12 tool stream", () => {
     } finally { controller.dispose(); }
   });
 
+  it("renders native message_update thinking and text deltas while the turn runs", () => {
+    const { controller, internals } = streamHarness();
+    const delta = (type: string, text: string) => internals.projectToolStream("s1", "message_update", {
+      event: { type: "message_update", message: { role: "assistant", content: [] }, assistantMessageEvent: { type, delta: text, contentIndex: 0 } },
+    });
+    try {
+      delta("thinking_delta", "checking ");
+      delta("thinking_delta", "runtime");
+      delta("text_delta", "answer ");
+      delta("text_delta", "arrived");
+      expect(internals.transcripts.get("s1")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "thought", content: "checking runtime", streaming: false }),
+        expect.objectContaining({ kind: "message", role: "assistant", content: "answer arrived", streaming: true }),
+      ]));
+    } finally { controller.dispose(); }
+  });
+
   it("accepts a late snapshot without start, tail replacement and empty error result", () => {
     const { controller, event, tool } = streamHarness();
     try {

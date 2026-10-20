@@ -5458,6 +5458,25 @@ export class GjcSdkController {
   }
 
   private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
+    if (kind === "message_update" || kind === "message_end") {
+      const event = payload.event as Record<string, unknown> | undefined;
+      const message = event?.message as Record<string, unknown> | undefined;
+      if (event?.type !== kind || message?.role !== "assistant" || !Array.isArray(message.content)) return;
+      const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
+      if (kind === "message_update") {
+        if (delta?.type === "thinking_delta" && typeof delta.delta === "string")
+          this.projectThoughtChunk(sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: delta.delta } });
+        if (delta?.type === "text_delta" && typeof delta.delta === "string") {
+          this.finalizeThought(sessionId);
+          this.projectMessageChunk(sessionId, "assistant", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta.delta } });
+        }
+      } else {
+        this.finalizeThought(sessionId);
+        this.finalizeAssistantMessage(sessionId);
+        void this.refreshTranscriptFromFile(sessionId);
+      }
+      return;
+    }
     // The installed SDK publishes reply snapshots as turn_stream, not ACP
     // agent_message_chunk. They are cumulative text, never append-only deltas.
     if (kind === "turn_stream") {
