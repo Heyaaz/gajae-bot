@@ -19,6 +19,8 @@ import {
   searchTranscriptItems,
   summarizeToolRun,
   streamingMarkdownParts,
+  toolRunCollapsed,
+  type ToolRunManualState,
   TRANSCRIPT_BOTTOM_EPSILON_PX as BOTTOM_EPSILON_PX,
   transcriptBlockIndexForItem,
   transcriptRowEstimate,
@@ -1678,9 +1680,10 @@ export function TodoCard({
 /**
  * A tool-run block, collapsed to a one-line summary in `basic` view mode.
  *
- * The summary itself expands on demand, but a run containing a failure or a
- * pending approval is never left collapsed: those need to be seen without an
- * extra click, so the component ignores the collapse preference for them.
+ * A run containing a failure or a pending approval starts expanded so it is not
+ * missed. The user can still collapse it after reading the failure; the summary
+ * keeps the failure/approval count visible so the choice does not hide it. A new
+ * failure reopens the run.
  */
 function ToolRunBlockView({
   items,
@@ -1703,8 +1706,14 @@ function ToolRunBlockView({
 }) {
   const summary = useMemo(() => summarizeToolRun(items), [items]);
   const needsAttention = !summary.allCompleted;
-  const [manuallyExpanded, setManuallyExpanded] = useState(false);
-  const collapsed = toolViewMode === "basic" && !needsAttention && !manuallyExpanded;
+  const [manual, setManual] = useState<ToolRunManualState>("auto");
+  // A failure that arrives while the run is collapsed must not stay hidden.
+  const previousAttention = useRef(needsAttention);
+  useEffect(() => {
+    if (needsAttention && !previousAttention.current) setManual("auto");
+    previousAttention.current = needsAttention;
+  }, [needsAttention]);
+  const collapsed = toolRunCollapsed(toolViewMode, needsAttention, manual);
   if (!collapsed) {
     return (
       <div className="transcript-entry tool-run">
@@ -1712,7 +1721,7 @@ function ToolRunBlockView({
           <button
             type="button"
             className="tool-run-collapse"
-            onClick={() => setManuallyExpanded(false)}
+            onClick={() => setManual("collapsed")}
           >
             {t("접기")} </button>
         )}
@@ -1742,12 +1751,16 @@ function ToolRunBlockView({
     parts.push(
       t`파일 ${summary.fileCount}개 수정 (+${summary.added} \u2212${summary.removed})`,
     );
+  if (summary.failedCount > 0)
+    parts.push(t`실패 ${summary.failedCount}개`);
+  if (summary.approvalRequiredCount > 0)
+    parts.push(t`승인 대기 ${summary.approvalRequiredCount}개`);
   return (
     <div className="transcript-entry tool-run tool-run--collapsed">
       <button
         type="button"
         className="tool-run-summary"
-        onClick={() => setManuallyExpanded(true)}
+        onClick={() => setManual("expanded")}
       >
         <TerminalSquare size={14} />
         <span>{parts.join(" \u00b7 ") || t`도구 ${items.length}개 실행`}</span>

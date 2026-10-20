@@ -4337,7 +4337,9 @@
 }
 .tool-reveal-inspector {
   margin: 4px 12px;
+  padding: 0;
   color: var(--text-secondary);
+  font-size: 10px;
   background: transparent;
   border: 0;
   cursor: pointer;

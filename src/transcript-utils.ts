@@ -516,6 +516,26 @@ export function groupTranscriptItems(
   return blocks;
 }
 
+export type ToolRunManualState = "auto" | "expanded" | "collapsed";
+
+/**
+ * Whether a tool run is shown as the one-line summary.
+ *
+ * A failed or pending run starts expanded so the problem is visible without a
+ * click. Once the user has read it, an explicit collapse is allowed; the summary
+ * keeps the failure count so collapsing does not hide what happened.
+ */
+export function toolRunCollapsed(
+  toolViewMode: "basic" | "reasoning" | "detailed",
+  needsAttention: boolean,
+  manual: ToolRunManualState,
+): boolean {
+  return (
+    toolViewMode === "basic" &&
+    (manual === "collapsed" || (manual === "auto" && !needsAttention))
+  );
+}
+
 export interface ToolRunSummary {
   /** Number of command (bash-like) tool calls in the run. */
   commandCount: number;

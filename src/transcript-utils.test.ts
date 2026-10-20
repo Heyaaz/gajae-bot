@@ -26,6 +26,7 @@ import {
   recentUserRequests,
   searchTranscriptItems,
   summarizeToolRun,
+  toolRunCollapsed,
   completeMarkdownBlocks,
   streamingMarkdownParts,
   TRANSCRIPT_BOTTOM_EPSILON_PX,
@@ -1212,6 +1213,19 @@ describe("summarizeToolRun", () => {
 
     const clean = summarizeToolRun([toolOf("d"), toolOf("e")]);
     expect(clean.allCompleted).toBe(true);
+  });
+});
+
+describe("toolRunCollapsed", () => {
+  it("collapses a clean run in basic mode but leaves a failed one open", () => {
+    expect(toolRunCollapsed("basic", false, "auto")).toBe(true);
+    expect(toolRunCollapsed("basic", true, "auto")).toBe(false);
+  });
+
+  it("honours an explicit collapse or expand, including after a failure", () => {
+    expect(toolRunCollapsed("basic", true, "collapsed")).toBe(true);
+    expect(toolRunCollapsed("basic", false, "expanded")).toBe(false);
+    expect(toolRunCollapsed("reasoning", true, "collapsed")).toBe(false);
   });
 });
 
