@@ -17,6 +17,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { readStoredTheme, setThemeMode, type ThemeMode } from "../theme";
 import { getLanguage, setLanguageMode, t, useLanguageMode } from "../i18n";
+import { LazyViewBoundary } from "./lazy-boundary";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
 const RemoteAccessPanel = lazy(() =>
@@ -844,9 +845,11 @@ export function SettingsDialog({
           )}
 
           {tab === "remote" && (
-            <Suspense fallback={null}>
-              <RemoteAccessPanel />
-            </Suspense>
+            <LazyViewBoundary>
+              <Suspense fallback={null}>
+                <RemoteAccessPanel />
+              </Suspense>
+            </LazyViewBoundary>
           )}
 
           {tab === "workspace" && (

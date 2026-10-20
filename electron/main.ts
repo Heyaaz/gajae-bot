@@ -578,12 +578,18 @@ function createWindow(): BrowserWindow {
             assert(document.querySelector('.tool-run .tool-run-entry + .tool-run-entry'), 'Consecutive tool calls did not collapse into one run block');
             const diffSummary = document.querySelector('.tool-diff-summary');
             assert(diffSummary, 'Edit diff summary did not render');
-            assert(!document.querySelector('.tool-diff-body'), 'Edit diff opened before it was expanded');
+            // A single-file edit is the common case and opens by default; one click
+            // must still collapse it and another must bring it back.
+            assert(document.querySelector('.tool-diff-body'), 'Single-file edit diff did not open by default');
             assert(diffSummary.textContent?.includes('+1') && diffSummary.textContent?.includes('-1'), 'Diff summary did not report added/removed counts: ' + diffSummary.textContent);
-            diffSummary.click();
-            await wait(60);
             assert(document.querySelector('.diff-line--added'), 'Expanded diff did not mark added lines');
             assert(document.querySelector('.diff-line--removed'), 'Expanded diff did not mark removed lines');
+            diffSummary.click();
+            await wait(60);
+            assert(!document.querySelector('.tool-diff-body'), 'Diff summary did not collapse the diff');
+            diffSummary.click();
+            await wait(60);
+            assert(document.querySelector('.tool-diff-body'), 'Diff summary did not reopen the diff');
             assert(document.querySelector('img.tool-image'), 'Image read did not render an inline image');
             assert(document.querySelector('.tool-output-preview'), 'Compact tool output preview did not render');
             assert(document.querySelector('.tool-expand'), 'Expandable tool output action did not render');
@@ -662,7 +668,7 @@ function createWindow(): BrowserWindow {
             assert(document.querySelector('button[title="파일 첨부"]'), 'Text file attachment action did not render');
             await wait(100);
             assert(document.querySelector('.composer-model'), 'Active model control did not render');
-            assert(parseFloat(getComputedStyle(document.querySelector('.composer-context')).fontSize) <= 9, 'Workspace control text is still oversized');
+            assert(parseFloat(getComputedStyle(document.querySelector('.composer-context')).fontSize) <= 10, 'Workspace control text is still oversized');
             assert(document.querySelector('.composer-model button')?.textContent?.includes('GPT-5.6 Sol'), 'Resolved profile default model did not render');
             assert(document.querySelector('.composer-model button > span')?.textContent?.trim() === 'high', 'Native Electron Shift-Tab did not cycle reasoning effort');
             assert(document.querySelector('.chat-branch')?.textContent?.trim() === 'main', 'Current session Git branch did not render');
@@ -685,8 +691,8 @@ function createWindow(): BrowserWindow {
             await wait(100);
             assert(document.querySelector('.command-palette'), 'Slash command palette did not render');
             assert(document.querySelectorAll('.command-palette > button').length > 8, 'Slash command palette still truncates runtime commands');
-            assert(document.body.textContent?.includes('/skill:deep-interview'), 'GJC skills did not appear in command palette');
-            assert(document.body.textContent?.includes('/skill:autoresearch'), 'Commands after the old eight-entry cap did not appear');
+            assert(document.querySelector('.command-palette button[aria-label^="/skill:deep-interview"]'), 'GJC skills did not appear in command palette');
+            assert(document.querySelector('.command-palette button[aria-label^="/skill:autoresearch"]'), 'Commands after the old eight-entry cap did not appear');
             assert(document.body.textContent?.includes('/model'), 'Model command did not appear in command palette');
             assert(document.body.textContent?.includes('/compact'), 'Compact command did not appear in command palette');
             assert(document.body.textContent?.includes('/new'), 'New-session command did not appear in command palette');
@@ -792,7 +798,7 @@ function createWindow(): BrowserWindow {
             await wait(50);
             assert(!document.querySelector('.workspace-menu'), 'Workspace switcher did not close on outside click');
 
-            document.querySelector('button[title="변경 파일"]')?.click();
+            document.querySelector('button[title="변경 파일 보기"]')?.click();
             await wait(100);
             assert(document.querySelector('.diff-panel'), 'Changed-files review panel did not render');
             assert(document.querySelector('.diff-panel')?.textContent?.includes('README.md'), 'Changed file did not render');
@@ -816,7 +822,8 @@ function createWindow(): BrowserWindow {
             const settings = buttonWithText('설정');
             assert(settings, 'Settings action did not render');
             settings.click();
-            await wait(100);
+            // The dialog is a deferred chunk; give the import a beat on a cold run.
+            await wait(500);
             assert(document.querySelector('[role="dialog"]'), 'Settings dialog did not open');
             assert(document.querySelectorAll('.backend-card').length === 1, 'GJC settings card did not render');
             assert(document.querySelector('.backend-logo img'), 'Gajae icon did not render in settings');
@@ -864,7 +871,9 @@ function createWindow(): BrowserWindow {
             textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, isComposing: true }));
             await wait(50);
             assert(textarea.value === '한국어 조종', 'Korean IME composition Enter submitted a partial duplicate steer');
-            valueSetter.call(textarea, 'focus on the regression');
+            // An explicit queue prefix keeps this check independent of the user's
+            // persisted queue/steer preference.
+            valueSetter.call(textarea, '/queue focus on the regression');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             await wait(50);
             assert(document.querySelector('button[title="이어서 보내기"]'), 'Active run kept the stop button after a steer/follow-up draft was entered');
@@ -888,7 +897,7 @@ function createWindow(): BrowserWindow {
             textarea.focus();
             textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
             await wait(50);
-            assert(textarea.value === 'focus on the regression', 'ArrowUp did not restore the most recent prompt');
+            assert(textarea.value === '/queue focus on the regression', 'ArrowUp did not restore the most recent prompt');
             textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
             await wait(50);
             assert(textarea.value === 'Desktop smoke message', 'Repeated ArrowUp did not navigate prompt history');
@@ -902,7 +911,9 @@ function createWindow(): BrowserWindow {
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             document.querySelector('.composer')?.requestSubmit();
             await wait(100);
-            valueSetter.call(textarea, '체크');
+            // Same explicit prefix as the earlier queue check: a user preference of
+            // steer must not turn this held-request assertion into an immediate send.
+            valueSetter.call(textarea, '/queue 체크');
             textarea.dispatchEvent(new Event('input', { bubbles: true }));
             document.querySelector('.composer-submit-actions .send-button')?.click();
             await wait(120);

@@ -318,6 +318,28 @@ describe("authenticated requests", () => {
     client.dispose();
   });
 
+  it("reads only changed transcript rows from the delta endpoint", async () => {
+    const change = { kind: "patch" as const, items: [] };
+    const { fetchImpl, calls } = recorder((call) =>
+      call.url.endsWith(REMOTE_API.transcriptChanges("s-1"))
+        ? jsonResponse(200, { result: change })
+        : undefined,
+    );
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+    });
+    await expect(client.transcriptChanges("s-1")).resolves.toEqual(change);
+    expect(calls.map((call) => call.url)).toContain(
+      `https://host${REMOTE_API.transcriptChanges("s-1")}`,
+    );
+    expect(calls.map((call) => call.url)).not.toContain(
+      `https://host${REMOTE_API.transcript("s-1")}`,
+    );
+    client.dispose();
+  });
+
   it("treats a 401 as revocation and forgets the token", async () => {
     const storage = memoryStorage(TOKEN);
     const { fetchImpl } = recorder(() => jsonResponse(401, { error: { code: "revoked", message: "no" } }));

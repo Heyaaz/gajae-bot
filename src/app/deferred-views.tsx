@@ -1,4 +1,5 @@
 import { lazy, Suspense, type ComponentProps, type ReactNode } from "react";
+import { LazyViewBoundary } from "./lazy-boundary";
 
 /**
  * Screens the first paint does not need.
@@ -18,7 +19,11 @@ const SettingsDialogLazy = lazy(() =>
 );
 
 function whenMounted(children: ReactNode) {
-  return <Suspense fallback={null}>{children}</Suspense>;
+  return (
+    <LazyViewBoundary>
+      <Suspense fallback={null}>{children}</Suspense>
+    </LazyViewBoundary>
+  );
 }
 
 export function DeferredProjectList(

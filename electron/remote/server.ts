@@ -7,7 +7,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
-import type { AgentEvent } from "../../shared/agent-contract.js";
+import type { AgentEvent, TranscriptItem } from "../../shared/agent-contract.js";
 import {
   REMOTE_API,
   REMOTE_PROTOCOL_VERSION,
@@ -27,6 +27,7 @@ import {
   runRemoteOperation,
   type RemoteOperationParams,
   type RemoteOperationsHost,
+  type RemoteTranscriptContext,
 } from "./operations.js";
 
 /**
@@ -168,6 +169,17 @@ export class RemoteServer {
   /** Identifies this process's event log, so clients can tell a restart from a gap. */
   private readonly instance = randomUUID();
   private buffer: RemoteEventFrame[] = [];
+  /**
+   * The transcript each device received last.
+   *
+   * The controller's cache is shared with the desktop and moves on its own, so a
+   * diff against it can be empty for a device that missed the row. Keeping the
+   * last body sent to this device is what makes the delta relative to the device.
+   */
+  private readonly transcriptBaselines = new Map<
+    string,
+    { sessionId: string; items: TranscriptItem[] }
+  >();
   private streams = new Map<number, StreamClient>();
   private nextStreamId = 1;
   private heartbeat?: ReturnType<typeof setInterval>;
@@ -624,6 +636,35 @@ export class RemoteServer {
     this.sendJson(response, 200, outcome);
   }
 
+  /**
+   * Baseline for one device's delta read.
+   *
+   * A different session (or a device the server has not served yet) starts from
+   * `full`; only the session this device read last can be diffed.
+   */
+  private transcriptContext(
+    access: RemoteAccess,
+    sessionId: string,
+  ): RemoteTranscriptContext {
+    const baseline = this.transcriptBaselines.get(access.id);
+    return {
+      baseline:
+        baseline?.sessionId === sessionId ? baseline.items : undefined,
+      remember: (items) => {
+        this.transcriptBaselines.delete(access.id);
+        this.transcriptBaselines.set(access.id, {
+          sessionId,
+          items: [...items],
+        });
+        while (this.transcriptBaselines.size > MAX_TRANSCRIPT_BASELINES) {
+          const oldest = this.transcriptBaselines.keys().next();
+          if (oldest.done) break;
+          this.transcriptBaselines.delete(oldest.value);
+        }
+      },
+    };
+  }
+
   private async runRead(
     response: ServerResponse,
     access: RemoteAccess,
@@ -637,7 +678,18 @@ export class RemoteServer {
       return;
     }
     try {
-      const result = await runRemoteOperation(this.options.host, operation, params, undefined);
+      const transcript =
+        params.sessionId !== undefined &&
+        (operation === "transcript" || operation === "transcript-changes")
+          ? this.transcriptContext(access, params.sessionId)
+          : undefined;
+      const result = await runRemoteOperation(
+        this.options.host,
+        operation,
+        params,
+        undefined,
+        transcript,
+      );
       this.sendJson(response, 200, { result });
     } catch (error) {
       // The request was well-formed; the host could not answer. Reporting that as
@@ -847,11 +899,14 @@ export class RemoteServer {
 
 /** One stalled device may not grow its write queue without bound. */
 const MAX_STREAM_BUFFER_BYTES = 1024 * 1024;
+/** A device only safety-nets the conversation it is showing; older baselines are dead weight. */
+const MAX_TRANSCRIPT_BASELINES = 16;
 
 const READ_OPERATIONS = new Set<RemoteOperationName>([
   "state",
   "history-sessions",
   "transcript",
+  "transcript-changes",
   "transcript-revision",
   "context",
   "queued",
@@ -873,6 +928,7 @@ interface MatchedRoute {
 
 const SESSION_ROUTES: Record<string, RemoteOperationName> = {
   transcript: "transcript",
+  "transcript-changes": "transcript-changes",
   "transcript-revision": "transcript-revision",
   context: "context",
   queued: "queued",

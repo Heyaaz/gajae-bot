@@ -25,6 +25,7 @@ const OPERATIONS: RemoteOperationName[] = [
   "state",
   "history-sessions",
   "transcript",
+  "transcript-changes",
   "transcript-revision",
   "context",
   "queued",

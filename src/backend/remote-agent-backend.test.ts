@@ -194,6 +194,26 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
+  it("reads only changed transcript rows through the delta endpoint", async () => {
+    const change = { kind: "patch" as const, items: [] };
+    const { instance, calls } = backend((call) => {
+      if (call.url === REMOTE_API.transcriptChanges("s-1"))
+        return new Response(JSON.stringify({ result: change }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      return undefined;
+    });
+    await expect(instance.getTranscriptChanges("s-1")).resolves.toEqual(change);
+    expect(calls.map((call) => call.url)).toContain(
+      REMOTE_API.transcriptChanges("s-1"),
+    );
+    expect(calls.map((call) => call.url)).not.toContain(
+      REMOTE_API.transcript("s-1"),
+    );
+    instance.dispose();
+  });
+
   it("reads a transcript revision without the transcript body", async () => {
     const { instance, calls } = backend((call) => {
       if (call.url.endsWith("/transcript-revision"))

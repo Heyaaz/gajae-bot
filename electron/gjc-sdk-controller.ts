@@ -214,9 +214,9 @@ export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
 /**
  * Durable broker session index.
  *
- * `gjc sdk session list` projects this file. Its device, inode, size, and
- * mtime are the revision a discovery poll compares so an unchanged index does
- * not spawn another list process.
+ * `gjc sdk session list` projects this file. Its device, inode, size, mtime,
+ * and ctime are the revision a discovery poll compares so an unchanged index
+ * does not spawn another list process.
  */
 function brokerSessionIndexPath(): string {
   return path.join(
@@ -226,6 +226,28 @@ function brokerSessionIndexPath(): string {
     "sessions",
     "index.jsonl",
   );
+}
+
+/**
+ * Identity a cache can trust across an in-place rewrite.
+ *
+ * Size and mtime are not enough: a writer that restores the modification time
+ * after replacing a file's contents leaves both unchanged. ctime moves on every
+ * write and cannot be set back through the ordinary file APIs, so including it
+ * keeps a same-size overwrite from looking like the previous parse.
+ */
+function statsRevision(info: Stats): string {
+  // The type bundled with this repo still names only the millisecond fields.
+  const precise = info as Stats & { mtimeNs?: bigint; ctimeNs?: bigint };
+  const mtime =
+    precise.mtimeNs === undefined
+      ? String(info.mtimeMs)
+      : precise.mtimeNs.toString();
+  const ctime =
+    precise.ctimeNs === undefined
+      ? String(info.ctimeMs)
+      : precise.ctimeNs.toString();
+  return `${info.dev}:${info.ino}:${info.size}:${mtime}:${ctime}`;
 }
 
 function commandPublicationKey(commands: readonly AgentCommand[]): string {
@@ -447,6 +469,8 @@ export class GjcSdkController {
       device: number;
       inode: number;
       size: number;
+      /** Stat identity, including ctime, that the parsed envelopes belong to. */
+      revision: string;
       envelopes: Record<string, unknown>[];
       partial: string;
       /** Bytes this read took from disk. Zero when the cached parse was reused. */
@@ -1496,7 +1520,7 @@ export class GjcSdkController {
     try {
       const info = await stat(brokerSessionIndexPath());
       if (!info.isFile()) return undefined;
-      return `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}`;
+      return statsRevision(info);
     } catch {
       return undefined;
     }
@@ -1850,11 +1874,12 @@ export class GjcSdkController {
   /**
    * Revision of the transcript the safety net compares.
    *
-   * The file half is a stat: inode, size, and nanosecond mtime. The tail is this
-   * process's run generation and transcript epoch, so an in-memory plan, todo, or
-   * streamed row changes the revision before the file does. A stat alone pinned
-   * the old body to a new mtime when the sample happened after the read, and it
-   * missed memory that had moved on while the file had not.
+   * The file half is a stat: inode, size, nanosecond mtime, and ctime. The tail
+   * is this process's run generation and transcript epoch, so an in-memory plan,
+   * todo, or streamed row changes the revision before the file does. A stat alone
+   * pinned the old body to a new mtime when the sample happened after the read,
+   * and it missed memory that had moved on while the file had not. ctime is what
+   * catches an in-place rewrite that restores both size and mtime.
    */
   async getTranscriptRevision(sessionId: string): Promise<string | undefined> {
     const memory = `${this.currentRunRevision(sessionId)}:${this.transcriptEpoch.get(sessionId) ?? 0}`;
@@ -1863,11 +1888,7 @@ export class GjcSdkController {
     try {
       const info = await stat(filePath);
       if (!info.isFile()) return `mem:${memory}`;
-      // Nanoseconds distinguish two writes that share a millisecond and a size.
-      // The type bundled with this repo still names only `mtimeMs`.
-      const mtimeNs = (info as Stats & { mtimeNs?: bigint }).mtimeNs;
-      const mtime = mtimeNs === undefined ? String(info.mtimeMs) : mtimeNs.toString();
-      return `${info.dev}:${info.ino}:${info.size}:${mtime}:${memory}`;
+      return `${statsRevision(info)}:${memory}`;
     } catch {
       return `mem:${memory}`;
     }
@@ -1930,15 +1951,14 @@ export class GjcSdkController {
 
     const device = Number(info.dev);
     const inode = Number(info.ino);
+    const revision = statsRevision(info);
     const previous = this.sharedTranscriptReads.get(filePath);
-    const reusable =
+    const sameFile =
       previous !== undefined &&
       previous.device === device &&
-      previous.inode === inode &&
-      // Shrinking means the file was rewritten (compaction), so nothing carries over.
-      info.size >= previous.size;
+      previous.inode === inode;
 
-    if (reusable && info.size === previous.size) {
+    if (sameFile && previous.revision === revision) {
       // An unchanged file is still a read, and the eviction order is what decides
       // which transcript survives. Returning early without touching it made the
       // most frequently polled session look like the stalest one.
@@ -1947,7 +1967,9 @@ export class GjcSdkController {
       return previous.envelopes.slice();
     }
 
-    if (reusable) {
+    // Only growth is safe to append to. A rewrite that happens to keep the same
+    // size has to go through the full parse; the revision above tells them apart.
+    if (sameFile && info.size > previous.size) {
       const handle = await open(filePath, "r");
       try {
         const length = info.size - previous.size;
@@ -1963,6 +1985,7 @@ export class GjcSdkController {
           device,
           inode,
           size: info.size,
+          revision,
           envelopes,
           partial,
           bytesRead: length,
@@ -1979,6 +2002,7 @@ export class GjcSdkController {
       device,
       inode,
       size: info.size,
+      revision,
       envelopes,
       partial,
       bytesRead: info.size,
@@ -1993,6 +2017,7 @@ export class GjcSdkController {
       device: number;
       inode: number;
       size: number;
+      revision: string;
       envelopes: Record<string, unknown>[];
       partial: string;
       bytesRead: number;

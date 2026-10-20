@@ -22,6 +22,7 @@ import type {
   CreateSessionInput,
   MessageInput,
   ToolDecision,
+  TranscriptChange,
   TranscriptItem,
 } from "./types";
 import { RemoteClient, type RemoteClientOptions } from "../remote/client";
@@ -216,6 +217,10 @@ export class RemoteAgentBackend implements AgentBackend {
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     return this.client.transcript(sessionId) as Promise<TranscriptItem[]>;
+  }
+
+  getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
+    return this.client.transcriptChanges(sessionId);
   }
 
   getTranscriptRevision(sessionId: string): Promise<string | undefined> {

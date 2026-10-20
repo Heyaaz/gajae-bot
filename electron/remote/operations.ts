@@ -4,8 +4,10 @@ import type {
   HistorySession,
   MessageDelivery,
   ToolDecision,
+  TranscriptChange,
   TranscriptItem,
 } from "../../shared/agent-contract.js";
+import { transcriptDelivery } from "../../shared/transcript-item-equal.js";
 import type { RemoteOperationName } from "../../shared/remote-protocol.js";
 import type { ResolvedMessageInput } from "../gjc-sdk-controller.js";
 import { messageInput, requiredId, toolDecision } from "../gjc-input-validation.js";
@@ -49,6 +51,19 @@ export interface RemoteOperationParams {
 }
 
 /**
+ * Per-device state for transcript delta reads.
+ *
+ * The controller's cache is shared with the desktop and is updated by its own
+ * watcher, so a diff against that cache can be empty even though this remote
+ * device missed the row. The server keeps what it last sent this device and
+ * passes it here instead.
+ */
+export interface RemoteTranscriptContext {
+  baseline?: readonly TranscriptItem[];
+  remember?: (items: readonly TranscriptItem[]) => void;
+}
+
+/**
  * A remote device can attach images inline but cannot hand over native file
  * paths: those are resolved through desktop leases tied to a renderer process
  * that a phone does not have. Rejecting them here keeps a path string from ever
@@ -81,6 +96,7 @@ export async function runRemoteOperation(
   operation: RemoteOperationName,
   params: RemoteOperationParams,
   body: unknown,
+  transcript?: RemoteTranscriptContext,
 ): Promise<unknown> {
   const sessionId =
     params.sessionId === undefined ? undefined : remoteSessionId(params.sessionId);
@@ -89,8 +105,20 @@ export async function runRemoteOperation(
       return { connection: await host.getConnection(), sessions: await host.listSessions() };
     case "history-sessions":
       return host.listHistorySessions();
-    case "transcript":
-      return host.getTranscript(sessionId!);
+    case "transcript": {
+      const items = await host.getTranscript(sessionId!);
+      transcript?.remember?.(items);
+      return items;
+    }
+    case "transcript-changes": {
+      const items = await host.getTranscript(sessionId!);
+      const change: TranscriptChange = transcriptDelivery(
+        transcript?.baseline,
+        items,
+      );
+      transcript?.remember?.(items);
+      return change;
+    }
     case "transcript-revision":
       return host.getTranscriptRevision(sessionId!);
     case "context":

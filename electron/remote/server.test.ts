@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentEvent } from "../../shared/agent-contract.js";
+import type { AgentEvent, TranscriptItem } from "../../shared/agent-contract.js";
 import { REMOTE_API, REMOTE_PROTOCOL_VERSION } from "../../shared/remote-protocol.js";
 import { DeviceStore } from "./devices.js";
 import type { RemoteOperationsHost } from "./operations.js";
@@ -19,12 +19,15 @@ afterEach(async () => {
 
 interface FakeHost extends RemoteOperationsHost {
   calls: string[];
+  transcript: TranscriptItem[];
 }
 
 function fakeHost(): FakeHost {
   const calls: string[] = [];
+  const transcript: TranscriptItem[] = [];
   return {
     calls,
+    transcript,
     async getConnection() {
       return {
         state: "connected" as const,
@@ -59,7 +62,7 @@ function fakeHost(): FakeHost {
     },
     async getTranscript(sessionId: string) {
       calls.push(`transcript:${sessionId}`);
-      return [];
+      return transcript.slice();
     },
     async getTranscriptRevision(sessionId: string) {
       calls.push(`transcript-revision:${sessionId}`);
@@ -442,6 +445,47 @@ describe("remote server permissions", () => {
     expect(revision.status).toBe(200);
     expect(await revision.json()).toEqual({ result: "rev" });
     expect(base.host.calls).toContain("transcript-revision:s-1");
+    const changes = await fetch(base.url(REMOTE_API.transcriptChanges("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(changes.status).toBe(200);
+    expect(await changes.json()).toEqual({
+      result: { kind: "full", items: [] },
+    });
+  });
+
+  it("sends only transcript rows appended since the device's last read", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const first: TranscriptItem = {
+      id: "m-1",
+      sessionId: "s-1",
+      kind: "message",
+      role: "assistant",
+      content: "first",
+      createdAt: new Date(0).toISOString(),
+    };
+    base.host.transcript.push(first);
+    const initial = await fetch(base.url(REMOTE_API.transcript("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(await initial.json()).toEqual({ result: [first] });
+
+    const second: TranscriptItem = {
+      id: "m-2",
+      sessionId: "s-1",
+      kind: "message",
+      role: "assistant",
+      content: "second",
+      createdAt: new Date(1000).toISOString(),
+    };
+    base.host.transcript.push(second);
+    const changes = await fetch(base.url(REMOTE_API.transcriptChanges("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(await changes.json()).toEqual({
+      result: { kind: "patch", items: [second] },
+    });
   });
 
   it("refuses every control operation for a view-only device", async () => {

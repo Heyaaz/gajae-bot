@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -88,6 +88,59 @@ describe("sharedTranscriptReads bounds", () => {
 
       expect(internals.sharedTranscriptReads.has(revived)).toBe(true);
       expect(internals.sharedTranscriptReads.has(files[1]!)).toBe(false);
+      controller.dispose();
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("re-parses a same-size overwrite even when the mtime is restored", async () => {
+    // A writer that replaces the file contents and puts the old mtime back leaves
+    // size and mtime identical. The cached parse has to notice the ctime moving,
+    // or the safety net keeps returning the previous conversation forever.
+    const directory = await mkdtemp(path.join(tmpdir(), "gjc-cache-rewrite-"));
+    const controller = new GjcSdkController({
+      workspace: "/tmp/project",
+      emit: () => undefined,
+    });
+    const internals = controller as unknown as {
+      sharedTranscriptReads: Map<string, { envelopes: unknown[] }>;
+      sharedSessionFiles: Map<string, string>;
+      readTranscriptEnvelopes: (
+        file: string,
+        info: Awaited<ReturnType<typeof stat>>,
+      ) => Promise<Record<string, unknown>[]>;
+    };
+    try {
+      const file = path.join(directory, "session.jsonl");
+      const beforeLine = `${JSON.stringify({ type: "message", id: "before" })}\n`;
+      const afterLine = `${JSON.stringify({ type: "message", id: "after!" })}\n`;
+      expect(Buffer.byteLength(afterLine)).toBe(Buffer.byteLength(beforeLine));
+      const stamp = new Date(1_700_000_000_000);
+
+      await writeFile(file, beforeLine);
+      await utimes(file, stamp, stamp);
+      const before = await stat(file);
+      const first = await internals.readTranscriptEnvelopes(file, before);
+      expect(first).toEqual([{ type: "message", id: "before" }]);
+
+      await writeFile(file, afterLine);
+      await utimes(file, stamp, stamp);
+      const after = await stat(file);
+      expect(after.size).toBe(before.size);
+      expect(after.mtimeMs).toBe(before.mtimeMs);
+
+      const second = await internals.readTranscriptEnvelopes(file, after);
+      expect(second).toEqual([{ type: "message", id: "after!" }]);
+
+      // The durable revision follows the same rule, so the safety net does not
+      // skip the body read on the strength of a matching size and mtime.
+      internals.sharedSessionFiles.set("s-1", file);
+      const firstRevision = await controller.getTranscriptRevision("s-1");
+      await writeFile(file, beforeLine);
+      await utimes(file, stamp, stamp);
+      const secondRevision = await controller.getTranscriptRevision("s-1");
+      expect(secondRevision).not.toBe(firstRevision);
       controller.dispose();
     } finally {
       await rm(directory, { recursive: true, force: true });

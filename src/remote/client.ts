@@ -1,4 +1,4 @@
-import type { AgentEvent } from "../../shared/agent-contract.js";
+import type { AgentEvent, TranscriptChange } from "../../shared/agent-contract.js";
 import {
   REMOTE_API,
   createRemoteOperationId,
@@ -590,6 +590,12 @@ export class RemoteClient {
 
   transcript(sessionId: string) {
     return this.readResult<unknown[]>(REMOTE_API.transcript(sessionId));
+  }
+
+  transcriptChanges(sessionId: string) {
+    return this.readResult<TranscriptChange>(
+      REMOTE_API.transcriptChanges(sessionId),
+    );
   }
 
   async transcriptRevision(sessionId: string): Promise<string | undefined> {

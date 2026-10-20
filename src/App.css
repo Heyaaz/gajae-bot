@@ -2121,6 +2121,26 @@
   font-size: 10px;
 }
 
+.lazy-view-error {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px;
+  padding: 12px 14px;
+  color: var(--danger);
+  font-size: 11px;
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 24%, transparent);
+  border-radius: 10px;
+}
+.lazy-view-error strong {
+  font-weight: 600;
+}
+.lazy-view-error .button-secondary {
+  flex: none;
+  margin-left: auto;
+}
+
 .button-primary,
 .button-secondary,
 .button-danger {
