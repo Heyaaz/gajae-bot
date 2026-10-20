@@ -1609,7 +1609,13 @@ describe("SDK slash commands", () => {
       await expect(controller.getTranscript("s1")).resolves.toMatchObject([
         { id: "m1", content: "hi" },
       ]);
-      expect(cli.queryItems).not.toHaveBeenCalled();
+      await vi.waitFor(() => {
+        expect(
+          cli.queryItems.mock.calls.map(
+            (call) => (call as readonly unknown[])[1],
+          ),
+        ).toEqual(["workflow.gates.list"]);
+      });
     } finally {
       controller.dispose();
     }

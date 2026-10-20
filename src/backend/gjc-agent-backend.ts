@@ -21,6 +21,7 @@ import type {
   HistorySession,
   MessageDelivery,
   QueuedMessage,
+  QuestionSubmission,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
@@ -152,6 +153,15 @@ export class GjcAgentBackend implements AgentBackend {
 
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
     return this.bridge.resolveToolCall(toolId, decision);
+  }
+
+  answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ): Promise<void> {
+    return this.bridge.answerQuestion(sessionId, gateId, submission, idempotencyKey);
   }
 
   markSessionRead(sessionId: string): Promise<void> {

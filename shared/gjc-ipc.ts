@@ -36,6 +36,8 @@ export const GJC_IPC = {
   sendMessage: "agent-control:gjc:send-message",
   cancelRun: "agent-control:gjc:cancel-run",
   resolveToolCall: "agent-control:gjc:resolve-tool-call",
+  answerQuestion: "agent-control:gjc:answer-question",
+  listPendingQuestions: "agent-control:gjc:list-pending-questions",
   markSessionRead: "agent-control:gjc:mark-session-read",
   getDiff: "agent-control:gjc:get-diff",
   readArtifact: "agent-control:gjc:read-artifact",

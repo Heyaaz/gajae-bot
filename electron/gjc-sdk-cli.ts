@@ -401,7 +401,10 @@ export class GjcSdkCli {
 
   constructor(private readonly options: SdkCliOptions) {}
 
-  /** A credential-free, read-only observer of non-replayable tool snapshots. */
+  /**
+   * A credential-free observer of non-replayable tool snapshots and workflow
+   * gates. Ask questions arrive as `workflow_gate` on this same relay.
+   */
   async observeTools(
     sessionId: string,
     onEvent: (kind: string, payload: Record<string, unknown>) => void,
@@ -452,7 +455,13 @@ export class GjcSdkCli {
               clearTimeout(handshake);
             } else if (frame?.type === "event" && typeof frame.kind === "string") {
               const payload = asRecord(frame.payload);
-              if (payload && ["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
+              if (
+                payload &&
+                (frame.kind === "tool_execution_start" ||
+                  frame.kind === "tool_execution_update" ||
+                  frame.kind === "tool_execution_end" ||
+                  frame.kind === "workflow_gate")
+              )
                 onEvent(frame.kind, payload);
             }
           } catch (error) {

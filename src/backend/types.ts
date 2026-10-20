@@ -20,6 +20,8 @@ export type {
   MessageInput,
   NoticeActivity,
   PlanActivity,
+  QuestionActivity,
+  QuestionSubmission,
   RuntimeKind,
   SessionStatus,
   SettingsDesktopBridge,

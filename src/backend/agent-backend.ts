@@ -19,6 +19,7 @@ import type {
   HistorySession,
   MessageDelivery,
   QueuedMessage,
+  QuestionSubmission,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
@@ -75,6 +76,12 @@ export interface AgentBackend {
   sendMessage(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   cancelRun(sessionId: string): Promise<void>;
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;
+  answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ): Promise<void>;
   markSessionRead(sessionId: string): Promise<void>;
   getDiff(sessionId: string): Promise<DiffSnapshot>;
   readArtifact(sessionId: string, artifactId: string): Promise<ArtifactContent>;

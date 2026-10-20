@@ -3,6 +3,8 @@ import type {
   BackendConnection,
   HistorySession,
   MessageDelivery,
+  QuestionActivity,
+  QuestionSubmission,
   ToolDecision,
   TranscriptChange,
   TranscriptItem,
@@ -10,7 +12,13 @@ import type {
 import { transcriptDelivery } from "../../shared/transcript-item-equal.js";
 import type { RemoteOperationName } from "../../shared/remote-protocol.js";
 import type { ResolvedMessageInput } from "../gjc-sdk-controller.js";
-import { messageInput, requiredId, toolDecision } from "../gjc-input-validation.js";
+import {
+  messageInput,
+  questionIdempotencyKey,
+  questionSubmission,
+  requiredId,
+  toolDecision,
+} from "../gjc-input-validation.js";
 
 /**
  * The operations a remote device may run, expressed once for every transport.
@@ -41,6 +49,13 @@ export interface RemoteOperationsHost {
   flushQueuedNow(sessionId: string): Promise<boolean>;
   cancelRun(sessionId: string): Promise<void>;
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;
+  listPendingQuestions(sessionId: string): Promise<QuestionActivity[]>;
+  answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ): Promise<void>;
   markSessionRead(sessionId: string): Promise<void>;
 }
 
@@ -48,6 +63,7 @@ export interface RemoteOperationParams {
   sessionId?: string;
   toolId?: string;
   artifactId?: string;
+  gateId?: string;
 }
 
 /**
@@ -151,6 +167,17 @@ export async function runRemoteOperation(
         requiredId(params.toolId, "Tool call ID"),
         toolDecision(decisionBody(body)),
       );
+    case "pending-questions":
+      return host.listPendingQuestions(sessionId!);
+    case "answer-question": {
+      const answer = questionBody(body);
+      return host.answerQuestion(
+        sessionId!,
+        requiredId(params.gateId, "Question ID"),
+        questionSubmission(answer.submission),
+        questionIdempotencyKey(answer.idempotencyKey),
+      );
+    }
     case "mark-read":
       return host.markSessionRead(sessionId!);
     default: {
@@ -166,6 +193,14 @@ function messageBody(body: unknown): unknown {
   const input = (body as { input?: unknown }).input;
   if (input === undefined) throw new Error("Message input is required");
   return input;
+}
+
+function questionBody(body: unknown): { submission: unknown; idempotencyKey: unknown } {
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    throw new Error("Question answer is required");
+  const record = body as { submission?: unknown; idempotencyKey?: unknown };
+  if (record.submission === undefined) throw new Error("Question answer is required");
+  return { submission: record.submission, idempotencyKey: record.idempotencyKey };
 }
 
 function decisionBody(body: unknown): unknown {

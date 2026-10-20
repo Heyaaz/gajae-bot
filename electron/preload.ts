@@ -8,6 +8,7 @@ import type {
   ForkSessionInput,
   GjcDesktopBridge,
   MessageInput,
+  QuestionSubmission,
   ArtifactContent,
   DiffSnapshot,
   EffectiveRuntimeState,
@@ -344,6 +345,21 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.cancelRun, sessionId),
   resolveToolCall: (toolId: string, decision: ToolDecision) =>
     ipcRenderer.invoke(GJC_IPC.resolveToolCall, toolId, decision),
+  answerQuestion: (
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ) =>
+    ipcRenderer.invoke(
+      GJC_IPC.answerQuestion,
+      sessionId,
+      gateId,
+      submission,
+      idempotencyKey,
+    ),
+  listPendingQuestions: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.listPendingQuestions, sessionId),
   markSessionRead: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.markSessionRead, sessionId),
   getDiff: (sessionId: string) =>

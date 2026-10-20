@@ -415,7 +415,7 @@ describe("currentTurnWork", () => {
   });
 });
 
-const tool = (id: string): TranscriptItem => ({
+const tool = (id: string): Extract<TranscriptItem, { kind: "tool" }> => ({
   id,
   sessionId: "session-1",
   kind: "tool",
