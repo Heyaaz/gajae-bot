@@ -17,10 +17,17 @@ describe("SDK tool observer transport", () => {
   it("forwards SDK live reply snapshots instead of filtering them out", async () => {
     const test = await fixture(`
       process.stdout.write('{"type":"hello"}\\n');
-      process.stdin.once('data', chunk => {
-        const request = JSON.parse(String(chunk));
+      const lines = require('node:readline').createInterface({input:process.stdin});
+      let negotiated = false;
+      lines.on('line', line => {
+        const request = JSON.parse(line);
+        if (request.type === 'hello') {
+          negotiated = request.protocolVersion === 3 && request.capabilities.includes('tool_activity_v2');
+          return;
+        }
+        if (!negotiated) process.exit(2);
         process.stdout.write(JSON.stringify({type:'event_replay_result',id:request.id,ok:true})+'\\n');
-        process.stdout.write(JSON.stringify({type:'event',kind:'turn_stream',payload:{type:'turn_stream',sessionId:'s1',phase:'live',text:'answer growing',messageRef:'42'}})+'\\n');
+        process.stdout.write(JSON.stringify({type:'turn_stream',sessionId:'s1',phase:'live',text:'answer growing',messageRef:'42'})+'\\n');
         process.exit(0);
       });
     `);
@@ -34,8 +41,9 @@ describe("SDK tool observer transport", () => {
   it("negotiates both observer capabilities and reads fragmented JSONL snapshots", async () => {
     const test = await fixture(`
       process.stdout.write('{"type":"hello"}\\n');
-      process.stdin.once('data', chunk => {
-        const request = JSON.parse(String(chunk));
+      require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+        const request = JSON.parse(line);
+        if (request.type === 'hello') return;
         process.stdout.write(JSON.stringify({type:'event_replay_result', id:request.id, ok:true})+'\\n');
         process.stdout.write('{"type":"event","kind":"tool_execution_update","pay');
         setTimeout(() => {

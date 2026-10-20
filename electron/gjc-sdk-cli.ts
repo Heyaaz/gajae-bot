@@ -446,10 +446,15 @@ export class GjcSdkCli {
           try {
             const frame = asRecord(JSON.parse(line));
             if (frame?.type === "hello") {
+              // Capabilities are negotiated by client hello. Putting them on
+              // event_replay does not register them with the native server.
+              child.stdin.write(`${JSON.stringify({ type: "hello", protocolVersion: 3, capabilities: ["turn_stream", "tool_activity_v2", "session_host_observer_v1"] })}\n`);
               child.stdin.write(`${JSON.stringify({ type: "event_replay", id: "gajae-tool-observer", capabilities: ["turn_stream", "session_host_observer_v1"] })}\n`);
             } else if (frame?.type === "event_replay_result" && frame.id === "gajae-tool-observer") {
               if (frame.ok !== true) throw new Error("GJC refused tool observer capabilities");
               clearTimeout(handshake);
+            } else if (frame?.type === "turn_stream") {
+              onEvent("turn_stream", frame);
             } else if (frame?.type === "event" && typeof frame.kind === "string") {
               const payload = asRecord(frame.payload);
               if (payload && ["turn_stream", "tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(frame.kind))
