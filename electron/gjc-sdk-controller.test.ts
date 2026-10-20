@@ -422,6 +422,16 @@ describe("0.18.12 tool stream", () => {
     } finally { controller.dispose(); }
   });
 
+  it("does not append a finalized snapshot already published by the durable watcher", () => {
+    const { controller, internals } = streamHarness();
+    internals.transcripts.set("s1", [{ id: "shared-message-final", kind: "message", sessionId: "s1", role: "assistant", content: "one answer", createdAt: "now", streaming: false }]);
+    try {
+      internals.projectToolStream("s1", "turn_stream", { sessionId: "s1", messageRef: "42", phase: "finalized", text: "one answer" });
+      expect(internals.transcripts.get("s1")).toHaveLength(1);
+      expect(internals.transcripts.get("s1")[0].id).toBe("shared-message-final");
+    } finally { controller.dispose(); }
+  });
+
   it("renders native message_update thinking and text deltas while the turn runs", () => {
     const { controller, internals } = streamHarness();
     const delta = (type: string, text: string) => internals.projectToolStream("s1", "message_update", {
@@ -1377,6 +1387,15 @@ describe("GjcSdkController CLI seam", () => {
       controller.dispose();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("preserves a just-sent user prompt across a durable read that has not recorded it", () => {
+    const { controller, internals } = harness();
+    try {
+      internals.appendLocalUserMessage("s1", "new prompt", { text: "new prompt", images: [], files: [] });
+      const items = internals.installTranscript("s1", []);
+      expect(items).toEqual([expect.objectContaining({ role: "user", content: "new prompt" })]);
+    } finally { controller.dispose(); }
   });
 
   it("keeps live memory readable before an active prompt has a transcript file", async () => {

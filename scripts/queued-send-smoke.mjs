@@ -42,6 +42,9 @@ window.agentControlDesktop = {
   getConnection: async () => ({ state: 'connected', backend: 'gjc', label: 'Isolated diagnostic', workspace: '/diagnostic' }),
   listSessions: async () => sessions.map(row => ({ ...row })),
   getTranscript: async () => [], getGoal: async () => ({ enabled: false, completed: 0, total: 0 }),
+  getTranscriptRevision: async () => undefined,
+  getTranscriptChanges: async () => ({ kind: 'patch', items: [] }),
+  watchTranscripts: () => {}, refreshSessionContext: async () => {},
   getGitStatus: async () => null, markSessionRead: async () => {}, listQueuedMessages: async () => [], listSubagents: async () => [],
   sendMessage: async (id, input) => {
    calls.push({ sessionId: id, text: input.text });

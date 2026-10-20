@@ -5483,7 +5483,14 @@ export class GjcSdkController {
       if (payload.sessionId !== sessionId || typeof payload.text !== "string" ||
         typeof payload.messageRef !== "string" ||
         (payload.phase !== "live" && payload.phase !== "finalized")) return;
-      const id = `gjc-message-stream-${payload.messageRef}`;
+      // A finalized snapshot can arrive after the durable watcher has already
+      // published this reply. It is not a second assistant message.
+      const recorded = [...(this.transcripts.get(sessionId) ?? [])].reverse().find((item) =>
+        item.kind === "message" && item.role === "assistant" &&
+        item.content === payload.text &&
+        (item.id.startsWith("shared-message-") || item.id.startsWith("gjc-message-")),
+      );
+      const id = recorded?.id ?? `gjc-message-stream-${payload.messageRef}`;
       const existing = this.transcripts.get(sessionId)?.find((item) => item.id === id);
       if (existing?.kind === "message" && existing.streaming === false && payload.phase === "live") return;
       const message: ChatMessage = {
@@ -5891,7 +5898,8 @@ export class GjcSdkController {
           });
         continue;
       }
-      if (!isLiveOnlyRow(row)) continue;
+      const pendingUserEcho = row.kind === "message" && row.role === "user" && row.id.startsWith("local-prompt-");
+      if (!isLiveOnlyRow(row) && !pendingUserEcho) continue;
       const twin = durableTwinOf(items, row);
       if (twin) {
         // The block this row streamed is now recorded under the read's own id, so
@@ -5905,7 +5913,7 @@ export class GjcSdkController {
         continue;
       }
       const anchor = precedingSharedRow(previous, index, ids);
-      if (durableTurnEnded(items, anchor)) continue;
+      if (!pendingUserEcho && durableTurnEnded(items, anchor)) continue;
       retained.push({ row, afterId: anchor?.id });
     }
     const composed = composeTranscriptRows(items, retained);
