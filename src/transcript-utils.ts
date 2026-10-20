@@ -901,6 +901,10 @@ export function cacheTranscript(
     // confirmed echo is dropped.
     const consumed = new Set<number>();
     for (const local of optimistic) {
+      // Incremental merges already carry the pending echo. Preserving it again
+      // doubles it on every tool append (1 -> 2 -> 4 -> ...), growing the list
+      // and burying actual progress below repeated user bubbles.
+      if (items.some((item) => item.id === local.id)) continue;
       // A repeated request has to keep its position in the sequence. Matching
       // the first row with the same text consumed an older historical request
       // and left the new row without its images. Count the identical user rows

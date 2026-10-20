@@ -882,6 +882,15 @@ describe("cacheTranscript", () => {
     expect(cached?.["session-1"].at(-1)?.id).toBe("message-new");
   });
 
+  it("does not multiply an unconfirmed echo on repeated incremental cache writes", () => {
+    const echo = { ...message, id: "local-prompt-1", role: "user" as const, content: "멍텔모아만 타겟으로 열어야해" };
+    let cached: Record<string, TranscriptItem[]> = { "session-1": [echo] };
+    for (let index = 0; index < 6; index += 1) {
+      cached = cacheTranscript(cached, "session-1", [...cached["session-1"], tool(`tool-${index}`)]);
+    }
+    expect(cached["session-1"].filter((item) => item.id === echo.id)).toHaveLength(1);
+  });
+
   it("keeps an optimistic user message until polling confirms it", () => {
     const optimistic = {
       ...message,
