@@ -1808,6 +1808,15 @@ export class GjcSdkController {
   }
 
   async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
+    // A prompt owned by this window still writes its durable transcript. Reading
+    // only the memory cache here made the safety net certify stale rows with the
+    // file's new revision after a watcher notification was missed. Keep the live
+    // rows through installTranscript, but actually read the file on this path too.
+    if (this.activePromptSessions.has(sessionId)) {
+      const persisted = await this.readPersistedTranscript(sessionId);
+      if (persisted)
+        return this.installTranscript(sessionId, persisted).map(cloneTranscriptItem);
+    }
     const externallyDriven = !this.activePromptSessions.has(sessionId);
     if (this.terminalOnlySessions.has(sessionId) || externallyDriven) {
       try {

@@ -1305,6 +1305,63 @@ describe("GjcSdkController CLI seam", () => {
     );
   });
 
+  it("repairs a missed watcher during an app-owned prompt without waiting for reload", async () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    const root = await mkdtemp(path.join(tmpdir(), "active-transcript-refresh-"));
+    const file = path.join(root, "session.jsonl");
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.attachedSessions.add("s1");
+    internals.activePromptSessions.add("s1");
+    internals.locateSharedTranscriptFile = vi.fn(async () => file);
+    // Simulate a dropped filesystem notification: only the safety-net read can
+    // discover this write while the prompt still owns the session.
+    internals.watchSharedTranscript = vi.fn();
+    try {
+      await writeFile(file, JSON.stringify({ type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: "question" }] } }) + "\n");
+      const initial = await controller.getTranscript("s1");
+      expect(initial).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "message", content: "question" }),
+      ]));
+      await writeFile(file, [
+        { type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: "question" }] } },
+        { type: "message", id: "a1", message: { role: "assistant", content: [{ type: "thinking", thinking: "reasoning now" }, { type: "text", text: "answer now" }, { type: "toolCall", id: "t1", name: "bash", arguments: { command: "pwd" } }], stopReason: "toolUse" } },
+        { type: "message", id: "r1", message: { role: "toolResult", toolCallId: "t1", toolName: "bash", content: [{ type: "text", text: "/repo" }], isError: false } },
+      ].map((row) => JSON.stringify(row)).join("\n") + "\n");
+      const change = await controller.getTranscriptChanges("s1");
+      expect(change.items).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "thought", content: "reasoning now" }),
+        expect.objectContaining({ kind: "message", content: "answer now" }),
+        expect.objectContaining({ kind: "tool", name: "bash", output: "/repo", status: "completed" }),
+      ]));
+      expect(internals.sessions.get("s1").status).toBe("running");
+      expect(internals.activePromptSessions.has("s1")).toBe(true);
+      expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: "session.updated", session: expect.objectContaining({ status: "idle" }) }));
+    } finally {
+      controller.dispose();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps live memory readable before an active prompt has a transcript file", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.attachedSessions.add("s1");
+    internals.activePromptSessions.add("s1");
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    internals.projectThoughtChunk("s1", {
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "first live thought" },
+    });
+    try {
+      expect(await controller.getTranscript("s1")).toEqual(expect.arrayContaining([
+        expect.objectContaining({ kind: "thought", content: "first live thought", streaming: true }),
+      ]));
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("lists sessions through the CLI and catches up tail cursors", async () => {
     const { cli, internals } = harness();
     (cli.listSessions as any).mockResolvedValue([{ sessionId: "s1", title: "One", repo: "/repo", live: true, runtime: "gjc", activityState: "idle" }]);
