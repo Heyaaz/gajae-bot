@@ -30,6 +30,7 @@ window.agentControlDesktop = {
  onCycleEffort: () => () => {},
  gjc: {
  getConnection: async () => ({ state: 'connected', backend: 'gjc', label: 'Read test', workspace: '/repo' }),
+ sendMessage: async () => new Promise(() => {}),
  listSessions: () => { counts.list++; return new Promise(done => { finishList = done; }); },
  getTranscript: id => { counts.transcript[id] = (counts.transcript[id] || 0) + 1; return new Promise(done => { waiting[id] = done; }); },
  getTranscriptRevision: async () => undefined,
@@ -98,6 +99,12 @@ try {
     window.dispatchEvent(new Event('focus'));
     await until(() => __reads.counts.list === list + 1);
     __reads.list();
+    const input = document.querySelector('textarea');
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'VISIBLE-BEFORE-BACKEND-ACK');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await wait(40);
+    input.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await until(() => [...document.querySelectorAll('.message')].some(row => row.textContent.includes('VISIBLE-BEFORE-BACKEND-ACK')));
     return { passed: true, counts: __reads.counts };
   })()`);
   console.log(JSON.stringify(result));

@@ -1346,6 +1346,20 @@ export default function App() {
     sessionId: string,
     input: MessageInput,
   ): Promise<MessageDelivery> {
+    const text = input.text.trim();
+    const prompt = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
+    if (prompt && (!text.startsWith("/") || /^\/(?:steer|queue)(?:\s+|$)/u.test(text))) {
+      const echo: TranscriptItem = {
+        id: `local-prompt-renderer-${crypto.randomUUID()}`,
+        sessionId, kind: "message", role: "user", content: prompt,
+        createdAt: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        streaming: false,
+        ...(input.images.length ? { images: input.images } : {}),
+      };
+      setTranscripts((current) => cacheTranscript(current, sessionId,
+        mergeTranscriptItem(current[sessionId] ?? [], echo),
+      ));
+    }
     // Answering the reader is part of sending: the transcript takes the view to the
     // newest content, so the request they just made and the reply to it appear where
     // they are looking instead of below a scroll position they had left behind.

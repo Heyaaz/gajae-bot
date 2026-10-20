@@ -1070,6 +1070,14 @@ export function mergeTranscriptItem(
     if (supersedesRunningTool(items[index], item)) return items.slice();
     return items.map((existing, at) => (at === index ? item : existing));
   }
+  if (item.kind === "message" && item.role === "user" &&
+    item.id.startsWith("local-prompt-") && !item.id.startsWith("local-prompt-renderer-")) {
+    const pending = items.findIndex((existing) => existing.kind === "message" &&
+      existing.role === "user" && existing.id.startsWith("local-prompt-renderer-") &&
+      sameUserRequest(existing, item));
+    if (pending >= 0)
+      return items.map((existing, at) => at === pending ? withLocalImages(item, existing) : existing);
+  }
   // GJC can replay a user_message_chunk for a prompt this window already echoed.
   // The local bubble is the same request, so appending the replay put the prompt on
   // screen twice until the next full transcript read (or a window reload) removed it.

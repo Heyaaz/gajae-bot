@@ -882,6 +882,16 @@ describe("cacheTranscript", () => {
     expect(cached?.["session-1"].at(-1)?.id).toBe("message-new");
   });
 
+  it("replaces the immediate renderer prompt with its backend acknowledgement", () => {
+    const local = { ...message, id: "local-prompt-renderer-1", role: "user" as const, content: "new request" };
+    const ack = { ...local, id: "local-prompt-99" };
+    const merged = mergeTranscriptItem([local], ack);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].id).toBe(ack.id);
+    const repeat = { ...local, id: "local-prompt-renderer-2" };
+    expect(mergeTranscriptItem(merged, repeat)).toHaveLength(2);
+  });
+
   it("does not multiply an unconfirmed echo on repeated incremental cache writes", () => {
     const echo = { ...message, id: "local-prompt-1", role: "user" as const, content: "멍텔모아만 타겟으로 열어야해" };
     let cached: Record<string, TranscriptItem[]> = { "session-1": [echo] };
