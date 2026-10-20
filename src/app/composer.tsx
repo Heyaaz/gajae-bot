@@ -227,13 +227,14 @@ export function parkComposerSession(
 export async function releaseQueuedSession(
   sessionId: string,
   send: (request: PendingRequest) => Promise<unknown>,
+  canSend: () => boolean = () => true,
 ): Promise<void> {
   if (releasingQueues.has(sessionId) || composerQueue(sessionId).length === 0)
     return;
   releasingQueues.add(sessionId);
   try {
     await releaseRequests({
-      canSend: () => true,
+      canSend,
       read: () => composerQueue(sessionId),
       write: (pending) => saveComposerQueue(sessionId, pending),
       send: (request) => send(request),

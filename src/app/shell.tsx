@@ -477,6 +477,7 @@ export default function App() {
     // seen so the side effect follows the same rule as the rendered row.
     const observedRevisions = new Map<string, number>();
     const releaseSessionQueue = (sessionId: string): void => {
+      const selectedAtRelease = selectedIdRef.current;
       void releaseQueuedSession(sessionId, async (request) => {
         // Send directly: this request belongs to the session whose run ended, which
         // may not be the one on screen. The composer's sent-request token would
@@ -486,7 +487,8 @@ export default function App() {
           images: request.images,
           files: request.files,
         });
-      }).catch((error: unknown) => setAppError(humanErrorMessage(error)));
+      }, () => selectedIdRef.current === selectedAtRelease)
+        .catch((error: unknown) => setAppError(humanErrorMessage(error)));
     };
     const observeSessionRun = (session: AgentSession): void => {
       if (
