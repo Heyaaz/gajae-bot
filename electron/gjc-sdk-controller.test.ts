@@ -2164,6 +2164,22 @@ describe("runtime activity visibility", () => {
     expect(items).toHaveLength(2);
   });
 
+  it("shows an in-flight call as running even after an earlier turn was aborted", () => {
+    const rows = [
+      { role: "user", content: [{ type: "text", text: "first" }] },
+      { role: "assistant", stopReason: "aborted", content: [{ type: "toolCall", id: "old", name: "bash", arguments: {} }] },
+      { role: "user", content: [{ type: "text", text: "second" }] },
+      { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: "live", name: "bash", arguments: {} }] },
+    ];
+    const status = (id: string, turnRunning: boolean) =>
+      (sharedTranscriptItems("s1", rows, { turnRunning }).find((item) => item.id === id) as { status?: string }).status;
+    expect(status("live", true)).toBe("running");
+    // The abandoned turn's own call stays cancelled.
+    expect(status("old", true)).toBe("cancelled");
+    // Once the turn really ended, the unanswered call is not left spinning.
+    expect(status("live", false)).toBe("cancelled");
+  });
+
   it("keeps a structured tool result when the recorded body is empty", () => {
     const items = sharedTranscriptItems("s1", [
       {

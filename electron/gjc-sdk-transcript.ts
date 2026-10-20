@@ -1135,22 +1135,30 @@ export function sharedTranscriptItems(
   // accurate either way and carries no spinner.
   const unresolvedToolStatus: ToolActivity["status"] =
     options?.turnRunning === false ? "cancelled" : "running";
-  const abortedTurn = records.some((row) => {
+  // A call without a result was cancelled only if its own turn was abandoned:
+  // an aborted assistant row at or after it. Deciding this once for the whole
+  // history marked every in-flight call of a session that had *ever* been
+  // aborted as Cancelled while it was still running. A finished turn's leftover
+  // calls are already cancelled through `turnRunning === false`.
+  let lastAbortedIndex = -1;
+  records.forEach((row, index) => {
     const message =
       row.message &&
       typeof row.message === "object" &&
       !Array.isArray(row.message)
         ? (row.message as Record<string, unknown>)
         : row;
-    return (
+    if (
       message.role === "assistant" &&
       (message.stopReason === "aborted" ||
         message.stopReason === "cancelled" ||
         message.stopReason === "canceled")
-    );
+    )
+      lastAbortedIndex = index;
   });
   const items: TranscriptItem[] = [];
-  for (const row of records) {
+  for (const [recordIndex, row] of records.entries()) {
+    const abortedTurn = lastAbortedIndex >= recordIndex;
     const sourceId =
       typeof row.id === "string" && row.id ? row.id : `row-${items.length}`;
     const createdAt = transcriptTime(row.ts ?? row.timestamp);
