@@ -17,6 +17,7 @@ import type {
   AgentSession,
   BackendConnection,
   MessageInput,
+  QuestionSubmission,
   ToolViewMode,
   TranscriptItem,
 } from "../backend/types";
@@ -30,6 +31,7 @@ import {
   lastUserRequestContent,
   mergeDiscoveredSessions,
   mergeTranscriptItem,
+  pendingQuestions,
   pendingToolApprovals,
   updateTranscriptItem,
 } from "../transcript-utils";
@@ -75,6 +77,7 @@ import {
 } from "./project-model";
 import type { RepoDesktopBridge } from "../../shared/repo-ipc";
 import type { ProjectPathResolution } from "../../shared/repo-ipc";
+import { QuestionBanner } from "./question-card";
 import {
   ApprovalBanner,
   ConversationFindBar,
@@ -718,6 +721,23 @@ export default function App() {
             () => event.tool,
           ),
         );
+      } else if (event.type === "question.updated") {
+        setTranscripts((current) => {
+          const items = current[event.question.sessionId];
+          if (!items) return current;
+          if (!items.some((item) => item.id === event.question.id))
+            return cacheTranscript(
+              current,
+              event.question.sessionId,
+              mergeTranscriptItem(items, event.question),
+            );
+          return updateTranscriptItem(
+            current,
+            event.question.sessionId,
+            event.question.id,
+            () => event.question,
+          );
+        });
       } else if (event.type === "session.activity") {
         setSessions((current) =>
           current.map((s) =>
@@ -1051,8 +1071,23 @@ export default function App() {
     },
     [backend],
   );
+  const answerQuestion = useCallback(
+    (gateId: string, submission: QuestionSubmission, idempotencyKey: string) => {
+      if (!selectedId) return;
+      backend
+        .answerQuestion(selectedId, gateId, submission, idempotencyKey)
+        .catch((error: unknown) => {
+          setAppError(humanErrorMessage(error));
+        });
+    },
+    [backend, selectedId],
+  );
   const pendingApprovals = useMemo(
     () => pendingToolApprovals(selectedTranscript),
+    [selectedTranscript],
+  );
+  const pendingQuestionCards = useMemo(
+    () => pendingQuestions(selectedTranscript),
     [selectedTranscript],
   );
   const readArtifact = useCallback(
@@ -2079,6 +2114,7 @@ export default function App() {
                 }
                 onRevealComplete={completeReveal}
                 onResolveTool={resolveToolCall}
+                onAnswerQuestion={answerQuestion}
                 onReadArtifact={readArtifact}
                 onRetryLastRequest={retryLastRequest}
                 onRevealInspector={onRevealInspector}
@@ -2092,6 +2128,10 @@ export default function App() {
                 }}
               />
               <div className="composer-wrap">
+                <QuestionBanner
+                  pending={pendingQuestionCards}
+                  onAnswer={answerQuestion}
+                />
                 <ApprovalBanner
                   pending={pendingApprovals}
                   focusedId={focusedApprovalId}

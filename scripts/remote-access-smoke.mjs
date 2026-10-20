@@ -96,6 +96,8 @@ async function main() {
     flushQueuedNow: async () => true,
     cancelRun: async () => {},
     resolveToolCall: async () => {},
+    listPendingQuestions: async () => [],
+    answerQuestion: async () => {},
     markSessionRead: async () => {},
   }
 

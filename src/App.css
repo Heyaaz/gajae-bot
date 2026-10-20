@@ -3103,6 +3103,119 @@
   border: 1px solid rgba(227, 179, 106, 0.32);
   border-radius: 8px;
 }
+.question-banner {
+  margin-bottom: 8px;
+}
+.question-card {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--overlay) 3%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.question-card--pending,
+.question-card--rejected {
+  border-color: rgba(240, 100, 22, 0.4);
+  background: rgba(240, 100, 22, 0.06);
+}
+.question-card-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.question-card-line,
+.question-card-result {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.question-card-line {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.question-card-result,
+.question-card-error {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.question-card-error {
+  color: var(--danger, #d4543c);
+}
+.question-card-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.question-option,
+.question-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.question-option:focus-visible,
+.question-submit:focus-visible,
+.question-other input:focus-visible {
+  outline: 2px solid rgba(240, 100, 22, 0.7);
+  outline-offset: 1px;
+}
+.question-option.is-selected,
+.question-option[aria-checked="true"] {
+  border-color: rgba(240, 100, 22, 0.7);
+  background: rgba(240, 100, 22, 0.14);
+}
+.question-option.is-recommended small {
+  color: var(--warning, #e3b36a);
+  font-size: 11px;
+}
+.question-option-index {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.question-option:disabled,
+.question-submit:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.question-other {
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.question-other input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.question-submit {
+  justify-self: start;
+  font-weight: 600;
+}
 .gajae-progress {
   display: grid;
   align-items: center;

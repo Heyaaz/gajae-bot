@@ -144,6 +144,26 @@ export function transcriptItemEqual(
           ),
         )
       );
+    case "question":
+      return (
+        right.kind === "question" &&
+        left.question === right.question &&
+        left.multi === right.multi &&
+        left.status === right.status &&
+        left.createdAt === right.createdAt &&
+        left.answerable === right.answerable &&
+        left.tag === right.tag &&
+        left.expectedSessionId === right.expectedSessionId &&
+        left.answerSummary === right.answerSummary &&
+        left.error === right.error &&
+        left.runtimeTurnId === right.runtimeTurnId &&
+        sameList(
+          left.options,
+          right.options,
+          (option, other) =>
+            option.label === other.label && option.recommended === other.recommended,
+        )
+      );
     default: {
       const exhaustive: never = left;
       return exhaustive === right;

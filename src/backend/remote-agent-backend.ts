@@ -10,6 +10,7 @@ import {
   type HistorySession,
   type MessageDelivery,
   type QueuedMessage,
+  type QuestionSubmission,
   type SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
@@ -288,6 +289,15 @@ export class RemoteAgentBackend implements AgentBackend {
 
   async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
     await this.client.resolveToolCall(toolId, decision.optionId);
+  }
+
+  async answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ): Promise<void> {
+    await this.client.answerQuestion(sessionId, gateId, submission, idempotencyKey);
   }
 
   async markSessionRead(sessionId: string): Promise<void> {

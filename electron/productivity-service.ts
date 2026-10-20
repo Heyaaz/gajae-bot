@@ -297,5 +297,5 @@ function searchSnippet(text: string, terms: string[]): string {
 
 function displayText(item: TranscriptItem): string {
   const value = item as unknown as Record<string, unknown>
-  return [value.kind, value.content, value.description, value.output, value.name, value.command, value.text].filter(v => typeof v === 'string').join(' ').slice(0, 100_000)
+  return [value.kind, value.content, value.description, value.output, value.name, value.command, value.text, value.question, value.answerSummary].filter(v => typeof v === 'string').join(' ').slice(0, 100_000)
 }

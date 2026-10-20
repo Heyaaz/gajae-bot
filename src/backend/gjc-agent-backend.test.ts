@@ -165,6 +165,10 @@ class FakeGjcBridge implements GjcDesktopBridge {
     _toolId: string,
     _decision: ToolDecision,
   ): Promise<void> {}
+  async answerQuestion(): Promise<void> {}
+  async listPendingQuestions() {
+    return [];
+  }
   async markSessionRead(_sessionId: string): Promise<void> {}
   async getDiff(sessionId: string) {
     return {

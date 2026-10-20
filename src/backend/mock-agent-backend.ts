@@ -282,6 +282,8 @@ function cloneSession(session: AgentSession): AgentSession {
 function cloneItem(item: TranscriptItem): TranscriptItem {
   if (item.kind === "plan")
     return { ...item, entries: item.entries.map((entry) => ({ ...entry })) };
+  if (item.kind === "question")
+    return { ...item, options: item.options.map((option) => ({ ...option })) };
   if (item.kind !== "message" || !item.images) return { ...item };
   return { ...item, images: item.images.map((image) => ({ ...image })) };
 }
@@ -821,6 +823,22 @@ export class MockAgentBackend implements AgentBackend {
   async cancelRun(sessionId: string): Promise<void> {
     this.clearTimers(sessionId);
     this.updateStatus(sessionId, "idle");
+  }
+
+  async answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: { selected: string[]; custom?: string; clarify?: string },
+  ): Promise<void> {
+    const items = this.transcriptStore.get(sessionId);
+    const question = items?.find((item) => item.kind === "question" && item.id === gateId);
+    if (question?.kind !== "question" || !question.answerable) return;
+    const summary = submission.clarify?.trim() || submission.custom?.trim() || submission.selected.join(", ");
+    question.status = "answered";
+    question.answerable = false;
+    question.answerSummary = summary;
+    question.error = undefined;
+    this.emit({ type: "question.updated", question: cloneItem(question) as typeof question });
   }
 
   async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {

@@ -40,6 +40,8 @@ const OPERATIONS: RemoteOperationName[] = [
   "flush-follow-ups",
   "cancel-run",
   "resolve-tool-call",
+  "pending-questions",
+  "answer-question",
   "mark-read",
 ];
 
@@ -111,6 +113,13 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
     async resolveToolCall(toolId: string) {
       calls.push(`tool:${toolId}`);
     },
+    async listPendingQuestions(sessionId: string) {
+      calls.push(`questions:${sessionId}`);
+      return [];
+    },
+    async answerQuestion(sessionId: string, gateId: string) {
+      calls.push(`answer:${sessionId}:${gateId}`);
+    },
     async markSessionRead(sessionId: string) {
       calls.push(`read:${sessionId}`);
     },
@@ -139,6 +148,7 @@ describe("remote operation surface", () => {
         "flush-follow-ups",
         "mark-read",
         "queue-follow-up",
+        "answer-question",
         "resolve-tool-call",
         "send-message",
         "steer",
@@ -181,6 +191,26 @@ describe("remote operation surface", () => {
     await expect(runRemoteOperation(host, "send-message", { sessionId: "s-1" }, {})).rejects.toThrow(
       "Message input is required",
     );
+    await runRemoteOperation(host, "pending-questions", { sessionId: "s-1" }, undefined);
+    expect(host.calls).toContain("questions:s-1");
+    await runRemoteOperation(
+      host,
+      "answer-question",
+      { sessionId: "s-1", gateId: "gate-1" },
+      {
+        submission: { selected: ["Yes"] },
+        idempotencyKey: "gajae-gate-12345678",
+      },
+    );
+    expect(host.calls).toContain("answer:s-1:gate-1");
+    await expect(
+      runRemoteOperation(
+        host,
+        "answer-question",
+        { sessionId: "s-1", gateId: "gate-1" },
+        { submission: { selected: ["Yes"] } },
+      ),
+    ).rejects.toThrow("idempotency");
   });
 });
 
