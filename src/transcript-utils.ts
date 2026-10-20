@@ -1066,6 +1066,10 @@ export function mergeTranscriptItem(
     if (supersedesRunningTool(items[index], item)) return items.slice();
     return items.map((existing, at) => (at === index ? item : existing));
   }
+  // GJC can replay a user_message_chunk for a prompt this window already echoed.
+  // The local bubble is the same request, so appending the replay put the prompt on
+  // screen twice until the next full transcript read (or a window reload) removed it.
+  if (isDuplicateLiveUserEcho(items, item)) return items.slice();
   // Every row this window shows before GJC persists it carries a local id, and
   // the persisted rebuild of that same row carries a different one. An id-only
   // match treated the rebuild as a brand new row and appended it, so a request,
@@ -1131,6 +1135,27 @@ const LOCAL_NOTICE_PREFIXES = ["gjc-cancelled-"];
 
 function hasLocalPrefix(id: string, prefixes: readonly string[]): boolean {
   return prefixes.some((prefix) => id.startsWith(prefix));
+}
+
+function isDuplicateLiveUserEcho(
+  items: readonly TranscriptItem[],
+  item: TranscriptItem,
+): boolean {
+  if (
+    item.kind !== "message" ||
+    item.role !== "user" ||
+    !item.id.startsWith("gjc-message-")
+  )
+    return false;
+  const body = requestText(item.content);
+  if (!body) return false;
+  return items.some(
+    (existing) =>
+      existing.kind === "message" &&
+      existing.role === "user" &&
+      isLocalEcho(existing.id) &&
+      requestText(existing.content) === body,
+  );
 }
 
 /** Index of the locally rendered row that `item` is the persisted rebuild of. */

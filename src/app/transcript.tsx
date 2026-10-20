@@ -651,7 +651,10 @@ export function Transcript({
   // can mount, be measured, unmount, and come back, and a seen-set would skip it the second
   // time and leave it on the estimate.
   //
-  // useLayoutEffect so this lands before the browser paints the bad positions.
+  // Re-run when the transcript changes too: `virtualItems` stays memoized while a row
+  // grows, so a streaming reply would otherwise keep its old height and place the next
+  // prompt inside it. useLayoutEffect so this lands before the browser paints the bad
+  // positions.
   useLayoutEffect(() => {
     const scroller = transcriptRef.current;
     if (!scroller) return;
@@ -665,7 +668,7 @@ export function Transcript({
       if (Math.abs(recorded - slot.offsetHeight) <= 1) continue;
       virtualizer.measureElement(slot);
     }
-  }, [virtualItems, virtualizer]);
+  }, [rows, virtualItems, virtualizer]);
 
   const totalSize = virtualizer.getTotalSize();
 

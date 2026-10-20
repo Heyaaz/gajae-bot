@@ -659,6 +659,27 @@ describe("mergeTranscriptItem", () => {
     ]);
   });
 
+  it("drops a replayed live user chunk when the local echo already shows it", () => {
+    const local = {
+      ...message("local-prompt-1", "커밋하고 다음 후보"),
+      role: "user",
+    } as TranscriptItem;
+    const replay = {
+      ...message("gjc-message-u1", "커밋하고  다음 후보"),
+      role: "user",
+    } as TranscriptItem;
+
+    const merged = mergeTranscriptItem([local], replay);
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toBe(local);
+
+    const next = {
+      ...message("gjc-message-u2", "다른 요청"),
+      role: "user",
+    } as TranscriptItem;
+    expect(mergeTranscriptItem([local], next)).toHaveLength(2);
+  });
+
   it("replaces a republished item instead of duplicating it", () => {
     // A rescan re-sends a tool row when it finishes. Appending it again put the
     // same call in the transcript twice.
