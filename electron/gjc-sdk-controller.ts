@@ -116,6 +116,7 @@ import {
   PlanEntry,
   RUN_STATE_TAIL_BYTES,
   ResolvedMessageInput,
+  UNWATCHED_DETACH_GRACE_MS,
   SDK_FAST_SERVICE_TIERS,
   SDK_RELOAD_COMPONENTS,
   SDK_SCOPED_FAST_SERVICE_TIERS,
@@ -336,6 +337,18 @@ export class GjcSdkController {
   private readonly sessions = new Map<string, AgentSession>();
   private readonly sessionCwds = new Map<string, string>();
   private readonly attachedSessions = new Set<string>();
+  /**
+   * Sessions the renderer is showing or keeping in its transcript cache.
+   *
+   * `undefined` means no window has reported a cache yet; an old renderer or a
+   * remote-only host must not have every attached session released because nobody
+   * told this process what is visible.
+   */
+  private watchedTranscripts: Set<string> | undefined;
+  private readonly detachTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   private readonly transcripts = new Map<string, TranscriptItem[]>();
   private readonly desktopTranscriptBaselines = new Map<string, TranscriptItem[]>();
   private readonly messageKeys = new Map<string, Map<string, string>>();
@@ -2036,6 +2049,87 @@ export class GjcSdkController {
     });
   }
 
+  /**
+   * The transcripts the renderer currently holds.
+   *
+   * Opening a session attaches it and starts a tail reader and a tool observer.
+   * The renderer keeps only three transcripts, so sessions outside this set are
+   * released after a grace period instead of keeping those processes for the rest
+   * of the app's lifetime. A running turn is always retained.
+   */
+  watchTranscripts(sessionIds: readonly string[]): void {
+    const next = new Set(
+      sessionIds.filter((sessionId): sessionId is string =>
+        typeof sessionId === "string" && sessionId.length > 0,
+      ),
+    );
+    this.watchedTranscripts = next;
+    for (const [sessionId, timer] of this.detachTimers) {
+      if (!next.has(sessionId)) continue;
+      clearTimeout(timer);
+      this.detachTimers.delete(sessionId);
+    }
+    for (const sessionId of this.attachedSessions) {
+      if (next.has(sessionId)) continue;
+      this.scheduleDetach(sessionId);
+    }
+  }
+
+  private scheduleDetach(sessionId: string): void {
+    if (
+      this.disposed ||
+      this.detachTimers.has(sessionId) ||
+      this.watchedTranscripts?.has(sessionId)
+    )
+      return;
+    const timer = setTimeout(() => {
+      this.detachTimers.delete(sessionId);
+      if (this.disposed || this.watchedTranscripts?.has(sessionId)) return;
+      if (!this.attachedSessions.has(sessionId)) return;
+      const session = this.sessions.get(sessionId);
+      if (
+        this.activePromptSessions.has(sessionId) ||
+        this.workingPhaseSessions.has(sessionId) ||
+        session?.status === "running"
+      ) {
+        this.scheduleDetach(sessionId);
+        return;
+      }
+      this.detachSession(sessionId);
+    }, UNWATCHED_DETACH_GRACE_MS);
+    timer.unref?.();
+    this.detachTimers.set(sessionId, timer);
+  }
+
+  private detachSession(sessionId: string): void {
+    if (!this.attachedSessions.has(sessionId)) return;
+    const session = this.sessions.get(sessionId);
+    if (
+      this.activePromptSessions.has(sessionId) ||
+      this.workingPhaseSessions.has(sessionId) ||
+      session?.status === "running"
+    )
+      return;
+    this.stopTailFollower(sessionId);
+    this.attachedSessions.delete(sessionId);
+    const watcher = this.sharedSessionWatchers.get(sessionId);
+    watcher?.close();
+    this.sharedSessionWatchers.delete(sessionId);
+    const refreshTimer = this.sharedSessionRefreshTimers.get(sessionId);
+    if (refreshTimer) clearTimeout(refreshTimer);
+    this.sharedSessionRefreshTimers.delete(sessionId);
+    this.transcripts.delete(sessionId);
+    this.desktopTranscriptBaselines.delete(sessionId);
+    this.messageKeys.delete(sessionId);
+    this.activeAssistantMessages.delete(sessionId);
+    this.activeThoughts.delete(sessionId);
+    this.sessionSdkOperations.delete(sessionId);
+    if (session) {
+      session.attachment = "attachable";
+      this.emitEvent({ type: "session.updated", session: { ...session } });
+    }
+  }
+
   async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     // A prompt owned by this window still writes its durable transcript. Reading
     // only the memory cache here made the safety net certify stale rows with the
@@ -2556,6 +2650,9 @@ export class GjcSdkController {
             setTimeout(() => {
               this.sharedSessionRefreshTimers.delete(sessionId);
               if (this.disposed) return;
+              // A detach closes this watcher; a callback already queued must not
+              // resurrect the transcript it just released.
+              if (this.sharedSessionWatchers.get(sessionId) !== watcher) return;
               const previousItems = this.transcripts.get(sessionId);
               void this.readPersistedTranscript(sessionId).then((items) => {
                 if (!items || this.disposed) return;
@@ -5335,6 +5432,9 @@ export class GjcSdkController {
     this.sharedTranscriptReads.clear();
     this.sharedSessionFiles.clear();
     this.sessionParents.clear();
+    for (const timer of this.detachTimers.values()) clearTimeout(timer);
+    this.detachTimers.clear();
+    this.watchedTranscripts = undefined;
     this.transcripts.clear();
     this.desktopTranscriptBaselines.clear();
     this.messageKeys.clear();
@@ -5924,6 +6024,11 @@ export class GjcSdkController {
     this.attachedSessions.add(sessionId);
     this.terminalOnlySessions.delete(sessionId);
     this.startTailFollower(sessionId);
+    if (
+      this.watchedTranscripts !== undefined &&
+      !this.watchedTranscripts.has(sessionId)
+    )
+      this.scheduleDetach(sessionId);
     // The session file is the live account now that no connection streams updates.
     const watched = await this.locateSharedTranscriptFile(sessionId);
     if (watched) this.watchSharedTranscript(sessionId, watched);

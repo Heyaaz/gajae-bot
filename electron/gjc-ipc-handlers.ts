@@ -275,6 +275,15 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.getTranscriptRevision, (_event, sessionId: unknown) =>
     controller.getTranscriptRevision(requiredId(sessionId, "Session ID")),
   );
+  handle(GJC_IPC.watchTranscripts, (_event, sessionIds: unknown) => {
+    if (!Array.isArray(sessionIds))
+      throw new Error("Watched transcript sessions must be an array");
+    if (sessionIds.length > 64)
+      throw new Error("Watched transcript sessions exceed the limit");
+    controller.watchTranscripts(
+      sessionIds.map((sessionId) => requiredId(sessionId, "Session ID")),
+    );
+  });
   handle(GJC_IPC.refreshSessionContext, (_event, sessionId: unknown) =>
     controller.refreshSessionContext(requiredId(sessionId, "Session ID")),
   );

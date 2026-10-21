@@ -210,6 +210,15 @@ export const PROMPT_SETTLE_ATTEMPTS = 900;
 export const PROMPT_SETTLE_INTERVAL_MS = 400;
 export const ATTACH_RETRY_INTERVAL_MS = 15_000;
 /**
+ * How long an attached session may stay outside the renderer's transcript cache
+ * before its tail, observer, watcher, and in-memory transcript are released.
+ *
+ * Opening a session attaches it, but the renderer keeps only three transcripts.
+ * Without this release every session ever opened kept two CLI processes alive for
+ * the rest of the process lifetime. A running turn is never released.
+ */
+export const UNWATCHED_DETACH_GRACE_MS = 60_000;
+/**
  * How long a live work signal outranks a transcript that already reads idle.
  *
  * GJC's live reports and its persisted transcript are two accounts of the same turn,

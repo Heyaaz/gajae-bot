@@ -26,6 +26,7 @@ export const GJC_IPC = {
   getTranscriptPage: "agent-control:gjc:get-transcript-page",
   getTranscriptChanges: "agent-control:gjc:get-transcript-changes",
   getTranscriptRevision: "agent-control:gjc:get-transcript-revision",
+  watchTranscripts: "agent-control:gjc:watch-transcripts",
   refreshSessionContext: "agent-control:gjc:refresh-session-context",
   setSessionConfig: "agent-control:gjc:set-session-config",
   cycleThinking: "agent-control:gjc:cycle-thinking",

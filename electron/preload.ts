@@ -327,6 +327,9 @@ const gjc: GjcDesktopBridge = Object.freeze({
     if (key === watchedTranscriptKey) return;
     watchedTranscriptKey = key;
     watchedTranscriptIds = new Set(sessionIds);
+    void ipcRenderer
+      .invoke(GJC_IPC.watchTranscripts, [...sessionIds])
+      .catch(() => undefined);
   },
   refreshSessionContext: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.refreshSessionContext, sessionId),

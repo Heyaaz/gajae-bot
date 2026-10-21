@@ -9,6 +9,7 @@ import {
   COMMAND_REFRESH_RETRY_BASE_MS,
   LIVE_EVIDENCE_GRACE_MS,
   TAIL_WINDOW_MS,
+  UNWATCHED_DETACH_GRACE_MS,
   TODO_EVENT_POLL_BASE_MS,
   busyPromptError,
   cancelledOperationError,
@@ -3628,6 +3629,57 @@ describe("live rows across a durable rebuild", () => {
     // Detaching ends the wait rather than holding the follower open.
     internals.stopTailFollower("s1");
     controller.dispose();
+  });
+});
+
+describe("unwatched session detach", () => {
+  it("releases an idle attached session outside the renderer cache after the grace period", async () => {
+    vi.useFakeTimers();
+    const { controller, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.attachedSessions.add("s1");
+      internals.transcripts.set("s1", []);
+      controller.watchTranscripts([]);
+      await vi.advanceTimersByTimeAsync(UNWATCHED_DETACH_GRACE_MS);
+      expect(internals.attachedSessions.has("s1")).toBe(false);
+      expect(internals.transcripts.has("s1")).toBe(false);
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a watched session and cancels a pending detach", async () => {
+    vi.useFakeTimers();
+    const { controller, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.attachedSessions.add("s1");
+      controller.watchTranscripts([]);
+      await vi.advanceTimersByTimeAsync(UNWATCHED_DETACH_GRACE_MS / 2);
+      controller.watchTranscripts(["s1"]);
+      await vi.advanceTimersByTimeAsync(UNWATCHED_DETACH_GRACE_MS);
+      expect(internals.attachedSessions.has("s1")).toBe(true);
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not detach a session whose turn is still running", async () => {
+    vi.useFakeTimers();
+    const { controller, internals } = harness();
+    try {
+      internals.sessions.set("s1", { ...session(), status: "running" });
+      internals.attachedSessions.add("s1");
+      controller.watchTranscripts([]);
+      await vi.advanceTimersByTimeAsync(UNWATCHED_DETACH_GRACE_MS);
+      expect(internals.attachedSessions.has("s1")).toBe(true);
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
   });
 });
 
