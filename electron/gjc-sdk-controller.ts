@@ -938,6 +938,16 @@ export class GjcSdkController {
     )
       return this.lastDiscovered.map((session) => ({ ...session }));
     this.lastLiveFingerprint = liveFingerprint;
+    // Group the broker index by resolved repository once. Scanning every row for
+    // every workspace made discovery O(workspaces × sessions) on each scan.
+    const rowsByWorkspace = new Map<string, SdkSessionRow[]>();
+    for (const row of brokerRows) {
+      if (!row.repo || !liveRanks.has(row.sessionId)) continue;
+      const repo = path.resolve(row.repo);
+      const rows = rowsByWorkspace.get(repo);
+      if (rows) rows.push(row);
+      else rowsByWorkspace.set(repo, [row]);
+    }
     const pages = await Promise.all(
       workspaces.map(async (cwd) => {
         try {
@@ -945,11 +955,7 @@ export class GjcSdkController {
           // carries every session id and repository; the session file supplies the
           // title and last activity.
           const sessions: SessionInfo[] = [];
-          for (const row of brokerRows) {
-            if (!row.repo || path.resolve(row.repo) !== path.resolve(cwd))
-              continue;
-            // Excluded rows must not scan the session directories or read history.
-            if (!liveRanks.has(row.sessionId)) continue;
+          for (const row of rowsByWorkspace.get(path.resolve(cwd)) ?? []) {
             const filePath = await this.locateSharedTranscriptFile(
               row.sessionId,
             );
@@ -1273,6 +1279,16 @@ export class GjcSdkController {
    * every root session in the list.
    */
   private readonly sessionParents = new Map<string, string | null>();
+  /** History picker summaries, reused while the session file's stat is unchanged. */
+  private readonly historySummaryCache = new Map<
+    string,
+    {
+      mtimeMs: number;
+      size: number;
+      summary: NonNullable<ReturnType<typeof historySessionSummary>>;
+      parentId?: string;
+    }
+  >();
 
   /**
    * The session a row was forked from, read from its transcript envelope.
@@ -5447,6 +5463,7 @@ export class GjcSdkController {
     this.sharedTranscriptReads.clear();
     this.sharedSessionFiles.clear();
     this.sessionParents.clear();
+    this.historySummaryCache.clear();
     for (const timer of this.detachTimers.values()) clearTimeout(timer);
     this.detachTimers.clear();
     this.watchedTranscripts = undefined;
@@ -5805,7 +5822,12 @@ export class GjcSdkController {
         .filter((session) => session.live)
         .map((session) => session.sessionId),
     );
-    const files: Array<{ path: string; id: string; modified: number }> = [];
+    const files: Array<{
+      path: string;
+      id: string;
+      modified: number;
+      size: number;
+    }> = [];
     try {
       for (const bucket of await readdir(sessionsDirectory, {
         withFileTypes: true,
@@ -5821,7 +5843,12 @@ export class GjcSdkController {
             const info = await stat(filePath);
             // A huge transcript is still listed, but its summary is read from a
             // bounded head rather than the whole file.
-            files.push({ path: filePath, id, modified: info.mtimeMs });
+            files.push({
+              path: filePath,
+              id,
+              modified: info.mtimeMs,
+              size: info.size,
+            });
           } catch {
             /* the file went away between listing and reading */
           }
@@ -5843,8 +5870,24 @@ export class GjcSdkController {
         const file = files[index];
         if (!file) return;
         try {
-          const headLines = await transcriptHeadLines(file.path);
-          const summary = historySessionSummary(headLines);
+          const cached = this.historySummaryCache.get(file.path);
+          let summary = cached?.summary;
+          let parentId = cached?.parentId;
+          if (!cached || cached.mtimeMs !== file.modified || cached.size !== file.size) {
+            const headLines = await transcriptHeadLines(file.path);
+            summary = historySessionSummary(headLines);
+            if (!summary) {
+              this.historySummaryCache.delete(file.path);
+              continue;
+            }
+            parentId = parentSessionOf(headLines[0], file.id);
+            this.historySummaryCache.set(file.path, {
+              mtimeMs: file.modified,
+              size: file.size,
+              summary,
+              ...(parentId ? { parentId } : {}),
+            });
+          }
           if (!summary) continue;
           const workspace = summary.cwd ?? "";
           sessions[index] = {
@@ -5856,7 +5899,7 @@ export class GjcSdkController {
             live: liveIds.has(file.id),
             // The same envelope line the summary already reads, so a fork is marked
             // by having been read rather than by a second pass over the file.
-            parentId: parentSessionOf(headLines[0], file.id),
+            parentId,
           };
         } catch {
           /* the file went away or is not a readable transcript */
@@ -5866,6 +5909,10 @@ export class GjcSdkController {
     await Promise.all(
       Array.from({ length: Math.min(8, files.length) }, read),
     );
+    const present = new Set(files.map((file) => file.path));
+    for (const filePath of this.historySummaryCache.keys()) {
+      if (!present.has(filePath)) this.historySummaryCache.delete(filePath);
+    }
     return sessions.filter(
       (session): session is HistorySession => session !== undefined,
     );
