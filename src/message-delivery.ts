@@ -166,6 +166,13 @@ export function messageDeliveryRequestText(input: MessageInput): string {
   return requestText(input.text);
 }
 
+/** A pending confirmation is internal; only a stuck outcome needs the user. */
+export function deliveryAttemptNeedsAttention(
+  attempt: MessageDeliveryAttempt,
+): boolean {
+  return attempt.state === "failed" || attempt.state === "unconfirmed";
+}
+
 /** Local optimistic rows keep a request visible, but are never delivery evidence. */
 export function deliveryEchoMatches(
   input: MessageInput,

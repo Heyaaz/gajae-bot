@@ -4,6 +4,7 @@ import {
   MESSAGE_DELIVERY_IDLE_GRACE_MS,
   MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS,
   MessageDeliveryTracker,
+  deliveryAttemptNeedsAttention,
   isTrackableMessageInput,
 } from "./message-delivery";
 
@@ -335,6 +336,19 @@ describe("message delivery tracker", () => {
       images: [{ name: "x.png", data: "AQID" }],
       files: [{ name: "x.txt", token: "token-2" }],
     });
+  });
+
+  it("keeps pending confirmations internal and surfaces only stuck outcomes", () => {
+    const attempt = {
+      id: "attempt-1",
+      sessionId: "session-1",
+      input: { text: "hello", images: [], files: [] },
+      retrying: false,
+      submitting: true,
+    };
+    expect(deliveryAttemptNeedsAttention({ ...attempt, state: "pending" })).toBe(false);
+    expect(deliveryAttemptNeedsAttention({ ...attempt, state: "failed" })).toBe(true);
+    expect(deliveryAttemptNeedsAttention({ ...attempt, state: "unconfirmed" })).toBe(true);
   });
 
   it("does not track SDK control commands as prompts", () => {

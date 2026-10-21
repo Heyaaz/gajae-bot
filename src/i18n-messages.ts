@@ -13,7 +13,6 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "전달 결과를 알 수 없습니다. 아직 대기 중일 수 있습니다.": "The outcome is unknown. It may still be queued.",
   "전달 결과를 확인할 수 없습니다. 아직 대기 중일 수 있어 다시 시도하면 중복 실행될 수 있습니다. 그래도 다시 시도할까요?": "The outcome cannot be confirmed. It may still be queued, so retrying could execute it twice. Retry anyway?",
   "결과 알 수 없음 · 다시 시도": "Outcome unknown · Retry",
-  "전달 확인 중…": "Confirming delivery…",
   "다시 보내는 중…": "Resending…",
   "이전 대화 불러오는 중…": "Loading earlier messages…",
   "이전 대화 다시 불러오기": "Retry loading earlier messages",

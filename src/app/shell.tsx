@@ -27,6 +27,7 @@ import type {
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
   MessageDeliveryTracker,
+  deliveryEchoMatches,
   isTrackableMessageInput,
 } from "../message-delivery";
 import type { MessageDeliverySessionState } from "../message-delivery";
@@ -2336,6 +2337,31 @@ export default function App() {
   const retryMessageDelivery = useCallback((attemptId: string): void => {
     const pending = messageDeliveryTrackerRef.current!.beginRetry(attemptId);
     if (!pending) return;
+    // A failed request leaves its optimistic echo behind while the failure row
+    // replaces it. Remove every matching echo before the retry adds a fresh one;
+    // otherwise the old echo resurfaces once the tracker confirms the retry.
+    setTranscripts((current) => {
+      const items = current[pending.sessionId];
+      if (!items) return current;
+      const removedIds = new Set(
+        items
+          .filter((item) => deliveryEchoMatches(pending.input, item))
+          .map((item) => item.id),
+      );
+      if (removedIds.size === 0) return current;
+      // The page read inside sendMessage preserves rows that arrived after its
+      // read version. A removed echo is not new content; clear its version so
+      // that preservation cannot resurrect it next to the durable row.
+      const versions = transcriptItemVersionsRef.current.get(pending.sessionId);
+      for (const id of removedIds) versions?.delete(id);
+      const remaining = items.filter((item) => !removedIds.has(item.id));
+      // Do not use cacheTranscript here: it deliberately preserves optimistic
+      // echoes that the incoming list does not confirm, which would put the
+      // failed request's echo straight back.
+      const next = { ...current, [pending.sessionId]: remaining };
+      transcriptsRef.current = next;
+      return next;
+    });
     setMessageDeliveryRevision((revision) => revision + 1);
     void sendMessageRef.current(pending.sessionId, pending.input, {
       retryId: attemptId,

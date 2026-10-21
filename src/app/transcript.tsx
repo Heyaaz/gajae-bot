@@ -12,7 +12,11 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 import type { MessageDeliveryAttempt } from "../message-delivery";
-import { deliveryEchoMatches, messageDeliveryRequestText } from "../message-delivery";
+import {
+  deliveryAttemptNeedsAttention,
+  deliveryEchoMatches,
+  messageDeliveryRequestText,
+} from "../message-delivery";
 import { QuestionCard } from "./question-card";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import {
@@ -555,17 +559,36 @@ export function Transcript({
   // opening a session is not read as a request that was just typed.
   const answeredSendRef = useRef(sentRequestToken);
 
+  // Pending text prompts already have a local echo in `items`; rendering the
+  // attempt as a second row duplicated the message while its delivery was being
+  // confirmed. Only actionable outcomes replace the echo. Attachment-only sends
+  // have no echo, so those keep their pending row (without a status line).
+  const attentionAttempts = useMemo(
+    () => deliveryAttempts.filter(deliveryAttemptNeedsAttention),
+    [deliveryAttempts],
+  );
+  const pendingWithoutEcho = useMemo(
+    () =>
+      deliveryAttempts.filter(
+        (attempt) =>
+          !deliveryAttemptNeedsAttention(attempt) &&
+          !messageDeliveryRequestText(attempt.input),
+      ),
+    [deliveryAttempts],
+  );
+  const renderedAttempts = useMemo(
+    () => [...attentionAttempts, ...pendingWithoutEcho],
+    [attentionAttempts, pendingWithoutEcho],
+  );
   const visibleItems = useMemo(() => {
-    const unpaired = [...deliveryAttempts];
     return items.filter((item) => {
       if (item.kind !== "message" || item.role !== "user" || !item.id.startsWith("local-prompt-"))
         return true;
-      const match = unpaired.findIndex((attempt) => deliveryEchoMatches(attempt.input, item));
-      if (match < 0) return true;
-      unpaired.splice(match, 1);
-      return false;
+      return !attentionAttempts.some((attempt) =>
+        deliveryEchoMatches(attempt.input, item),
+      );
     });
-  }, [deliveryAttempts, items]);
+  }, [attentionAttempts, items]);
   const grouped = useMemo(() => groupTranscriptItems(visibleItems), [visibleItems]);
   const turnStarts = useMemo(() => turnStartBlockIds(grouped), [grouped]);
   // One clock per session, kept across renders so a streaming answer can hide the
@@ -591,13 +614,13 @@ export function Transcript({
     const blocks = appendProgressBlock(grouped, resolved.progress);
     return [
       ...blocks,
-      ...deliveryAttempts.map((attempt) => ({
+      ...renderedAttempts.map((attempt) => ({
           kind: "delivery" as const,
           id: `delivery:${attempt.id}`,
           attempt,
         })),
     ];
-  }, [deliveryAttempts, grouped, items, sessionId, turnPhase, turnStatus]);
+  }, [renderedAttempts, grouped, items, sessionId, turnPhase, turnStatus]);
   // The restoration runs across frames and has to name the anchored block, so it reads the
   // current blocks rather than the ones its effect closed over.
   const blocksRef = useRef(rows);
@@ -1539,7 +1562,7 @@ export function Transcript({
                 ) : block.kind === "tools" ? (
                   <ToolRunBlockView items={block.items} toolViewMode={toolViewMode} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRevealInspector={onRevealInspector} />
                 ) : (
-                  <MessageDeliveryFailureRow
+                  <MessageDeliveryRow
                     attempt={block.attempt}
                     onRetry={onRetryDelivery}
                   />
@@ -2020,7 +2043,7 @@ export function ThoughtCard({
   );
 }
 
-function MessageDeliveryFailureRow({
+function MessageDeliveryRow({
   attempt,
   onRetry,
 }: {
@@ -2028,8 +2051,11 @@ function MessageDeliveryFailureRow({
   onRetry?: (attemptId: string) => void;
 }) {
   const text = messageDeliveryRequestText(attempt.input);
+  const needsAttention = deliveryAttemptNeedsAttention(attempt);
   return (
-    <article className="message message--user message--delivery-failed">
+    <article
+      className={`message message--user${needsAttention ? " message--delivery-failed" : ""}`}
+    >
       {text && <div className="message-body">{text}</div>}
       {attempt.input.images.length > 0 && (
         <div className="message-images">
@@ -2053,38 +2079,36 @@ function MessageDeliveryFailureRow({
           ))}
         </ul>
       )}
-      <div className="message-meta">
-        <span role="status">
-          {attempt.failure?.kind === "not_executed"
-            ? t`요청이 실행되지 않았습니다: ${attempt.failure.detail}`
-            : attempt.state === "unconfirmed"
-              ? t("전달 결과를 알 수 없습니다. 아직 대기 중일 수 있습니다.")
-              : attempt.state === "failed"
-                ? t("전달 상태를 기록에서 확인하지 못했습니다.")
-                : attempt.retrying
-                  ? t("다시 보내는 중…")
-                  : t("전달 확인 중…")}
-        </span>
-        {(attempt.state === "failed" || attempt.state === "unconfirmed") && onRetry && (
-          <button
-            type="button"
-            className="notice-card-retry"
-            disabled={attempt.retrying || attempt.submitting}
-            onClick={() => {
-              if (
-                attempt.state === "unconfirmed" &&
-                !window.confirm(t("전달 결과를 확인할 수 없습니다. 아직 대기 중일 수 있어 다시 시도하면 중복 실행될 수 있습니다. 그래도 다시 시도할까요?"))
-              )
-                return;
-              onRetry(attempt.id);
-            }}
-          >
-            {attempt.state === "unconfirmed"
-              ? t("결과 알 수 없음 · 다시 시도")
-              : t("전달 안 됨 · 다시 보내기")}
-          </button>
-        )}
-      </div>
+      {needsAttention && (
+        <div className="message-meta">
+          <span role="status">
+            {attempt.failure?.kind === "not_executed"
+              ? t`요청이 실행되지 않았습니다: ${attempt.failure.detail}`
+              : attempt.state === "unconfirmed"
+                ? t("전달 결과를 알 수 없습니다. 아직 대기 중일 수 있습니다.")
+                : t("전달 상태를 기록에서 확인하지 못했습니다.")}
+          </span>
+          {onRetry && (
+            <button
+              type="button"
+              className="notice-card-retry"
+              disabled={attempt.retrying || attempt.submitting}
+              onClick={() => {
+                if (
+                  attempt.state === "unconfirmed" &&
+                  !window.confirm(t("전달 결과를 확인할 수 없습니다. 아직 대기 중일 수 있어 다시 시도하면 중복 실행될 수 있습니다. 그래도 다시 시도할까요?"))
+                )
+                  return;
+                onRetry(attempt.id);
+              }}
+            >
+              {attempt.state === "unconfirmed"
+                ? t("결과 알 수 없음 · 다시 시도")
+                : t("전달 안 됨 · 다시 보내기")}
+            </button>
+          )}
+        </div>
+      )}
     </article>
   );
 }
