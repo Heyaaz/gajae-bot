@@ -235,6 +235,49 @@ describe("history opening with an unavailable endpoint", () => {
     }
   });
 
+  it("lifts a settled row when the transcript starts a turn nothing reported live", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "gajae-idle-lift-"));
+    const { controller, internals } = harness({ emit: vi.fn() });
+    try {
+      const file = path.join(root, "s1.jsonl");
+      const header = { type: "session", id: "s1", cwd: "/repo", timestamp: "2026-01-01T00:00:00Z" };
+      const user = (id: string, text: string) => ({ type: "message", id, timestamp: "2026-01-01T00:00:01Z", message: { role: "user", content: [{ type: "text", text }] } });
+      const toolUse = (id: string) => ({ type: "message", id, timestamp: "2026-01-01T00:00:02Z", message: { role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: `t-${id}`, name: "bash", arguments: {} }] } });
+      const toolResult = (id: string) => ({ type: "message", id, timestamp: "2026-01-01T00:00:03Z", message: { role: "toolResult", toolCallId: `t-${id}`, toolName: "bash", content: [{ type: "text", text: "ok" }] } });
+      const done = { type: "message", id: "a0", timestamp: "2026-01-01T00:00:01Z", message: { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "done" }] } };
+      const write = (rows: unknown[]) => writeFile(file, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+      internals.locateSharedTranscriptFile = vi.fn(async () => file);
+      internals.sessions.set("s1", { ...session(), status: "idle" });
+
+      // A turn that died mid-tool without a stop row reads running, but it is the
+      // snapshot the idle row already settled: rereading it does not revive the row.
+      await write([header, user("u0", "old"), toolUse("a-dead")]);
+      await internals.readPersistedTranscript("s1");
+      await internals.readPersistedTranscript("s1");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+
+      // The terminal starts a turn: new rows after the settle lift the row.
+      await write([header, user("u0", "old"), toolUse("a-dead"), done, user("u1", "next"), toolUse("a1")]);
+      await internals.readPersistedTranscript("s1");
+      expect(internals.sessions.get("s1").status).toBe("running");
+
+      // The same holds while this window's own prompt is still awaiting its record:
+      // that prompt owns the status, but not a turn it cannot see.
+      internals.updateSessionStatus("s1", "idle");
+      internals.activePromptSessions.add("s1");
+      await internals.readPersistedTranscript("s1");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      await write([header, user("u0", "old"), toolUse("a-dead"), done, user("u1", "next"), toolUse("a1"), toolResult("a1")]);
+      await internals.readPersistedTranscript("s1");
+      expect(internals.sessions.get("s1").status).toBe("running");
+    } finally {
+      const writes = [...internals.artifactWrites.values()];
+      controller.dispose();
+      await Promise.allSettled(writes);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("does not turn missing persisted history into an empty successful open", async () => {
     const { controller, internals } = harness();
     const failure = new SdkCliError("endpoint_stale", "unavailable");

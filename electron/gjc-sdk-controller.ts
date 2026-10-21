@@ -398,6 +398,11 @@ export class GjcSdkController {
    * `runningJobIds` records the launch markers the verdict at that size rests on,
    * so a size-unchanged read can still notice that the job behind them ended.
    */
+  /** The transcript size an idle row settled at, per run revision. */
+  private readonly idleTranscriptBaselines = new Map<
+    string,
+    { revision: number; size: number }
+  >();
   private readonly discoveredRunStates = new Map<
     string,
     { size: number; status: AgentSession["status"]; runningJobIds?: string[] }
@@ -609,6 +614,7 @@ export class GjcSdkController {
     this.pendingAsyncWorkSessions.clear();
     this.asyncJobReconciliations.clear();
     this.discoveredRunStates.clear();
+    this.idleTranscriptBaselines.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
     this.compactionRecordWatermark.clear();
@@ -1252,6 +1258,31 @@ export class GjcSdkController {
     } catch {
       return undefined;
     }
+  }
+
+  /**
+   * Whether an idle row's transcript has started work since the row settled.
+   *
+   * A settled row is lifted only by rows written after it settled. A transcript that
+   * merely still reads running -- a turn that died mid-tool without a stop row -- is
+   * the same snapshot the idle verdict already overruled, so the size at that verdict
+   * is the baseline, and it is taken per run revision: any later status change
+   * starts a new baseline instead of comparing against an older settle.
+   */
+  private transcriptStartedNewWork(
+    sessionId: string,
+    size: number,
+    transcriptRunning: boolean,
+  ): boolean {
+    if (this.sessions.get(sessionId)?.status !== "idle") return false;
+    if (this.locallyAbortedSessions.has(sessionId)) return false;
+    const revision = this.currentRunRevision(sessionId);
+    const baseline = this.idleTranscriptBaselines.get(sessionId);
+    if (!baseline || baseline.revision !== revision) {
+      this.idleTranscriptBaselines.set(sessionId, { revision, size });
+      return false;
+    }
+    return transcriptRunning && size > baseline.size;
   }
 
   private effectiveTranscriptRunState(
@@ -2216,6 +2247,11 @@ export class GjcSdkController {
       // only place its finished compaction is recorded.
       // `compactionCompleted` was handled before computing turnRunning so the
       // completion receipt can settle status in this same transcript read.
+      // Read before any branch below so every read of an idle row records the size
+      // it settled at, whichever branch then runs.
+      const startedNewWork =
+        lifecycleCurrent &&
+        this.transcriptStartedNewWork(sessionId, info.size, transcriptRunning);
       if (lifecycleCurrent && !this.activePromptSessions.has(sessionId)) {
         const status = turnRunning ? "running" : "idle";
         const current = this.sessions.get(sessionId)?.status;
@@ -2251,7 +2287,16 @@ export class GjcSdkController {
           !this.locallyAbortedSessions.has(sessionId)
         ) {
           this.updateSessionStatus(sessionId, status);
+        } else if (startedNewWork) {
+          this.updateSessionStatus(sessionId, "running");
         }
+      } else if (startedNewWork) {
+        // A prompt this window sent owns the row's status, but only for work it can
+        // see. A turn that started while it waits -- a steer, or work typed into the
+        // terminal -- reports no live start under gjc/0.18.12, so nothing else lifts
+        // a row settled idle before it: the progress row then followed each tool
+        // card in and out, reading 완료 between them for the whole turn.
+        this.updateSessionStatus(sessionId, "running");
       }
       // A session owned by a terminal never attaches here, so its own transcript is the
       // only place that states which model it is actually running.
@@ -4714,6 +4759,7 @@ export class GjcSdkController {
     this.asyncJobReconciliations.delete(sessionId);
     this.runRevisions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
+    this.idleTranscriptBaselines.delete(sessionId);
     this.compactingSessions.delete(sessionId);
     this.compactionRecordBaseline.delete(sessionId);
     this.compactionRecordWatermark.delete(sessionId);
@@ -4820,6 +4866,7 @@ export class GjcSdkController {
     this.runRevisions.clear();
     this.transcriptEpoch.clear();
     this.discoveredRunStates.clear();
+    this.idleTranscriptBaselines.clear();
     this.compactingSessions.clear();
     this.compactionRecordBaseline.clear();
     this.compactionRecordWatermark.clear();
