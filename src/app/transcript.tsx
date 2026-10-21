@@ -520,6 +520,8 @@ export function Transcript({
   const restoreFrameRef = useRef(0);
   // Frames of the in-flight hand-back to the newest content, for the same reason.
   const latestFrameRef = useRef(0);
+  const revealFrameRef = useRef(0);
+  const revealGenerationRef = useRef(0);
   // Set while this view is deliberately on its way to the newest content, which is the
   // one thing the position cannot say for itself: mid-flight it sits short of the bottom
   // it is heading for, and every consumer of the position reads that as a reader who
@@ -932,6 +934,15 @@ export function Transcript({
     handingBackRef.current = false;
   }
 
+  function cancelReveal(): void {
+    revealGenerationRef.current += 1;
+    if (revealFrameRef.current !== 0) {
+      cancelAnimationFrame(revealFrameRef.current);
+      revealFrameRef.current = 0;
+    }
+    selfScrollingRef.current = false;
+  }
+
   /**
    * Re-establish the reading position across a width change.
    *
@@ -1136,14 +1147,17 @@ export function Transcript({
     pendingPrependRef.current = null;
     cancelResizeRestore();
     cancelHandBack();
+    gestureLandingRef.current = null;
     followingRef.current = false;
     scrolledAwayRef.current = true;
     gestureAtRef.current = performance.now();
     setFollowing(false);
     selfScrollingRef.current = true;
-    let frame = 0;
+    const generation = ++revealGenerationRef.current;
     let attempts = 0;
     const reveal = (): void => {
+      revealFrameRef.current = 0;
+      if (revealGenerationRef.current !== generation) return;
       virtualizer.scrollToIndex(index, { align: "center" });
       const target = document.getElementById(`transcript-${encodeURIComponent(revealItemId)}`);
       const scroller = transcriptRef.current;
@@ -1156,7 +1170,7 @@ export function Transcript({
       // window. Keep the target anchored while mounted rows acquire real heights.
       attempts += 1;
       if (attempts < 12) {
-        frame = requestAnimationFrame(reveal);
+        revealFrameRef.current = requestAnimationFrame(reveal);
       } else {
         selfScrollingRef.current = false;
         rememberViewport();
@@ -1167,10 +1181,9 @@ export function Transcript({
         onRevealComplete?.(revealItemId);
       }
     };
-    frame = requestAnimationFrame(reveal);
+    revealFrameRef.current = requestAnimationFrame(reveal);
     return () => {
-      cancelAnimationFrame(frame);
-      selfScrollingRef.current = false;
+      if (revealGenerationRef.current === generation) cancelReveal();
     };
   }, [grouped, onRevealComplete, revealItemId, virtualizer]);
 
@@ -1182,6 +1195,7 @@ export function Transcript({
       ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
       : 0;
     if (!transcriptGestureClaimsView(deltaY, remaining)) return;
+    cancelReveal();
     // A gesture that takes the view ends a hand-back: the position this is heading for
     // is the one the reader is leaving.
     cancelHandBack();
@@ -1266,6 +1280,7 @@ export function Transcript({
   }, [sentRequestToken]);
 
   function scrollToLatest(): void {
+    cancelReveal();
     earlierRequestSessionRef.current = null;
     pendingPrependRef.current = null;
     cancelResizeRestore();
@@ -1455,7 +1470,7 @@ export function Transcript({
         onScroll={() => {
           updateScrollFollowing();
           const scroller = transcriptRef.current;
-          if (scroller && !followingRef.current && scroller.scrollTop <= 24 && hasMoreBefore && !loadingEarlier && !loadEarlierError)
+          if (scroller && gestureLandingRef.current && !followingRef.current && scroller.scrollTop <= 24 && hasMoreBefore && !loadingEarlier && !loadEarlierError)
             loadEarlier();
         }}
       // Input direction carries intent: upward means "reading older content", downward means

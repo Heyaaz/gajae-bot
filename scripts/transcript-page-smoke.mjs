@@ -42,8 +42,8 @@ app.whenReady().then(async () => {
     await writeFile(preload, `
 const listeners = new Set();
 const sessionId = 'transcript-page-smoke';
-const session = { id: sessionId, title: 'Transcript paging fixture', subtitle: 'isolated smoke fixture', workspace: '/transcript-page-smoke', runtime: 'gjc', status: 'idle', updatedAt: 'now', pinned: false, unread: false, accent: '#ff8a34', ownership: 'external', attachment: 'attached' };
-const items = [];
+let session = { id: sessionId, title: 'Transcript paging fixture', subtitle: 'isolated smoke fixture', workspace: '/transcript-page-smoke', runtime: 'gjc', status: 'idle', updatedAt: 'now', pinned: false, unread: false, accent: '#ff8a34', ownership: 'external', attachment: 'attached' };
+let items = [];
 for (let number = 1; number <= 45; number++) {
   const suffix = String(number).padStart(2, '0');
   items.push(
@@ -53,13 +53,19 @@ for (let number = 1; number <= 45; number++) {
   );
 }
 const copy = value => JSON.parse(JSON.stringify(value));
-const requestSummaries = items.filter(item => item.kind === 'message' && item.role === 'user').map(item => ({ id: item.id, text: item.content, createdAt: item.createdAt }));
-const blocks = items.length / 3;
+const requestSummaries = () => items.filter(item => item.kind === 'message' && item.role === 'user').map(item => ({ id: item.id, text: item.content, createdAt: item.createdAt }));
+const blockCount = () => items.length / 3;
 const pageCalls = [];
 const fullCalls = [];
 const changeCalls = [];
+const sendCalls = [];
 let nextPageId = 1;
+const updateSession = status => {
+  session = { ...session, status, updatedAt: new Date().toISOString() };
+  emit({ type: 'session.updated', session: copy(session) });
+};
 const pageFor = request => {
+  const blocks = blockCount();
   let startBlock;
   let endBlock;
   if (request?.beforeId) {
@@ -80,7 +86,7 @@ const pageFor = request => {
   const pageItems = copy(items.slice(startBlock * 3, endBlock * 3));
   return {
     items: pageItems,
-    requests: copy(requestSummaries),
+    requests: copy(requestSummaries()),
     hasMoreBefore: startBlock > 0,
     hasMoreAfter: endBlock < blocks,
     ...(pageItems.length ? { firstId: pageItems[0].id, lastId: pageItems.at(-1).id } : {}),
@@ -89,20 +95,31 @@ const pageFor = request => {
 const emit = event => listeners.forEach(listener => listener(event));
 window.__transcriptPages = {
   snapshot: () => ({
-    pages: pageCalls.map(call => ({ callId: call.callId, request: call.request, itemIds: call.page.items.map(item => item.id), requestIds: call.page.requests.map(request => request.id), hasMoreBefore: call.page.hasMoreBefore, hasMoreAfter: call.page.hasMoreAfter })),
+    pages: pageCalls.map(call => ({ callId: call.callId, request: call.request, itemIds: call.page.items.map(item => item.id), requestIds: call.page.requests.map(request => request.id), hasMoreBefore: call.page.hasMoreBefore, hasMoreAfter: call.page.hasMoreAfter, resolved: call.resolved })),
     fullReads: [...fullCalls],
     changes: [...changeCalls],
+    sends: copy(sendCalls),
   }),
   resolve: callId => {
     const call = pageCalls.find(candidate => candidate.callId === callId);
     if (!call || !call.resolve) throw Error('Page call is not pending: ' + callId);
-    call.resolve(copy(call.page));
+    const resolve = call.resolve;
     call.resolve = undefined;
+    call.resolved = true;
+    resolve(copy(call.page));
   },
   appendLatest: () => {
-    emit({ type: 'transcript.appended', item: { id: 'request-46', kind: 'message', sessionId, role: 'user', content: 'USER-BODY-46', createdAt: '2026-10-21T00:46:00.000Z' } });
-    emit({ type: 'transcript.appended', item: { id: 'assistant-46', kind: 'message', sessionId, role: 'assistant', content: 'ASSISTANT-BODY-46', createdAt: '2026-10-21T00:46:02.000Z' } });
+    const additions = [
+      { id: 'request-46', kind: 'message', sessionId, role: 'user', content: 'USER-BODY-46', createdAt: '2026-10-21T00:46:00.000Z' },
+      { id: 'tool-46', kind: 'tool', sessionId, name: 'Fixture tool', description: 'Tool output for request 46', command: 'fixture 46', status: 'completed', output: 'TOOL-OUTPUT-46', createdAt: '2026-10-21T00:46:01.000Z' },
+      { id: 'assistant-46', kind: 'message', sessionId, role: 'assistant', content: 'ASSISTANT-BODY-46', createdAt: '2026-10-21T00:46:02.000Z' },
+    ];
+    items = [...items, ...additions];
+    for (const item of additions) emit({ type: 'transcript.appended', item: copy(item) });
   },
+  invalidate: () => emit({ type: 'transcript.invalidated', sessionId }),
+  sendCalls: () => copy(sendCalls),
+  latestRows: () => copy(items.slice(-3)),
 };
 window.agentControlDesktop = {
   onSessionShortcut: () => () => {}, onAbortRun: () => () => {}, onCycleEffort: () => () => {},
@@ -111,7 +128,7 @@ window.agentControlDesktop = {
     listSessions: async () => [copy(session)],
     getTranscriptPage: (id, request) => {
       if (id !== sessionId) throw Error('Unexpected transcript page session: ' + id);
-      const call = { callId: nextPageId++, request: request ? copy(request) : null, page: pageFor(request) };
+      const call = { callId: nextPageId++, request: request ? copy(request) : null, page: pageFor(request), resolved: false };
       pageCalls.push(call);
       return new Promise(resolve => { call.resolve = resolve; });
     },
@@ -125,8 +142,27 @@ window.agentControlDesktop = {
       await new Promise(resolve => setTimeout(resolve, 30));
       return { kind: 'patch', items: [] };
     },
-    watchTranscripts: () => {}, refreshSessionContext: async () => {},
+    sendMessage: async (id, input) => {
+      if (id !== sessionId) throw Error('Unexpected send session: ' + id);
+      const call = { text: input.text, result: undefined };
+      sendCalls.push(call);
+      updateSession('running');
+      await new Promise(resolve => setTimeout(resolve, 50));
+      const additions = [
+        { id: 'request-47', kind: 'message', sessionId, role: 'user', content: input.text, createdAt: '2026-10-21T00:47:00.000Z' },
+        { id: 'tool-47', kind: 'tool', sessionId, name: 'Fixture tool', description: 'Tool output for request 47', command: 'fixture 47', status: 'completed', output: 'TOOL-OUTPUT-47', createdAt: '2026-10-21T00:47:01.000Z' },
+        { id: 'assistant-47', kind: 'message', sessionId, role: 'assistant', content: '', streaming: true, createdAt: '2026-10-21T00:47:02.000Z' },
+      ];
+      items = [...items, ...additions];
+      for (const item of additions) emit({ type: 'transcript.appended', item: copy(item) });
+      const assistant = items.find(item => item.id === 'assistant-47');
+      assistant.content += 'RACE-STREAM-50MS';
+      emit({ type: 'message.delta', sessionId, messageId: assistant.id, delta: 'RACE-STREAM-50MS', streaming: true });
+      call.result = 'prompt';
+      return 'prompt';
+    },
     getGoal: async () => ({ enabled: false, completed: 0, total: 0 }),
+    watchTranscripts: () => {}, refreshSessionContext: async () => {},
     getGitStatus: async () => null, markSessionRead: async () => {},
     listQueuedMessages: async () => [], listSubagents: async () => [],
     onEvent: listener => { listeners.add(listener); return () => listeners.delete(listener); }, dispose: () => {},
@@ -152,16 +188,30 @@ window.agentControlDesktop = {
     })()`);
     };
     const pageCalls = async () => win.webContents.executeJavaScript('window.__transcriptPages.snapshot().pages');
-    const waitForPage = async (predicate, afterCallId = 0) => {
-      for (let attempt = 0; attempt < 150; attempt++) {
+    const waitForPage = async (predicate, afterCallId = 0, stage = 'transcript page request', timeoutMs = 3_000) => {
+      const startedAt = Date.now();
+      while (Date.now() - startedAt < timeoutMs) {
         const calls = await pageCalls();
         const call = calls.find(candidate => candidate.callId > afterCallId && predicate(candidate));
         if (call) return call;
         await wait(20);
       }
-      throw new Error('Timed out waiting for transcript page call');
+      throw new Error(`Timed out waiting for ${stage}`);
     };
     const resolvePage = call => win.webContents.executeJavaScript(`window.__transcriptPages.resolve(${call.callId})`);
+    const resolvePageAndEarlier = async (page, stage) => {
+      let current = page;
+      while (true) {
+        await resolvePage(current);
+        if (!current.hasMoreBefore) return;
+        const beforeId = current.itemIds[0];
+        current = await waitForPage(
+          call => call.request?.beforeId === beforeId,
+          current.callId,
+          `${stage} preceding-page read for ${beforeId}`,
+        );
+      }
+    };
     const assertRenderer = expression => win.webContents.executeJavaScript(`(() => {
       const assert = (value, message) => { if (!value) throw Error(message); };
       ${expression}
@@ -184,6 +234,10 @@ window.agentControlDesktop = {
     await resolvePage(pageSnapshot);
     await rendererUntil("document.querySelector('.recent-requests-timeline-toggle')");
     await openTimeline();
+    await wait(150);
+    const initialPageCalls = await pageCalls();
+    if (initialPageCalls.some(call => call.request?.beforeId))
+      throw new Error('Transcript opened by fetching earlier pages before explicit user navigation');
     if (await win.webContents.executeJavaScript("document.querySelectorAll('.prompt-timeline li').length") !== 45)
       throw new Error('Timeline did not index all 45 user requests');
     await clickRequest(45);
@@ -213,7 +267,7 @@ window.agentControlDesktop = {
     await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-25')");
     await assertRenderer(`
       const button = document.querySelector('.transcript-load-earlier button');
-      assert(button && button.textContent.includes('이전 대화 불러오기'), 'Earlier-page control is missing');
+      assert(button && (button.textContent.includes('이전 대화 불러오기') || button.textContent.includes('Load earlier messages')), 'Earlier-page control is missing');
       button.click();
     `);
     const before = await waitForPage(call => call.request?.beforeId === 'request-15', around.callId);
@@ -221,6 +275,19 @@ window.agentControlDesktop = {
     if (overlap.length) throw new Error('Fixture before page overlaps the displayed page: ' + overlap.join(', '));
     await resolvePage(before);
     await rendererUntil("!document.querySelector('.transcript-load-earlier button')");
+    await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-25')");
+    const invalidationCallCount = (await pageCalls()).length;
+    await win.webContents.executeJavaScript('window.__transcriptPages.invalidate()');
+    const refreshedHistory = await waitForPage(
+      call => call.request?.aroundId === 'request-34',
+      invalidationCallCount,
+      'historical anchor refresh after transcript invalidation',
+    );
+    await resolvePageAndEarlier(refreshedHistory, 'historical anchor refresh');
+    await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-25')");
+    const afterInvalidationText = await transcriptText();
+    if (!afterInvalidationText.includes('USER-BODY-25'))
+      throw new Error('Historical anchor disappeared after invalidation and expanded-range refresh');
     await openTimeline();
     await clickRequest(1);
     await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-01')");
@@ -265,23 +332,90 @@ window.agentControlDesktop = {
     if (!finalText.includes('USER-BODY-45') || finalText.includes('USER-BODY-25'))
       throw new Error('A stale around-page response overrode the latest page');
     // Virtualization deliberately does not mount both ends of a 20-request page.
-    // Reveal its first request and verify it is already loaded, without an around read.
+    // Reveal the latest page's first request without an around read.
     const callsBeforeReveal = (await pageCalls()).length;
     await openTimeline();
-    await clickRequest(26);
-    await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-26')");
-    if ((await pageCalls()).slice(callsBeforeReveal).some(call => call.request?.aroundId === 'request-26'))
+    await clickRequest(27);
+    await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-27')");
+    if ((await pageCalls()).slice(callsBeforeReveal).some(call => call.request?.aroundId === 'request-27'))
       throw new Error('Stale around page replaced the loaded latest-page beginning');
+
+    const raceCallsBeforeReveal = (await pageCalls()).length;
+    await openTimeline();
+    await clickRequest(1);
+    const pendingReveal = await waitForPage(
+      call => call.request?.aroundId === 'request-1',
+      raceCallsBeforeReveal,
+      'old-page reveal before sending a new prompt',
+    );
+    const racePrompt = 'TRANSCRIPT-PAGING-SEND-REVEAL-RACE';
+    await assertRenderer(`(() => {
+      const input = document.querySelector('.composer textarea') ?? document.querySelector('textarea');
+      assert(input, 'Composer textarea is missing during send/reveal race');
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(racePrompt)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await wait(60);
+    await assertRenderer(`(() => {
+      const input = document.querySelector('.composer textarea') ?? document.querySelector('textarea');
+      const button = input?.closest('form')?.querySelector('button[type="submit"]');
+      assert(button && !button.disabled, 'Composer send button is unavailable during send/reveal race');
+      button.click();
+    })()`);
+    await rendererUntil("window.__transcriptPages.sendCalls().length === 1 && window.__transcriptPages.sendCalls()[0].result === 'prompt'");
+    const rowsSentDuringReveal = await win.webContents.executeJavaScript('window.__transcriptPages.latestRows()');
+    if (rowsSentDuringReveal[0]?.role !== 'user' || rowsSentDuringReveal[0]?.content !== racePrompt ||
+      rowsSentDuringReveal[2]?.streaming !== true || !rowsSentDuringReveal[2]?.content.includes('RACE-STREAM-50MS'))
+      throw new Error('Send fixture did not provide durable user and 50ms streaming assistant rows');
+    const pendingDuringSend = (await pageCalls()).find(call => call.callId === pendingReveal.callId);
+    if (!pendingDuringSend || pendingDuringSend.resolved)
+      throw new Error('Old-page reveal was not pending while the new durable send streamed');
+    await resolvePage(pendingReveal);
+    await wait(150);
+    const sendRaceText = await transcriptText();
+    if (!sendRaceText.includes(racePrompt) || !sendRaceText.includes('RACE-STREAM-50MS'))
+      throw new Error('Resolving the old-page reveal hid the newly sent prompt or streamed response');
+    if (sendRaceText.includes('USER-BODY-01'))
+      throw new Error('Resolving the old-page reveal yanked the transcript to the old request');
 
     const final = await win.webContents.executeJavaScript('window.__transcriptPages.snapshot()');
     if (final.fullReads.length) throw new Error('Display called getTranscript instead of using pages');
     if (rendererErrors.length) throw new Error(`Renderer reported errors: ${rendererErrors.join('; ')}`);
-    console.log(JSON.stringify({ passed: true, mobileViewport: '430x900', calls: final }, null, 2));
+    console.log(JSON.stringify({
+      passed: true,
+      mobileViewport: '430x900',
+      scenarios: {
+        coldOpenBeforePages: initialPageCalls.filter(call => call.request?.beforeId).length,
+        expandedHistoricalAnchorAfterInvalidation: afterInvalidationText.includes('USER-BODY-25'),
+        sendRevealRace: { sends: final.sends.length, promptAndStreamVisible: true, staleOldPageHidden: true },
+      },
+      pageCalls: final.pages.map(call => ({
+        callId: call.callId,
+        request: call.request,
+        firstId: call.itemIds[0],
+        lastId: call.itemIds.at(-1),
+        itemCount: call.itemIds.length,
+        hasMoreBefore: call.hasMoreBefore,
+        hasMoreAfter: call.hasMoreAfter,
+        resolved: call.resolved,
+      })),
+      fullTranscriptReads: final.fullReads.length,
+      changePolls: final.changes.length,
+      sends: final.sends,
+    }, null, 2));
     console.log('Transcript page smoke passed');
     await finish(0);
   } catch (error) {
     console.error('Transcript page smoke failed', error);
-    if (win && !win.isDestroyed()) console.error(await win.webContents.executeJavaScript(`JSON.stringify({ calls: window.__transcriptPages?.snapshot().pages.map(p => ({id:p.callId,request:p.request})), text: document.querySelector('.transcript')?.textContent?.slice(0,1500), scroll: document.querySelector('.transcript')?.scrollTop })`));
+    if (win && !win.isDestroyed()) {
+      try {
+        const diagnostic = await win.webContents.executeJavaScript(`JSON.stringify({ calls: window.__transcriptPages?.snapshot().pages.map(p => ({id:p.callId,request:p.request,resolved:p.resolved})), text: document.querySelector('.transcript')?.textContent?.slice(0,800), scroll: document.querySelector('.transcript')?.scrollTop })`);
+        console.error(diagnostic);
+      } catch (diagnosticError) {
+        console.error('Could not collect transcript page smoke diagnostics', diagnosticError);
+      }
+    }
     await finish(1);
   }
 }).catch(async error => {

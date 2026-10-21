@@ -3,12 +3,15 @@ import type {
   ChatMessage,
   TranscriptItem,
   TranscriptPage,
+  TranscriptPageRequest,
   TranscriptRequestSummary,
 } from "../shared/agent-contract.js";
+import { selectTranscriptPage } from "../shared/transcript-page.js";
 import {
   mergeRequestSummaries,
   mergeTranscriptPage,
   mergeTranscriptTail,
+  refreshTranscriptWindow,
 } from "./transcript-pages.js";
 
 function message(
@@ -31,6 +34,17 @@ function page(items: TranscriptItem[]): TranscriptPage {
 
 function ids(items: readonly TranscriptItem[]): string[] {
   return items.map((item) => item.id);
+}
+
+function requestHistory(count: number): TranscriptItem[] {
+  const items: TranscriptItem[] = [];
+  for (let index = 0; index < count; index += 1) {
+    items.push(
+      message(`user-${index}`, `request ${index}`, "user"),
+      message(`response-${index}`, `response ${index}`),
+    );
+  }
+  return items;
 }
 
 describe("mergeTranscriptPage", () => {
@@ -117,6 +131,96 @@ describe("mergeTranscriptTail", () => {
 
     expect(mergeTranscriptTail(current, emptyTail)).toEqual([]);
     expect(current).toEqual(currentBefore);
+  });
+});
+
+describe("refreshTranscriptWindow", () => {
+  it("refreshes a prepended historical range through the complete last request", async () => {
+    const original = requestHistory(40);
+    const current = original.slice(2, 70);
+    const fresh = original.map((item) =>
+      item.id === "response-20" ? message("response-20", "updated response") : item,
+    );
+    const nextRequestIndex = fresh.findIndex((item) => item.id === "user-35");
+    fresh.splice(nextRequestIndex, 0, message("response-34-followup", "continued response"));
+    const calls: (TranscriptPageRequest | undefined)[] = [];
+
+    const refreshed = await refreshTranscriptWindow(current, async (request) => {
+      calls.push(request);
+      return selectTranscriptPage(fresh, request);
+    });
+
+    const expectedStart = fresh.findIndex((item) => item.id === "user-1");
+    const expectedEnd = fresh.findIndex((item) => item.id === "user-35");
+    expect(refreshed.items).toEqual(fresh.slice(expectedStart, expectedEnd));
+    expect(ids(refreshed.items)).toContain("response-34-followup");
+    expect(ids(refreshed.items)).not.toContain("user-35");
+    expect(refreshed.items.find((item) => item.id === "response-20")).toMatchObject({
+      content: "updated response",
+    });
+    expect(refreshed.firstId).toBe("user-1");
+    expect(refreshed.lastId).toBe("response-34-followup");
+    expect(refreshed.requests.map((request) => request.id)).toEqual(
+      Array.from({ length: 40 }, (_, index) => `user-${index}`),
+    );
+    expect(refreshed.hasMoreBefore).toBe(true);
+    expect(refreshed.hasMoreAfter).toBe(true);
+    expect(calls[0]).toEqual({ aroundId: "user-34" });
+    expect(calls.slice(1).every((call) => call?.beforeId !== undefined)).toBe(true);
+  });
+
+  it("sets page flags from actual source bounds instead of the clipped source pages", async () => {
+    const source = requestHistory(35);
+    const refreshed = await refreshTranscriptWindow(source, (request) =>
+      Promise.resolve(selectTranscriptPage(source, request)),
+    );
+
+    expect(ids(refreshed.items)).toEqual(ids(source));
+    expect(refreshed.hasMoreBefore).toBe(false);
+    expect(refreshed.hasMoreAfter).toBe(false);
+  });
+
+  it("rejects a missing loaded anchor instead of returning a replacement page", async () => {
+    const source = requestHistory(30);
+    const current = [
+      message("missing-first-row", "old anchor"),
+      ...source.slice(source.findIndex((item) => item.id === "user-20")),
+    ];
+
+    await expect(
+      refreshTranscriptWindow(current, (request) =>
+        Promise.resolve(selectTranscriptPage(source, request)),
+      ),
+    ).rejects.toThrow("Transcript page anchor not found: missing-first-row");
+  });
+
+  it("rejects a repeated page cursor that cannot make progress", async () => {
+    const repeated = {
+      ...page([message("user-2", "request", "user"), message("response-2", "response")]),
+      hasMoreBefore: true,
+    };
+    const current = [message("missing-first-row", "old anchor"), ...repeated.items];
+    const calls: (TranscriptPageRequest | undefined)[] = [];
+
+    await expect(
+      refreshTranscriptWindow(current, async (request) => {
+        calls.push(request);
+        return repeated;
+      }),
+    ).rejects.toThrow("Transcript page made no progress before cursor: user-2");
+    expect(calls).toEqual([{ aroundId: "user-2" }, { beforeId: "user-2" }]);
+  });
+
+  it("uses one contiguous around-page when the loaded rows have no user request", async () => {
+    const source = [message("notice-1", "first"), message("notice-2", "second")];
+    const calls: (TranscriptPageRequest | undefined)[] = [];
+    const refreshed = await refreshTranscriptWindow([source[0]!], async (request) => {
+      calls.push(request);
+      return selectTranscriptPage(source, request);
+    });
+
+    expect(ids(refreshed.items)).toEqual(ids(source));
+    expect(calls).toEqual([{ aroundId: "notice-1" }]);
   });
 });
 

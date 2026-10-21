@@ -45,6 +45,7 @@ import {
   mergeRequestSummaries,
   mergeTranscriptPage,
   mergeTranscriptTail,
+  refreshTranscriptWindow,
 } from "../transcript-pages";
 import { getLanguage, t, useLanguage } from "../i18n";
 import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
@@ -694,11 +695,22 @@ export default function App() {
     const readVersion = transcriptEventVersionsRef.current.get(sessionId) ?? 0;
     let page: TranscriptPage;
     try {
-      page = await backend.getTranscriptPage(sessionId, request);
+      page = mode === "around"
+        ? await refreshTranscriptWindow(
+            transcriptsRef.current[sessionId] ?? [],
+            (pageRequest) => backend.getTranscriptPage(sessionId, pageRequest),
+          )
+        : await backend.getTranscriptPage(sessionId, request);
     } catch (error) {
       if (transcriptPageGenerationsRef.current.get(sessionId) === generation) {
         transcriptPageInFlightRef.current.delete(sessionId);
         pendingTranscriptScopesRef.current.delete(sessionId);
+        if (mode === "around")
+          updateTranscriptPageState(sessionId, (current) => ({
+            ...current,
+            loadingPage: false,
+            pageError: humanErrorMessage(error),
+          }));
       }
       throw error;
     }
@@ -1685,7 +1697,7 @@ export default function App() {
   async function returnTranscriptToLatest(): Promise<void> {
     const sessionId = selectedIdRef.current;
     if (!sessionId) return;
-    revealRequestGenerationRef.current += 1;
+    const generation = ++revealRequestGenerationRef.current;
     setRevealTarget(null);
     updateTranscriptPageState(sessionId, (current) => ({
       ...current,
@@ -1699,24 +1711,29 @@ export default function App() {
         "replace",
         { kind: "latest" },
       );
-      if (page && selectedIdRef.current === sessionId)
+      if (
+        page &&
+        selectedIdRef.current === sessionId &&
+        revealRequestGenerationRef.current === generation
+      )
         setSentRequestToken((token) => token + 1);
     } catch (error) {
-      updateTranscriptPageState(sessionId, (current) => ({
-        ...current,
-        loadingPage: false,
-        pageError: humanErrorMessage(error),
-      }));
+      if (revealRequestGenerationRef.current === generation)
+        updateTranscriptPageState(sessionId, (current) => ({
+          ...current,
+          loadingPage: false,
+          pageError: humanErrorMessage(error),
+        }));
     }
   }
   function revealTranscriptItem(itemId: string): void {
     const sessionId = selectedIdRef.current;
     if (!sessionId) return;
+    const generation = ++revealRequestGenerationRef.current;
     if (transcriptsRef.current[sessionId]?.some((item) => item.id === itemId)) {
       setRevealTarget({ sessionId, itemId });
       return;
     }
-    const generation = ++revealRequestGenerationRef.current;
     void readTranscriptPage(
       sessionId,
       { aroundId: itemId },
@@ -2050,6 +2067,19 @@ export default function App() {
     const pageState = transcriptPageStatesRef.current[resolvedSessionId];
     const isSelectedSend =
       options.quiet !== true && selectedIdRef.current === resolvedSessionId;
+    if (isSelectedSend) {
+      revealRequestGenerationRef.current += 1;
+      setRevealTarget(null);
+      if (pendingTranscriptScopesRef.current.get(resolvedSessionId)?.kind === "around") {
+        transcriptPageGenerationsRef.current.set(resolvedSessionId,
+          (transcriptPageGenerationsRef.current.get(resolvedSessionId) ?? 0) + 1);
+        pendingTranscriptScopesRef.current.delete(resolvedSessionId);
+        transcriptPageInFlightRef.current.delete(resolvedSessionId);
+        updateTranscriptPageState(resolvedSessionId, (current) => ({
+          ...current, loadingPage: false, pageError: "", loadingEarlier: false,
+        }));
+      }
+    }
     const mustInstallLatest =
       isSelectedSend &&
       (pageState?.scope.kind === "around" || pageState?.hasMoreAfter === true);
