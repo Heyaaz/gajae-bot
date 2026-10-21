@@ -1810,7 +1810,7 @@ describe("GjcSdkController CLI seam", () => {
       })
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 100));
     expect(cli.tail).toHaveBeenCalledTimes(2);
     // gjc/0.18.12 refuses a live --cursor without the row it stopped at.
     expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
@@ -1826,7 +1826,7 @@ describe("GjcSdkController CLI seam", () => {
       .mockResolvedValueOnce({ source: "session", terminal: true, items: [{ kind: "agent_end", payload: {} }], checkpointToken: "checkpoint-1" })
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 100));
     expect(cli.tail).toHaveBeenCalledTimes(2);
     expect((cli.tail as any).mock.calls[1]?.[1]).not.toHaveProperty("cursor");
   });
@@ -1958,7 +1958,9 @@ describe("GjcSdkController CLI seam", () => {
       .mockRejectedValueOnce(new SdkCliError("tail_timeout", "still running"))
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) =>
+      setTimeout(resolve, TAIL_WINDOW_MS * 2 + 100),
+    );
     expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
       expect.objectContaining({ cursor: "checkpoint-1", afterTranscriptId: "row-9" }),
     );
@@ -2023,6 +2025,7 @@ describe("GjcSdkController CLI seam", () => {
     internals.startTailFollower("s1");
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(internals.refreshTranscriptFromFile).toHaveBeenCalledWith("s1");
+    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 100));
     expect((cli.tail as any).mock.calls[1]?.[1]).not.toHaveProperty("cursor");
     controller.dispose();
   });
