@@ -1196,6 +1196,25 @@ describe("GjcSdkController CLI seam", () => {
     }
   });
 
+  it("paces request reconciliation instead of spawning a query every 400ms", async () => {
+    vi.useFakeTimers();
+    const { controller, cli, internals } = harness();
+    (cli.rawQuery as any).mockResolvedValue({
+      result: { status: "in_flight", startedAt: 1 },
+    });
+    try {
+      const pending = internals.awaitPromptSettlement("s1", "op-paced");
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(cli.rawQuery.mock.calls.length).toBeLessThanOrEqual(6);
+      controller.dispose();
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toBe("unknown");
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("classifies prompt records by whether the agent ever ran them", async () => {
     const { cli, internals } = harness();
     const settle = (record: Record<string, unknown>) => {

@@ -301,7 +301,12 @@ function statsRevision(info: Stats): string {
  */
 const COMPACTION_TIMEOUT_MS = 300_000;
 const REQUEST_OUTCOME_RECONCILIATION_BUDGET_MS = 20_000;
-const REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS = 400;
+// The session file watcher and tail already carry the visible terminal row.
+// This query only reconciles the send promise's own record, so it is a backstop:
+// a 400ms cadence spawned a CLI process every ~0.4s for the whole budget, which
+// was the dominant cost of a long turn. One second still settles a quick turn
+// promptly without tying process spawns to the polling clock.
+const REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS = 1_000;
 const REQUEST_OUTCOME_QUERY_TIMEOUT_MS = 2_000;
 
 function commandPublicationKey(commands: readonly AgentCommand[]): string {
