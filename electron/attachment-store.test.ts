@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,6 +28,27 @@ async function fixture(contents = "hello"): Promise<{
   };
 }
 
+async function sparseFixture(name: string, size: number): Promise<{
+  file: string;
+  metadata: { name: string; mimeType: string; size: number; mtimeMs: number };
+}> {
+  const root = await mkdtemp(path.join(tmpdir(), "gajae-attachment-store-"));
+  roots.push(root);
+  const file = path.join(root, name);
+  await writeFile(file, "");
+  await truncate(file, size);
+  const info = await stat(file);
+  return {
+    file,
+    metadata: {
+      name,
+      mimeType: "application/octet-stream",
+      size: info.size,
+      mtimeMs: info.mtimeMs,
+    },
+  };
+}
+
 afterEach(async () => {
   await Promise.all(
     roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
@@ -35,7 +56,7 @@ afterEach(async () => {
 });
 
 describe("AttachmentStore", () => {
-  it("returns only an opaque record and consumes it exactly once", async () => {
+  it("returns only an opaque record and retains committed capabilities for same-sender retry", async () => {
     const { file, metadata } = await fixture();
     const store = new AttachmentStore();
     store.activateSender(7);
@@ -45,12 +66,16 @@ describe("AttachmentStore", () => {
     expect(record).not.toHaveProperty("nativePath");
     expect(record.token).toMatch(/^[A-Za-z0-9_-]{40,}$/u);
 
+    expect(() => store.commit(7, [record.token])).toThrow(
+      "Attachment is unavailable",
+    );
     const [lease] = await store.acquire(7, [record.token]);
     expect(lease?.nativePath).toBe(await realpath(file));
     store.commit(7, [record.token]);
-    await expect(store.acquire(7, [record.token])).rejects.toThrow(
-      "Attachment is unavailable",
-    );
+
+    const [retryLease] = await store.acquire(7, [record.token]);
+    expect(retryLease?.nativePath).toBe(await realpath(file));
+    store.commit(7, [record.token]);
   });
 
   it("isolates capabilities by renderer sender", async () => {
@@ -59,6 +84,12 @@ describe("AttachmentStore", () => {
     store.activateSender(7);
     store.activateSender(8);
     const record = await store.issue(7, "file", file, metadata);
+
+    await expect(store.acquire(8, [record.token])).rejects.toThrow(
+      "Attachment is unavailable",
+    );
+    await store.acquire(7, [record.token]);
+    store.commit(7, [record.token]);
 
     await expect(store.acquire(8, [record.token])).rejects.toThrow(
       "Attachment is unavailable",
@@ -104,9 +135,65 @@ describe("AttachmentStore", () => {
     await store.acquire(7, [record.token]);
     expect(() => store.revoke(7, [record.token])).toThrow("Attachment is in use");
     store.commit(7, [record.token]);
+    expect(await store.acquire(7, [record.token])).toHaveLength(1);
+  });
+
+  it("revalidates the file when reacquiring after commit", async () => {
+    const { file, metadata } = await fixture();
+    const store = new AttachmentStore();
+    store.activateSender(7);
+    const record = await store.issue(7, "file", file, metadata);
+
+    await store.acquire(7, [record.token]);
+    store.commit(7, [record.token]);
+    await writeFile(file, "changed");
+
     await expect(store.acquire(7, [record.token])).rejects.toThrow(
+      "note.txt is no longer available",
+    );
+  });
+
+  it("evicts the oldest committed idle capability when the handle cap is reached", async () => {
+    const { file, metadata } = await fixture();
+    const store = new AttachmentStore();
+    store.activateSender(7);
+    const records = [];
+
+    for (let index = 0; index < 101; index += 1) {
+      const record = await store.issue(7, "file", file, metadata);
+      records.push(record);
+      await store.acquire(7, [record.token]);
+      store.commit(7, [record.token]);
+    }
+
+    await expect(store.acquire(7, [records[0]!.token])).rejects.toThrow(
       "Attachment is unavailable",
     );
+    expect(await store.acquire(7, [records[1]!.token])).toHaveLength(1);
+  });
+
+  it("preserves byte caps without evicting unsent or acquired handles", async () => {
+    const size = 60 * 1024 * 1024;
+    const first = await sparseFixture("first.bin", size);
+    const second = await sparseFixture("second.bin", size);
+    const store = new AttachmentStore();
+    store.activateSender(7);
+    const firstRecord = await store.issue(7, "file", first.file, first.metadata);
+
+    await expect(
+      store.issue(7, "file", second.file, second.metadata),
+    ).rejects.toThrow("Attachment limit exceeded");
+    await store.acquire(7, [firstRecord.token]);
+    await expect(
+      store.issue(7, "file", second.file, second.metadata),
+    ).rejects.toThrow("Attachment limit exceeded");
+
+    store.commit(7, [firstRecord.token]);
+    const secondRecord = await store.issue(7, "file", second.file, second.metadata);
+    await expect(store.acquire(7, [firstRecord.token])).rejects.toThrow(
+      "Attachment is unavailable",
+    );
+    expect(await store.acquire(7, [secondRecord.token])).toHaveLength(1);
   });
 
   it("revokes only capabilities issued by a failed preparation batch", async () => {

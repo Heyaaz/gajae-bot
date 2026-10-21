@@ -21,7 +21,12 @@ export interface AttachmentLease extends AttachmentRecord {
   nativePath: string
 }
 
-type Handle = AttachmentLease & { senderId: number; expiresAt: number; acquired: boolean }
+type Handle = AttachmentLease & {
+  senderId: number
+  expiresAt: number
+  acquired: boolean
+  committed: boolean
+}
 
 const TTL_MS = 24 * 60 * 60 * 1000
 const RELEASED_TTL_MS = 5 * 60 * 1000
@@ -50,12 +55,16 @@ export class AttachmentStore {
     const info = await stat(nativePath)
     if (!info.isFile() || info.size !== metadata.size || info.mtimeMs !== metadata.mtimeMs) throw new Error('Attachment changed')
     this.assertActiveEpoch(senderId, epoch)
-    const usage = this.senderUsage.get(senderId) ?? { count: 0, bytes: 0 }
-    if (usage.count >= MAX_HANDLES || usage.bytes + metadata.size > MAX_BYTES) throw new Error('Attachment limit exceeded')
+    if (metadata.size > MAX_BYTES) throw new Error('Attachment limit exceeded')
     let token = randomBytes(32).toString('base64url')
     while (this.handles.has(token)) token = randomBytes(32).toString('base64url')
-    const handle: Handle = { token, kind, nativePath, ...metadata, senderId, expiresAt: Date.now() + TTL_MS, acquired: false }
+    this.makeRoom(senderId, metadata.size)
+    const handle: Handle = {
+      token, kind, nativePath, ...metadata, senderId,
+      expiresAt: Date.now() + TTL_MS, acquired: false, committed: false,
+    }
     this.handles.set(token, handle)
+    const usage = this.senderUsage.get(senderId) ?? { count: 0, bytes: 0 }
     this.senderUsage.set(senderId, { count: usage.count + 1, bytes: usage.bytes + metadata.size })
     return this.publicRecord(handle)
   }
@@ -103,7 +112,15 @@ export class AttachmentStore {
   }
 
   commit(senderId: number, tokens: string[]): void {
-    this.remove(senderId, tokens, true)
+    for (const token of tokens) {
+      const handle = this.handles.get(token)
+      if (!handle || handle.senderId !== senderId || !handle.acquired) throw new Error('Attachment is unavailable')
+    }
+    for (const token of tokens) {
+      const handle = this.handles.get(token)!
+      handle.acquired = false
+      handle.committed = true
+    }
   }
 
   release(senderId: number, tokens: string[]): void {
@@ -161,15 +178,23 @@ export class AttachmentStore {
     }
   }
 
-  private remove(senderId: number, tokens: string[], requireAcquired: boolean): void {
-    for (const token of tokens) {
-      const handle = this.handles.get(token)
-      if (!handle || handle.senderId !== senderId || (requireAcquired && !handle.acquired)) throw new Error('Attachment is unavailable')
+  private makeRoom(senderId: number, size: number): void {
+    const usage = this.senderUsage.get(senderId) ?? { count: 0, bytes: 0 }
+    if (usage.count < MAX_HANDLES && usage.bytes + size <= MAX_BYTES) return
+
+    // Map iteration preserves issue order, so eligible idle capabilities are evicted oldest first.
+    const evictions: Handle[] = []
+    let count = usage.count
+    let bytes = usage.bytes
+    for (const handle of this.handles.values()) {
+      if (count < MAX_HANDLES && bytes + size <= MAX_BYTES) break
+      if (handle.senderId !== senderId || !handle.committed || handle.acquired) continue
+      evictions.push(handle)
+      count -= 1
+      bytes -= handle.size
     }
-    for (const token of tokens) {
-      const handle = this.handles.get(token)!
-      this.removeExisting(handle)
-    }
+    if (count >= MAX_HANDLES || bytes + size > MAX_BYTES) throw new Error('Attachment limit exceeded')
+    for (const handle of evictions) this.removeExisting(handle)
   }
 
   private activeEpoch(senderId: number): number {

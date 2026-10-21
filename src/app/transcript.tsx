@@ -5,6 +5,8 @@ import type {
   TodoSnapshotTask,
 } from "../../shared/agent-contract";
 import type { ToolActivity, ToolViewMode, TranscriptItem } from "../backend/types";
+import type { MessageDeliveryAttempt } from "../message-delivery";
+import { deliveryEchoMatches, messageDeliveryRequestText } from "../message-delivery";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import {
   appendProgressBlock,
@@ -379,6 +381,8 @@ function layoutTopWithin(
 export interface TranscriptProps {
   sessionId: string;
   items: TranscriptItem[];
+  deliveryAttempts?: MessageDeliveryAttempt[];
+  onRetryDelivery?: (attemptId: string) => void;
   /**
    * Bumped by the shell every time this window sends a request into the open session.
    *
@@ -429,6 +433,8 @@ export interface TranscriptProps {
 export function Transcript({
   sessionId,
   items,
+  deliveryAttempts = [],
+  onRetryDelivery,
   sentRequestToken = 0,
   turnSession = null,
   compacting = false,
@@ -509,7 +515,18 @@ export function Transcript({
   // opening a session is not read as a request that was just typed.
   const answeredSendRef = useRef(sentRequestToken);
 
-  const grouped = useMemo(() => groupTranscriptItems(items), [items]);
+  const visibleItems = useMemo(() => {
+    const unpaired = [...deliveryAttempts];
+    return items.filter((item) => {
+      if (item.kind !== "message" || item.role !== "user" || !item.id.startsWith("local-prompt-"))
+        return true;
+      const match = unpaired.findIndex((attempt) => deliveryEchoMatches(attempt.input, item));
+      if (match < 0) return true;
+      unpaired.splice(match, 1);
+      return false;
+    });
+  }, [deliveryAttempts, items]);
+  const grouped = useMemo(() => groupTranscriptItems(visibleItems), [visibleItems]);
   const turnStarts = useMemo(() => turnStartBlockIds(grouped), [grouped]);
   // One clock per session, kept across renders so a streaming answer can hide the
   // row without forgetting when the turn started. The row itself only ticks a
@@ -531,8 +548,16 @@ export function Transcript({
     );
     if (resolved.stored) turnClockRef.current.set(sessionId, resolved.stored);
     else turnClockRef.current.delete(sessionId);
-    return appendProgressBlock(grouped, resolved.progress);
-  }, [grouped, items, sessionId, turnPhase, turnStatus]);
+    const blocks = appendProgressBlock(grouped, resolved.progress);
+    return [
+      ...blocks,
+      ...deliveryAttempts.map((attempt) => ({
+          kind: "delivery" as const,
+          id: `delivery:${attempt.id}`,
+          attempt,
+        })),
+    ];
+  }, [deliveryAttempts, grouped, items, sessionId, turnPhase, turnStatus]);
   // The restoration runs across frames and has to name the anchored block, so it reads the
   // current blocks rather than the ones its effect closed over.
   const blocksRef = useRef(rows);
@@ -1343,8 +1368,13 @@ export function Transcript({
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
                     <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
-                ) : (
+                ) : block.kind === "tools" ? (
                   <ToolRunBlockView items={block.items} toolViewMode={toolViewMode} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRevealInspector={onRevealInspector} />
+                ) : (
+                  <MessageDeliveryFailureRow
+                    attempt={block.attempt}
+                    onRetry={onRetryDelivery}
+                  />
                 )}
               </div>
             );
@@ -1814,6 +1844,62 @@ export function ThoughtCard({
           )}
         </div>
       )}
+    </article>
+  );
+}
+
+function MessageDeliveryFailureRow({
+  attempt,
+  onRetry,
+}: {
+  attempt: MessageDeliveryAttempt;
+  onRetry?: (attemptId: string) => void;
+}) {
+  const text = messageDeliveryRequestText(attempt.input);
+  return (
+    <article className="message message--user message--delivery-failed">
+      {text && <div className="message-body">{text}</div>}
+      {attempt.input.images.length > 0 && (
+        <div className="message-images">
+          {attempt.input.images.map((image) => (
+            <img
+              key={image.id}
+              src={`data:${image.mimeType};base64,${image.data}`}
+              alt={image.name}
+              title={image.name}
+            />
+          ))}
+        </div>
+      )}
+      {attempt.input.files.length > 0 && (
+        <ul className="message-attachments">
+          {attempt.input.files.map((file) => (
+            <li key={file.id}>
+              <Paperclip size={12} aria-hidden />
+              <span>{file.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="message-meta">
+        <span role="status">
+          {attempt.state === "failed"
+            ? t("전달 상태를 기록에서 확인하지 못했습니다.")
+            : attempt.retrying
+              ? t("다시 보내는 중…")
+              : t("전달 확인 중…")}
+        </span>
+        {attempt.state === "failed" && onRetry && (
+          <button
+            type="button"
+            className="notice-card-retry"
+            disabled={attempt.retrying || attempt.submitting}
+            onClick={() => onRetry(attempt.id)}
+          >
+            {t("전달 안 됨 · 다시 보내기")}
+          </button>
+        )}
+      </div>
     </article>
   );
 }

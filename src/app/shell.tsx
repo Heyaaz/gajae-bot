@@ -21,6 +21,12 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
+import { isImmediateSdkCommandSubmission } from "../composer-utils";
+import {
+  MessageDeliveryTracker,
+  isTrackableMessageInput,
+} from "../message-delivery";
+import type { MessageDeliverySessionState } from "../message-delivery";
 import {
   applyTranscriptPatch,
   applyTranscriptRead,
@@ -75,6 +81,7 @@ import {
 } from "./project-model";
 import type { RepoDesktopBridge } from "../../shared/repo-ipc";
 import type { ProjectPathResolution } from "../../shared/repo-ipc";
+
 import {
   ApprovalBanner,
   ConversationFindBar,
@@ -87,6 +94,17 @@ import {
   DEFAULT_TOOL_VIEW_MODE,
 } from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
+
+interface ShellSendOptions {
+  quiet?: boolean;
+  retryId?: string;
+}
+
+type ShellSendMessage = (
+  sessionId: string,
+  input: MessageInput,
+  options?: ShellSendOptions,
+) => Promise<MessageDelivery>;
 
 /**
  * Whether a key press is the shell's abort gesture.
@@ -156,6 +174,19 @@ function transcriptHasLiveWork(transcript: readonly TranscriptItem[]): boolean {
     if (item.kind === "tool") return item.status === "running";
     return false;
   });
+}
+
+function deliverySessionState(
+  session: AgentSession | undefined,
+  connection: BackendConnection["state"],
+): MessageDeliverySessionState | undefined {
+  if (!session) return undefined;
+  return {
+    status: session.status,
+    phase: session.phase,
+    attachment: session.attachment,
+    connection,
+  };
 }
 
 /**
@@ -235,10 +266,21 @@ export default function App() {
     workspace: "",
   });
   const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
+  const connectionRef = useRef(connection);
+  connectionRef.current = connection;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<
     Record<string, TranscriptItem[]>
   >({});
+  const transcriptsRef = useRef(transcripts);
+  transcriptsRef.current = transcripts;
+  const messageDeliveryTrackerRef = useRef<MessageDeliveryTracker | null>(null);
+  if (!messageDeliveryTrackerRef.current)
+    messageDeliveryTrackerRef.current = new MessageDeliveryTracker();
+  const deliveryPageReadsRef = useRef(new Set<string>());
+  const [messageDeliveryRevision, setMessageDeliveryRevision] = useState(0);
   const [commands, setCommands] = useState<Record<string, AgentCommand[]>>({});
   const [configOptions, setConfigOptions] = useState<
     Record<string, AgentConfigOption[]>
@@ -274,6 +316,52 @@ export default function App() {
     completed: 0,
     total: 0,
   });
+
+  useEffect(() => {
+    const tracker = messageDeliveryTrackerRef.current!;
+    const now = Date.now();
+    for (const sessionId of tracker.sessionIds()) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      const deliveryState = deliverySessionState(
+        session,
+        connection.state,
+      );
+      tracker.observeSession(
+        sessionId,
+        deliveryState,
+        now,
+      );
+      if (
+        tracker.needsLatestRead(sessionId) &&
+        !deliveryPageReadsRef.current.has(sessionId)
+      ) {
+        deliveryPageReadsRef.current.add(sessionId);
+        const requestedAt = Date.now();
+        void backend.getTranscript(sessionId)
+          .then((items) => {
+            tracker.observeTranscript(
+              sessionId,
+              items,
+              { kind: "latest", complete: true, requestedAt },
+              Date.now(),
+            );
+            setMessageDeliveryRevision((revision) => revision + 1);
+          })
+          .catch(() => undefined)
+          .finally(() => deliveryPageReadsRef.current.delete(sessionId));
+      }
+    }
+  }, [backend, sessions, connection.state, messageDeliveryRevision]);
+
+  useEffect(() => {
+    const due = messageDeliveryTrackerRef.current!.nextDeadline();
+    if (due === undefined) return;
+    const timer = window.setTimeout(() => {
+      messageDeliveryTrackerRef.current!.advance(Date.now());
+      setMessageDeliveryRevision((revision) => revision + 1);
+    }, Math.max(0, due - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [messageDeliveryRevision]);
   const [goalBusySessionId, setGoalBusySessionId] = useState<string | null>(null);
   const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
   const [diffLoading, setDiffLoading] = useState(false);
@@ -482,11 +570,11 @@ export default function App() {
         // Send directly: this request belongs to the session whose run ended, which
         // may not be the one on screen. The composer's sent-request token would
         // scroll an unrelated transcript.
-        await backend.sendMessage(await resolveSessionId(sessionId), {
+        await sendMessageRef.current(sessionId, {
           text: request.text,
           images: request.images,
           files: request.files,
-        });
+        }, false);
       }, () => selectedIdRef.current === selectedAtRelease)
         .catch((error: unknown) => setAppError(humanErrorMessage(error)));
     };
@@ -638,6 +726,12 @@ export default function App() {
       } else if (event.type === "session.deleted") {
         forgetSession(event.sessionId);
       } else if (event.type === "transcript.appended") {
+        messageDeliveryTrackerRef.current!.observeUserEvent(
+          event.item.sessionId,
+          event.item,
+          Date.now(),
+        );
+        setMessageDeliveryRevision((revision) => revision + 1);
         setTranscripts((current) => {
           const items = current[event.item.sessionId];
           if (!items) return current;
@@ -648,6 +742,13 @@ export default function App() {
           );
         });
       } else if (event.type === "transcript.synced") {
+        messageDeliveryTrackerRef.current!.observeTranscript(
+          event.sessionId,
+          event.items,
+          { kind: "other", complete: false },
+          Date.now(),
+        );
+        setMessageDeliveryRevision((revision) => revision + 1);
         setTranscripts((current) =>
           cacheTranscript(current, event.sessionId, event.items),
         );
@@ -668,6 +769,12 @@ export default function App() {
           ),
         );
       } else if (event.type === "message.updated") {
+        messageDeliveryTrackerRef.current!.observeUserEvent(
+          event.message.sessionId,
+          event.message,
+          Date.now(),
+        );
+        setMessageDeliveryRevision((revision) => revision + 1);
         setTranscripts((current) =>
           updateTranscriptItem(
             current,
@@ -1038,6 +1145,9 @@ export default function App() {
   const selectedTranscript = selectedId
     ? (transcripts[selectedId] ?? EMPTY_TRANSCRIPT)
     : EMPTY_TRANSCRIPT;
+  const selectedDeliveryAttempts = selectedId
+    ? messageDeliveryTrackerRef.current!.snapshot(selectedId)
+    : [];
   // Queue state changes when the turn starts or ends, not on every streamed
   // chunk. Keying this on transcript length re-listed the queue over the shared
   // GJC connection for each chunk, which is what made sending feel slow.
@@ -1345,33 +1455,111 @@ export default function App() {
   async function sendMessage(
     sessionId: string,
     input: MessageInput,
+    options: ShellSendOptions = {},
   ): Promise<MessageDelivery> {
+    const resolvedSessionId = await resolveSessionId(sessionId);
+    const tracker = messageDeliveryTrackerRef.current!;
+    const now = Date.now();
+    const session =
+      sessionsRef.current.find((candidate) => candidate.id === resolvedSessionId) ??
+      (await pendingSessions.current.get(sessionId));
+    let baseline =
+      transcriptsRef.current[resolvedSessionId] ??
+      transcriptsRef.current[sessionId];
+    let baselineKnown = baseline !== undefined;
+    if (!baselineKnown) {
+      try {
+        baseline = await backend.getTranscript(resolvedSessionId);
+        baselineKnown = true;
+      } catch {
+        baseline = [];
+      }
+    }
+    const sessionState = deliverySessionState(
+      session,
+      connectionRef.current.state,
+    );
+    let deliveryAttemptId = options.retryId;
+    if (options.retryId) {
+      tracker.submitRetry(
+        options.retryId,
+        resolvedSessionId,
+        baseline ?? [],
+        now,
+        sessionState,
+        baselineKnown,
+      );
+    } else if (
+      isTrackableMessageInput(
+        input,
+        [...BUNDLED_GJC_COMMANDS, ...(commands[resolvedSessionId] ?? [])],
+      )
+    ) {
+      deliveryAttemptId = tracker.submit(
+        resolvedSessionId,
+        input,
+        baseline ?? [],
+        now,
+        sessionState,
+        baselineKnown,
+      );
+    }
+    const generation = deliveryAttemptId
+      ? tracker.submissionGeneration(deliveryAttemptId)
+      : undefined;
+    setMessageDeliveryRevision((revision) => revision + 1);
+    let rendererEchoId: string | undefined;
     const text = input.text.trim();
     const prompt = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
     if (prompt && (!text.startsWith("/") || /^\/(?:steer|queue)(?:\s+|$)/u.test(text))) {
       const echo: TranscriptItem = {
         id: `local-prompt-renderer-${crypto.randomUUID()}`,
-        sessionId, kind: "message", role: "user", content: prompt,
+        sessionId: resolvedSessionId, kind: "message", role: "user", content: prompt,
         // Same clock format as the controller's rows, so the label does not
         // change (오후 01:22 -> 13:22) when the confirmed row replaces this one.
         createdAt: new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()),
         streaming: false,
         ...(input.images.length ? { images: input.images } : {}),
       };
-      setTranscripts((current) => cacheTranscript(current, sessionId,
-        mergeTranscriptItem(current[sessionId] ?? [], echo),
+      rendererEchoId = echo.id;
+      setTranscripts((current) => cacheTranscript(current, resolvedSessionId,
+        mergeTranscriptItem(current[resolvedSessionId] ?? [], echo),
       ));
     }
     // Answering the reader is part of sending: the transcript takes the view to the
     // newest content, so the request they just made and the reply to it appear where
     // they are looking instead of below a scroll position they had left behind.
-    setSentRequestToken((token) => token + 1);
+    if (options.quiet !== true) setSentRequestToken((token) => token + 1);
     try {
-      return await backend.sendMessage(
-        await resolveSessionId(sessionId),
-        input,
-      );
+      const result = await backend.sendMessage(resolvedSessionId, input);
+      if (deliveryAttemptId && generation !== undefined) {
+        if (options.retryId)
+          tracker.finishRetry(deliveryAttemptId, Date.now(), generation);
+        else tracker.acceptSubmission(deliveryAttemptId, Date.now(), generation);
+        setMessageDeliveryRevision((revision) => revision + 1);
+      }
+      return result;
     } catch (error) {
+      if (rendererEchoId) {
+        const echoId = rendererEchoId;
+        setTranscripts((current) => {
+          const items = current[resolvedSessionId];
+          if (!items?.some((item) => item.id === echoId)) return current;
+          return {
+            ...current,
+            [resolvedSessionId]: items.filter((item) => item.id !== echoId),
+          };
+        });
+      }
+      if (deliveryAttemptId && generation !== undefined) {
+        tracker.rejectSubmission(
+          deliveryAttemptId,
+          Date.now(),
+          generation,
+          options.retryId !== undefined,
+        );
+        setMessageDeliveryRevision((revision) => revision + 1);
+      }
       setAppError(humanErrorMessage(error));
       throw error;
     }
@@ -1383,10 +1571,16 @@ export default function App() {
   // The transcript changes on every streaming chunk. Reading it through a ref keeps
   // this callback — and the memoized row that receives it — the same across those
   // chunks. The text is read when the button is pressed, not when the row rendered.
-  const transcriptsRef = useRef(transcripts);
-  transcriptsRef.current = transcripts;
-  const sendMessageRef = useRef(sendMessage);
+  const sendMessageRef = useRef<ShellSendMessage>(sendMessage);
   sendMessageRef.current = sendMessage;
+  const retryMessageDelivery = useCallback((attemptId: string): void => {
+    const pending = messageDeliveryTrackerRef.current!.beginRetry(attemptId);
+    if (!pending) return;
+    setMessageDeliveryRevision((revision) => revision + 1);
+    void sendMessageRef.current(pending.sessionId, pending.input, {
+      retryId: attemptId,
+    }).catch(() => undefined);
+  }, []);
   const retryLastRequest = useCallback((sessionId: string): void => {
     const text = lastUserRequestContent(transcriptsRef.current[sessionId] ?? []);
     if (!text) return;
@@ -2081,6 +2275,8 @@ export default function App() {
               <Transcript
                 sessionId={selectedSession.id}
                 items={selectedTranscript}
+                deliveryAttempts={selectedDeliveryAttempts}
+                onRetryDelivery={retryMessageDelivery}
                 sentRequestToken={sentRequestToken}
                 turnSession={{
                   status: selectedSession.status,
