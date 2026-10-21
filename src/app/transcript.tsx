@@ -24,10 +24,9 @@ import {
   resolveTurnProgress,
   shouldFollowTranscript,
   recentUserRequests,
-  completeMarkdownBlocks,
   searchTranscriptItems,
+  streamingMarkdownState,
   summarizeToolRun,
-  streamingMarkdownParts,
   toolRunCollapsed,
   type ToolRunManualState,
   TRANSCRIPT_BOTTOM_EPSILON_PX as BOTTOM_EPSILON_PX,
@@ -183,15 +182,18 @@ const MarkdownBody = memo(function MarkdownBody({ children }: { children: string
 });
 
 function StreamingMarkdown({ content }: { content: string }) {
-  const parts = streamingMarkdownParts(content);
-  const blocks = completeMarkdownBlocks(parts.complete);
+  const stateRef = useRef<
+    ReturnType<typeof streamingMarkdownState> | undefined
+  >(undefined);
+  const state = streamingMarkdownState(content, stateRef.current);
+  stateRef.current = state;
   return (
     <>
-      {blocks.map((block, index) => (
+      {state.blocks.map((block, index) => (
         <MarkdownBody key={index}>{block}</MarkdownBody>
       ))}
-      {parts.pending ? (
-        <span style={{ whiteSpace: "pre-wrap" }}>{parts.pending}</span>
+      {state.pending ? (
+        <span style={{ whiteSpace: "pre-wrap" }}>{state.pending}</span>
       ) : null}
     </>
   );

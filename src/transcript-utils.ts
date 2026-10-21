@@ -401,6 +401,45 @@ export function completeMarkdownBlocks(complete: string): readonly string[] {
   return commitMarkdownBlocks(complete).blocks;
 }
 
+export interface StreamingMarkdownState {
+  content: string;
+  boundary: number;
+  blocks: readonly string[];
+  pending: string;
+}
+
+/**
+ * Splits a growing streaming reply without rescanning its committed prefix.
+ *
+ * The previous boundary is always outside a fence and at a line start, so only
+ * the appended suffix needs the block scanner. A replaced or shortened stream
+ * falls back to a full scan.
+ */
+export function streamingMarkdownState(
+  content: string,
+  previous?: StreamingMarkdownState,
+): StreamingMarkdownState {
+  if (previous?.content === content) return previous;
+  let boundary = 0;
+  let blocks: string[] = [];
+  if (
+    previous &&
+    content.startsWith(previous.content) &&
+    previous.boundary <= content.length
+  ) {
+    boundary = previous.boundary;
+    blocks = [...previous.blocks];
+    const appended = commitMarkdownBlocks(content.slice(boundary));
+    boundary += appended.boundary;
+    blocks.push(...appended.blocks);
+  } else {
+    const whole = commitMarkdownBlocks(content);
+    boundary = whole.boundary;
+    blocks = [...whole.blocks];
+  }
+  return { content, boundary, blocks, pending: content.slice(boundary) };
+}
+
 export function parseSkillInvocation(text: string): { name: string; args: string } | undefined {
   const match = /^\/skill:([\p{L}\p{N}][\p{L}\p{N}_.-]*)(?:\s+([\s\S]*))?$/u.exec(text.trim());
   if (!match) return undefined;

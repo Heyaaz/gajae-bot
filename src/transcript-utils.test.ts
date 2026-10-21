@@ -29,6 +29,7 @@ import {
   toolRunCollapsed,
   completeMarkdownBlocks,
   streamingMarkdownParts,
+  streamingMarkdownState,
   TRANSCRIPT_BOTTOM_EPSILON_PX,
   turnStartBlockIds,
   updateTranscriptItem,
@@ -77,6 +78,34 @@ describe("streamingMarkdownParts", () => {
       "```\nline\n\nline\n```\n",
     ]);
     expect(parts.pending).toBe("");
+  });
+});
+
+describe("streamingMarkdownState", () => {
+  it("scans appended text and matches a full scan", () => {
+    const first = streamingMarkdownState("**a**\n\npartial");
+    const second = streamingMarkdownState(
+      "**a**\n\npartial done\n\nnext",
+      first,
+    );
+    const whole = streamingMarkdownState("**a**\n\npartial done\n\nnext");
+    expect(second.blocks).toEqual(["**a**\n\n", "partial done\n\n"]);
+    expect(second.boundary).toBe(whole.boundary);
+    expect(second.pending).toBe("next");
+  });
+
+  it("falls back to a full scan when the stream is replaced", () => {
+    const first = streamingMarkdownState("old\n\n");
+    const second = streamingMarkdownState("new\n\npending", first);
+    expect(second.blocks).toEqual(["new\n\n"]);
+    expect(second.pending).toBe("pending");
+  });
+
+  it("keeps a fence intact across an append", () => {
+    const first = streamingMarkdownState("```\nline\n");
+    const second = streamingMarkdownState("```\nline\n\nmore\n```\n", first);
+    expect(second.blocks).toEqual(["```\nline\n\nmore\n```\n"]);
+    expect(second.pending).toBe("");
   });
 });
 
