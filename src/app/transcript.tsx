@@ -548,6 +548,7 @@ export function Transcript({
   } | null>(null);
   const earlierRequestSessionRef = useRef<{ sessionId: string } | null>(null);
   const [following, setFollowing] = useState(true);
+  const [atHistoryStart, setAtHistoryStart] = useState(false);
   // The send this view has already answered for. Seeded with the token it mounted with so
   // opening a session is not read as a request that was just typed.
   const answeredSendRef = useRef(sentRequestToken);
@@ -686,6 +687,7 @@ export function Transcript({
     cancelResizeRestore();
     cancelHandBack();
     sessionRef.current = sessionId;
+    setAtHistoryStart(false);
     stableViewportRef.current = null;
     followingRef.current = true;
     scrolledAwayRef.current = false;
@@ -1450,7 +1452,7 @@ export function Transcript({
           )}
         </div>
       )}
-      {hasMoreBefore && (
+      {hasMoreBefore && atHistoryStart && !following && (
         <div className="transcript-load-earlier" style={{ flex: "none", padding: "6px 12px", textAlign: "center" }}>
           <button
             type="button"
@@ -1470,6 +1472,7 @@ export function Transcript({
         onScroll={() => {
           updateScrollFollowing();
           const scroller = transcriptRef.current;
+          setAtHistoryStart(Boolean(scroller && scroller.scrollTop <= 24));
           if (scroller && gestureLandingRef.current && !followingRef.current && scroller.scrollTop <= 24 && hasMoreBefore && !loadingEarlier && !loadEarlierError)
             loadEarlier();
         }}

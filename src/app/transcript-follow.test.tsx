@@ -165,7 +165,12 @@ describe("gesture window follow latch", () => {
       hasMoreBefore: true,
       onLoadEarlier,
     });
+    expect(host?.querySelector(".transcript-load-earlier")).toBeNull();
     scroll.scrollTop = 0;
+    await act(async () => {
+      element.dispatchEvent(new WheelEvent("wheel", { deltaY: -24, bubbles: true, cancelable: true }));
+      element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
     // happy-dom does not perform layout for the virtualizer, so provide the mounted
     // row geometry the real scroller reports before a user asks to load its prefix.
     const slot = document.createElement("div");
@@ -194,5 +199,10 @@ describe("gesture window follow latch", () => {
     });
     expect(onLoadEarlier).toHaveBeenCalledWith({ key: "m-anchor", offset: 0 });
     expect(element.className).toContain("transcript");
+    scroll.scrollTop = 300;
+    await act(async () => {
+      element.dispatchEvent(new Event("scroll", { bubbles: true }));
+    });
+    expect(host?.querySelector(".transcript-load-earlier")).toBeNull();
   });
 });
