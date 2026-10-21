@@ -61,6 +61,10 @@ Package:
 npm run package:mac
 ```
 
+Packaging rebuilds `node-pty` against Electron and unpacks that module from the
+asar archive, including its `spawn-helper`. The chat header can switch the
+open session between the conversation and a login-shell terminal.
+
 For a public release, first store notarization credentials in the login
 Keychain, then provide the Developer ID identity, Keychain profile, and an
 explicit confirmation that the bundled artwork is cleared for redistribution.

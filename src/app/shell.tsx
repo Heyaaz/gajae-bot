@@ -38,6 +38,7 @@ import {
 import { readTranscriptForSafetyNet } from "../transcript-sync";
 import { getLanguage, t, useLanguage } from "../i18n";
 import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
+import { TerminalView } from "./terminal-view";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
@@ -307,6 +308,12 @@ export default function App() {
   const [centerView, setCenterView] = useState<
     "conversation" | "repository" | "projects"
   >("conversation");
+  const [surface, setSurface] = useState<"chat" | "terminal">("chat");
+  const [terminalMounted, setTerminalMounted] = useState(false);
+  const surfaceRef = useRef(surface);
+  useEffect(() => {
+    surfaceRef.current = surface;
+  }, [surface]);
   // Git project roots, as the main process resolved them. Empty until that answer
   // arrives, and empty forever in a renderer with no desktop bridge; the grouping
   // falls back to workspace paths in that case rather than dropping sessions.
@@ -1340,6 +1347,7 @@ export default function App() {
   // dismissible surface is open for the same reason abortWithEscape is.
   useEffect(() => {
     function onApprovalShortcut(event: globalThis.KeyboardEvent): void {
+      if (surfaceRef.current === "terminal") return;
       if (!event.metaKey || dismissibleSurfaceOpen) return;
       if (event.key !== "Enter" && event.key !== "Backspace") return;
       const pending = pendingApprovals;
@@ -1366,6 +1374,7 @@ export default function App() {
   // find shortcut is.
   useEffect(() => {
     function onFindShortcut(event: globalThis.KeyboardEvent): void {
+      if (surfaceRef.current === "terminal") return;
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
       if (!selectedSessionRef.current) return;
       event.preventDefault();
@@ -2008,7 +2017,7 @@ export default function App() {
           onError={setAppError}
         />
       ) : selectedSession ? (
-        <main className="workspace">
+        <main className="workspace" data-surface={surface}>
           <header className="chat-header">
             <div className="chat-identity">
               <span className="header-avatar">
@@ -2045,6 +2054,28 @@ export default function App() {
               </span>
             </div>
             <div className="chat-header__actions">
+              <div className="surface-mode-toggle" role="group" aria-label={t("채팅과 터미널")}>
+                <button
+                  type="button"
+                  className={surface === "chat" ? "is-active" : ""}
+                  aria-pressed={surface === "chat"}
+                  onClick={() => setSurface("chat")}
+                >
+                  {t("채팅")}
+                </button>
+                <button
+                  type="button"
+                  className={surface === "terminal" ? "is-active" : ""}
+                  aria-pressed={surface === "terminal"}
+                  data-terminal-toggle
+                  onClick={() => {
+                    setTerminalMounted(true);
+                    setSurface("terminal");
+                  }}
+                >
+                  {t("터미널")}
+                </button>
+              </div>
               <div className="tool-view-mode-toggle">
                 <Dropdown ariaLabel={t("대화 표시 방식")} icon={<Layers size={15} aria-hidden="true" />} value={preferences.toolViewMode} onChange={changeToolViewMode}
                   options={[
@@ -2079,6 +2110,7 @@ export default function App() {
           <div className="workspace-body">
             <section
               className={`conversation conversation--${selectedSession.phase === "compacting" ? "compacting" : selectedSession.status}`}
+              hidden={surface === "terminal"}
             >
               {findOpen && (
                 <ConversationFindBar
@@ -2174,7 +2206,15 @@ export default function App() {
                 />
               </div>
             </section>
-            {inspectorOpen && (
+            {terminalMounted && (
+              <TerminalView
+                key={selectedSession.workspace || selectedSession.id}
+                cwd={selectedSession.workspace}
+                active={surface === "terminal"}
+                hidden={surface !== "terminal"}
+              />
+            )}
+            {surface === "chat" && inspectorOpen && (
               <Inspector
                 session={selectedSession}
                 transcript={selectedTranscript}
@@ -2185,7 +2225,7 @@ export default function App() {
                 onClose={closeInspector}
               />
             )}
-            {diffOpen && (
+            {surface === "chat" && diffOpen && (
               <DiffPanel
                 session={selectedSession}
                 backend={backend}
