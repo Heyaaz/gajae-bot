@@ -237,21 +237,30 @@ export const TODO_EVENT_POLL_MAX_MS = 120_000;
 export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
 export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
 
+/** Agent dir the broker and `getAgentDir()` share (`GJC_CODING_AGENT_DIR` or `~/.gjc/agent`). */
+function codingAgentDir(): string {
+  return path.resolve(
+    process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
+  );
+}
+
 /**
- * Durable broker session index.
+ * Durable broker session index and its compaction snapshot.
  *
- * `gjc sdk session list` projects this file. Its device, inode, size, mtime,
- * and ctime are the revision a discovery poll compares so an unchanged index
- * does not spawn another list process.
+ * GJC 0.18.12 writes both under `<agentDir>/sdk/sessions/`
+ * (`packages/coding-agent/src/sdk/broker/session-index.ts`: `dirFor`, `logFor`,
+ * `snapshotFor`). `Broker` is constructed with that agent dir
+ * (`packages/coding-agent/src/commands/sdk.ts`, falling back to `getAgentDir()`).
+ * Transcript files stay in `<agentDir>/sessions/`; that tree has no index.
+ * An append grows the log, and compaction rename-replaces the snapshot, so a
+ * discovery poll has to see both.
  */
 function brokerSessionIndexPath(): string {
-  return path.join(
-    path.resolve(
-      process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
-    ),
-    "sessions",
-    "index.jsonl",
-  );
+  return path.join(codingAgentDir(), "sdk", "sessions", "index.jsonl");
+}
+
+function brokerSessionSnapshotPath(): string {
+  return path.join(codingAgentDir(), "sdk", "sessions", "index.snapshot.json");
 }
 
 /**
@@ -407,6 +416,11 @@ export class GjcSdkController {
    * `runtime.jobs.list`.
    */
   private readonly pendingAsyncWorkSessions = new Map<string, string[]>();
+  /**
+   * Sessions whose running -> idle completion was withheld because the background
+   * job list could not be read. One later idle verdict announces that finish once.
+   */
+  private readonly completionDeferredSessions = new Set<string>();
   /**
    * Launch markers a session's transcript carried when the runtime was last asked
    * which jobs it still has running.
@@ -707,6 +721,7 @@ export class GjcSdkController {
     this.workingPhaseSessions.clear();
     this.runtimeIdleSessions.clear();
     this.pendingAsyncWorkSessions.clear();
+    this.completionDeferredSessions.clear();
     this.asyncJobReconciliations.clear();
     this.discoveredRunStates.clear();
     this.idleTranscriptBaselines.clear();
@@ -1287,13 +1302,20 @@ export class GjcSdkController {
           latched,
         );
         // A verdict this size rests entirely on markers reads idle once they are
-        // gone; one that rested on the rows themselves keeps what they said, and a
-        // surviving latch holds it running whatever they said.
+        // gone. One that rested on the rows themselves keeps what they said. A
+        // confirmed surviving latch holds it running; an unanswered lookup does not
+        // replace that row-derived running verdict.
         const querySucceeded =
           this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true;
-        const status =
-          surviving.length > 0
-            ? (querySucceeded ? "running" as const : "unknown" as const)
+        // No stored markers means the cached verdict came from the rows themselves.
+        // A failed lookup of an inherited latch must not hide that foreground work.
+        const rowsRunning = markers.length === 0 && cached.status === "running";
+        const status = rowsRunning
+          ? ("running" as const)
+          : surviving.length > 0
+            ? querySucceeded
+              ? ("running" as const)
+              : ("unknown" as const)
             : markers.length > 0
               ? ("idle" as const)
               : cached.status === "unknown"
@@ -1302,7 +1324,12 @@ export class GjcSdkController {
         this.discoveredRunStates.set(sessionId, {
           size: info.size,
           status,
-          ...(surviving.length > 0 ? { runningJobIds: surviving } : {}),
+          // Keep a row-derived running verdict distinguishable from one that rests
+          // on markers. Storing the latch here would let the next failed lookup
+          // replace foreground work with `unknown`.
+          ...(rowsRunning || surviving.length === 0
+            ? {}
+            : { runningJobIds: surviving }),
         });
         return this.effectiveTranscriptRunState(sessionId, status);
       }
@@ -1685,9 +1712,15 @@ export class GjcSdkController {
 
   private async brokerIndexRevision(): Promise<string | undefined> {
     try {
-      const info = await stat(brokerSessionIndexPath());
-      if (!info.isFile()) return undefined;
-      return statsRevision(info);
+      const log = await stat(brokerSessionIndexPath());
+      if (!log.isFile()) return undefined;
+      const snapshot = await stat(brokerSessionSnapshotPath()).catch(
+        () => undefined,
+      );
+      const snapshotRevision = snapshot?.isFile()
+        ? statsRevision(snapshot)
+        : "absent";
+      return `${statsRevision(log)}|${snapshotRevision}`;
     } catch {
       return undefined;
     }
@@ -2312,22 +2345,6 @@ export class GjcSdkController {
           );
       }
       const persistedTurn = persistedTurnState(envelopes);
-      // A new compaction record is the durable completion receipt for the requested
-      // cycle. It outranks a live `compacting` phase because that phase can remain
-      // stuck in the in-memory marker when no separate idle update is delivered.
-      // Only clear those live markers when the persisted turn is terminal; a real
-      // concurrent prompt remains authoritative while its transcript is running.
-      const baseline = this.compactionRecordBaseline.get(sessionId);
-      const compactionCompleted =
-        this.compactingSessions.has(sessionId) &&
-        baseline !== undefined &&
-        compactionRecordCount(envelopes) > baseline &&
-        (this.compactionStartedAt.get(sessionId) === undefined ||
-          (latestCompactionTimestamp !== undefined &&
-            latestCompactionTimestamp >
-              this.compactionStartedAt.get(sessionId)!)) &&
-        !persistedTurn.running;
-
       // A full read is the only read that sees every launch row and every release row,
       // so it is where a session's detached work is settled: a job paused, cancelled,
       // or taken down with its process writes no release row, and its launch marker
@@ -2342,18 +2359,37 @@ export class GjcSdkController {
       // look -- only the runtime can say that job ended.
       const jobsQuerySucceeded =
         this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true;
-      const pendingAsyncUnknown =
+      const unverifiedPendingMarkers =
         persistedTurn.pendingAsyncWorkOnly &&
         pendingAsyncJobIds.length > 0 &&
-        !jobsQuerySucceeded &&
+        !jobsQuerySucceeded;
+      const pendingAsyncUnknown =
+        unverifiedPendingMarkers &&
         !this.activePromptSessions.has(sessionId) &&
         !this.workingPhaseSessions.has(sessionId);
       const transcriptRunning = persistedTurn.pendingAsyncWorkOnly
         ? jobsQuerySucceeded && pendingAsyncJobIds.length > 0
         : persistedTurn.running;
+      // A new compaction record is the durable completion receipt for the requested
+      // cycle. It outranks a live `compacting` phase because that phase can remain
+      // stuck in the in-memory marker when no separate idle update is delivered.
+      // A stale launch marker the runtime has already retired is not a live turn, and
+      // an older compaction record is not a receipt for the cycle that just started.
+      // An unanswered job list is not a receipt either: compaction stays up until the
+      // background work can be checked.
+      const baseline = this.compactionRecordBaseline.get(sessionId);
+      const compactionCompleted =
+        this.compactingSessions.has(sessionId) &&
+        baseline !== undefined &&
+        compactionRecordCount(envelopes) > baseline &&
+        (this.compactionStartedAt.get(sessionId) === undefined ||
+          (latestCompactionTimestamp !== undefined &&
+            latestCompactionTimestamp >
+              this.compactionStartedAt.get(sessionId)!)) &&
+        !transcriptRunning &&
+        !unverifiedPendingMarkers;
       const turnRunning =
         transcriptRunning ||
-        pendingAsyncUnknown ||
         this.activePromptSessions.has(sessionId) ||
         (this.workingPhaseSessions.has(sessionId) &&
           !this.runtimeIdleSessions.has(sessionId) &&
@@ -5151,6 +5187,7 @@ export class GjcSdkController {
     this.workingPhaseSessions.delete(sessionId);
     this.runtimeIdleSessions.delete(sessionId);
     this.pendingAsyncWorkSessions.delete(sessionId);
+    this.completionDeferredSessions.delete(sessionId);
     this.asyncJobReconciliations.delete(sessionId);
     this.runRevisions.delete(sessionId);
     this.discoveredRunStates.delete(sessionId);
@@ -5260,6 +5297,7 @@ export class GjcSdkController {
     this.workingPhaseSessions.clear();
     this.runtimeIdleSessions.clear();
     this.pendingAsyncWorkSessions.clear();
+    this.completionDeferredSessions.clear();
     this.asyncJobReconciliations.clear();
     this.runRevisions.clear();
     this.transcriptEpoch.clear();
@@ -8325,10 +8363,21 @@ export class GjcSdkController {
     //
     // A cancel is excluded: the user performed it and is already looking at the
     // window, so telling them about it is noise.
+    const previous = session?.status ?? "running";
+    const owesCompletion =
+      previous === "running" ||
+      (previous === "unknown" &&
+        this.completionDeferredSessions.has(sessionId));
+    if (status === "unknown" && previous === "running")
+      this.completionDeferredSessions.add(sessionId);
+    else if (status !== "unknown")
+      this.completionDeferredSessions.delete(sessionId);
+    // Unknown is not a finish. A later idle verdict is the one completion notice
+    // for the running turn whose job list could not be read.
     const finishedTurn =
       options?.announce !== false &&
       status === "idle" &&
-      (session?.status ?? "running") === "running" &&
+      owesCompletion &&
       !this.cancellingSessions.has(sessionId) &&
       !this.locallyAbortedSessions.has(sessionId);
     if (session) {

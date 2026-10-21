@@ -189,9 +189,14 @@ describe("session read performance", () => {
     const root = await mkdtemp(path.join(tmpdir(), "broker-index-"));
     const previous = process.env.GJC_CODING_AGENT_DIR;
     process.env.GJC_CODING_AGENT_DIR = root;
-    const index = path.join(root, "sessions", "index.jsonl");
+    // GJC 0.18.12: <agentDir>/sdk/sessions/index.jsonl, not <agentDir>/sessions/.
+    const index = path.join(root, "sdk", "sessions", "index.jsonl");
+    const snapshot = path.join(root, "sdk", "sessions", "index.snapshot.json");
+    const legacy = path.join(root, "sessions", "index.jsonl");
     await mkdir(path.dirname(index), { recursive: true });
+    await mkdir(path.dirname(legacy), { recursive: true });
     await writeFile(index, "{\"sessionId\":\"s1\"}\n");
+    await writeFile(legacy, "{\"sessionId\":\"legacy\"}\n");
     const { controller, state } = harness();
     state.resolveExecutable = vi.fn(async () => "/gjc");
     state.recoverOwnedSessions = vi.fn(async () => undefined);
@@ -208,14 +213,20 @@ describe("session read performance", () => {
       await controller.listSessions();
       await controller.listSessions();
       expect(list).toHaveBeenCalledTimes(1);
-      await writeFile(index, "{\"sessionId\":\"s1\"}\n{\"sessionId\":\"s2\"}\n");
+      await writeFile(legacy, "{\"sessionId\":\"legacy-changed\"}\n");
+      await controller.listSessions();
+      expect(list).toHaveBeenCalledTimes(1);
+      await writeFile(snapshot, "{\"indexSeq\":1,\"events\":[]}\n");
       await controller.listSessions();
       expect(list).toHaveBeenCalledTimes(2);
+      await writeFile(index, "{\"sessionId\":\"s1\"}\n{\"sessionId\":\"s2\"}\n");
+      await controller.listSessions();
+      expect(list).toHaveBeenCalledTimes(3);
       // A delete or fork still has to see the broker, not the discovery cache.
       expect(await state.brokerSessions()).toEqual([
         expect.objectContaining({ sessionId: "s1" }),
       ]);
-      expect(list).toHaveBeenCalledTimes(3);
+      expect(list).toHaveBeenCalledTimes(4);
     } finally {
       controller.dispose();
       list.mockRestore();

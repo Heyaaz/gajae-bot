@@ -68,7 +68,7 @@ async function transcriptFile(
   await mkdir(directory, { recursive: true });
   await writeFile(
     path.join(directory, `2026-01-01T00-00-00-000Z_${id}.jsonl`),
-    rows.map((row) => JSON.stringify(row)).join("\n"),
+    `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`,
     "utf8",
   );
 }
@@ -4354,6 +4354,228 @@ describe("detached task launch markers", () => {
         terminalStop(),
       ]),
     ).toBe(true);
+  });
+
+  it("lets the last explicit subagent status win inside one result", () => {
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        subagentInspector(
+          { id: "agent-1", jobId: "job-1", status: "completed" },
+          { id: "agent-1", jobId: "job-1", status: "running" },
+        ),
+        terminalStop(),
+      ]),
+    ).toBe(true);
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        subagentInspector(
+          { id: "agent-1", jobId: "job-1", status: "running" },
+          { id: "agent-1", jobId: "job-1", status: "completed" },
+        ),
+        terminalStop(),
+      ]),
+    ).toBe(false);
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        subagentInspector({ id: "agent-1", jobId: "job-1", status: "already_completed" }),
+        terminalStop(),
+      ]),
+    ).toBe(false);
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        subagentInspector({ status: "completed" }, { jobId: "job-1" }),
+        terminalStop(),
+      ]),
+    ).toBe(true);
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        {
+          type: "message",
+          id: "conflict",
+          timestamp: "2026-01-01T00:00:01.500Z",
+          message: {
+            role: "toolResult",
+            toolCallId: "call-conflict",
+            toolName: "subagent",
+            content: [{ type: "text", text: "conflict" }],
+            details: {
+              subagents: [{ id: "agent-1", jobId: "job-1", status: "running" }],
+              terminalIds: ["job-1"],
+            },
+          },
+        },
+        terminalStop(),
+      ]),
+    ).toBe(true);
+  });
+
+  it("follows transcript order when a later row carries an earlier timestamp", () => {
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        {
+          ...subagentInspector({ id: "agent-1", jobId: "job-1", status: "completed" }),
+          timestamp: "2026-01-01T00:00:09.000Z",
+        },
+        {
+          ...taskLaunch("job-1"),
+          id: "relaunch-older-clock",
+          timestamp: "2026-01-01T00:00:00.100Z",
+        },
+        terminalStop(),
+      ]),
+    ).toBe(true);
+  });
+
+  it("marks an open session unknown without a completion notice, then announces once", async () => {
+    const { cli, emit, internals, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    internals.sessions.get("s1").status = "running";
+    (cli.queryItems as any).mockRejectedValue(
+      new SdkCliError("endpoint_stale", "unavailable"),
+    );
+    const completions = () =>
+      emit.mock.calls.filter(
+        ([event]: any[]) =>
+          event.type === "session.activity" && event.category === "completed",
+      );
+    try {
+      await internals.refreshTranscriptFromFile("s1");
+      expect(internals.sessions.get("s1").status).toBe("unknown");
+      expect(completions()).toHaveLength(0);
+
+      const failed = internals.asyncJobReconciliations.get("s1");
+      internals.asyncJobReconciliations.set("s1", {
+        ...failed,
+        checkedAt: failed.checkedAt - 60_000,
+      });
+      (cli.queryItems as any).mockResolvedValue(jobList());
+      await internals.refreshTranscriptFromFile("s1");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      expect(completions()).toHaveLength(1);
+
+      await internals.refreshTranscriptFromFile("s1");
+      expect(completions()).toHaveLength(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps foreground running when a latched job lookup later fails", async () => {
+    const { cli, internals, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+      userRequest(),
+    ]);
+    internals.sessions.get("s1").status = "running";
+    (cli.queryItems as any).mockRejectedValue(
+      new SdkCliError("endpoint_stale", "unavailable"),
+    );
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      await internals.refreshTranscriptFromFile("s1");
+      expect(internals.sessions.get("s1").status).toBe("running");
+      expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("settles compaction after the runtime retires a stale launch marker", async () => {
+    const { emit, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+      {
+        type: "compaction",
+        id: "compact-1",
+        timestamp: "2026-01-01T00:00:04.000Z",
+        summary: "compacted",
+      },
+    ]);
+    jobs();
+    internals.compactingSessions.add("s1");
+    internals.compactionRecordBaseline.set("s1", 0);
+    internals.workingPhaseSessions.add("s1");
+    internals.sessions.get("s1").status = "running";
+    internals.sessions.get("s1").phase = "compacting";
+    try {
+      await internals.refreshTranscriptFromFile("s1");
+      expect(internals.compactingSessions.has("s1")).toBe(false);
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      expect(internals.sessions.get("s1").phase).toBeUndefined();
+      expect(
+        emit.mock.calls.filter(
+          ([event]: any[]) =>
+            event.type === "session.activity" && event.category === "completed",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps compaction running for a stale record or an unreachable job list", async () => {
+    const stale = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+      {
+        type: "compaction",
+        timestamp: "2026-01-01T00:00:04.000Z",
+        summary: "old",
+      },
+    ]);
+    stale.jobs();
+    stale.internals.compactingSessions.add("s1");
+    stale.internals.compactionRecordBaseline.set("s1", 0);
+    stale.internals.compactionStartedAt.set(
+      "s1",
+      Date.parse("2026-01-01T00:00:05.000Z"),
+    );
+    stale.internals.workingPhaseSessions.add("s1");
+    stale.internals.sessions.get("s1").status = "running";
+    stale.internals.sessions.get("s1").phase = "compacting";
+    try {
+      await stale.internals.refreshTranscriptFromFile("s1");
+      expect(stale.internals.compactingSessions.has("s1")).toBe(true);
+      expect(stale.internals.sessions.get("s1").status).toBe("running");
+      expect(stale.internals.sessions.get("s1").phase).toBe("compacting");
+    } finally {
+      await stale.cleanup();
+    }
+
+    const unreachable = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+      {
+        type: "compaction",
+        timestamp: "2026-01-01T00:00:04.000Z",
+        summary: "compacted",
+      },
+    ]);
+    (unreachable.cli.queryItems as any).mockRejectedValue(
+      new SdkCliError("endpoint_stale", "unavailable"),
+    );
+    unreachable.internals.compactingSessions.add("s1");
+    unreachable.internals.compactionRecordBaseline.set("s1", 0);
+    unreachable.internals.workingPhaseSessions.add("s1");
+    unreachable.internals.sessions.get("s1").status = "running";
+    unreachable.internals.sessions.get("s1").phase = "compacting";
+    try {
+      await unreachable.internals.refreshTranscriptFromFile("s1");
+      expect(unreachable.internals.compactingSessions.has("s1")).toBe(true);
+      expect(unreachable.internals.sessions.get("s1").status).toBe("running");
+      expect(unreachable.internals.sessions.get("s1").phase).toBe("compacting");
+    } finally {
+      await unreachable.cleanup();
+    }
   });
 });
 

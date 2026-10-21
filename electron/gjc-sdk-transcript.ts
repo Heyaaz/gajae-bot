@@ -710,6 +710,36 @@ export const TERMINAL_STOP_REASONS = new Set([
 ]);
 
 /**
+ * Subagent snapshot statuses that release a launch marker.
+ *
+ * GJC 0.18.12 (`packages/coding-agent/src/tools/subagent.ts`) treats
+ * `completed`, `failed`, and `cancelled` as terminal, and its group summary
+ * counts `already_completed` with `completed`. Anything else, including an
+ * unrecognized string, is not evidence the work ended.
+ */
+const TERMINAL_SUBAGENT_STATUSES = new Set([
+  "completed",
+  "failed",
+  "cancelled",
+  "already_completed",
+]);
+
+/** Statuses that say the same subagent is still work. Last explicit one wins. */
+const LIVE_SUBAGENT_STATUSES = new Set(["running", "paused", "queued"]);
+
+function subagentIdentifiers(record: Record<string, unknown>): string[] {
+  const ids: string[] = [];
+  if (typeof record.id === "string" && record.id) ids.push(record.id);
+  if (
+    typeof record.jobId === "string" &&
+    record.jobId &&
+    record.jobId !== record.id
+  )
+    ids.push(record.jobId);
+  return ids;
+}
+
+/**
  * How long a reconciliation of detached-task launch markers is trusted.
  *
  * A marker the runtime still reports as running has to be re-checked eventually:
@@ -805,30 +835,41 @@ export function persistedTurnState(rows: unknown[]): PersistedTurnState {
       message.role === "toolResult" &&
       message.toolName === "subagent"
     ) {
-      // Explicit await/inspect results carry structured terminal subagent snapshots.
-      // Only their exact identifiers can release a launch marker; live, paused, or
-      // unrecognized statuses are not evidence that the work has ended.
+      // Explicit await/inspect results carry structured subagent snapshots.
+      // Records in one result can disagree; the last explicit status for an id
+      // wins, and only a status that was actually pending can be released or
+      // restored. A missing id or an unrecognized status changes nothing.
+      const releasedHere = new Set<string>();
+      const keptLive = new Set<string>();
       if (Array.isArray(details?.subagents)) {
         for (const candidate of details.subagents) {
           if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
             continue;
           const subagent = candidate as Record<string, unknown>;
-          if (
-            subagent.status === "completed" ||
-            subagent.status === "failed" ||
-            subagent.status === "cancelled"
-          ) {
-            if (typeof subagent.id === "string")
-              pendingAsyncJobs.delete(subagent.id);
-            if (typeof subagent.jobId === "string")
-              pendingAsyncJobs.delete(subagent.jobId);
+          const ids = subagentIdentifiers(subagent);
+          const status = subagent.status;
+          if (typeof status !== "string") continue;
+          if (TERMINAL_SUBAGENT_STATUSES.has(status)) {
+            for (const id of ids) {
+              if (pendingAsyncJobs.delete(id)) releasedHere.add(id);
+              keptLive.delete(id);
+            }
+          } else if (LIVE_SUBAGENT_STATUSES.has(status)) {
+            for (const id of ids) {
+              if (!pendingAsyncJobs.has(id) && !releasedHere.has(id)) continue;
+              pendingAsyncJobs.add(id);
+              keptLive.add(id);
+              releasedHere.delete(id);
+            }
           }
         }
       }
-      // Legacy explicit await completion IDs remain authoritative as well.
+      // Legacy explicit await completion IDs remain authoritative, except where
+      // this same result's snapshot says that id is still live.
       if (Array.isArray(details?.terminalIds)) {
         for (const jobId of details.terminalIds)
-          if (typeof jobId === "string") pendingAsyncJobs.delete(jobId);
+          if (typeof jobId === "string" && !keptLive.has(jobId))
+            pendingAsyncJobs.delete(jobId);
       }
     }
     if (
