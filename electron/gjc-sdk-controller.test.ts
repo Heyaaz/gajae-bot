@@ -1534,17 +1534,46 @@ describe("GjcSdkController CLI seam", () => {
     internals.attachedSessions.add("s1");
     (cli.tail as any)
       .mockResolvedValueOnce({
-        source: "session", terminal: true, items: [], checkpointToken: "checkpoint-1",
+        source: "session", terminal: true, items: [{ kind: "transcript", payload: { id: "row-9", role: "assistant" } }], checkpointToken: "checkpoint-1",
       })
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    // An answer with no frames is paced by one window before the next read, so the
-    // cursor this test is about is handed over on the second poll.
-    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 250));
+    await new Promise((resolve) => setTimeout(resolve, 250));
     expect(cli.tail).toHaveBeenCalledTimes(2);
+    // gjc/0.18.12 refuses a live --cursor without the row it stopped at.
     expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({ cursor: "checkpoint-1" }),
+      expect.objectContaining({ cursor: "checkpoint-1", afterTranscriptId: "row-9" }),
     );
+  });
+
+  it("does not resume a tail it has no transcript boundary for", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.attachedSessions.add("s1");
+    (cli.tail as any)
+      .mockResolvedValueOnce({ source: "session", terminal: true, items: [{ kind: "agent_end", payload: {} }], checkpointToken: "checkpoint-1" })
+      .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
+    internals.startTailFollower("s1");
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(cli.tail).toHaveBeenCalledTimes(2);
+    expect((cli.tail as any).mock.calls[1]?.[1]).not.toHaveProperty("cursor");
+  });
+
+  it("drops a checkpoint the reader refuses instead of retrying it forever", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.attachedSessions.add("s1");
+    internals.tailCheckpoints.set("s1", { cursor: "expired", afterTranscriptId: "row-1" });
+    internals.refreshTranscriptFromFile = vi.fn(async () => undefined);
+    (cli.tail as any)
+      .mockRejectedValueOnce(new SdkCliError("usage", "The command arguments are invalid."))
+      .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
+    internals.startTailFollower("s1");
+    await internals.tailReads.get("s1");
+    expect(cli.tail).toHaveBeenCalledTimes(2);
+    expect((cli.tail as any).mock.calls[1]?.[1]).not.toHaveProperty("cursor");
+    expect(internals.refreshTranscriptFromFile).toHaveBeenCalledWith("s1");
+    controller.dispose();
   });
 
   it("retains the last tail checkpoint across a timeout and aborts on detach", async () => {
@@ -1553,19 +1582,17 @@ describe("GjcSdkController CLI seam", () => {
     internals.attachedSessions.add("s1");
     (cli.tail as any)
       .mockResolvedValueOnce({
-        source: "session", terminal: true, items: [], checkpointToken: "checkpoint-1",
+        source: "session", terminal: true, items: [{ kind: "transcript", payload: { id: "row-9", role: "assistant" } }], checkpointToken: "checkpoint-1",
       })
       .mockRejectedValueOnce(new SdkCliError("tail_timeout", "still running"))
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });
     internals.startTailFollower("s1");
-    // The first answer carries no frames, so the follower waits one window before
-    // the timeout that follows it.
-    await new Promise((resolve) => setTimeout(resolve, TAIL_WINDOW_MS + 250));
+    await new Promise((resolve) => setTimeout(resolve, 250));
     expect((cli.tail as any).mock.calls[1]?.[1]).toEqual(
-      expect.objectContaining({ cursor: "checkpoint-1" }),
+      expect.objectContaining({ cursor: "checkpoint-1", afterTranscriptId: "row-9" }),
     );
     expect((cli.tail as any).mock.calls[2]?.[1]).toEqual(
-      expect.objectContaining({ cursor: "checkpoint-1" }),
+      expect.objectContaining({ cursor: "checkpoint-1", afterTranscriptId: "row-9" }),
     );
     internals.removeLocalSession("s1", false);
     expect(internals.tailControllers.has("s1")).toBe(false);
@@ -1576,7 +1603,7 @@ describe("GjcSdkController CLI seam", () => {
     internals.sessions.set("s1", session());
     internals.sessionCwds.set("s1", "/repo");
     internals.attachedSessions.add("s1");
-    internals.tailCheckpoints.set("s1", "checkpoint-1");
+    internals.tailCheckpoints.set("s1", { cursor: "checkpoint-1", afterTranscriptId: "row-9" });
     (cli.tail as any)
       .mockRejectedValueOnce(new Error("broker transport closed"))
       .mockResolvedValueOnce({ source: "offline", terminal: true, items: [] });

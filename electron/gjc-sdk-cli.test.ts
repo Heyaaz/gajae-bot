@@ -515,8 +515,10 @@ describe("GjcSdkCli.tail", () => {
     const { client, calls } = cli([
       JSON.stringify({ ok: true, result: { source: "session", items: [] } }),
     ]);
-    await client.tail("s1", { cursor: "ck1" });
+    await client.tail("s1", { cursor: "ck1", afterTranscriptId: "row-9" });
     expect(calls[0]?.[calls[0].indexOf("--cursor") + 1]).toBe("ck1");
+    // A live resume without its transcript boundary is a usage error on gjc/0.18.12.
+    expect(calls[0]?.[calls[0].indexOf("--after-transcript-id") + 1]).toBe("row-9");
   });
   it("surfaces tail_timeout as a typed error because items are discarded", async () => {
     const { client } = cli([

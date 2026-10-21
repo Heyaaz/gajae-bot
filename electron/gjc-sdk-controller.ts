@@ -267,6 +267,19 @@ function commandPublicationKey(commands: readonly AgentCommand[]): string {
     .join("\n");
 }
 
+/** The id of the newest transcript row a tail read returned. */
+function lastTailTranscriptId(
+  items: ReadonlyArray<{ kind: string; payload: unknown }>,
+): string | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (item.kind !== "transcript") continue;
+    const id = (item.payload as { id?: unknown } | null)?.id;
+    if (typeof id === "string" && id) return id;
+  }
+  return undefined;
+}
+
 export class GjcSdkController {
   private workspace: string;
   private configuredExecutable?: string;
@@ -522,7 +535,14 @@ export class GjcSdkController {
   /** Abort handles for the short-lived tail CLI child currently reading a session. */
   private readonly tailControllers = new Map<string, AbortController>();
   /** Latest tail checkpoint claim per session, so a re-read resumes rather than rewinds. */
-  private readonly tailCheckpoints = new Map<string, string>();
+  /**
+   * Where each session's tail resumes. gjc/0.18.12 refuses a live `--cursor`
+   * without the transcript row it stopped at (`usage`), so the two travel together.
+   */
+  private readonly tailCheckpoints = new Map<
+    string,
+    { cursor: string; afterTranscriptId: string }
+  >();
   /** Sessions this window resumed, and therefore may close before deleting. */
   private readonly windowHostedSessions = new Set<string>();
   /** Public observer connections that replace tool output with the newest snapshot. */
@@ -5629,9 +5649,7 @@ export class GjcSdkController {
         const cli = await this.requireCli();
         const tail = await cli.tail(sessionId, {
           repo: this.repoFor(sessionId),
-          ...(this.tailCheckpoints.get(sessionId)
-            ? { cursor: this.tailCheckpoints.get(sessionId) }
-            : {}),
+          ...this.tailCheckpoints.get(sessionId),
           untilIdle: true,
           timeoutMs: TAIL_WINDOW_MS,
           signal: controller.signal,
@@ -5642,8 +5660,16 @@ export class GjcSdkController {
           await this.refreshTranscriptFromFile(sessionId);
           continue;
         }
-        if (tail.checkpointToken)
-          this.tailCheckpoints.set(sessionId, tail.checkpointToken);
+        // A read with no new transcript row resumes at the row the last one ended at.
+        const afterTranscriptId =
+          lastTailTranscriptId(tail.items) ??
+          this.tailCheckpoints.get(sessionId)?.afterTranscriptId;
+        if (tail.checkpointToken && afterTranscriptId)
+          this.tailCheckpoints.set(sessionId, {
+            cursor: tail.checkpointToken,
+            afterTranscriptId,
+          });
+        else this.tailCheckpoints.delete(sessionId);
         this.projectTailItems(sessionId, tail.items);
         if (tail.source === "offline") return;
         // A reader that answered with no frames at all did no work. The CLI owns the
@@ -5661,7 +5687,14 @@ export class GjcSdkController {
           // A timeout means only that no terminal turn event arrived inside this
           // bounded window. It is not a failed run and never clears the spinner.
           if (error.code === "tail_timeout") continue;
-          if (error.code === "retention_gap") {
+          // A checkpoint the reader refuses -- one without its transcript boundary,
+          // or one past its expiry -- is refused on every retry. Keeping it is what
+          // left a session with no live follower at all: each pass failed with
+          // `usage`, and only the file watcher still reported the turn.
+          if (
+            error.code === "retention_gap" ||
+            (error.code === "usage" && this.tailCheckpoints.has(sessionId))
+          ) {
             this.tailCheckpoints.delete(sessionId);
             await this.refreshTranscriptFromFile(sessionId);
             continue;

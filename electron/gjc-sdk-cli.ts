@@ -716,6 +716,8 @@ export class GjcSdkCli {
     options?: {
       repo?: string;
       cursor?: string;
+      /** The transcript row the cursor stopped at; a live resume requires it. */
+      afterTranscriptId?: string;
       untilIdle?: boolean;
       timeoutMs?: number;
       signal?: AbortSignal;
@@ -737,6 +739,9 @@ export class GjcSdkCli {
         "--all-events",
         ...(options?.untilIdle === false ? [] : ["--until-idle"]),
         ...(options?.cursor ? ["--cursor", options.cursor] : []),
+        ...(options?.cursor && options.afterTranscriptId
+          ? ["--after-transcript-id", options.afterTranscriptId]
+          : []),
         "--timeout-ms",
         String(windowMs),
       ],
