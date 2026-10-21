@@ -15,6 +15,7 @@ import { transcriptDelivery } from "../../shared/transcript-item-equal.js";
 import { transcriptSyncWindow } from "../../shared/transcript-page.js";
 import type { RemoteOperationName } from "../../shared/remote-protocol.js";
 import type { ResolvedMessageInput } from "../gjc-sdk-controller.js";
+import { projectTranscriptItemForDelivery } from "../transcript-body-preview.js";
 import {
   messageInput,
   questionIdempotencyKey,
@@ -131,7 +132,9 @@ export async function runRemoteOperation(
     case "history-sessions":
       return host.listHistorySessions();
     case "transcript": {
-      const items = await host.getTranscript(sessionId!);
+      const items = (await host.getTranscript(sessionId!)).map(
+        projectTranscriptItemForDelivery,
+      );
       transcript?.remember?.(items);
       return items;
     }
@@ -148,7 +151,9 @@ export async function runRemoteOperation(
     case "transcript-changes": {
       const previous = transcript?.baseline;
       const items = await host.getTranscript(sessionId!);
-      const window = transcriptSyncWindow(items, previous);
+      const window = transcriptSyncWindow(items, previous).map(
+        projectTranscriptItemForDelivery,
+      );
       const change: TranscriptChange = transcriptDelivery(previous, window);
       transcript?.remember?.(window);
       return change;

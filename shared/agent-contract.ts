@@ -361,6 +361,8 @@ export interface PermissionOption {
   name: string;
 }
 
+export const TRANSCRIPT_BODY_ARTIFACT_PREFIX = "gajae-transcript-body-";
+
 export interface ArtifactContent {
   artifactId: string;
   text: string;

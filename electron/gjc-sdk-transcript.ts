@@ -92,6 +92,7 @@ import {
   artifactReferences,
   boundedJson,
   configOptionValues,
+  fullToolText,
   gitBranchFromHeader,
   redactSensitiveText,
   safeGitPath,
@@ -591,7 +592,7 @@ export function toolDiffText(...candidates: unknown[]): string | undefined {
  * -- an empty body used to win over populated content and end the search, so the
  * tool card came back empty for a result the file had recorded in full.
  *
- * Structured `details` is kept as bounded, redacted JSON because it is the only
+ * Structured `details` is kept as full, redacted JSON because it is the only
  * place a structured reply survives a rebuild. Nothing here interprets it: a
  * recorded result is shown as data, not classified into an activity kind.
  */
@@ -600,8 +601,8 @@ export function toolResultText(
   diff?: string,
 ): string | undefined {
   const body = typeof result.body === "string" ? result.body : "";
-  const text = boundedJson(body || sharedContentText(result.content));
-  const details = boundedJson(result.details);
+  const text = fullToolText(body || sharedContentText(result.content));
+  const details = fullToolText(result.details);
   const parts = [
     ...(text ? [text] : []),
     // A diff already rendered on its own is not repeated as structured payload.
@@ -1342,7 +1343,7 @@ export function sharedTranscriptItems(
         description: typeof value.name === "string" ? value.name : "Tool call",
         ...(value.arguments === undefined
           ? {}
-          : { command: boundedJson(value.arguments) }),
+          : { command: fullToolText(value.arguments) }),
         status: result
           ? result.isError === true
             ? "failed"

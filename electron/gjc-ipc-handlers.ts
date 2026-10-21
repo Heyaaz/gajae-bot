@@ -25,6 +25,7 @@ import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
 import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
 import type { IpcSecurity } from "./ipc-security.js";
+import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 
 function transcriptPageRequest(
   value: unknown,
@@ -255,8 +256,10 @@ export function registerGjcIpcHandlers(
     });
     return controller.hideSession(id);
   });
-  handle(GJC_IPC.getTranscript, (_event, sessionId: unknown) =>
-    controller.getTranscript(requiredId(sessionId, "Session ID")),
+  handle(GJC_IPC.getTranscript, async (_event, sessionId: unknown) =>
+    (await controller.getTranscript(requiredId(sessionId, "Session ID"))).map(
+      projectTranscriptItemForDelivery,
+    ),
   );
   handle(
     GJC_IPC.getTranscriptPage,

@@ -468,6 +468,33 @@ describe("remote server request boundaries", () => {
 });
 
 describe("remote server permissions", () => {
+  it("sends settled tool previews and detects changes beyond the preview without altering host originals", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const output = "same prefix ".repeat(1000) + "ORIGINAL_END";
+    const tool: TranscriptItem = {
+      id: "large-tool", sessionId: "s-1", kind: "tool", name: "bash",
+      description: "large result", status: "completed", createdAt: "now", output,
+    };
+    base.host.transcript.push(tool);
+    const headers = bearer(device.token);
+    const first = await fetch(base.url(REMOTE_API.transcriptChanges("s-1")), { headers });
+    const firstBody = await first.json() as { result: { kind: string; items: Array<{ output: string; outputArtifactId: string }> } };
+    expect(firstBody.result.kind).toBe("full");
+    expect(Buffer.byteLength(firstBody.result.items[0]!.output)).toBeLessThan(700);
+    expect(firstBody.result.items[0]!.outputArtifactId).toMatch(/^gajae-transcript-body-/);
+    expect(base.host.transcript[0]).toMatchObject({ output });
+    const unchanged = await fetch(base.url(REMOTE_API.transcriptChanges("s-1")), { headers });
+    expect(await unchanged.json()).toEqual({ result: { kind: "patch", items: [] } });
+    tool.output = output + "CHANGED_END";
+    const changed = await fetch(base.url(REMOTE_API.transcriptChanges("s-1")), { headers });
+    const changedBody = await changed.json() as typeof firstBody;
+    expect(changedBody.result.kind).toBe("patch");
+    expect(changedBody.result.items).toHaveLength(1);
+    expect(changedBody.result.items[0]!.output).toBe(firstBody.result.items[0]!.output);
+    expect(changedBody.result.items[0]!.outputArtifactId).not.toBe(firstBody.result.items[0]!.outputArtifactId);
+  });
+
   it("lets a view-only device read", async () => {
     const base = await harness();
     const device = await base.pair("view");

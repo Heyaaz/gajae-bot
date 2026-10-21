@@ -364,18 +364,23 @@ export function agentConfigOptions(
   );
 }
 
-export function boundedJson(value: unknown): string | undefined {
+export function fullToolText(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined;
   try {
-    const text = redactSensitiveText(
+    return redactSensitiveText(
       typeof value === "string" ? value : JSON.stringify(value, null, 2),
     );
-    return text.length > MAX_TOOL_TEXT
-      ? `${text.slice(0, MAX_TOOL_TEXT)}…`
-      : text;
   } catch {
-    return String(value);
+    return redactSensitiveText(String(value));
   }
+}
+
+export function boundedJson(value: unknown): string | undefined {
+  const text = fullToolText(value);
+  if (text === undefined) return undefined;
+  return text.length > MAX_TOOL_TEXT
+    ? `${text.slice(0, MAX_TOOL_TEXT)}…`
+    : text;
 }
 
 export function redactSensitiveText(value: string): string {

@@ -25,7 +25,11 @@ import {
   todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
 import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
-import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
+import {
+  DEFAULT_MODEL_PRESET,
+  TRANSCRIPT_BODY_ARTIFACT_PREFIX,
+} from "../shared/agent-contract.js";
+import type { ToolActivity, TranscriptItem } from "../shared/agent-contract.js";
 const execFile = promisify(execFileCallback);
 
 const session = (id = "s1", workspace = "/repo") => ({
@@ -1827,6 +1831,46 @@ describe("GjcSdkController CLI seam", () => {
     expect((cli.tail as any).mock.calls[1]?.[1]).not.toHaveProperty("cursor");
   });
 
+  it("does not replay a historical start after idle, but accepts a newer sequenced turn", async () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    internals.sessions.set("s1", { ...session(), status: "idle" });
+    internals.discoveredRunState = vi.fn(async () => "idle");
+    const oldHistory = [
+      { kind: "turn_start", generation: 7, seq: 40, payload: {} },
+      { kind: "agent_start", generation: 7, seq: 41, payload: {} },
+      { kind: "turn_end", generation: 7, seq: 42, payload: {} },
+    ];
+    try {
+      // An initial catch-up read and an identical replay must not resurrect a
+      // completed run or announce a completion for the historical end frame.
+      internals.projectTailItems("s1", oldHistory);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      internals.projectTailItems("s1", oldHistory);
+      await Promise.resolve();
+      expect(internals.sessions.get("s1").status).toBe("idle");
+      expect(emit.mock.calls.map(([event]) => event).filter(
+        (event) => event.type === "session.activity" && event.category === "completed",
+      )).toHaveLength(0);
+
+      internals.projectTailItems("s1", [
+        { kind: "turn_start", generation: 7, seq: 43, payload: {} },
+      ]);
+      expect(internals.sessions.get("s1").status).toBe("running");
+      internals.projectTailItems("s1", [
+        { kind: "turn_end", generation: 7, seq: 44, payload: {} },
+      ]);
+      await vi.waitFor(() => expect(internals.sessions.get("s1").status).toBe("idle"));
+      expect(emit.mock.calls.map(([event]) => event).filter(
+        (event) => event.type === "session.activity" && event.category === "completed",
+      )).toHaveLength(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("drops a checkpoint the reader refuses instead of retrying it forever", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
@@ -2147,6 +2191,166 @@ describe("SDK slash commands", () => {
       });
     } finally {
       controller.dispose();
+    }
+  });
+
+  it("projects completed tool bodies only at delivery and resolves their full source", async () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    const command = `${"command-prefix ".repeat(100)}COMMAND_SENTINEL`;
+    const output = `${"output-prefix ".repeat(200)}OUTPUT_SENTINEL`;
+    const toolRow = (body: string) => ({
+      id: "tool-1",
+      kind: "tool" as const,
+      sessionId: "s1",
+      name: "bash",
+      description: "bash",
+      command,
+      status: "completed" as const,
+      createdAt: "t1",
+      output: body,
+    });
+    let rows = [toolRow(output)];
+    internals.sessions.set("s1", session());
+    internals.readSharedTranscript = vi.fn(async () =>
+      rows.map((row) => ({ ...row })),
+    );
+    internals.refreshTranscriptAttachment = vi.fn();
+
+    try {
+      const full = await controller.getTranscript("s1");
+      expect(full[0]).toMatchObject({ command, output });
+
+      const page = await controller.getTranscriptPage("s1");
+      const pageTool = page.items[0] as ToolActivity;
+      expect(pageTool.command).not.toContain("COMMAND_SENTINEL");
+      expect(pageTool.output).not.toContain("OUTPUT_SENTINEL");
+      expect(pageTool.command).toContain("[Preview truncated;");
+      expect(pageTool.output).toContain("[Preview truncated;");
+      expect(pageTool.command!.length).toBeLessThan(400);
+      expect(pageTool.output!.length).toBeLessThan(700);
+      expect(pageTool.inputArtifactId).toMatch(
+        new RegExp(`^${TRANSCRIPT_BODY_ARTIFACT_PREFIX}input-`, "u"),
+      );
+      expect(pageTool.outputArtifactId).toMatch(
+        new RegExp(`^${TRANSCRIPT_BODY_ARTIFACT_PREFIX}output-`, "u"),
+      );
+
+      const initial = await controller.getTranscriptChanges("s1");
+      expect(initial.kind).toBe("full");
+      if (initial.kind !== "full") return;
+      const initialTool = initial.items[0] as ToolActivity;
+      expect(initialTool.command).toBe(pageTool.command);
+      expect(initialTool.output).toBe(pageTool.output);
+      expect(initialTool.outputArtifactId).toBe(pageTool.outputArtifactId);
+      await expect(
+        controller.readArtifact("s1", initialTool.outputArtifactId!),
+      ).resolves.toMatchObject({ text: output, complete: true });
+      await expect(
+        controller.readArtifact("s1", initialTool.inputArtifactId!),
+      ).resolves.toMatchObject({ text: command, complete: true });
+
+      const emittedRow = toolRow(output);
+      internals.emitEvent({ type: "transcript.appended", item: emittedRow });
+      internals.emitEvent({ type: "tool.updated", tool: emittedRow });
+      internals.emitEvent({
+        type: "transcript.synced",
+        sessionId: "s1",
+        items: [emittedRow],
+      });
+      expect(emit.mock.calls[0]?.[0]).toMatchObject({
+        type: "transcript.appended",
+        item: {
+          command: pageTool.command,
+          output: pageTool.output,
+          inputArtifactId: pageTool.inputArtifactId,
+          outputArtifactId: pageTool.outputArtifactId,
+        },
+      });
+      expect(emit.mock.calls[1]?.[0]).toMatchObject({
+        type: "tool.updated",
+        tool: {
+          command: pageTool.command,
+          output: pageTool.output,
+          outputArtifactId: pageTool.outputArtifactId,
+        },
+      });
+      expect(emit.mock.calls[2]?.[0]).toMatchObject({
+        type: "transcript.synced",
+        items: [
+          {
+            command: pageTool.command,
+            output: pageTool.output,
+            outputArtifactId: pageTool.outputArtifactId,
+          },
+        ],
+      });
+
+      const samePreviewNewOutput = `${"output-prefix ".repeat(200)}SECOND_SENTINEL`;
+      rows = [toolRow(samePreviewNewOutput)];
+      const changed = await controller.getTranscriptChanges("s1");
+      expect(changed.kind).toBe("patch");
+      if (changed.kind !== "patch") return;
+      const changedTool = changed.items[0] as ToolActivity;
+      expect(changedTool.output).toBe(initialTool.output);
+      expect(changedTool.outputArtifactId).not.toBe(initialTool.outputArtifactId);
+      await expect(
+        controller.readArtifact("s1", changedTool.outputArtifactId!),
+      ).resolves.toMatchObject({ text: samePreviewNewOutput, complete: true });
+      await expect(
+        controller.readArtifact("s1", initialTool.outputArtifactId!),
+      ).rejects.toThrow(/Stale transcript body artifact reference/u);
+      expect(internals.cli.rawQuery).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("keeps live tool source full and redacted while emitting only a preview", async () => {
+    const artifactDirectory = await mkdtemp(
+      path.join(tmpdir(), "tool-body-source-"),
+    );
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit, artifactDirectory });
+    const inputText = `${"c".repeat(13_000)}COMMAND_SENTINEL`;
+    const outputText = `${"o".repeat(13_000)}OUTPUT_SENTINEL`;
+    const secret = "sk-live-redaction-token-123456";
+    internals.sessions.set("s1", session());
+
+    try {
+      internals.upsertTool("s1", {
+        sessionUpdate: "tool_call",
+        toolCallId: "live-tool",
+        title: "bash",
+        status: "completed",
+        rawInput: { command: inputText, token: secret },
+        rawOutput: `${outputText} ${secret}`,
+      });
+
+      const row = internals.transcripts
+        .get("s1")
+        .find((item: TranscriptItem) => item.kind === "tool") as ToolActivity;
+      expect(row.command).toContain(inputText);
+      expect(row.command).toContain("[REDACTED]");
+      expect(row.command).not.toContain(secret);
+      expect(row.command!.length).toBeGreaterThan(12_000);
+      expect(row.output).toContain(outputText);
+      expect(row.output).toContain("[REDACTED]");
+      expect(row.output).not.toContain(secret);
+      expect(row.output!.length).toBeGreaterThan(12_000);
+
+      const emitted = emit.mock.calls[0]?.[0] as
+        | { type: string; item: ToolActivity }
+        | undefined;
+      expect(emitted?.type).toBe("transcript.appended");
+      expect(emitted?.item.command).not.toContain("COMMAND_SENTINEL");
+      expect(emitted?.item.output).not.toContain("OUTPUT_SENTINEL");
+      expect(emitted?.item.inputArtifactId).toBe(row.inputArtifactId);
+      expect(emitted?.item.outputArtifactId).toBe(row.outputArtifactId);
+    } finally {
+      await Promise.all(internals.artifactWrites.values());
+      controller.dispose();
+      await rm(artifactDirectory, { recursive: true, force: true });
     }
   });
 

@@ -50,7 +50,10 @@ import type {
   TranscriptPage,
   TranscriptPageRequest,
 } from "../shared/agent-contract.js";
-import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
+import {
+  DEFAULT_MODEL_PRESET,
+  TRANSCRIPT_BODY_ARTIFACT_PREFIX,
+} from "../shared/agent-contract.js";
 import { transcriptDelivery } from "../shared/transcript-item-equal.js";
 import {
   selectTranscriptPage,
@@ -219,6 +222,11 @@ import {
 } from "./gjc-sdk-foundation.js";
 
 import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
+import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  projectTranscriptItemForDelivery,
+  resolveTranscriptBodyArtifact,
+} from "./transcript-body-preview.js";
 
 export * from "./gjc-sdk-foundation.js";
 
@@ -577,6 +585,11 @@ export class GjcSdkController {
     string,
     { cursor: string; afterTranscriptId: string }
   >();
+  /** Last sequence observed from a tail, used to distinguish catch-up from new work. */
+  private readonly tailEventPositions = new Map<
+    string,
+    { generation: number; seq: number }
+  >();
   /** Sessions this window resumed, and therefore may close before deleting. */
   private readonly windowHostedSessions = new Set<string>();
   /** Public observer connections that replace tool output with the newest snapshot. */
@@ -590,7 +603,30 @@ export class GjcSdkController {
     this.modelPreset = options.modelPreset ?? DEFAULT_MODEL_PRESET;
     this.permissionHandling = options.permissionHandling ?? "prompt";
     this.sessionMetadata = options.sessionMetadata;
-    this.emitEvent = options.emit;
+    this.emitEvent = (event) => {
+      switch (event.type) {
+        case "transcript.appended":
+          options.emit({
+            ...event,
+            item: projectTranscriptItemForDelivery(event.item),
+          });
+          break;
+        case "tool.updated":
+          options.emit({
+            ...event,
+            tool: projectTranscriptItemForDelivery(event.tool) as ToolActivity,
+          });
+          break;
+        case "transcript.synced":
+          options.emit({
+            ...event,
+            items: event.items.map(projectTranscriptItemForDelivery),
+          });
+          break;
+        default:
+          options.emit(event);
+      }
+    };
     this.artifactDirectory = path.resolve(
       options.artifactDirectory ??
         path.join(this.workspace, ".gajae-artifacts"),
@@ -1966,14 +2002,20 @@ export class GjcSdkController {
     sessionId: string,
     request?: TranscriptPageRequest,
   ): Promise<TranscriptPage> {
-    return selectTranscriptPage(await this.getTranscript(sessionId), request);
+    const page = selectTranscriptPage(await this.getTranscript(sessionId), request);
+    return {
+      ...page,
+      items: page.items.map(projectTranscriptItemForDelivery),
+    };
   }
 
   /** Safety-net read using the session's bounded desktop snapshot as its baseline. */
   async getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
     const items = await this.getTranscript(sessionId);
     const previous = this.desktopTranscriptBaselines.get(sessionId);
-    const next = transcriptSyncWindow(items, previous);
+    const next = transcriptSyncWindow(items, previous).map(
+      projectTranscriptItemForDelivery,
+    );
     const change = transcriptDelivery(previous, next);
     if (this.sessions.has(sessionId))
       this.desktopTranscriptBaselines.set(sessionId, next);
@@ -4171,6 +4213,16 @@ export class GjcSdkController {
   ): Promise<ArtifactContent> {
     if (!/^[A-Za-z0-9._-]+$/.test(artifactId))
       throw new Error("Invalid artifact id");
+    if (artifactId.startsWith(TRANSCRIPT_BODY_ARTIFACT_PREFIX)) {
+      const content = resolveTranscriptBodyArtifact(
+        sessionId,
+        artifactId,
+        await this.getTranscript(sessionId),
+      );
+      if (!content)
+        throw new Error(`Invalid transcript body artifact reference: ${artifactId}`);
+      return content;
+    }
     const file = path.join(
       this.artifactDirectory,
       this.artifactNamespace(sessionId),
@@ -5116,6 +5168,7 @@ export class GjcSdkController {
     this.windowHostedSessions.clear();
     this.tailReads.clear();
     this.tailCheckpoints.clear();
+    this.tailEventPositions.clear();
     this.sessions.clear();
     this.sessionCwds.clear();
     this.attachedSessions.clear();
@@ -5776,6 +5829,7 @@ export class GjcSdkController {
     // checks identity before cleanup, so it cannot remove a replacement follower.
     this.tailReads.delete(sessionId);
     this.tailCheckpoints.delete(sessionId);
+    this.tailEventPositions.delete(sessionId);
   }
 
   private startToolObserver(sessionId: string): void {
@@ -6340,9 +6394,19 @@ export class GjcSdkController {
 
   private projectTailItems(
     sessionId: string,
-    items: Array<{ kind: string; payload: unknown }>,
+    items: Array<{
+      kind: string;
+      payload: unknown;
+      generation?: number;
+      seq?: number;
+    }>,
   ): void {
     let transcriptEvidence = false;
+    // Compare every frame in this response to the prior response's watermark.
+    // Advancing it frame-by-frame would mistake later frames in an initial
+    // catch-up batch for fresh work merely because an earlier frame seeded it.
+    const priorPosition = this.tailEventPositions.get(sessionId);
+    let newestPosition = priorPosition;
     for (const item of items) {
       const payload =
         item.payload &&
@@ -6368,7 +6432,29 @@ export class GjcSdkController {
           update: nested as unknown as SessionUpdate,
         });
       if (item.kind === "transcript") transcriptEvidence = true;
-      if (item.kind === "turn_start" || item.kind === "agent_start")
+      const positioned =
+        typeof item.generation === "number" && typeof item.seq === "number";
+      const isNewTailEvent =
+        positioned &&
+        priorPosition !== undefined &&
+        (item.generation! > priorPosition.generation ||
+          (item.generation === priorPosition.generation &&
+            item.seq! > priorPosition.seq));
+      if (
+        positioned &&
+        (!newestPosition || item.generation! > newestPosition.generation ||
+          (item.generation === newestPosition.generation &&
+            item.seq! > newestPosition.seq))
+      )
+        newestPosition = { generation: item.generation!, seq: item.seq! };
+      // The first tail read is a catch-up snapshot: its start events may describe
+      // already-finished work. Only a start beyond a sequence position we've
+      // observed before this frame (including a newer generation) can reopen an
+      // idle session. Missing sequence metadata is insufficient evidence.
+      if (
+        (item.kind === "turn_start" || item.kind === "agent_start") &&
+        isNewTailEvent
+      )
         this.updateSessionStatus(sessionId, "running");
       if (item.kind === "agent_failed")
         this.updateSessionStatus(sessionId, "failed", { announce: false });
@@ -6377,6 +6463,7 @@ export class GjcSdkController {
       if (item.kind === "session_closed" || item.kind === "session_terminated")
         this.stopTailFollower(sessionId);
     }
+    if (newestPosition) this.tailEventPositions.set(sessionId, newestPosition);
     if (transcriptEvidence) void this.refreshTranscriptFromFile(sessionId);
   }
 
@@ -7395,12 +7482,7 @@ export class GjcSdkController {
       ? toolStatus(update.status)
       : (existing?.status ?? "running");
     const rawOutput = update.rawOutput ?? update.content;
-    const outputText =
-      rawOutput === undefined
-        ? undefined
-        : typeof rawOutput === "string"
-          ? rawOutput
-          : JSON.stringify(rawOutput);
+    const outputText = fullToolText(rawOutput);
     const subagents =
       name === "task"
         ? input
@@ -7418,11 +7500,10 @@ export class GjcSdkController {
       sessionId,
       name,
       description: update.title ?? existing?.description ?? name,
-      command: boundedJson(update.rawInput) ?? existing?.command,
+      command: fullToolText(update.rawInput) ?? existing?.command,
       status: projectedStatus,
       createdAt: existing?.createdAt ?? nowLabel(),
-      output:
-        boundedJson(update.rawOutput ?? update.content) ?? existing?.output,
+      output: fullToolText(update.rawOutput ?? update.content) ?? existing?.output,
       artifactRefs: [
         ...new Set([
           ...(existing?.artifactRefs ?? []),
