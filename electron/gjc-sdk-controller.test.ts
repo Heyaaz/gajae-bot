@@ -3778,6 +3778,45 @@ describe("owned session recovery", () => {
   });
 });
 
+describe("tool row index", () => {
+  it("updates an early tool row without duplicating it", () => {
+    const { internals } = harness();
+    const tool = (id: string, status: string) => ({
+      id,
+      kind: "tool" as const,
+      sessionId: "s1",
+      name: "bash",
+      description: "bash",
+      status: status as "running" | "completed",
+      createdAt: "now",
+    });
+    const items = [
+      tool("early", "running"),
+      ...Array.from({ length: 50 }, (_value, index) => ({
+        id: `message-${index}`,
+        kind: "message" as const,
+        sessionId: "s1",
+        role: "assistant" as const,
+        content: `answer ${index}`,
+        createdAt: "now",
+      })),
+      tool("late", "running"),
+    ];
+    internals.transcripts.set("s1", items);
+    internals.reindexToolRows("s1", items);
+    internals.upsertTool("s1", {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "early",
+      title: "bash",
+      status: "completed",
+    });
+    const updated = internals.transcripts.get("s1");
+    expect(updated).toHaveLength(items.length);
+    expect(updated[0]).toMatchObject({ id: "early", status: "completed" });
+    expect(internals.toolRowIndices.get("s1")?.get("early")).toBe(0);
+  });
+});
+
 describe("context usage pacing", () => {
   it("runs at most one watcher repair per interval and still forces after settlement", async () => {
     const { cli, internals } = harness();

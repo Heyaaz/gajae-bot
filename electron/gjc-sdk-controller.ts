@@ -356,6 +356,8 @@ export class GjcSdkController {
     ReturnType<typeof setTimeout>
   >();
   private readonly transcripts = new Map<string, TranscriptItem[]>();
+  /** Tool id → row index, rebuilt whenever the transcript array is replaced. */
+  private readonly toolRowIndices = new Map<string, Map<string, number>>();
   /** Rows mutated live that a later durable rescan must compare even when old. */
   private readonly dirtyTranscriptRows = new Map<string, Set<string>>();
   private readonly desktopTranscriptBaselines = new Map<string, TranscriptItem[]>();
@@ -1878,6 +1880,7 @@ export class GjcSdkController {
         if (retainedId) {
           this.sessionCwds.set(retainedId, sessionWorkspace);
           this.transcripts.set(retainedId, []);
+          this.toolRowIndices.delete(retainedId);
           this.messageKeys.set(retainedId, new Map());
           response = { sessionId: retainedId };
         }
@@ -1945,6 +1948,7 @@ export class GjcSdkController {
     this.windowHostedSessions.add(session.id);
     this.sessionCwds.set(session.id, sessionWorkspace);
     this.transcripts.set(session.id, []);
+    this.toolRowIndices.delete(session.id);
     this.messageKeys.set(session.id, new Map());
     this.sessionMetadata?.setAlias(session.id, session.title);
     this.sessionMetadata?.setWorkspace(session.id, sessionWorkspace);
@@ -2146,6 +2150,7 @@ export class GjcSdkController {
     if (refreshTimer) clearTimeout(refreshTimer);
     this.sharedSessionRefreshTimers.delete(sessionId);
     this.transcripts.delete(sessionId);
+    this.toolRowIndices.delete(sessionId);
     this.dirtyTranscriptRows.delete(sessionId);
     this.desktopTranscriptBaselines.delete(sessionId);
     this.messageKeys.delete(sessionId);
@@ -2244,6 +2249,18 @@ export class GjcSdkController {
       this.desktopTranscriptBaselines.set(sessionId, next);
     else this.desktopTranscriptBaselines.delete(sessionId);
     return change;
+  }
+
+  private reindexToolRows(
+    sessionId: string,
+    items: readonly TranscriptItem[],
+  ): void {
+    const indices = new Map<string, number>();
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index]!;
+      if (item.kind === "tool") indices.set(item.id, index);
+    }
+    this.toolRowIndices.set(sessionId, indices);
   }
 
   private markTranscriptRowDirty(sessionId: string, rowId: string): void {
@@ -5350,6 +5367,7 @@ export class GjcSdkController {
     this.attachedSessions.delete(sessionId);
     this.transcriptAttachments.delete(sessionId);
     this.transcripts.delete(sessionId);
+    this.toolRowIndices.delete(sessionId);
     this.dirtyTranscriptRows.delete(sessionId);
     this.desktopTranscriptBaselines.delete(sessionId);
     this.messageKeys.delete(sessionId);
@@ -5468,6 +5486,7 @@ export class GjcSdkController {
     this.detachTimers.clear();
     this.watchedTranscripts = undefined;
     this.transcripts.clear();
+    this.toolRowIndices.clear();
     this.dirtyTranscriptRows.clear();
     this.desktopTranscriptBaselines.clear();
     this.messageKeys.clear();
@@ -7148,6 +7167,7 @@ export class GjcSdkController {
     if (this.terminalOnlySessions.has(sessionId) && !composed.some((item) => item.id === `terminal-only-${sessionId}`))
       composed.push(this.terminalOnlyNotice(sessionId));
     this.transcripts.set(sessionId, composed);
+    this.reindexToolRows(sessionId, composed);
     return composed;
   }
 
@@ -7892,10 +7912,28 @@ export class GjcSdkController {
   ): void {
     this.markTranscriptRowDirty(sessionId, update.toolCallId);
     const items = this.transcripts.get(sessionId) ?? [];
-    const existing = items.find(
-      (item): item is ToolActivity =>
-        item.kind === "tool" && item.id === update.toolCallId,
-    );
+    let indices = this.toolRowIndices.get(sessionId);
+    if (!indices) {
+      indices = new Map();
+      this.toolRowIndices.set(sessionId, indices);
+    }
+    let existingIndex = indices.get(update.toolCallId);
+    const indexed =
+      existingIndex === undefined ? undefined : items[existingIndex];
+    let existing: ToolActivity | undefined =
+      indexed?.kind === "tool" && indexed.id === update.toolCallId
+        ? indexed
+        : undefined;
+    if (!existing) {
+      existingIndex = items.findIndex(
+        (item): item is ToolActivity =>
+          item.kind === "tool" && item.id === update.toolCallId,
+      );
+      const found = existingIndex >= 0 ? items[existingIndex] : undefined;
+      existing = found?.kind === "tool" ? found : undefined;
+      if (existingIndex >= 0) indices.set(update.toolCallId, existingIndex);
+      else indices.delete(update.toolCallId);
+    }
     if (
       this.locallyAbortedSessions.has(sessionId) &&
       update.sessionUpdate === "tool_call" &&
@@ -8401,6 +8439,7 @@ export class GjcSdkController {
     if (retained) {
       this.sessionCwds.set(retained, workspace);
       this.transcripts.set(retained, []);
+      this.toolRowIndices.delete(retained);
       this.messageKeys.set(retained, new Map());
     }
     return retained;
@@ -8569,6 +8608,14 @@ export class GjcSdkController {
     const items = this.transcripts.get(item.sessionId) ?? [];
     items.push(item);
     this.transcripts.set(item.sessionId, items);
+    if (item.kind === "tool") {
+      let indices = this.toolRowIndices.get(item.sessionId);
+      if (!indices) {
+        indices = new Map();
+        this.toolRowIndices.set(item.sessionId, indices);
+      }
+      indices.set(item.id, items.length - 1);
+    }
     this.noteTranscriptEpoch(item.sessionId);
     this.emitEvent({
       type: "transcript.appended",
