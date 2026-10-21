@@ -54,6 +54,14 @@ if (release) {
 }
 
 await exec('npm', ['run', 'build'], { cwd: root, stdio: 'inherit' });
+// node-pty's prebuilds target Node. Electron's ABI is different, so the
+// packaged app needs a binary rebuilt against the Electron headers. The loader
+// prefers build/Release and falls back to prebuilds, which keeps `npm test`
+// on the Node binary.
+await exec(path.join(root, 'node_modules', '.bin', 'electron-rebuild'), ['--force', '--only', 'node-pty'], {
+  cwd: root,
+  stdio: 'inherit',
+});
 
 const [outputDirectory] = await packager({
   dir: root,
@@ -62,7 +70,13 @@ const [outputDirectory] = await packager({
   arch: 'arm64',
   out: release ? stagingDirectory : releaseDirectory,
   overwrite: true,
-  asar: true,
+  // Native addons cannot be dlopen'd from inside app.asar. node-pty also ships
+  // a spawn-helper executable beside the .node file and rewrites `app.asar` to
+  // `app.asar.unpacked` when it looks that helper up.
+  asar: {
+    unpack: '**/*.node',
+    unpackDir: 'node_modules/node-pty/**/*',
+  },
   prune: true,
   appBundleId: 'com.gajae.desktop',
   appVersion: packageJson.version,

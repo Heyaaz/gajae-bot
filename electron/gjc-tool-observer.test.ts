@@ -63,6 +63,24 @@ describe("SDK tool observer transport", () => {
     } finally { await test.cleanup(); }
   });
 
+  it("forwards workflow gates and drops unrelated observer kinds", async () => {
+    const gate = { type: "workflow_gate", gate_id: "g1", kind: "question" };
+    const test = await fixture(`
+      process.stdout.write('{"type":"hello"}\\n');
+      process.stdin.once('data', () => {
+        process.stdout.write(JSON.stringify({ type: "event", kind: "workflow_gate", payload: ${JSON.stringify(gate)} }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "event", kind: "turn_started", payload: { type: "turn_started" } }) + "\\n");
+        process.stdout.write(JSON.stringify({ type: "activity", state: "idle" }) + "\\n");
+        process.exit(0);
+      });
+    `);
+    const events: unknown[] = [];
+    try {
+      await test.client.observeTools("s1", (kind, payload) => events.push({ kind, payload }), new AbortController().signal);
+      expect(events).toEqual([{ kind: "workflow_gate", payload: gate }]);
+    } finally { await test.cleanup(); }
+  });
+
   it("terminates only its relay when detached", async () => {
     const test = await fixture(`process.stdout.write('{"type":"hello"}\\n'); setInterval(()=>{},1000);`);
     const abort = new AbortController();

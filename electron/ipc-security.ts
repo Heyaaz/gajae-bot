@@ -8,6 +8,8 @@ export interface RendererLaunchConfig {
   mockSmokeMode: boolean;
   gjcSmokeMode: boolean;
   smokeMode: boolean;
+  /** Loads the mock backend without the assertion harness, for the terminal view. */
+  terminalSmokeMode: boolean;
 }
 
 export function rendererLaunchConfig(
@@ -21,15 +23,18 @@ export function rendererLaunchConfig(
       mockSmokeMode: false,
       gjcSmokeMode: false,
       smokeMode: false,
+      terminalSmokeMode: false,
     };
   const developmentUrl = env.VITE_DEV_SERVER_URL?.trim() || undefined;
   const mockSmokeMode = argv.includes("--smoke");
   const gjcSmokeMode = argv.includes("--gjc-smoke");
+  const terminalSmokeMode = argv.includes("--terminal-smoke");
   return {
     developmentUrl,
     mockSmokeMode,
     gjcSmokeMode,
     smokeMode: mockSmokeMode || gjcSmokeMode,
+    terminalSmokeMode,
   };
 }
 

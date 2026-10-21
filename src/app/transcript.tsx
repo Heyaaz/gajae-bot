@@ -5,9 +5,15 @@ import type {
   TranscriptRequestSummary,
   TodoSnapshotTask,
 } from "../../shared/agent-contract";
-import type { ToolActivity, ToolViewMode, TranscriptItem } from "../backend/types";
+import type {
+  QuestionSubmission,
+  ToolActivity,
+  ToolViewMode,
+  TranscriptItem,
+} from "../backend/types";
 import type { MessageDeliveryAttempt } from "../message-delivery";
 import { deliveryEchoMatches, messageDeliveryRequestText } from "../message-delivery";
+import { QuestionCard } from "./question-card";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import {
   appendProgressBlock,
@@ -421,6 +427,11 @@ export interface TranscriptProps {
   revealItemId?: string;
   onRevealComplete?: (itemId: string) => void;
   onResolveTool: (toolId: string, optionId: string) => void;
+  onAnswerQuestion?: (
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ) => void;
   onReadArtifact?: (artifactId: string) => Promise<ArtifactContent>;
   /**
    * The auto-deny hint shown on every denied tool call, when the session's
@@ -461,6 +472,7 @@ export function Transcript({
   revealItemId,
   onRevealComplete,
   onResolveTool,
+  onAnswerQuestion,
   onReadArtifact,
   autoDenyHint,
   onRetryLastRequest,
@@ -1502,7 +1514,7 @@ export function Transcript({
                   />
                 ) : block.kind === "item" ? (
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
-                    <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
+                    <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onAnswerQuestion={onAnswerQuestion} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
                 ) : block.kind === "tools" ? (
                   <ToolRunBlockView items={block.items} toolViewMode={toolViewMode} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRevealInspector={onRevealInspector} />
@@ -2049,6 +2061,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   thoughtsExpanded = false,
   onToggleThoughtsExpanded,
   onResolveTool,
+  onAnswerQuestion,
   onReadArtifact,
   autoDenyHint,
   onRetryLastRequest,
@@ -2058,6 +2071,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
   thoughtsExpanded?: boolean;
   onToggleThoughtsExpanded?: () => void;
   onResolveTool: TranscriptProps["onResolveTool"];
+  onAnswerQuestion?: TranscriptProps["onAnswerQuestion"];
   onReadArtifact: TranscriptProps["onReadArtifact"];
   autoDenyHint?: TranscriptProps["autoDenyHint"];
   onRetryLastRequest?: TranscriptProps["onRetryLastRequest"];
@@ -2190,6 +2204,15 @@ export const TranscriptItemView = memo(function TranscriptItemView({
         item={item}
         expanded={thoughtsExpanded}
         onToggle={onToggleThoughtsExpanded}
+      />
+    );
+  }
+
+  if (item.kind === "question") {
+    return (
+      <QuestionCard
+        item={item}
+        onAnswer={onAnswerQuestion ?? (() => undefined)}
       />
     );
   }

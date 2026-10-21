@@ -518,6 +518,62 @@ export interface BranchSummaryActivity {
 }
 
 /**
+ * Lifecycle of one gjc ask question.
+ *
+ * `rejected` stays open: the host refused the body, and the same card takes
+ * another answer. Quarantined and accepted diagnostic rows are not answerable.
+ */
+export type QuestionStatus =
+  | "pending"
+  | "answered"
+  | "cancelled"
+  | "timeout"
+  | "rejected";
+
+export type QuestionGateTag = "pending" | "quarantined" | "accepted";
+
+export interface QuestionOption {
+  label: string;
+  /** gjc marks the recommended choice with `description: "recommended"`. */
+  recommended?: boolean;
+}
+
+/**
+ * What the user sends. The controller turns this into the gate answer schema.
+ *
+ * `clarify` is the third schema shape. A non-blank `custom` is the free-text
+ * path. Otherwise `selected` is the chosen labels.
+ */
+export interface QuestionSubmission {
+  selected: string[];
+  custom?: string;
+  clarify?: string;
+}
+
+export interface QuestionActivity {
+  /** gjc `gate_id`. The list row's `pending:<gate_id>` id is not this. */
+  id: string;
+  kind: "question";
+  sessionId: string;
+  /** One line, from `context.title` or `context.prompt`. */
+  question: string;
+  options: QuestionOption[];
+  multi: boolean;
+  status: QuestionStatus;
+  createdAt: string;
+  /** False for quarantined and accepted diagnostic rows. */
+  answerable: boolean;
+  tag: QuestionGateTag;
+  /** Sent back as `expectedSessionId` on `workflow.gate_answer`. */
+  expectedSessionId: string;
+  /** Chosen labels or free text, once this window has an answer to show. */
+  answerSummary?: string;
+  /** Schema rejection. The card stays open. */
+  error?: string;
+  runtimeTurnId?: string;
+}
+
+/**
  * One item of a todo snapshot, as the runtime's `todo.list` returned it.
  *
  * The status stays a plain string. The runtime's vocabulary is wider than this window
@@ -585,7 +641,8 @@ export type TranscriptItem =
   | PlanActivity
   | CompactionActivity
   | BranchSummaryActivity
-  | SystemNoticeActivity;
+  | SystemNoticeActivity
+  | QuestionActivity;
 
 /**
  * A safety-net read of a transcript the caller already has.
@@ -644,6 +701,7 @@ export type AgentEvent =
   | { type: "session.commands"; sessionId: string; commands: AgentCommand[] }
   | { type: "session.config"; sessionId: string; options: AgentConfigOption[] }
   | { type: "tool.updated"; tool: ToolActivity }
+  | { type: "question.updated"; question: QuestionActivity }
   | {
       type: "session.activity";
       sessionId: string;
@@ -680,6 +738,8 @@ export function eventSessionId(event: AgentEvent): string | undefined {
       return event.plan.sessionId;
     case "tool.updated":
       return event.tool.sessionId;
+    case "question.updated":
+      return event.question.sessionId;
     default:
       return "sessionId" in event && typeof event.sessionId === "string"
         ? event.sessionId
@@ -776,6 +836,20 @@ export interface GjcDesktopBridge {
   sendMessage(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   cancelRun(sessionId: string): Promise<void>;
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;
+  /**
+   * Answers one pending ask gate through `workflow.gate_answer`.
+   *
+   * `idempotencyKey` is the gjc key for this attempt. A repeat of the same
+   * attempt replays; a second client that loses the race sees the first answer.
+   */
+  answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ): Promise<void>;
+  /** Pending and rejected question cards. The gates list is the source. */
+  listPendingQuestions(sessionId: string): Promise<QuestionActivity[]>;
   markSessionRead(sessionId: string): Promise<void>;
   getDiff(sessionId: string): Promise<DiffSnapshot>;
   readArtifact(sessionId: string, artifactId: string): Promise<ArtifactContent>;

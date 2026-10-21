@@ -5,6 +5,7 @@ import type {
   FileAttachment,
   ImageAttachment,
   MessageInput,
+  QuestionSubmission,
   ToolDecision,
 } from "../shared/agent-contract.js";
 
@@ -195,6 +196,41 @@ export function messageInput(value: unknown): MessageInput {
   if (!candidate.text.trim() && images.length === 0 && files.length === 0)
     throw new Error("Message text or an attachment is required");
   return { text: candidate.text, images, files };
+}
+
+const QUESTION_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,199}$/u;
+
+function optionalQuestionText(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length > 8_000)
+    throw new Error(`${label} is invalid`);
+  return value;
+}
+
+/** The answer a question card submits. Schema checks happen against the gate. */
+export function questionSubmission(value: unknown): QuestionSubmission {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Question answer is required");
+  const record = value as { selected?: unknown; custom?: unknown; clarify?: unknown };
+  if (
+    !Array.isArray(record.selected) ||
+    record.selected.length > 32 ||
+    record.selected.some((item) => typeof item !== "string" || item.length > 500)
+  )
+    throw new Error("Question selection is invalid");
+  const custom = optionalQuestionText(record.custom, "Custom answer");
+  const clarify = optionalQuestionText(record.clarify, "Clarification");
+  return {
+    selected: record.selected.map((item) => item.trim()).filter(Boolean),
+    ...(custom !== undefined ? { custom } : {}),
+    ...(clarify !== undefined ? { clarify } : {}),
+  };
+}
+
+export function questionIdempotencyKey(value: unknown): string {
+  if (typeof value !== "string" || !QUESTION_IDEMPOTENCY_KEY.test(value))
+    throw new Error("Question idempotency key is invalid");
+  return value;
 }
 
 export function toolDecision(value: unknown): ToolDecision {

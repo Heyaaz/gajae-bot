@@ -48,6 +48,7 @@ describe("IpcSecurity", () => {
       mockSmokeMode: false,
       gjcSmokeMode: false,
       smokeMode: false,
+      terminalSmokeMode: false,
     });
     expect(
       rendererLaunchConfig(
@@ -60,6 +61,12 @@ describe("IpcSecurity", () => {
       mockSmokeMode: true,
       gjcSmokeMode: false,
       smokeMode: true,
+      terminalSmokeMode: false,
+    });
+    expect(rendererLaunchConfig(false, {}, ["electron", "--terminal-smoke"])).toMatchObject({
+      mockSmokeMode: false,
+      smokeMode: false,
+      terminalSmokeMode: true,
     });
   });
 

@@ -190,6 +190,8 @@ export type RemoteOperationName =
   | "flush-follow-ups"
   | "cancel-run"
   | "resolve-tool-call"
+  | "pending-questions"
+  | "answer-question"
   | "mark-read";
 
 export const REMOTE_OPERATION_ACCESS: Record<RemoteOperationName, RemotePermission> = {
@@ -212,6 +214,8 @@ export const REMOTE_OPERATION_ACCESS: Record<RemoteOperationName, RemotePermissi
   "flush-follow-ups": "control",
   "cancel-run": "control",
   "resolve-tool-call": "control",
+  "pending-questions": "view",
+  "answer-question": "control",
   "mark-read": "control",
 };
 
@@ -260,6 +264,10 @@ export const REMOTE_API = {
   read: (sessionId: string) => `${REMOTE_API.session(sessionId)}/read`,
   toolCallDecision: (toolId: string) =>
     `/api/tool-calls/${encodeURIComponent(toolId)}/decision`,
+  pendingQuestions: (sessionId: string) =>
+    `${REMOTE_API.session(sessionId)}/questions`,
+  answerQuestion: (sessionId: string, gateId: string) =>
+    `${REMOTE_API.session(sessionId)}/questions/${encodeURIComponent(gateId)}/answer`,
 } as const;
 
 const OPERATION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u;

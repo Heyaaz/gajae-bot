@@ -1222,6 +1222,73 @@
   align-items: center;
   gap: 4px;
 }
+.surface-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.surface-mode-toggle button {
+  height: 26px;
+  padding: 0 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+.surface-mode-toggle button.is-active {
+  color: var(--text-primary);
+  background: var(--bg-selected);
+}
+.conversation[hidden],
+.terminal-pane[hidden] {
+  display: none !important;
+}
+.terminal-pane {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-app);
+}
+.terminal-pane__host {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 8px 10px 4px;
+}
+.terminal-pane__host .xterm {
+  height: 100%;
+}
+.terminal-pane__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 12px 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.terminal-pane__cwd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.terminal-pane__bar button {
+  height: 26px;
+  padding: 0 10px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
 .workspace-body {
   display: flex;
   flex: 1;
@@ -3121,6 +3188,119 @@
   background: rgba(227, 179, 106, 0.1);
   border: 1px solid rgba(227, 179, 106, 0.32);
   border-radius: 8px;
+}
+.question-banner {
+  margin-bottom: 8px;
+}
+.question-card {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--overlay) 3%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.question-card--pending,
+.question-card--rejected {
+  border-color: rgba(240, 100, 22, 0.4);
+  background: rgba(240, 100, 22, 0.06);
+}
+.question-card-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.question-card-line,
+.question-card-result {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.question-card-line {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.question-card-result,
+.question-card-error {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.question-card-error {
+  color: var(--danger, #d4543c);
+}
+.question-card-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.question-option,
+.question-submit {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 4px 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.question-option:focus-visible,
+.question-submit:focus-visible,
+.question-other input:focus-visible {
+  outline: 2px solid rgba(240, 100, 22, 0.7);
+  outline-offset: 1px;
+}
+.question-option.is-selected,
+.question-option[aria-checked="true"] {
+  border-color: rgba(240, 100, 22, 0.7);
+  background: rgba(240, 100, 22, 0.14);
+}
+.question-option.is-recommended small {
+  color: var(--warning, #e3b36a);
+  font-size: 11px;
+}
+.question-option-index {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.question-option:disabled,
+.question-submit:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+.question-other {
+  display: grid;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.question-other input {
+  width: 100%;
+  min-height: 32px;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.question-submit {
+  justify-self: start;
+  font-weight: 600;
 }
 .gajae-progress {
   display: grid;

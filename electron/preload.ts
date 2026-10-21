@@ -8,6 +8,7 @@ import type {
   ForkSessionInput,
   GjcDesktopBridge,
   MessageInput,
+  QuestionSubmission,
   ArtifactContent,
   DiffSnapshot,
   EffectiveRuntimeState,
@@ -41,6 +42,13 @@ import { PRODUCTIVITY_IPC } from "../shared/productivity-ipc.js";
 import { AUTOMATION_IPC } from "../shared/automation-ipc.js";
 import { REPO_IPC } from "../shared/repo-ipc.js";
 import type { RepoDesktopBridge } from "../shared/repo-ipc.js";
+import {
+  TERMINAL_IPC,
+  type TerminalDesktopBridge,
+  type TerminalExitEvent,
+  type TerminalOutputEvent,
+  type TerminalStartRequest,
+} from "../shared/terminal-ipc.js";
 
 /**
  * The desktop event stream.
@@ -342,6 +350,21 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.cancelRun, sessionId),
   resolveToolCall: (toolId: string, decision: ToolDecision) =>
     ipcRenderer.invoke(GJC_IPC.resolveToolCall, toolId, decision),
+  answerQuestion: (
+    sessionId: string,
+    gateId: string,
+    submission: QuestionSubmission,
+    idempotencyKey: string,
+  ) =>
+    ipcRenderer.invoke(
+      GJC_IPC.answerQuestion,
+      sessionId,
+      gateId,
+      submission,
+      idempotencyKey,
+    ),
+  listPendingQuestions: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.listPendingQuestions, sessionId),
   markSessionRead: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.markSessionRead, sessionId),
   getDiff: (sessionId: string) =>
@@ -479,6 +502,45 @@ const automations: AutomationDesktopBridge = Object.freeze({
     ipcRenderer.invoke(AUTOMATION_IPC.listRuns, automationId),
   runNow: (id: string) => ipcRenderer.invoke(AUTOMATION_IPC.runNow, id),
 });
+const terminal: TerminalDesktopBridge = Object.freeze({
+  start: (request: TerminalStartRequest) =>
+    ipcRenderer.invoke(TERMINAL_IPC.start, request),
+  write: (data: string) => {
+    if (typeof data !== "string" || data.length === 0) return;
+    ipcRenderer.send(TERMINAL_IPC.input, data);
+  },
+  resize: (cols: number, rows: number) => {
+    ipcRenderer.send(TERMINAL_IPC.resize, cols, rows);
+  },
+  setPaused: (paused: boolean) => {
+    ipcRenderer.send(TERMINAL_IPC.pause, paused);
+  },
+  dispose: (token: number) => ipcRenderer.invoke(TERMINAL_IPC.dispose, token),
+  onOutput: (listener: (event: TerminalOutputEvent) => void) => {
+    const wrapped = (
+      _event: Electron.IpcRendererEvent,
+      payload: TerminalOutputEvent,
+    ) => {
+      if (!payload || typeof payload.id !== "string" || typeof payload.data !== "string")
+        return;
+      listener(payload);
+    };
+    ipcRenderer.on(TERMINAL_IPC.output, wrapped);
+    return () => ipcRenderer.removeListener(TERMINAL_IPC.output, wrapped);
+  },
+  onExit: (listener: (event: TerminalExitEvent) => void) => {
+    const wrapped = (
+      _event: Electron.IpcRendererEvent,
+      payload: TerminalExitEvent,
+    ) => {
+      if (!payload || typeof payload.id !== "string" || typeof payload.exitCode !== "number")
+        return;
+      listener(payload);
+    };
+    ipcRenderer.on(TERMINAL_IPC.exit, wrapped);
+    return () => ipcRenderer.removeListener(TERMINAL_IPC.exit, wrapped);
+  },
+});
 const remote: RemoteDesktopBridge = Object.freeze({
   getState: () => ipcRenderer.invoke(REMOTE_IPC.getState),
   setEnabled: (enabled: boolean) =>
@@ -510,6 +572,7 @@ contextBridge.exposeInMainWorld(
     automations,
     repo,
     remote,
+    terminal,
     onCycleEffort: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on(DESKTOP_IPC.cycleEffort, wrapped);

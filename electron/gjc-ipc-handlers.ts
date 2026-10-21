@@ -8,6 +8,8 @@ import {
   createSessionInput,
   gitPaths,
   messageInput,
+  questionIdempotencyKey,
+  questionSubmission,
   requiredId,
   requiredString,
   toolDecision,
@@ -311,6 +313,25 @@ export function registerGjcIpcHandlers(
   );
   handle(GJC_IPC.cancelRun, (_event, sessionId: unknown) =>
     controller.cancelRun(requiredId(sessionId, "Session ID")),
+  );
+  handle(
+    GJC_IPC.answerQuestion,
+    (
+      _event,
+      sessionId: unknown,
+      gateId: unknown,
+      submission: unknown,
+      idempotencyKey: unknown,
+    ) =>
+      controller.answerQuestion(
+        requiredId(sessionId, "Session ID"),
+        requiredId(gateId, "Question ID"),
+        questionSubmission(submission),
+        questionIdempotencyKey(idempotencyKey),
+      ),
+  );
+  handle(GJC_IPC.listPendingQuestions, (_event, sessionId: unknown) =>
+    controller.listPendingQuestions(requiredId(sessionId, "Session ID")),
   );
   handle(GJC_IPC.resolveToolCall, async (event, toolId: unknown, decision: unknown) => {
     const id = requiredId(toolId, "Tool call ID");

@@ -11,7 +11,7 @@ import {
 import { mkdir, writeFile } from "node:fs/promises";
 import { mkdirSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
@@ -47,9 +47,17 @@ import { RemoteAccessService } from "./remote/service.js";
 import { registerRemoteIpcHandlers } from "./remote-ipc-handlers.js";
 import { RepoService } from "./repo-service.js";
 import { registerRepoIpcHandlers } from "./repo-ipc-handlers.js";
+import { registerTerminalIpcHandlers } from "./terminal-ipc-handlers.js";
+import { attachTerminalSmoke } from "./terminal-smoke.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode } = rendererLaunchConfig(app.isPackaged);
+const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode, terminalSmokeMode } =
+  rendererLaunchConfig(app.isPackaged);
+if (terminalSmokeMode && !process.env.GAJAE_USER_DATA_DIR?.trim()) {
+  process.env.GAJAE_USER_DATA_DIR = path.join(tmpdir(), "gajae-terminal-smoke");
+}
+const mockBackend =
+  !app.isPackaged && !developmentUrl && (mockSmokeMode || terminalSmokeMode);
 
 app.setName("Gajae");
 const isolatedUserData = process.env.GAJAE_USER_DATA_DIR?.trim();
@@ -293,6 +301,7 @@ const repoService = new RepoService({
   ghExecutable: process.env.GAJA_GH_BIN || undefined,
 });
 const unregisterRepoIpc = registerRepoIpcHandlers(repoService, ipcSecurity);
+const terminalIpc = registerTerminalIpcHandlers(ipcSecurity);
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -316,8 +325,9 @@ function createWindow(): BrowserWindow {
   const expectedUrl = expectedTopLevelUrl(
     developmentUrl,
     app.getAppPath(),
-    !app.isPackaged && !developmentUrl && mockSmokeMode,
+    mockBackend,
   );
+  terminalIpc.bindWindow(window);
   ipcSecurity.register(window, expectedUrl);
   // Bind this window to the stream before its document can load, so an event published
   // while it is still loading is replayed to its preload instead of being lost.
@@ -1101,9 +1111,11 @@ function createWindow(): BrowserWindow {
     void window.loadURL(developmentUrl);
   } else {
     void window.loadFile(path.join(app.getAppPath(), "dist/index.html"), {
-      query: !app.isPackaged && mockSmokeMode ? { backend: "mock" } : undefined,
+      query: mockBackend ? { backend: "mock" } : undefined,
     });
   }
+
+  if (terminalSmokeMode) attachTerminalSmoke(window);
 
   return window;
 }
@@ -1138,6 +1150,8 @@ app.on("before-quit", () => {
   unregisterAutomationIpc();
   unregisterRemoteIpc();
   unregisterRepoIpc();
+  terminalIpc.disposeAll();
+  terminalIpc.unregister();
   unregisterEventStreamIpc();
   void desktopEvents.close();
   void remoteAccess?.dispose();

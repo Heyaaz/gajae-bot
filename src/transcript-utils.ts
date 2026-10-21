@@ -150,6 +150,7 @@ export interface TurnApproval {
 
 type TailSignal =
   | { kind: "approval" }
+  | { kind: "question" }
   | { kind: "tool" }
   | { kind: "thinking" }
   | { kind: "answering" }
@@ -161,6 +162,12 @@ function tailSignal(items: readonly TranscriptItem[]): TailSignal {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
     if (item.kind === "message" && item.role === "user") break;
+    if (
+      item.kind === "question" &&
+      item.answerable &&
+      (item.status === "pending" || item.status === "rejected")
+    )
+      return { kind: "question" };
     if (item.kind === "tool" && item.status === "approval-required")
       return { kind: "approval" };
     if (latest) continue;
@@ -221,6 +228,8 @@ export function currentTurnWork(
     return { kind: "thinking", label: t("세션 context 압축 중") };
 
   const signal = tailSignal(items);
+  if (signal.kind === "question")
+    return { kind: "waiting", label: t("답변을 기다리고 있어요") };
   if (signal.kind === "approval")
     return { kind: "approval", label: t("승인이 필요해요") };
   if (session?.status === "failed")
@@ -615,6 +624,10 @@ function searchableItemText(item: TranscriptItem): string {
       return [item.title, item.content].filter(Boolean).join("\n");
     case "plan":
       return item.entries.map((entry) => entry.content).join("\n");
+    case "question":
+      return [item.question, item.answerSummary, item.error]
+        .filter((value): value is string => Boolean(value))
+        .join("\n");
     default:
       return "";
   }
@@ -666,6 +679,18 @@ export function lastUserRequestContent(
  * virtualizer happens to have mounted: a card the user scrolled away from is still
  * waiting, and the banner is what keeps it reachable.
  */
+/** Ask cards that still need an answer, in transcript order. */
+export function pendingQuestions(
+  items: readonly TranscriptItem[],
+): Extract<TranscriptItem, { kind: "question" }>[] {
+  return items.filter(
+    (item): item is Extract<TranscriptItem, { kind: "question" }> =>
+      item.kind === "question" &&
+      item.answerable &&
+      (item.status === "pending" || item.status === "rejected"),
+  );
+}
+
 export function pendingToolApprovals(
   items: readonly TranscriptItem[],
 ): Extract<TranscriptItem, { kind: "tool" }>[] {

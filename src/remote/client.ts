@@ -682,6 +682,22 @@ export class RemoteClient {
     return this.control<void>(REMOTE_API.toolCallDecision(toolId), { decision: { optionId } });
   }
 
+  pendingQuestions(sessionId: string) {
+    return this.readResult<unknown[]>(REMOTE_API.pendingQuestions(sessionId));
+  }
+
+  answerQuestion(
+    sessionId: string,
+    gateId: string,
+    submission: unknown,
+    idempotencyKey: string,
+  ) {
+    return this.control<void>(REMOTE_API.answerQuestion(sessionId, gateId), {
+      submission,
+      idempotencyKey,
+    });
+  }
+
   /** Can this client reach the host at all: a device token, or an identity grant. */
   private hasAccess(): boolean {
     return this.token !== null || this.via === "tailscale";

@@ -140,6 +140,13 @@ function fakeHost(): FakeHost {
     async resolveToolCall(toolId: string) {
       calls.push(`tool:${toolId}`);
     },
+    async listPendingQuestions(sessionId: string) {
+      calls.push(`questions:${sessionId}`);
+      return [];
+    },
+    async answerQuestion(sessionId: string, gateId: string) {
+      calls.push(`answer:${sessionId}:${gateId}`);
+    },
     async markSessionRead(sessionId: string) {
       calls.push(`read:${sessionId}`);
     },
@@ -468,6 +475,12 @@ describe("remote server permissions", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ result: [] });
     expect(base.host.calls).toContain("transcript:s-1");
+    const questions = await fetch(base.url(REMOTE_API.pendingQuestions("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(questions.status).toBe(200);
+    expect(await questions.json()).toEqual({ result: [] });
+    expect(base.host.calls).toContain("questions:s-1");
     const revision = await fetch(base.url(REMOTE_API.transcriptRevision("s-1")), {
       headers: bearer(device.token),
     });
@@ -644,6 +657,11 @@ describe("remote server permissions", () => {
       [REMOTE_API.cancel("s-1"), { operationId: "op-55555555" }],
       [REMOTE_API.read("s-1"), { operationId: "op-66666666" }],
       [REMOTE_API.toolCallDecision("t-1"), { operationId: "op-77777777", decision: { optionId: "allow_once" } }],
+      [REMOTE_API.answerQuestion("s-1", "gate-1"), {
+        operationId: "op-88888888",
+        submission: { selected: ["Yes"] },
+        idempotencyKey: "gajae-gate-12345678",
+      }],
     ];
     for (const [endpoint, body] of attempts) {
       const response = await post(base, device.token, endpoint, body);

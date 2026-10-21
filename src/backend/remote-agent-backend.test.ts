@@ -172,6 +172,24 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
+  it("answers a question gate through the control route", async () => {
+    const { instance, calls } = backend(() => completed(null));
+    const submission = { selected: ["Yes"] };
+    await instance.answerQuestion("s-1", "gate-1", submission, "gajae-gate-12345678");
+    const call = calls.find((value) => value.method === "POST");
+    expect(call?.url).toBe(REMOTE_API.answerQuestion("s-1", "gate-1"));
+    expect(call?.body).toMatchObject({
+      submission,
+      idempotencyKey: "gajae-gate-12345678",
+    });
+    expect(call?.body).toEqual(
+      expect.objectContaining({
+        operationId: expect.stringMatching(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/u),
+      }),
+    );
+    instance.dispose();
+  });
+
   it("forwards runtime events to subscribers", async () => {
     const frame = `event: agent\ndata: ${JSON.stringify({
       seq: 1,

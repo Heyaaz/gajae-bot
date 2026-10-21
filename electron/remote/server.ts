@@ -980,6 +980,7 @@ const READ_OPERATIONS = new Set<RemoteOperationName>([
   "git-status",
   "diff",
   "artifact",
+  "pending-questions",
 ]);
 
 function isReadOperation(operation: RemoteOperationName): boolean {
@@ -1012,6 +1013,21 @@ const SESSION_ROUTES: Record<string, RemoteOperationName> = {
 
 function matchOperationRoute(pathname: string): MatchedRoute | undefined {
   if (pathname === REMOTE_API.historySessions) return { operation: "history-sessions", params: {} };
+  const questionList = /^\/api\/sessions\/([^/]+)\/questions$/u.exec(pathname);
+  if (questionList)
+    return {
+      operation: "pending-questions",
+      params: { sessionId: decodeURIComponent(questionList[1]) },
+    };
+  const questionAnswer = /^\/api\/sessions\/([^/]+)\/questions\/([^/]+)\/answer$/u.exec(pathname);
+  if (questionAnswer)
+    return {
+      operation: "answer-question",
+      params: {
+        sessionId: decodeURIComponent(questionAnswer[1]),
+        gateId: decodeURIComponent(questionAnswer[2]),
+      },
+    };
   const artifact = /^\/api\/sessions\/([^/]+)\/artifacts\/([^/]+)$/u.exec(pathname);
   if (artifact)
     return {
@@ -1051,6 +1067,7 @@ function validateRouteParams(params: RemoteOperationParams): void {
   if (params.sessionId !== undefined) requiredId(params.sessionId, "Session ID");
   if (params.toolId !== undefined) requiredId(params.toolId, "Tool call ID");
   if (params.artifactId !== undefined) requiredId(params.artifactId, "Artifact ID");
+  if (params.gateId !== undefined) requiredId(params.gateId, "Question ID");
   if (params.beforeId !== undefined) validateTranscriptAnchor(params.beforeId, "beforeId");
   if (params.aroundId !== undefined) validateTranscriptAnchor(params.aroundId, "aroundId");
   if (params.beforeId !== undefined && params.aroundId !== undefined)

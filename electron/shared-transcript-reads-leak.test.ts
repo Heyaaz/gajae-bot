@@ -124,6 +124,9 @@ describe("sharedTranscriptReads bounds", () => {
       const first = await internals.readTranscriptEnvelopes(file, before);
       expect(first).toEqual([{ type: "message", id: "before" }]);
 
+      // ctime is the rewrite signal, and this filesystem does not advance it
+      // inside one timestamp tick. The pause is what lets the next write move it.
+      await new Promise((resolve) => setTimeout(resolve, 20));
       await writeFile(file, afterLine);
       await utimes(file, stamp, stamp);
       const after = await stat(file);
@@ -137,6 +140,7 @@ describe("sharedTranscriptReads bounds", () => {
       // skip the body read on the strength of a matching size and mtime.
       internals.sharedSessionFiles.set("s-1", file);
       const firstRevision = await controller.getTranscriptRevision("s-1");
+      await new Promise((resolve) => setTimeout(resolve, 20));
       await writeFile(file, beforeLine);
       await utimes(file, stamp, stamp);
       const secondRevision = await controller.getTranscriptRevision("s-1");
