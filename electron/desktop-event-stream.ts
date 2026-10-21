@@ -37,11 +37,20 @@ import type { GjcEventStreamDescriptor } from "../shared/gjc-ipc.js";
 export const EVENT_BUFFER_LIMIT = 1000;
 const STREAM_HEARTBEAT_MS = 15_000;
 /**
- * How much unwritten frame data one stream may hold. A client that stops reading
- * is dropped instead of growing this queue for the life of the process; it can
- * reconnect with its cursor and replay from the buffer.
+ * How much unwritten frame data one stream may queue before delivery waits for the
+ * socket to drain. The check comes before a write, so a single frame larger than
+ * this -- a whole-history `transcript.synced` of a long session is well over a
+ * megabyte -- is still delivered. Checking after the write instead dropped the
+ * client on that frame, and its reconnect replayed the same frame and was dropped
+ * again, forever: the window stopped receiving any event at all.
  */
 const MAX_STREAM_BUFFER_BYTES = 1024 * 1024;
+/**
+ * How long a stream may stay blocked on a full queue before it is dropped. A client
+ * that stopped reading is released instead of holding a socket for the life of the
+ * process; it can reconnect with its cursor and replay from the buffer.
+ */
+const STALLED_STREAM_MS = 30_000;
 const AUTHORIZATION_SCHEME = "Bearer";
 
 /**
@@ -64,6 +73,10 @@ interface BufferedFrame {
 interface StreamClient {
   id: number;
   response: ServerResponse;
+  /** The newest sequence written to this client. */
+  cursor: number;
+  /** When delivery began waiting for this client's queue to drain. */
+  blockedSince?: number;
 }
 
 export class DesktopEventStream {
@@ -83,9 +96,14 @@ export class DesktopEventStream {
   private buffer: BufferedFrame[] = [];
   private nextClientId = 1;
   private heartbeat?: ReturnType<typeof setInterval>;
+  private readonly stalledStreamMs: number;
 
-  constructor(log: (message: string) => void = () => undefined) {
+  constructor(
+    log: (message: string) => void = () => undefined,
+    options: { stalledStreamMs?: number } = {},
+  ) {
     this.log = log;
+    this.stalledStreamMs = options.stalledStreamMs ?? STALLED_STREAM_MS;
   }
 
   /** Where the stream listens and the secret that reaches it, once it is up. */
@@ -203,13 +221,68 @@ export class DesktopEventStream {
     this.buffer.push(frame);
     if (this.buffer.length > EVENT_BUFFER_LIMIT)
       this.buffer.splice(0, this.buffer.length - EVENT_BUFFER_LIMIT);
-    for (const client of [...this.clients.values()]) {
-      if (this.writeFrame(client.response, frame)) continue;
-      this.clients.delete(client.id);
-      // Dropping the queue is what keeps a stalled window bounded; the frame stays
-      // in the replay buffer for its reconnect.
-      client.response.destroy();
+    for (const client of [...this.clients.values()]) this.pump(client);
+  }
+
+  /**
+   * Writes the frames a client has not received yet, in order, while its queue has room.
+   *
+   * A full queue pauses this client until the socket drains; every frame stays in the
+   * replay buffer meanwhile, so nothing is skipped and the cursor never moves past
+   * output the client did not get. A client that fell behind the buffer is told so
+   * with a resync frame. One that stays blocked is released (see STALLED_STREAM_MS).
+   */
+  private pump(client: StreamClient): void {
+    const { response } = client;
+    if (client.blockedSince !== undefined) {
+      if (Date.now() - client.blockedSince <= this.stalledStreamMs) return;
+      this.drop(client);
+      return;
     }
+    while (client.cursor < this.sequence) {
+      if (response.writableEnded || response.destroyed) {
+        this.drop(client);
+        return;
+      }
+      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) {
+        client.blockedSince = Date.now();
+        response.once("drain", () => {
+          client.blockedSince = undefined;
+          if (this.clients.get(client.id) === client) this.pump(client);
+        });
+        return;
+      }
+      const oldest = this.buffer[0]?.seq ?? this.sequence + 1;
+      try {
+        if (client.cursor + 1 < oldest) {
+          // The buffer no longer reaches back to this client's position. Saying so
+          // beats silence: the client learns that a gap it cannot replay exists, and
+          // its own cursor moves to the newest frame.
+          response.write(
+            `id: ${this.sequence}\nevent: resync\ndata: ${JSON.stringify({
+              seq: this.sequence,
+              resync: true,
+              reason: "the replay buffer no longer covers the requested position",
+            })}\n\n`,
+          );
+          client.cursor = this.sequence;
+          continue;
+        }
+        const frame = this.buffer[client.cursor + 1 - oldest]!;
+        response.write(`id: ${frame.seq}\ndata: ${JSON.stringify(frame.event)}\n\n`);
+        client.cursor = frame.seq;
+      } catch {
+        // A window that vanished mid-write is dropped from the fan-out; the event
+        // stays in the buffer for whoever reads it back.
+        this.drop(client);
+        return;
+      }
+    }
+  }
+
+  private drop(client: StreamClient): void {
+    this.clients.delete(client.id);
+    client.response.destroy();
   }
 
   /** Ends every stream and releases the port. */
@@ -313,7 +386,14 @@ export class DesktopEventStream {
     // that attaches with nothing to replay waiting on a response that has in fact been
     // accepted. Attaching has to be observable on its own.
     response.flushHeaders();
-    const client: StreamClient = { id: this.nextClientId++, response };
+    // Without a cursor the client starts at the current position; with one, the
+    // pump replays every buffered frame after it -- or a resync when the buffer no
+    // longer reaches back that far -- before live frames, at the socket's pace.
+    const client: StreamClient = {
+      id: this.nextClientId++,
+      response,
+      cursor: wantsReplay ? Math.min(since, this.sequence) : this.sequence,
+    };
     this.clients.set(client.id, client);
     const cleanup = (): void => {
       this.clients.delete(client.id);
@@ -321,57 +401,15 @@ export class DesktopEventStream {
     request.on("close", cleanup);
     response.on("close", cleanup);
     response.on("error", cleanup);
-    if (!wantsReplay) return;
-    const oldest = this.buffer[0]?.seq ?? this.sequence + 1;
-    if (since + 1 < oldest) {
-      // The buffer no longer reaches back to the requested position. Saying so beats
-      // silence: the client learns that a gap it cannot replay exists, and its own
-      // cursor still moves to the newest frame.
-      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) {
-        response.destroy();
-        return;
-      }
-      response.write(
-        `id: ${this.sequence}\nevent: resync\ndata: ${JSON.stringify({
-          seq: this.sequence,
-          resync: true,
-          reason: "the replay buffer no longer covers the requested position",
-        })}\n\n`,
-      );
-      return;
-    }
-    for (const frame of this.buffer) {
-      if (frame.seq <= since) continue;
-      // A replay that fills the socket queue would otherwise skip the frames it
-      // could not write and keep the stream open, so the client's cursor moves past
-      // output it never received. End the connection instead: its reconnect resumes
-      // from the last delivered frame, while the skipped frames are still buffered.
-      if (this.writeFrame(response, frame)) continue;
-      this.clients.delete(client.id);
-      response.destroy();
-      return;
-    }
-  }
-
-  private writeFrame(response: ServerResponse, frame: BufferedFrame): boolean {
-    try {
-      if (response.writableEnded || response.destroyed) return false;
-      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) return false;
-      response.write(`id: ${frame.seq}\ndata: ${JSON.stringify(frame.event)}\n\n`);
-      return response.writableLength <= MAX_STREAM_BUFFER_BYTES;
-    } catch {
-      // A window that vanished mid-write is dropped from the fan-out; the event stays
-      // in the buffer for whoever reads it back.
-      return false;
-    }
+    this.pump(client);
   }
 
   private beat(): void {
     for (const client of [...this.clients.values()]) {
       try {
-        if (client.response.writableLength > MAX_STREAM_BUFFER_BYTES) {
-          this.clients.delete(client.id);
-          client.response.destroy();
+        // A blocked stream is not pinged: the pump decides when it is stalled.
+        if (client.blockedSince !== undefined) {
+          this.pump(client);
           continue;
         }
         client.response.write(": ping\n\n");

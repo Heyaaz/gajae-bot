@@ -195,8 +195,10 @@ function portIsFree(port: number): Promise<boolean> {
 
 const streams: DesktopEventStream[] = [];
 
-function createStream(): DesktopEventStream {
-  const stream = new DesktopEventStream();
+function createStream(
+  options?: ConstructorParameters<typeof DesktopEventStream>[1],
+): DesktopEventStream {
+  const stream = new DesktopEventStream(undefined, options);
   streams.push(stream);
   return stream;
 }
@@ -363,7 +365,7 @@ function openSilentStream(
 }
 
   it("drops a client that stops reading instead of buffering without bound", async () => {
-    const stream = createStream();
+    const stream = createStream({ stalledStreamMs: 50 });
     await stream.start("window:1");
     const stalled = await openSilentStream(stream);
     const tracker = new StopTracker();
@@ -372,8 +374,10 @@ function openSilentStream(
       "the silent client to attach",
     );
     const large = event("x".repeat(64 * 1024));
-    for (let index = 0; index < 100 && stream.clientCount > 0; index += 1)
+    for (let index = 0; index < 100 && stream.clientCount > 0; index += 1) {
       stream.publish(large);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     await tracker.waitUntil(
       () => stream.clientCount === 0,
       "the stalled client to be dropped",
@@ -407,54 +411,40 @@ function openSilentStream(
     client.close();
   });
 
-  it("ends a replay that exceeds the output cap instead of skipping frames", async () => {
+  it("replays frames past the output cap in order, at the socket's pace", async () => {
     const stream = createStream();
     await stream.start("window:1");
-    // 600 KiB each: the second frame pushes the response queue past the 1 MiB cap.
-    for (const id of ["one", "two", "three", "four"])
-      stream.publish(event("x".repeat(600 * 1024)));
-
-    let bytes = 0;
-    const written: number[] = [];
-    const response = {
-      writableEnded: false,
-      destroyed: false,
-      get writableLength() {
-        return bytes;
-      },
-      writeHead: () => undefined,
-      flushHeaders: () => undefined,
-      on: () => undefined,
-      write(chunk: string) {
-        const id = /^id: (\d+)/u.exec(chunk)?.[1];
-        if (id) written.push(Number(id));
-        bytes += Buffer.byteLength(chunk);
-        return true;
-      },
-      destroy() {
-        response.destroyed = true;
-      },
-    };
-    const internals = stream as unknown as {
-      openStream: (
-        request: unknown,
-        response: unknown,
-        url: URL,
-      ) => void;
-    };
-    internals.openStream(
-      { on: () => undefined },
-      response,
-      new URL("http://127.0.0.1/events?since=0"),
-    );
-
-    // The frames after the first two were never written, so the stream must end
-    // rather than stay open past a gap.
-    expect(written).toEqual([1, 2]);
-    expect(response.destroyed).toBe(true);
-    expect(stream.clientCount).toBe(0);
+    // A whole-history sync of a long session is a single frame over the 1 MiB cap.
+    // The replay used to drop the client on it, and every reconnect asked for the
+    // same frame again, so the window never received another event.
+    stream.publish(event("x".repeat(1536 * 1024)));
+    for (const id of ["two", "three", "four"])
+      stream.publish(event("y".repeat(600 * 1024)));
+    const client = await openStream(stream, { since: 0 });
+    await client.waitForFrames(4);
+    expect(client.ids).toEqual([1, 2, 3, 4]);
+    expect(client.ended).toBe(false);
     stream.publish(event("five"));
-    expect(written).toEqual([1, 2]);
+    await client.waitForFrames(5);
+    expect(client.ids).toEqual([1, 2, 3, 4, 5]);
+    expect(JSON.parse(client.data[4]!)).toEqual(event("five"));
+    client.close();
+  });
+
+  it("keeps a live client attached through a frame larger than the cap", async () => {
+    const stream = createStream();
+    await stream.start("window:1");
+    const client = await openStream(stream);
+    const tracker = new StopTracker();
+    await tracker.waitUntil(() => stream.clientCount === 1, "the client to attach");
+    stream.publish(event("x".repeat(1536 * 1024)));
+    // Published in the same tick, while the large frame is still queued.
+    stream.publish(event("after"));
+    await client.waitForFrames(2);
+    expect(client.ids).toEqual([1, 2]);
+    expect(JSON.parse(client.data[1]!)).toEqual(event("after"));
+    expect(stream.clientCount).toBe(1);
+    client.close();
   });
 
   it("answers a resync frame when ?since= is older than the buffer", async () => {

@@ -133,7 +133,10 @@ interface Harness {
 }
 
 async function harness(
-  options: { identity?: () => Promise<{ login: string } | undefined> } = {},
+  options: {
+    identity?: () => Promise<{ login: string } | undefined>;
+    stalledStreamMs?: number;
+  } = {},
 ): Promise<Harness> {
   const directory = mkdtempSync(path.join(tmpdir(), "gajae-remote-server-"));
   directories.push(directory);
@@ -156,6 +159,7 @@ async function harness(
     allowedHosts: () => ["127.0.0.1", "localhost", "mac.tailnet-abcd.ts.net"],
     allowedOrigins: () => [`http://127.0.0.1:${port}`, "https://mac.tailnet-abcd.ts.net"],
     ...(options.identity ? { identity: options.identity } : {}),
+    ...(options.stalledStreamMs !== undefined ? { stalledStreamMs: options.stalledStreamMs } : {}),
     log: (message) => logs.push(message),
   });
   await server.start();
@@ -736,7 +740,7 @@ describe("remote server event stream", () => {
   });
 
   it("drops a device that stops reading instead of buffering without bound", async () => {
-    const base = await harness();
+    const base = await harness({ stalledStreamMs: 50 });
     const device = await base.pair("view");
     const response = await new Promise<import("node:http").IncomingMessage>(
       (resolve, reject) => {
@@ -759,10 +763,36 @@ describe("remote server event stream", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
     expect(base.server.streamCount).toBe(1);
     const large = updated("x".repeat(64 * 1024));
-    for (let index = 0; index < 100 && base.server.streamCount > 0; index += 1)
+    for (let index = 0; index < 100 && base.server.streamCount > 0; index += 1) {
       base.server.publish(large);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
     expect(base.server.streamCount).toBe(0);
     response.destroy();
+  });
+
+  it("delivers an event larger than the queue cap and keeps the device attached", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    // A whole-history sync of a long session is one event over the 1 MiB cap. The
+    // device used to be dropped on it, and each reconnect replayed it into the same drop.
+    base.server.publish(updated("x".repeat(1536 * 1024)));
+    base.server.publish(updated("after-replay"));
+    const stream = await SseReader.open(base.url(REMOTE_API.events), device.token, base.origin, 0);
+    const replayedLarge = await stream.next(6000);
+    expect(replayedLarge.data).toMatchObject({ seq: 1 });
+    const replayedNext = await stream.next(6000);
+    expect(replayedNext.data).toMatchObject({ seq: 2 });
+    // The hello follows the replay, so its position is one the device really reached.
+    const hello = await stream.next(6000);
+    expect(hello.event).toBe("hello");
+    expect(hello.data).toMatchObject({ seq: 2 });
+    base.server.publish(updated("x".repeat(1536 * 1024)));
+    base.server.publish(updated("live"));
+    expect((await stream.next(6000)).data).toMatchObject({ seq: 3 });
+    expect((await stream.next(6000)).data).toMatchObject({ seq: 4 });
+    expect(base.server.streamCount).toBe(1);
+    stream.close();
   });
 
   it("asks for a resync when the cursor is older than the buffer", async () => {

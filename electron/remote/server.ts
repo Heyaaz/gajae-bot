@@ -72,6 +72,8 @@ export interface RemoteServerOptions {
   identity?: () => Promise<{ login: string } | undefined>;
   now?: () => number;
   log?: (message: string) => void;
+  /** How long a device stream may stay blocked on a full queue before it is dropped. */
+  stalledStreamMs?: number;
 }
 
 export interface RemoteServerAddress {
@@ -96,6 +98,12 @@ interface StreamClient {
   id: number;
   deviceId: string;
   response: ServerResponse;
+  /** The newest event sequence written to this device. */
+  cursor: number;
+  /** When delivery began waiting for this device's queue to drain. */
+  blockedSince?: number;
+  /** The hello still owed once the replay has been written. */
+  hello?: RemoteAccess;
 }
 
 interface OperationLogEntry {
@@ -153,6 +161,7 @@ export class RemoteOperationLog {
 export class RemoteServer {
   private readonly options: RemoteServerOptions;
   private readonly now: () => number;
+  private readonly stalledStreamMs: number;
   private readonly log: (message: string) => void;
   private readonly operationLog = new RemoteOperationLog();
   /**
@@ -190,6 +199,7 @@ export class RemoteServer {
     this.options = options;
     this.port = options.port;
     this.now = options.now ?? (() => Date.now());
+    this.stalledStreamMs = options.stalledStreamMs ?? STALLED_STREAM_MS;
     this.log = options.log ?? (() => undefined);
     // Streams belong to this server, so revocation closes them here: a device
     // whose access was removed must lose the live connection, not just the
@@ -281,20 +291,68 @@ export class RemoteServer {
     const frame: RemoteEventFrame = { seq: this.sequence, event };
     this.buffer.push(frame);
     if (this.buffer.length > EVENT_BUFFER_LIMIT) this.buffer = this.buffer.slice(-EVENT_BUFFER_LIMIT);
-    for (const client of [...this.streams.values()]) {
-      if (!this.writeFrame(client.response, "agent", frame)) {
-        this.streams.delete(client.id);
-        client.response.destroy();
+    for (const client of [...this.streams.values()]) this.pump(client);
+  }
+
+  /**
+   * Writes the events a device has not received yet, in order, while its queue has room.
+   *
+   * The queue is checked before a write, so a single event larger than the cap -- a
+   * whole-history sync of a long session -- is still delivered. Checking after the write
+   * dropped the device on that event, and its reconnect replayed the same event and was
+   * dropped again, so the device stopped receiving anything. A full queue now pauses the
+   * device until the socket drains; a device that stays blocked is released.
+   */
+  private pump(client: StreamClient): void {
+    const { response } = client;
+    if (client.blockedSince !== undefined) {
+      if (Date.now() - client.blockedSince <= this.stalledStreamMs) return;
+      this.dropStream(client);
+      return;
+    }
+    while (client.cursor < this.sequence || client.hello) {
+      if (response.writableEnded || response.destroyed) {
+        this.dropStream(client);
+        return;
+      }
+      if (response.writableLength > MAX_STREAM_BUFFER_BYTES) {
+        client.blockedSince = Date.now();
+        response.once("drain", () => {
+          client.blockedSince = undefined;
+          if (this.streams.get(client.id) === client) this.pump(client);
+        });
+        return;
+      }
+      try {
+        if (client.cursor >= this.sequence) {
+          // The replay is written, so the hello's position is the one this device
+          // has really reached.
+          const access = client.hello!;
+          client.hello = undefined;
+          this.sendHello(response, access);
+          continue;
+        }
+        const frame = this.buffer[client.cursor + 1 - (this.buffer[0]?.seq ?? 0)]!;
+        response.write(`id: ${frame.seq}\nevent: agent\ndata: ${JSON.stringify(frame)}\n\n`);
+        client.cursor = frame.seq;
+      } catch {
+        this.dropStream(client);
+        return;
       }
     }
+  }
+
+  private dropStream(client: StreamClient): void {
+    this.streams.delete(client.id);
+    client.response.destroy();
   }
 
   private beat(): void {
     for (const client of [...this.streams.values()]) {
       try {
-        if (client.response.writableLength > MAX_STREAM_BUFFER_BYTES) {
-          this.streams.delete(client.id);
-          client.response.destroy();
+        // A blocked stream is not pinged: the pump decides when it is stalled.
+        if (client.blockedSince !== undefined) {
+          this.pump(client);
           continue;
         }
         client.response.write(": ping\n\n");
@@ -566,6 +624,8 @@ export class RemoteServer {
       id: this.nextStreamId++,
       deviceId: access.id,
       response,
+      cursor: this.sequence,
+      hello: access,
     };
     this.streams.set(client.id, client);
     const cleanup = (): void => {
@@ -586,22 +646,15 @@ export class RemoteServer {
           reason: "the event buffer no longer covers the requested position",
         };
         if (!this.writeFrame(response, "resync", notice)) {
-          this.streams.delete(client.id);
-          response.destroy();
+          this.dropStream(client);
           return;
         }
       } else {
-        for (const frame of this.buffer) {
-          if (frame.seq <= since) continue;
-          if (!this.writeFrame(response, "agent", frame)) {
-            this.streams.delete(client.id);
-            response.destroy();
-            return;
-          }
-        }
+        // The pump replays every buffered event after the cursor, then the hello.
+        client.cursor = since;
       }
     }
-    this.sendHello(response, access);
+    this.pump(client);
   }
 
   private sendHello(response: ServerResponse, access: RemoteAccess): void {
@@ -897,8 +950,10 @@ export class RemoteServer {
   }
 }
 
-/** One stalled device may not grow its write queue without bound. */
+/** How much unwritten data one device stream queues before delivery waits for a drain. */
 const MAX_STREAM_BUFFER_BYTES = 1024 * 1024;
+/** How long a device may stay blocked on a full queue before its stream is dropped. */
+const STALLED_STREAM_MS = 30_000;
 /** A device only safety-nets the conversation it is showing; older baselines are dead weight. */
 const MAX_TRANSCRIPT_BASELINES = 16;
 
