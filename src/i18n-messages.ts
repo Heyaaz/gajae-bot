@@ -1,5 +1,8 @@
 /** English copy for every translated source string. */
 export const MESSAGES: Readonly<Record<string, string>> = {
+  "상태 확인 필요": "Needs verification",
+  "상태 확인 불가": "Status unknown",
+  "백그라운드 작업 상태를 확인할 수 없습니다": "Background work status could not be verified",
   "요청 위치를 대화에서 찾지 못했습니다.": "Could not locate this request in the conversation.",
   "최신 대화를 불러오지 못했습니다.": "Could not load the latest conversation.",
   "최근 대화 불러오는 중…": "Loading recent messages…",

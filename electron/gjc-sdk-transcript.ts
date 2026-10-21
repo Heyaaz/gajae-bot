@@ -803,15 +803,33 @@ export function persistedTurnState(rows: unknown[]): PersistedTurnState {
     }
     if (
       message.role === "toolResult" &&
-      message.toolName === "subagent" &&
-      Array.isArray(details?.terminalIds)
+      message.toolName === "subagent"
     ) {
-      // An explicit `subagent await` consumes completion inside the tool result, so
-      // GJC does not need to append a later custom_message/async-result. terminalIds
-      // is the tool's authoritative set: timed-out and interrupted waits omit it for
-      // jobs that are still alive.
-      for (const jobId of details.terminalIds)
-        if (typeof jobId === "string") pendingAsyncJobs.delete(jobId);
+      // Explicit await/inspect results carry structured terminal subagent snapshots.
+      // Only their exact identifiers can release a launch marker; live, paused, or
+      // unrecognized statuses are not evidence that the work has ended.
+      if (Array.isArray(details?.subagents)) {
+        for (const candidate of details.subagents) {
+          if (!candidate || typeof candidate !== "object" || Array.isArray(candidate))
+            continue;
+          const subagent = candidate as Record<string, unknown>;
+          if (
+            subagent.status === "completed" ||
+            subagent.status === "failed" ||
+            subagent.status === "cancelled"
+          ) {
+            if (typeof subagent.id === "string")
+              pendingAsyncJobs.delete(subagent.id);
+            if (typeof subagent.jobId === "string")
+              pendingAsyncJobs.delete(subagent.jobId);
+          }
+        }
+      }
+      // Legacy explicit await completion IDs remain authoritative as well.
+      if (Array.isArray(details?.terminalIds)) {
+        for (const jobId of details.terminalIds)
+          if (typeof jobId === "string") pendingAsyncJobs.delete(jobId);
+      }
     }
     if (
       message.role === "toolResult" &&

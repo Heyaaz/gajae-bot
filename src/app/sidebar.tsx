@@ -328,7 +328,7 @@ function SidebarView({
   );
   const model = useMemo(
     () =>
-      sessionListModel(sessions, {
+      sessionListModel(sessions.filter((session) => session.status !== "unknown"), {
         expanded: expandedGroups,
         collapsedFamilies,
         selectedId,
@@ -531,6 +531,25 @@ function SidebarView({
             )}
           </section>
         ))}
+
+        {sessions.some((session) => session.status === "unknown") && (
+          <section className="session-section">
+            <header>
+              <span>{t("상태 확인 필요")}</span>
+            </header>
+            {sessions
+              .filter((session) => session.status === "unknown")
+              .map((session) =>
+                renderNode({
+                  session,
+                  depth: 0,
+                  familyHead: false,
+                  hidden: 0,
+                  hiddenSummary: null,
+                }),
+              )}
+          </section>
+        )}
 
         {sessions.length === 0 && (
           <div className="sidebar-empty">

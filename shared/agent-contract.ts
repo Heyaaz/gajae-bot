@@ -1,7 +1,7 @@
 export type RuntimeKind = "gjc" | "hermes";
 
 export type SessionStatus =
-  "starting" | "idle" | "running" | "waiting" | "failed";
+  "starting" | "idle" | "running" | "waiting" | "failed" | "unknown";
 
 export type ConnectionState =
   "connecting" | "connected" | "disconnected" | "error";

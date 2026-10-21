@@ -101,6 +101,7 @@ export function statusLabel(status: AgentSession["status"], phase?: string): str
   if (status === "running") return "Working";
   if (status === "waiting") return "Needs input";
   if (status === "failed") return "Failed";
+  if (status === "unknown") return t("상태 확인 불가");
   return "Idle";
 }
 

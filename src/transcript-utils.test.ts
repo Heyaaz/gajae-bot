@@ -206,6 +206,12 @@ describe("currentTurnWork", () => {
     expect(gajaeEmoticonFor("waiting")).toBe("sleepy");
   });
 
+  it("does not present unverified background work as running or completed", () => {
+    expect(currentTurnWork([user, { ...call, status: "running" }], { status: "unknown" })).toEqual({
+      kind: "waiting", label: "백그라운드 작업 상태를 확인할 수 없습니다",
+    });
+  });
+
   it("maps a failed session to crying even if a stale stream flag remains", () => {
     const work = currentTurnWork(
       [

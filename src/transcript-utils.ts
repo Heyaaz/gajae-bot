@@ -234,6 +234,8 @@ export function currentTurnWork(
     return { kind: "approval", label: t("승인이 필요해요") };
   if (session?.status === "failed")
     return { kind: "error", label: t("오류가 났어요") };
+  if (session?.status === "unknown")
+    return { kind: "waiting", label: t("백그라운드 작업 상태를 확인할 수 없습니다") };
   if (signal.kind === "answering") return null;
   if (signal.kind === "tool") return { kind: "tool" };
   if (signal.kind === "thinking") return { kind: "thinking" };

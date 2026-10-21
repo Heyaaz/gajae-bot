@@ -3777,6 +3777,18 @@ describe("detached task launch markers", () => {
       details: { jobs: [{ id: jobId, type: "task", status: "completed" }] },
     },
   });
+  const subagentInspector = (...subagents: unknown[]) => ({
+    type: "message",
+    id: "inspect-subagents",
+    timestamp: "2026-01-01T00:00:01.500Z",
+    message: {
+      role: "toolResult",
+      toolCallId: "call-inspect-subagents",
+      toolName: "subagent",
+      content: [{ type: "text", text: "subagent snapshot" }],
+      details: { subagents },
+    },
+  });
   const terminalStop = () => ({
     type: "message",
     id: "assistant-final",
@@ -3959,7 +3971,7 @@ describe("detached task launch markers", () => {
     }
   });
 
-  it("keeps today's answer when the runtime cannot be asked", async () => {
+  it("does not present an unanswered job lookup as running or completed", async () => {
     const { cli, internals, cleanup } = await markerHarness([
       taskLaunch("job-1"),
       terminalStop(),
@@ -3968,9 +3980,9 @@ describe("detached task launch markers", () => {
       new SdkCliError("endpoint_stale", "The SDK endpoint is stale or unavailable."),
     );
     try {
-      // An unanswered query is not evidence the work ended.
-      expect(await internals.discoveredRunState("s1")).toBe("running");
-      expect(await internals.discoveredRunState("s1")).toBe("running");
+      // An unanswered query is not evidence the work ended or is still running.
+      expect(await internals.discoveredRunState("s1")).toBe("unknown");
+      expect(await internals.discoveredRunState("s1")).toBe("unknown");
       // A failed attempt is throttled too, so a broken runtime is not re-queried on
       // every read.
       expect(cli.queryItems).toHaveBeenCalledTimes(1);
@@ -4055,7 +4067,7 @@ describe("detached task launch markers", () => {
       (cli.queryItems as any).mockRejectedValue(new Error("runtime unavailable"));
       const stillListed = await internals.listSessions();
       expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
-      expect(stillListed.find((row: any) => row.id === "s1")?.status).toBe("running");
+      expect(stillListed.find((row: any) => row.id === "s1")?.status).toBe("unknown");
     } finally {
       await cleanup();
     }
@@ -4151,7 +4163,7 @@ describe("detached task launch markers", () => {
     }
   });
 
-  it("holds an out-of-window latch while the runtime cannot be asked about it", async () => {
+  it("classifies terminal foreground plus an unreachable job list as unknown", async () => {
     const rows = [taskLaunch("job-1"), ...paddingRows(2000), terminalStop()];
     const { cli, internals, cleanup } = await markerHarness(rows);
     (cli.queryItems as any).mockImplementation(
@@ -4166,12 +4178,60 @@ describe("detached task launch markers", () => {
     );
     try {
       await internals.refreshTranscriptFromFile("s1");
-      // An unanswered query is not evidence the work ended, so the latch stands -- and
-      // a runtime that cannot answer is not re-asked on every read either.
+      // An unanswered query is not evidence the job ended or is still running. Keep
+      // its ID, but do not present it as active work.
       expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
-      expect(await internals.discoveredRunState("s1")).toBe("running");
-      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(await internals.discoveredRunState("s1")).toBe("unknown");
+      expect(await internals.discoveredRunState("s1")).toBe("unknown");
       expect(cli.queryItems).toHaveBeenCalledTimes(1);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("returns to running or idle when a later jobs query answers", async () => {
+    const { cli, internals, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    (cli.queryItems as any).mockRejectedValueOnce(
+      new SdkCliError("endpoint_stale", "unavailable"),
+    );
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("unknown");
+      const failed = internals.asyncJobReconciliations.get("s1");
+      internals.asyncJobReconciliations.set("s1", {
+        ...failed,
+        checkedAt: failed.checkedAt - 60_000,
+      });
+      (cli.queryItems as any).mockResolvedValue(jobList(runningJob("job-1")));
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+
+      const running = internals.asyncJobReconciliations.get("s1");
+      internals.asyncJobReconciliations.set("s1", {
+        ...running,
+        checkedAt: running.checkedAt - 60_000,
+      });
+      (cli.queryItems as any).mockResolvedValue(jobList());
+      expect(await internals.discoveredRunState("s1")).toBe("idle");
+      expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("keeps independently active foreground evidence running when jobs lookup fails", async () => {
+    const { cli, internals, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+      userRequest(),
+    ]);
+    (cli.queryItems as any).mockRejectedValue(
+      new SdkCliError("endpoint_stale", "unavailable"),
+    );
+    try {
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      expect(cli.queryItems).not.toHaveBeenCalled();
     } finally {
       await cleanup();
     }
@@ -4240,6 +4300,58 @@ describe("detached task launch markers", () => {
         taskLaunch("job-1"),
         terminalStop(),
         userRequest(),
+      ]),
+    ).toBe(true);
+  });
+
+  it("releases only structured terminal subagent IDs from inspect results", () => {
+    for (const status of ["completed", "failed", "cancelled"]) {
+      expect(
+        persistedTranscriptRunning([
+          taskLaunch("job-1"),
+          subagentInspector({ id: "agent-1", jobId: "job-1", status }),
+          terminalStop(),
+        ]),
+      ).toBe(false);
+    }
+
+    for (const status of ["running", "paused", "unknown", "not_found"]) {
+      expect(
+        persistedTranscriptRunning([
+          taskLaunch("job-1"),
+          subagentInspector({ id: "agent-1", jobId: "job-1", status }),
+          terminalStop(),
+        ]),
+      ).toBe(true);
+    }
+
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        taskLaunch("job-2"),
+        subagentInspector(
+          { id: "agent-1", jobId: "job-1", status: "completed" },
+          { id: "agent-2", jobId: "job-2", status: "running" },
+        ),
+        terminalStop(),
+      ]),
+    ).toBe(true);
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        subagentInspector({ id: "job-1", status: "completed" }),
+        terminalStop(),
+      ]),
+    ).toBe(false);
+  });
+
+  it("re-adds a relaunched job after an earlier terminal subagent result", () => {
+    expect(
+      persistedTranscriptRunning([
+        taskLaunch("job-1"),
+        subagentInspector({ id: "agent-1", jobId: "job-1", status: "completed" }),
+        taskLaunch("job-1"),
+        terminalStop(),
       ]),
     ).toBe(true);
   });

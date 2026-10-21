@@ -424,7 +424,12 @@ export class GjcSdkController {
    */
   private readonly asyncJobReconciliations = new Map<
     string,
-    { checkedAt: number; deadJobIds: Set<string>; checkedJobIds: Set<string> }
+    {
+      checkedAt: number;
+      deadJobIds: Set<string>;
+      checkedJobIds: Set<string>;
+      querySucceeded: boolean;
+    }
   >();
   /** Monotonic per-session lifecycle generation for async status reads and IPC merges. */
   private readonly runRevisions = new Map<string, number>();
@@ -986,7 +991,12 @@ export class GjcSdkController {
           : revisionChanged && currentSession
           ? currentSession.status
           : this.activePromptSessions.has(info.sessionId) ||
-              this.liveRunningSessions.has(info.sessionId)
+              (this.liveRunningSessions.has(info.sessionId) &&
+                !this.liveEvidenceQuiet(info.sessionId)) ||
+              (this.workingPhaseSessions.has(info.sessionId) &&
+                !this.runtimeIdleSessions.has(info.sessionId) &&
+                !this.liveEvidenceQuiet(info.sessionId)) ||
+              transcriptStatus === "running"
             ? (currentSession?.status ?? "idle")
             : currentSession?.status === "failed" ||
                 currentSession?.status === "starting"
@@ -1279,12 +1289,16 @@ export class GjcSdkController {
         // A verdict this size rests entirely on markers reads idle once they are
         // gone; one that rested on the rows themselves keeps what they said, and a
         // surviving latch holds it running whatever they said.
+        const querySucceeded =
+          this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true;
         const status =
           surviving.length > 0
-            ? ("running" as const)
+            ? (querySucceeded ? "running" as const : "unknown" as const)
             : markers.length > 0
               ? ("idle" as const)
-              : cached.status;
+              : cached.status === "unknown"
+                ? "idle"
+                : cached.status;
         this.discoveredRunStates.set(sessionId, {
           size: info.size,
           status,
@@ -1321,7 +1335,8 @@ export class GjcSdkController {
           turn.pendingAsyncJobIds,
           latched,
         );
-        running = runningJobIds.length > 0;
+        running = this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true &&
+          runningJobIds.length > 0;
       } else if (!running && latched.length > 0) {
         // This window names no launch marker and the rows read settled, but an
         // earlier full-history read left detached work latched whose launch rows sit
@@ -1337,12 +1352,21 @@ export class GjcSdkController {
           [],
           latched,
         );
-        running = surviving.length > 0;
+        running = this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true &&
+          surviving.length > 0;
         // Only a surviving latch is recorded: nothing in these rows rests on the
         // markers, so an idle verdict here is the window's own account.
         if (running) runningJobIds = surviving;
       }
-      const status = running ? ("running" as const) : ("idle" as const);
+      const uncertainPendingJobs =
+        !running &&
+        (this.pendingAsyncWorkSessions.get(sessionId)?.length ?? 0) > 0 &&
+        this.asyncJobReconciliations.get(sessionId)?.querySucceeded === false;
+      const status = running
+        ? ("running" as const)
+        : uncertainPendingJobs
+          ? ("unknown" as const)
+          : ("idle" as const);
       if (status === "running") this.transcriptRunningSessions.add(sessionId);
       else this.transcriptRunningSessions.delete(sessionId);
       this.discoveredRunStates.set(sessionId, {
@@ -1386,16 +1410,23 @@ export class GjcSdkController {
     status: AgentSession["status"],
   ): AgentSession["status"] {
     if (
-      status === "idle" &&
+      (status === "idle" || status === "unknown") &&
       ((this.workingPhaseSessions.has(sessionId) &&
         !this.runtimeIdleSessions.has(sessionId) &&
         // A phase report ages like every other live signal. A 'working' phase with
         // no report after it held a settled row running for the life of the process,
         // and nothing else re-derives a verdict for a session a latch still names.
-        !this.liveEvidenceQuiet(sessionId)) ||
-        this.pendingAsyncWorkSessions.has(sessionId))
+        !this.liveEvidenceQuiet(sessionId)))
     )
       return "running";
+    if (
+      status === "idle" &&
+      this.pendingAsyncWorkSessions.has(sessionId)
+    ) {
+      return this.asyncJobReconciliations.get(sessionId)?.querySucceeded === false
+        ? "unknown"
+        : "running";
+    }
     return status;
   }
 
@@ -1558,6 +1589,7 @@ export class GjcSdkController {
       checkedAt: now,
       deadJobIds: dead,
       checkedJobIds: new Set([...(asked ?? []), ...pending]),
+      querySucceeded: live !== undefined,
     });
     if (!live) return pending;
     for (const jobId of pending) if (!live.has(jobId)) dead.add(jobId);
@@ -2308,11 +2340,20 @@ export class GjcSdkController {
       // A marker a reconciliation retired is not work again just because this read met
       // the same rows, and a marker it kept is still work however settled the rows here
       // look -- only the runtime can say that job ended.
+      const jobsQuerySucceeded =
+        this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true;
+      const pendingAsyncUnknown =
+        persistedTurn.pendingAsyncWorkOnly &&
+        pendingAsyncJobIds.length > 0 &&
+        !jobsQuerySucceeded &&
+        !this.activePromptSessions.has(sessionId) &&
+        !this.workingPhaseSessions.has(sessionId);
       const transcriptRunning = persistedTurn.pendingAsyncWorkOnly
-        ? pendingAsyncJobIds.length > 0
+        ? jobsQuerySucceeded && pendingAsyncJobIds.length > 0
         : persistedTurn.running;
       const turnRunning =
         transcriptRunning ||
+        pendingAsyncUnknown ||
         this.activePromptSessions.has(sessionId) ||
         (this.workingPhaseSessions.has(sessionId) &&
           !this.runtimeIdleSessions.has(sessionId) &&
@@ -2368,9 +2409,15 @@ export class GjcSdkController {
         lifecycleCurrent &&
         this.transcriptStartedNewWork(sessionId, info.size, transcriptRunning);
       if (lifecycleCurrent && !this.activePromptSessions.has(sessionId)) {
-        const status = turnRunning ? "running" : "idle";
+        const status = turnRunning
+            ? "running"
+            : pendingAsyncUnknown
+              ? "unknown"
+              : "idle";
         const current = this.sessions.get(sessionId)?.status;
-        if (status === "idle") {
+        if (status === "unknown") {
+          if (current !== "unknown") this.updateSessionStatus(sessionId, "unknown");
+        } else if (status === "idle") {
           // The transcript is written after the fact, so it reads idle for the gap
           // between a turn starting and its first row reaching disk. That snapshot is
           // older than the live signal and must not overrule it.
@@ -6513,7 +6560,7 @@ export class GjcSdkController {
     const revision = this.currentRunRevision(sessionId);
     const state = await this.discoveredRunState(sessionId);
     if (state !== undefined && state !== "running" && generation === this.generation && revision === this.currentRunRevision(sessionId))
-      this.updateSessionStatus(sessionId, "idle");
+      this.updateSessionStatus(sessionId, state);
   }
 
   /**
