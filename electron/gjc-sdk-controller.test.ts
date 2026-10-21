@@ -3736,6 +3736,48 @@ describe("unwatched session detach", () => {
   });
 });
 
+describe("owned session recovery", () => {
+  it("recovers watched and running sessions with bounded concurrency", async () => {
+    const { internals } = harness();
+    internals.sessions.set("watched", { ...session("watched"), status: "idle" });
+    internals.sessions.set("running", { ...session("running"), status: "running" });
+    internals.sessions.set("unwatched", { ...session("unwatched"), status: "idle" });
+    for (const id of ["watched", "running", "unwatched"])
+      internals.sessionCwds.set(id, "/repo");
+    internals.watchedTranscripts = new Set(["watched"]);
+    let active = 0;
+    let peak = 0;
+    const attached: string[] = [];
+    internals.ensureAttached = vi.fn(async (id: string) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      attached.push(id);
+      active -= 1;
+    });
+    internals.discoveredRunState = vi.fn(async () => "idle");
+    await internals.recoverOwnedSessions();
+    expect(attached.sort()).toEqual(["running", "watched"]);
+    expect(peak).toBeLessThanOrEqual(2);
+  });
+
+  it("shares one recovery pass between startup and reconnect callers", async () => {
+    const { internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.watchedTranscripts = new Set(["s1"]);
+    internals.ensureAttached = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    });
+    internals.discoveredRunState = vi.fn(async () => "idle");
+    const first = internals.recoverOwnedSessions();
+    const second = internals.recoverOwnedSessions();
+    expect(second).toBe(first);
+    await first;
+    expect(internals.ensureAttached).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("context usage pacing", () => {
   it("runs at most one watcher repair per interval and still forces after settlement", async () => {
     const { cli, internals } = harness();

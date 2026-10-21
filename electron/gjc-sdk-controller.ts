@@ -623,6 +623,7 @@ export class GjcSdkController {
   private generation = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   private reconnectAttempt = 0;
+  private recovery?: Promise<void>;
   /** Sessions whose permission mode has been applied for this runtime generation. */
   private readonly permissionModeApplied = new Set<string>();
   /** Live tail catch-up reads in flight, keyed by session. */
@@ -5684,39 +5685,84 @@ export class GjcSdkController {
     }, delay);
   }
 
-  private async recoverOwnedSessions(): Promise<void> {
-    if (!this.cli) return;
-    for (const session of this.sessions.values()) {
-      if (
-        session.ownership !== "gajae" ||
-        this.attachedSessions.has(session.id)
-      )
-        continue;
-      const cwd = this.sessionCwds.get(session.id);
-      if (!cwd) continue;
-      try {
-        await this.ensureAttached(session.id, false);
-        session.attachment = "attached";
-        // Re-attaching says this window can talk to the session again, not that its
-        // turn ended. Another process may have kept working through the disconnect,
-        // so the transcript decides; `idle` is only the answer when it has none.
-        session.status = (await this.discoveredRunState(session.id)) ?? "idle";
-        session.unread = true;
-        this.sessionMetadata?.setUnread(session.id, true);
-        this.emitEvent({ type: "session.updated", session: { ...session } });
-        this.emitEvent({
-          type: "session.activity",
-          sessionId: session.id,
-          title: session.title,
-          unread: true,
-          category: "recovered",
-        });
-      } catch {
-        session.attachment = "recovering";
-        session.status = "failed";
-        this.emitEvent({ type: "session.updated", session: { ...session } });
+  /**
+   * Re-attaches owned sessions after a reconnect.
+   *
+   * Called from both the startup microtask and the reconnect retry, so concurrent
+   * calls share one pass. Idle sessions the renderer is not showing are left for
+   * their next selection: reattaching every recorded session at once started a
+   * tail reader, a tool observer, and several config/command queries per session
+   * before the first screen was interactive.
+   */
+  private recoverOwnedSessions(): Promise<void> {
+    if (!this.cli) return Promise.resolve();
+    if (this.recovery) return this.recovery;
+    const pass = this.recoverOwnedSessionsOnce().finally(() => {
+      if (this.recovery === pass) this.recovery = undefined;
+    });
+    this.recovery = pass;
+    return pass;
+  }
+
+  private async recoverOwnedSessionsOnce(): Promise<void> {
+    const watched = this.watchedTranscripts;
+    const candidates = [...this.sessions.values()]
+      .filter((session) => {
+        if (
+          session.ownership !== "gajae" ||
+          this.attachedSessions.has(session.id) ||
+          !this.sessionCwds.get(session.id)
+        )
+          return false;
+        if (!watched) return true;
+        return (
+          watched.has(session.id) ||
+          session.status === "running" ||
+          this.activePromptSessions.has(session.id) ||
+          this.workingPhaseSessions.has(session.id)
+        );
+      })
+      .sort(
+        (left, right) =>
+          Number(right.status === "running") -
+          Number(left.status === "running"),
+      );
+    let next = 0;
+    const recoverOne = async (): Promise<void> => {
+      while (true) {
+        const session = candidates[next];
+        next += 1;
+        if (!session) return;
+        try {
+          await this.ensureAttached(session.id, false);
+          session.attachment = "attached";
+          // Re-attaching says this window can talk to the session again, not that its
+          // turn ended. Another process may have kept working through the disconnect,
+          // so the transcript decides; `idle` is only the answer when it has none.
+          session.status = (await this.discoveredRunState(session.id)) ?? "idle";
+          session.unread = true;
+          this.sessionMetadata?.setUnread(session.id, true);
+          this.emitEvent({ type: "session.updated", session: { ...session } });
+          this.emitEvent({
+            type: "session.activity",
+            sessionId: session.id,
+            title: session.title,
+            unread: true,
+            category: "recovered",
+          });
+        } catch {
+          session.attachment = "recovering";
+          session.status = "failed";
+          this.emitEvent({ type: "session.updated", session: { ...session } });
+        }
       }
-    }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(2, candidates.length) },
+        () => recoverOne(),
+      ),
+    );
   }
 
   private async resolveExecutable(): Promise<string> {
