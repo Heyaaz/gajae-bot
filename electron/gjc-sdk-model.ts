@@ -210,6 +210,11 @@ export const PROMPT_SETTLE_ATTEMPTS = 900;
 export const PROMPT_SETTLE_INTERVAL_MS = 400;
 export const ATTACH_RETRY_INTERVAL_MS = 15_000;
 /**
+ * Minimum interval between watcher-driven context usage queries. A live usage
+ * event resets this clock, so a query is only a repair for a missed push.
+ */
+export const CONTEXT_USAGE_REFRESH_INTERVAL_MS = 5_000;
+/**
  * How long an attached session may stay outside the renderer's transcript cache
  * before its tail, observer, watcher, and in-memory transcript are released.
  *

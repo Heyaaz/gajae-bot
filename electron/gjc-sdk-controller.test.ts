@@ -3683,6 +3683,30 @@ describe("unwatched session detach", () => {
   });
 });
 
+describe("context usage pacing", () => {
+  it("runs at most one watcher repair per interval and still forces after settlement", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    (cli.queryItems as any).mockResolvedValue([{ usage: { percent: 12 } }]);
+    await internals.refreshContextUsage("s1");
+    await internals.refreshContextUsage("s1");
+    expect(cli.queryItems).toHaveBeenCalledTimes(1);
+    await internals.refreshContextUsage("s1", { force: true });
+    expect(cli.queryItems).toHaveBeenCalledTimes(2);
+  });
+
+  it("trusts a live usage event instead of repairing it from the watcher", async () => {
+    const { cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.handleSessionUpdate({
+      sessionId: "s1",
+      update: { sessionUpdate: "usage_update", used: 10, size: 100 },
+    });
+    await internals.refreshContextUsage("s1");
+    expect(cli.queryItems).not.toHaveBeenCalled();
+  });
+});
+
 describe("shared terminal session control", () => {
   it("clears a stale route failure after positive broker evidence and a successful probe", async () => {
     const { controller, internals } = harness();

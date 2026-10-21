@@ -95,6 +95,7 @@ import {
   ATTACH_RETRY_INTERVAL_MS,
   AvailableCommand,
   CLOCK_LABEL,
+  CONTEXT_USAGE_REFRESH_INTERVAL_MS,
   ContentBlock,
   EFFORT_LEVELS,
   GJC_ACCENT,
@@ -596,6 +597,8 @@ export class GjcSdkController {
   private readonly imageDataUrls = new Map<string, string>();
   private readonly attachAttempts = new Map<string, number>();
   private readonly contextUsageQueries = new Map<string, Promise<void>>();
+  /** Last usage observation (query or live event) used to pace watcher repairs. */
+  private readonly contextUsageObservedAt = new Map<string, number>();
 
   private connectionState: BackendConnection;
   /**
@@ -2124,6 +2127,7 @@ export class GjcSdkController {
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
     this.sessionSdkOperations.delete(sessionId);
+    this.contextUsageObservedAt.delete(sessionId);
     if (session) {
       session.attachment = "attachable";
       this.emitEvent({ type: "session.updated", session: { ...session } });
@@ -3000,7 +3004,7 @@ export class GjcSdkController {
         usagePercent: undefined,
         usagePending: true,
       });
-      await this.refreshContextUsage(sessionId);
+      await this.refreshContextUsage(sessionId, { force: true });
     } catch (error) {
       if (uncertainAfterSendError(error)) {
         // The host accepted the request and is still summarizing. Keep the
@@ -3916,7 +3920,7 @@ export class GjcSdkController {
         return "prompt";
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
-      await this.refreshContextUsage(sessionId);
+      await this.refreshContextUsage(sessionId, { force: true });
       // updateSessionStatus announces the running -> idle transition itself.
       //
       // The prompt is released before the read because the run-state cache is keyed on
@@ -3963,7 +3967,7 @@ export class GjcSdkController {
       }
       this.finalizeThought(sessionId);
       this.finalizeAssistantMessage(sessionId);
-      void this.refreshContextUsage(sessionId);
+      void this.refreshContextUsage(sessionId, { force: true });
       if (cancelledOperationError(error)) {
         // A cancel is the user's own action, so it settles quietly.
         this.updateSessionStatus(sessionId, "idle", { announce: false });
@@ -5495,6 +5499,7 @@ export class GjcSdkController {
     this.locallyAbortedSessions.clear();
     this.imageDataUrls.clear();
     this.contextUsageQueries.clear();
+    this.contextUsageObservedAt.clear();
     for (const watcher of this.sharedSessionWatchers.values()) watcher.close();
     for (const watcher of this.runStateWatchers.values()) watcher.close();
     this.runStateWatchers.clear();
@@ -6046,7 +6051,7 @@ export class GjcSdkController {
         session.status = (await this.discoveredRunState(sessionId)) ?? "idle";
       this.emitEvent({ type: "session.updated", session: { ...session } });
     }
-    void this.refreshContextUsage(sessionId);
+    void this.refreshContextUsage(sessionId, { force: true });
   }
 
   /**
@@ -6834,6 +6839,7 @@ export class GjcSdkController {
         this.patchSessionRuntime(sessionId, { mode: update.currentModeId });
         break;
       case "usage_update":
+        this.contextUsageObservedAt.set(sessionId, Date.now());
         if (update.size > 0)
           this.patchSessionRuntime(sessionId, {
             usagePercent: Math.min(
@@ -7587,9 +7593,20 @@ export class GjcSdkController {
    * otherwise spawn a burst of redundant usage lookups, so a request that arrives
    * while one is running joins it instead of adding another.
    */
-  private refreshContextUsage(sessionId: string): Promise<void> {
+  private refreshContextUsage(
+    sessionId: string,
+    options?: { force?: boolean },
+  ): Promise<void> {
+    const now = Date.now();
+    const observedAt = this.contextUsageObservedAt.get(sessionId) ?? 0;
+    if (
+      !options?.force &&
+      now - observedAt < CONTEXT_USAGE_REFRESH_INTERVAL_MS
+    )
+      return Promise.resolve();
     const inFlight = this.contextUsageQueries.get(sessionId);
     if (inFlight) return inFlight;
+    this.contextUsageObservedAt.set(sessionId, now);
     const query = this.queryContextUsage(sessionId).finally(() => {
       this.contextUsageQueries.delete(sessionId);
     });
