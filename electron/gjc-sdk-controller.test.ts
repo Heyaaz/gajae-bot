@@ -3585,6 +3585,25 @@ describe("live rows across a durable rebuild", () => {
     }
   });
 
+  it("paces a tail reader that returns frames instead of spawning per frame", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.attachedSessions.add("s1");
+    // A live stream returns as soon as it has data. Without a wait after a
+    // non-empty answer the follower re-spawns immediately on every frame.
+    (cli.tail as any).mockResolvedValue({
+      source: "session",
+      terminal: false,
+      items: [{ kind: "activity", payload: {} }],
+    });
+    internals.startTailFollower("s1");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(cli.tail).toHaveBeenCalledTimes(1);
+    internals.stopTailFollower("s1");
+    controller.dispose();
+  });
+
   it("polls the tail reader on the short window without spinning on an empty answer", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session());

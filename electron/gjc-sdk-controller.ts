@@ -6493,6 +6493,7 @@ export class GjcSdkController {
         if (tail.gap) {
           this.tailCheckpoints.delete(sessionId);
           await this.refreshTranscriptFromFile(sessionId);
+          await tailReadPause(detached);
           continue;
         }
         // A read with no new transcript row resumes at the row the last one ended at.
@@ -6507,21 +6508,22 @@ export class GjcSdkController {
         else this.tailCheckpoints.delete(sessionId);
         this.projectTailItems(sessionId, tail.items);
         if (tail.source === "offline") return;
-        // A reader that answered with no frames at all did no work. The CLI owns the
-        // wait window and normally blocks for it, but an endpoint that accepts the
-        // read and has nothing to send answers at once, and re-issuing that straight
-        // away would spawn one reader process per iteration -- a tighter loop than
-        // the longer window ever allowed. One window of quiet before the next read
-        // bounds the poll rate; frames that arrive during it wait for the next pass,
-        // which the shorter window already made the norm.
-        if (tail.items.length === 0) await tailReadPause(detached);
+        // Pace every read, including one that returned frames. An active stream
+        // returns as soon as it has data, so pausing only on an empty answer tied
+        // process spawns to the frame rate: a live turn re-launched a ~400MB tail
+        // reader more than once a second. The file watcher already delivers rows;
+        // one window between reads is the cost of keeping stream events ordered.
+        await tailReadPause(detached);
       } catch (error) {
         if (controller.signal.aborted || this.disposed) return;
         if (error instanceof SdkCliError) {
           if (error.code === "aborted") return;
           // A timeout means only that no terminal turn event arrived inside this
           // bounded window. It is not a failed run and never clears the spinner.
-          if (error.code === "tail_timeout") continue;
+          if (error.code === "tail_timeout") {
+            await tailReadPause(detached);
+            continue;
+          }
           // A checkpoint the reader refuses -- one without its transcript boundary,
           // or one past its expiry -- is refused on every retry. Keeping it is what
           // left a session with no live follower at all: each pass failed with
@@ -6532,6 +6534,7 @@ export class GjcSdkController {
           ) {
             this.tailCheckpoints.delete(sessionId);
             await this.refreshTranscriptFromFile(sessionId);
+            await tailReadPause(detached);
             continue;
           }
           if (
