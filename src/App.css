@@ -3776,6 +3776,12 @@
   color: var(--danger);
   font-size: 10px;
 }
+.composer-hint {
+  display: block;
+  padding: 8px 12px 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
 .composer-toolbar {
   display: flex;
   min-height: 40px;
@@ -3886,6 +3892,12 @@
   flex: 0 0 auto;
   color: var(--text-tertiary);
   font-size: 10px;
+}
+.command-palette-loading {
+  display: block;
+  padding: 10px 9px;
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
 .command-palette-count {
   padding: 1px 5px;

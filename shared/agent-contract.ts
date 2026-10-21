@@ -825,7 +825,12 @@ export interface GjcDesktopBridge {
    * reports the selected session and the transcripts it has cached.
    */
   watchTranscripts(sessionIds: readonly string[]): void;
-  /** Loads command/todo context once when a session is opened, never on a poll. */
+  /**
+   * Loads command/todo context when a session opens or its palette is requested.
+   *
+   * Repeated requests inside the reuse window are served from the loaded context;
+   * this is never part of a transcript poll.
+   */
   refreshSessionContext(sessionId: string): Promise<void>;
   setSessionConfig(
     sessionId: string,

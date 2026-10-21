@@ -1803,6 +1803,18 @@ export default function App() {
     () => (selectedId && configOptions[selectedId]) || [],
     [configOptions, selectedId],
   );
+  // An undefined command list means the live palette has not arrived yet. A
+  // terminal-only or recovering row has no SDK endpoint to answer, so it is not
+  // left claiming a load that can never finish.
+  const commandsPending =
+    selectedId !== null &&
+    commands[selectedId] === undefined &&
+    selectedSession?.attachment !== "terminal-only" &&
+    selectedSession?.attachment !== "recovering";
+  const onCommandPaletteOpen = useCallback(() => {
+    if (!selectedId) return;
+    void backend.refreshSessionContext?.(selectedId).catch(() => undefined);
+  }, [backend, selectedId]);
   const composerModelPreset =
     selectedSession?.model ?? connection.modelPreset ?? DEFAULT_MODEL_PRESET;
   const composerConfigOptions = useMemo(() => {
@@ -3059,6 +3071,7 @@ export default function App() {
                   workspace={selectedSession.workspace}
                   workspaces={recentWorkspaces}
                   commands={selectedCommands}
+                  commandsPending={commandsPending}
                   configOptions={composerConfigOptions}
                   modelDisplay={selectedSession.modelDisplay}
                   thinking={selectedSession.thinking}
@@ -3073,6 +3086,7 @@ export default function App() {
                   onWorkspaceChange={onComposerWorkspaceChange}
                   onConfigChange={onComposerConfigChange}
                   onCycleThinking={onComposerCycleThinking}
+                  onCommandPaletteOpen={onCommandPaletteOpen}
                   readOnly={remoteViewOnly}
                 />
               </div>

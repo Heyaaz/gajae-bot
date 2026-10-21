@@ -162,6 +162,8 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "명령 실행 중…": "Running commands…",
   "명령어 (예: /compact, /resume)": "Commands (for example /compact, /resume)",
   "모델": "Model",
+  "모델 목록을 불러오는 중입니다. 잠시 후 다시 선택하세요.":
+    "Loading the model list. Select it again in a moment.",
   "모델 프로필": "Model profile",
   "모델 확인 중…": "Checking model…",
   "모델별 사용량": "Usage by model",
@@ -265,6 +267,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "수요일": "Wednesday",
   "스킬": "Skills",
   "스킬 및 명령어": "Skills and commands",
+  "스킬 불러오는 중…": "Loading skills…",
   "스킬 지침": "Skill instructions",
   "스킬 호출: {0}": "Skill call: {0}",
   "스테이징된 {0}개 파일을 커밋할까요?": "Commit {0} staged files?",

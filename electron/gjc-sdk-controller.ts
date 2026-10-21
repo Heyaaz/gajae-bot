@@ -236,6 +236,13 @@ export const TODO_EVENT_POLL_MAX_MS = 120_000;
 /** Command palette refresh after a failed read, doubled until the cap. */
 export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
 export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
+/**
+ * How long a loaded command/todo context is reused before it is read again.
+ *
+ * Opening the palette is a user gesture, not a poll; a refresh costs two or more
+ * CLI round trips, so a reopen seconds later must not repeat them.
+ */
+export const SESSION_CONTEXT_REFRESH_TTL_MS = 15_000;
 
 /** Agent dir the broker and `getAgentDir()` share (`GJC_CODING_AGENT_DIR` or `~/.gjc/agent`). */
 function codingAgentDir(): string {
@@ -478,6 +485,10 @@ export class GjcSdkController {
     ReturnType<typeof setTimeout>
   >();
   private readonly commandRefreshAttempts = new Map<string, number>();
+  /** In-flight command palette rebuild per session, shared by concurrent callers. */
+  private readonly commandRefreshes = new Map<string, Promise<void>>();
+  private readonly sessionContextRefreshes = new Map<string, Promise<void>>();
+  private readonly sessionContextRefreshedAt = new Map<string, number>();
   /** Long todo reads used only while a session has no live todo event channel. */
   private readonly todoPollTimers = new Map<
     string,
@@ -1914,7 +1925,6 @@ export class GjcSdkController {
     this.attachedSessions.add(session.id);
     this.startTailFollower(session.id);
     void this.refreshSdkCommands(session.id);
-    await this.refreshModelProfiles(session.id);
     await this.refreshSessionConfigOptions(session.id);
     void this.refreshContextUsage(session.id);
     // The new session's file is the live account for everything it does next.
@@ -1981,10 +1991,29 @@ export class GjcSdkController {
   async refreshSessionContext(sessionId: string): Promise<void> {
     const commands = this.sessionCommands.get(sessionId);
     if (commands) this.publishSessionCommands(sessionId, commands);
-    await Promise.all([
-      this.refreshSdkCommands(sessionId),
-      this.readTodoRecords(sessionId),
-    ]);
+    // The palette asks for this whenever it opens. A session opened a moment ago
+    // has already paid for these CLI reads, and repeating them made every reopen
+    // spawn another pair of processes before the same palette could render.
+    const inFlight = this.sessionContextRefreshes.get(sessionId);
+    if (inFlight) return inFlight;
+    const refreshedAt = this.sessionContextRefreshedAt.get(sessionId);
+    if (
+      refreshedAt !== undefined &&
+      Date.now() - refreshedAt < SESSION_CONTEXT_REFRESH_TTL_MS
+    )
+      return;
+    const refresh = (async () => {
+      await Promise.all([
+        this.refreshSdkCommands(sessionId),
+        this.readTodoRecords(sessionId),
+      ]);
+      this.sessionContextRefreshedAt.set(sessionId, Date.now());
+    })().finally(() => {
+      if (this.sessionContextRefreshes.get(sessionId) === refresh)
+        this.sessionContextRefreshes.delete(sessionId);
+    });
+    this.sessionContextRefreshes.set(sessionId, refresh);
+    return refresh;
   }
 
   /**
@@ -2757,7 +2786,10 @@ export class GjcSdkController {
         this.emitEvent({ type: "session.config", sessionId, options: updated });
       }
       await this.refreshSessionSettings(sessionId);
-      await this.refreshModelProfiles(sessionId);
+      // The profile catalog does not change when one profile is selected; only the
+      // selected model's catalog details do. Read those after the receipt instead
+      // of making the switch wait on a second profile list.
+      void this.refreshModelCapabilities(sessionId);
       return;
     }
     // Any other selector is a session config value; `config.patch` is the control
@@ -3598,7 +3630,7 @@ export class GjcSdkController {
         // succeeds. Rebuild both sides of the session's reported surface.
         await Promise.all([
           this.refreshSdkCommands(sessionId),
-          this.refreshModelProfiles(sessionId).catch(() => undefined),
+          // This reads the session config and the model profile list together.
           this.refreshSessionConfigOptions(sessionId).catch(() => undefined),
         ]);
         return output(
@@ -4520,7 +4552,25 @@ export class GjcSdkController {
    * used alone and the synthesized entries are dropped instead of being merged back
    * in. A failing source contributes nothing rather than clearing the palette.
    */
-  private async refreshSdkCommands(
+  private refreshSdkCommands(
+    sessionId: string,
+    advertised?: AgentCommand[],
+  ): Promise<void> {
+    // An advertised update carries new authority and must run on its own. Every
+    // other caller is asking for the same rebuild, so join the one in flight
+    // instead of starting a second pair of capability/skill CLI reads.
+    if (advertised) return this.rebuildSdkCommands(sessionId, advertised);
+    const inFlight = this.commandRefreshes.get(sessionId);
+    if (inFlight) return inFlight;
+    const refresh = this.rebuildSdkCommands(sessionId).finally(() => {
+      if (this.commandRefreshes.get(sessionId) === refresh)
+        this.commandRefreshes.delete(sessionId);
+    });
+    this.commandRefreshes.set(sessionId, refresh);
+    return refresh;
+  }
+
+  private async rebuildSdkCommands(
     sessionId: string,
     advertised?: AgentCommand[],
   ): Promise<void> {
@@ -5201,6 +5251,9 @@ export class GjcSdkController {
     this.locallyAbortedSessions.delete(sessionId);
     this.sessionCommands.delete(sessionId);
     this.publishedCommandKeys.delete(sessionId);
+    this.commandRefreshes.delete(sessionId);
+    this.sessionContextRefreshes.delete(sessionId);
+    this.sessionContextRefreshedAt.delete(sessionId);
     this.clearCommandRefreshRetry(sessionId);
     this.clearTodoPoll(sessionId);
     this.sessionAdvertisedCommands.delete(sessionId);
@@ -5310,6 +5363,9 @@ export class GjcSdkController {
     this.suppressedUserMessageKeys.clear();
     this.echoedPromptTexts.clear();
     this.sessionCommands.clear();
+    this.commandRefreshes.clear();
+    this.sessionContextRefreshes.clear();
+    this.sessionContextRefreshedAt.clear();
     this.sessionAdvertisedCommands.clear();
     this.sessionDiscoveredCommands.clear();
     this.sessionPlans.clear();
@@ -5853,8 +5909,12 @@ export class GjcSdkController {
     const owned = rehosted || this.sessions.get(sessionId)?.ownership === "gajae";
     requireCurrentAttachment();
     if (owned) await this.applyPermissionMode(sessionId);
+    // Command discovery is independent of the config surface and is what the
+    // palette needs first. Start it alongside the config reads instead of after
+    // them: each CLI query costs a process, and the old order made a fresh
+    // session spend seconds on model profiles before skills could appear.
+    void this.refreshSdkCommands(sessionId);
     await this.refreshSessionConfigOptions(sessionId);
-    await this.refreshModelProfiles(sessionId);
     requireCurrentAttachment();
     if (replay) {
       const restored = await this.readSharedTranscript(sessionId).catch(() => []);
@@ -5864,10 +5924,6 @@ export class GjcSdkController {
     this.attachedSessions.add(sessionId);
     this.terminalOnlySessions.delete(sessionId);
     this.startTailFollower(sessionId);
-    // Command discovery must not wait for GJC to publish a bootstrap update: a
-    // session opened in an already-running process never re-sends one, and the tail
-    // frame that carried it may be long past. Ask the runtime directly.
-    void this.refreshSdkCommands(sessionId);
     // The session file is the live account now that no connection streams updates.
     const watched = await this.locateSharedTranscriptFile(sessionId);
     if (watched) this.watchSharedTranscript(sessionId, watched);
@@ -6644,11 +6700,28 @@ export class GjcSdkController {
         );
         break;
       }
-      case "config_option_update":
+      case "config_option_update": {
         this.captureSessionState(sessionId, update.configOptions);
-        if (this.attachedSessions.has(sessionId))
-          void this.refreshModelProfiles(sessionId);
+        if (this.attachedSessions.has(sessionId)) {
+          const selected = this.sessionConfig
+            .get(sessionId)
+            ?.find(
+              (option) => option.category === "model" || option.id === "model",
+            )?.currentValue;
+          const known =
+            typeof selected === "string" &&
+            (this.modelProfiles.get(sessionId) ?? []).some(
+              (profile) => profile.value === selected,
+            );
+          // A selection already in the cached catalog needs only its display and
+          // thinking details. A selection outside it may be a profile added since
+          // the last read, so that one still re-lists the catalog.
+          if (typeof selected === "string" && !known)
+            void this.refreshSessionConfigOptions(sessionId);
+          else void this.refreshModelCapabilities(sessionId);
+        }
         break;
+      }
       case "current_mode_update":
         this.patchSessionRuntime(sessionId, { mode: update.currentModeId });
         break;
@@ -7130,8 +7203,19 @@ export class GjcSdkController {
    * session's real preset rather than a process-wide launch flag.
    */
   private async refreshSessionConfigOptions(sessionId: string): Promise<void> {
-    const row = await this.sessionConfigRow(sessionId);
+    // The model picker cannot open until this finishes. Reading the session row
+    // and the profile catalog in one round instead of two, and carrying the
+    // profiles into the first emitted option, is what removes both the extra CLI
+    // process and the empty picker that was on screen while the second read ran.
+    const [row, profiles] = await Promise.all([
+      this.sessionConfigRow(sessionId),
+      this.loadModelProfiles(sessionId),
+    ]);
+    if (profiles && profiles.length > 0)
+      this.modelProfiles.set(sessionId, profiles);
     if (!row) return;
+    const availableProfiles =
+      profiles ?? this.modelProfiles.get(sessionId) ?? [];
     const preset =
       typeof row.modelPreset === "string" && row.modelPreset
         ? row.modelPreset
@@ -7146,7 +7230,7 @@ export class GjcSdkController {
         name: "Model",
         category: "model",
         currentValue: preset ?? this.modelPreset,
-        options: (this.modelProfiles.get(sessionId) ?? []).map((profile) => ({
+        options: availableProfiles.map((profile) => ({
           type: "item",
           id: profile.value,
           name: profile.name,
@@ -7183,6 +7267,57 @@ export class GjcSdkController {
         : []),
     ];
     this.captureSessionState(sessionId, options, mode);
+    // The catalog answer (display label and the model's own thinking choices) is
+    // advisory: paint the picker now and let those details arrive after it opens.
+    void this.refreshModelCapabilities(sessionId);
+  }
+
+  /** The runtime's model profile catalog, or undefined when it cannot answer. */
+  private async loadModelProfiles(
+    sessionId: string,
+  ): Promise<AgentConfigOptionValue[] | undefined> {
+    try {
+      const cli = await this.requireCli();
+      const items = await cli.queryItems(
+        sessionId,
+        "models.profiles.list",
+        {},
+        { repo: this.repoFor(sessionId) },
+      );
+      return items
+        .flatMap((item): AgentConfigOptionValue[] => {
+          if (!item || typeof item !== "object") return [];
+          const profile = item as {
+            id?: unknown;
+            displayName?: unknown;
+            source?: unknown;
+            available?: unknown;
+          };
+          if (typeof profile.id !== "string" || profile.available === false)
+            return [];
+          const configured = profile.source === "configured";
+          return [
+            {
+              value: profile.id,
+              name:
+                typeof profile.displayName === "string" && profile.displayName
+                  ? profile.displayName
+                  : profile.id,
+              group: configured ? "Custom profiles" : "Built-in profiles",
+              description: configured
+                ? "From ~/.gjc/agent/models.yml"
+                : "Bundled with GJC",
+            },
+          ];
+        })
+        .sort((left, right) => {
+          if (left.group !== right.group)
+            return left.group === "Custom profiles" ? -1 : 1;
+          return left.name.localeCompare(right.name);
+        });
+    } catch {
+      return undefined;
+    }
   }
 
   /** One row of the session's own config, or undefined when it cannot answer. */
@@ -7275,87 +7410,42 @@ export class GjcSdkController {
     }
   }
 
-  private async refreshModelProfiles(sessionId: string): Promise<void> {
-    try {
-      const cli = await this.requireCli();
-      const items = await cli.queryItems(
-        sessionId,
-        "models.profiles.list",
-        {},
-        { repo: this.repoFor(sessionId) },
-      );
-      const profiles = items
-        .flatMap((item): AgentConfigOptionValue[] => {
-          if (!item || typeof item !== "object") return [];
-          const profile = item as {
-            id?: unknown;
-            displayName?: unknown;
-            source?: unknown;
-            available?: unknown;
-          };
-          if (typeof profile.id !== "string" || profile.available === false)
-            return [];
-          const configured = profile.source === "configured";
-          return [
-            {
-              value: profile.id,
-              name:
-                typeof profile.displayName === "string" && profile.displayName
-                  ? profile.displayName
-                  : profile.id,
-              group: configured ? "Custom profiles" : "Built-in profiles",
-              description: configured
-                ? "From ~/.gjc/agent/models.yml"
-                : "Bundled with GJC",
-            },
-          ];
-        })
-        .sort((left, right) => {
-          if (left.group !== right.group)
-            return left.group === "Custom profiles" ? -1 : 1;
-          return left.name.localeCompare(right.name);
-        });
-      if (profiles.length > 0) this.modelProfiles.set(sessionId, profiles);
-      const existing = this.sessionConfig.get(sessionId) ?? [];
-      if (existing.length > 0) {
-        const selectedModel = existing.find(
-          (option) => option.category === "model" || option.id === "model",
-        )?.currentValue;
-        const modelCapabilities =
-          typeof selectedModel === "string"
-            ? await this.modelCapabilities(sessionId, selectedModel)
-            : undefined;
-        const thinkingOptions = modelCapabilities?.thinkingOptions;
-        // A preset whose catalog row carries no default-model label must still resolve to a
-        // name: the profile list, then the raw preset id. Leaving it undefined is what pinned
-        // the composer at "모델 확인 중…" after every preset change.
-        const modelDisplay =
-          modelCapabilities?.modelDisplay ??
-          (typeof selectedModel === "string"
-            ? (profiles.find((profile) => profile.value === selectedModel)
-                ?.name ?? selectedModel)
-            : undefined);
-        if (modelDisplay) this.patchSessionRuntime(sessionId, { modelDisplay });
-        const updated = existing.map((option) => {
-          if (
-            (option.category === "model" || option.id === "model") &&
-            profiles.length > 0
-          )
-            return { ...option, options: profiles };
-          if (
-            (option.category === "thought_level" || option.id === "thinking") &&
-            thinkingOptions
-          ) {
-            return { ...option, options: thinkingOptions };
-          }
-          return option;
-        });
-        this.sessionConfig.set(sessionId, updated);
-        this.emitEvent({ type: "session.config", sessionId, options: updated });
-      }
-    } catch {
-      // The active session keeps its cached model options when discovery is unavailable.
-    }
+  /**
+   * Adds the selected model's catalog details (display label, thinking choices).
+   *
+   * The picker is already open and usable from config/profile reads; this is the
+   * slower `models.list/current` follow-up and must not delay it. The selected
+   * preset is re-read after the query so a switch made meanwhile cannot wear the
+   * previous model's label.
+   */
+  private async refreshModelCapabilities(sessionId: string): Promise<void> {
+    const existing = this.sessionConfig.get(sessionId);
+    if (!existing || existing.length === 0) return;
+    const selectedModel = existing.find(
+      (option) => option.category === "model" || option.id === "model",
+    )?.currentValue;
+    if (typeof selectedModel !== "string") return;
+    const capabilities = await this.modelCapabilities(sessionId, selectedModel);
+    if (this.disposed || !this.sessions.has(sessionId)) return;
+    const current = this.sessionConfig.get(sessionId);
+    const stillSelected = current?.find(
+      (option) => option.category === "model" || option.id === "model",
+    )?.currentValue;
+    if (!current || stillSelected !== selectedModel) return;
+    const modelDisplay =
+      capabilities.modelDisplay ??
+      this.modelProfiles
+        .get(sessionId)
+        ?.find((profile) => profile.value === selectedModel)?.name;
+    if (modelDisplay) this.patchSessionRuntime(sessionId, { modelDisplay });
+    if (!capabilities.thinkingOptions) return;
+    const updated = current.map((option) =>
+      option.category === "thought_level" || option.id === "thinking"
+        ? { ...option, options: capabilities.thinkingOptions! }
+        : option,
+    );
+    this.sessionConfig.set(sessionId, updated);
+    this.emitEvent({ type: "session.config", sessionId, options: updated });
   }
 
   private async modelCapabilities(

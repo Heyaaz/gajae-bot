@@ -2512,6 +2512,128 @@ describe("SDK slash commands", () => {
     ).toContain("session");
   });
 
+  it("shares one in-flight command rebuild between concurrent palette opens", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    let release!: (rows: unknown[]) => void;
+    const gate = new Promise<unknown[]>((resolve) => {
+      release = resolve;
+    });
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) =>
+        query === "runtime.capabilities"
+          ? gate
+          : [{ name: "ci-green", description: "Make CI green" }],
+    );
+    const first = internals.refreshSdkCommands("s1");
+    const second = internals.refreshSdkCommands("s1");
+    release([{ operations: ["skill.list/state"] }]);
+    await Promise.all([first, second]);
+    expect(
+      (cli.queryItems as any).mock.calls.filter(
+        ([, query]: [string, string]) => query === "runtime.capabilities",
+      ),
+    ).toHaveLength(1);
+    expect(
+      (internals.sessionCommands.get("s1") as Array<{ name: string }>).map(
+        (command) => command.name,
+      ),
+    ).toContain("skill:ci-green");
+    controller.dispose();
+  });
+
+  it("reuses a recently loaded context instead of re-reading it on every palette open", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue(
+      capabilityRows("session.metadata"),
+    );
+    await controller.refreshSessionContext("s1");
+    const reads = (cli.queryItems as any).mock.calls.length;
+    await controller.refreshSessionContext("s1");
+    expect((cli.queryItems as any).mock.calls.length).toBe(reads);
+    controller.dispose();
+  });
+
+  it("opens the model picker with its profiles from one read pass", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => {
+        if (query === "config.list/get")
+          return [{ modelPreset: "profile-two" }];
+        if (query === "models.profiles.list")
+          return [
+            {
+              id: "profile-two",
+              displayName: "Profile Two",
+              source: "configured",
+              available: true,
+            },
+            {
+              id: "profile-one",
+              displayName: "Profile One",
+              source: "builtin",
+              available: true,
+            },
+          ];
+        return [];
+      },
+    );
+    await internals.refreshSessionConfigOptions("s1");
+    const configEvent = emit.mock.calls
+      .map(([event]) => event)
+      .find((event) => event.type === "session.config");
+    expect(
+      configEvent?.options
+        .find((option: { id: string }) => option.id === "model")
+        ?.options?.map((choice: { value: string }) => choice.value),
+    ).toEqual(["profile-two", "profile-one"]);
+    controller.dispose();
+  });
+
+  it("does not re-list model profiles when selecting one", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.sessionConfig.set("s1", [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "profile-one",
+        options: [
+          { value: "profile-one", name: "Profile One" },
+          { value: "profile-two", name: "Profile Two" },
+        ],
+      },
+    ]);
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) =>
+        query === "config.list/get"
+          ? [{ modelPreset: "profile-two" }]
+          : [],
+    );
+    await controller.setSessionConfig("s1", "model", "profile-two");
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "model.profile.set",
+      { id: "profile-two" },
+      expect.objectContaining({ repo: "/repo" }),
+    );
+    expect(
+      (cli.queryItems as any).mock.calls.filter(
+        ([, query]: [string, string]) => query === "models.profiles.list",
+      ),
+    ).toHaveLength(0);
+    controller.dispose();
+  });
+
   it("retries a failed command refresh and then publishes the new list", async () => {
     vi.useFakeTimers();
     const emit = vi.fn();

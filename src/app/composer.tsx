@@ -590,6 +590,8 @@ export interface ComposerProps {
   workspace: string;
   workspaces: string[];
   commands: AgentCommand[];
+  /** The live command list has not arrived yet; the bundled entries are all there is. */
+  commandsPending?: boolean;
   configOptions: AgentConfigOption[];
   modelDisplay?: string;
   thinking?: string;
@@ -605,6 +607,8 @@ export interface ComposerProps {
   onWorkspaceChange: (workspace: string) => void;
   onConfigChange: (configId: string, value: string) => void;
   onCycleThinking: () => void;
+  /** Called once each time the slash palette opens, to load skills on demand. */
+  onCommandPaletteOpen?: () => void;
   /** Set on a view-only remote device: the host would refuse every control. */
   readOnly?: boolean;
 }
@@ -616,6 +620,7 @@ export const Composer = memo(function Composer({
   workspace,
   workspaces,
   commands,
+  commandsPending = false,
   configOptions,
   modelDisplay,
   thinking,
@@ -630,12 +635,14 @@ export const Composer = memo(function Composer({
   onWorkspaceChange,
   onConfigChange,
   onCycleThinking,
+  onCommandPaletteOpen,
   readOnly = false,
 }: ComposerProps) {
   const [value, setValue] = useState(() => composerSnapshots.get(sessionId)?.value ?? "");
   const [images, setImages] = useState(() => composerSnapshots.get(sessionId)?.images ?? []);
   const [files, setFiles] = useState(() => composerSnapshots.get(sessionId)?.files ?? []);
   const [attachmentError, setAttachmentError] = useState("");
+  const [configNotice, setConfigNotice] = useState("");
   const [choosingImages, setChoosingImages] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const fastMode = FAST_SERVICE_TIERS.has(serviceTier ?? "");
@@ -722,6 +729,17 @@ export const Composer = memo(function Composer({
       : commands.filter((command) =>
           command.name.toLowerCase().includes(commandQuery),
         );
+  const paletteOpen = commandQuery !== null;
+  const paletteRequestedRef = useRef(false);
+  useEffect(() => {
+    if (!paletteOpen) {
+      paletteRequestedRef.current = false;
+      return;
+    }
+    if (paletteRequestedRef.current) return;
+    paletteRequestedRef.current = true;
+    onCommandPaletteOpen?.();
+  }, [paletteOpen, onCommandPaletteOpen]);
   const modelOption = configOptions.find(
     (option) =>
       option.type === "select" &&
@@ -1503,7 +1521,14 @@ export const Composer = memo(function Composer({
       onNewSession();
       return;
     }
-    if (command.name === "model" && modelOption) {
+    if (command.name === "model") {
+      // The config surface is still loading. Sending `/model` here would print the
+      // runtime's raw profile JSON into the conversation instead of opening the
+      // picker, so keep the request waiting for the options it needs.
+      if (!modelOption) {
+        setConfigNotice(t("모델 목록을 불러오는 중입니다. 잠시 후 다시 선택하세요."));
+        return;
+      }
       setValue("");
       setConfigMenu(modelOption.id);
       return;
@@ -1779,6 +1804,9 @@ export const Composer = memo(function Composer({
       {attachmentError && (
         <small className="composer-error">{attachmentError}</small>
       )}
+      {configNotice && !modelOption && (
+        <small className="composer-hint">{configNotice}</small>
+      )}
       {draftUrl && <LinkPreviewCard url={draftUrl} compact />}
       <textarea
         ref={textareaRef}
@@ -1819,11 +1847,16 @@ export const Composer = memo(function Composer({
         }}
         onKeyDown={handleKeyDown}
       />
-      {matchingCommands.length > 0 && (
+      {(matchingCommands.length > 0 ||
+        (commandsPending && commandQuery !== null)) && (
         <div className="command-palette" ref={commandPaletteRef}>
           <header>
             <Sparkles size={14} /> {t("스킬 및 명령어")} <span className="command-palette-count">{matchingCommands.length}</span>
-            <span className="command-palette-help">{t("↑↓ 선택 · Enter 적용")}</span>
+            <span className="command-palette-help">
+              {commandsPending
+                ? t("스킬 불러오는 중…")
+                : t("↑↓ 선택 · Enter 적용")}
+            </span>
           </header>
           {matchingCommands.map((command, index) => (
             <button
@@ -1848,6 +1881,11 @@ export const Composer = memo(function Composer({
               </span>
             </button>
           ))}
+          {matchingCommands.length === 0 && commandsPending && (
+            <small className="command-palette-loading">
+              {t("스킬 불러오는 중…")}
+            </small>
+          )}
         </div>
       )}
       <div className="composer-toolbar">
@@ -1940,10 +1978,10 @@ export const Composer = memo(function Composer({
                 }
               >
                 <strong>
-                  {modelDisplay ??
-                    modelOption.options?.find(
-                      (choice) => choice.value === modelOption.currentValue,
-                    )?.name ??
+                  {modelOption.options?.find(
+                    (choice) => choice.value === modelOption.currentValue,
+                  )?.name ??
+                    modelDisplay ??
                     String(modelOption.currentValue)}
                 </strong>
                 <i />

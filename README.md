@@ -151,7 +151,10 @@ work, `/progress` reads project progress, `/reload` reloads runtime components, 
 work follows the same held-work rules as prompts; session controls execute immediately.
 
 On attachment, skills are discovered from `skill.list/state` until the runtime
-publishes its authoritative command list. GJC 0.18.12 does not expose a complete
+publishes its authoritative command list. The palette also requests that context
+when it opens, but reuses a read from the last 15 seconds so reopening it does not
+spawn another pair of CLI processes. Until the live list arrives the palette keeps
+the bundled commands and says that skills are loading. GJC 0.18.12 does not expose a complete
 CLI slash-command registry query, and its skill rows can omit visibility metadata.
 An authoritative command update replaces that provisional skill list. TUI-only
 commands and commands without a public SDK equivalent are not claimed as supported;
