@@ -495,7 +495,7 @@ describe("session-scoped goal updates", () => {
   it("ignores a late goal operation result after selection changes", async () => {
     const shell = await source("src/app/shell.tsx");
     expect(shell).toContain(
-      "if (selectedIdRef.current === sessionId) setGoal(snapshot);",
+      "if (selectedIdRef.current === sessionId) {\n        setGoal(snapshot);\n        goalRescheduleRef.current(snapshot);\n      }",
     );
     expect(shell).toContain("goalBusySessionId === selectedSession.id");
   });

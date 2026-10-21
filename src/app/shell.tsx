@@ -72,6 +72,7 @@ import {
   statusLabel,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
+import { goalPollDelay } from "./goal-poll";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
   DeferredProjectList,
@@ -409,6 +410,9 @@ export default function App() {
     completed: 0,
     total: 0,
   });
+  const goalRescheduleRef = useRef<(snapshot: GoalSnapshot) => void>(
+    () => undefined,
+  );
 
   useEffect(() => {
     const tracker = messageDeliveryTrackerRef.current!;
@@ -1435,39 +1439,52 @@ export default function App() {
     if (!selectedSessionId) return;
     let active = true;
     let refreshing = false;
+    let timer: number | undefined;
+    const clearTimer = (): void => {
+      if (timer === undefined) return;
+      window.clearTimeout(timer);
+      timer = undefined;
+    };
+    const schedule = (snapshot: GoalSnapshot): void => {
+      if (!active) return;
+      clearTimer();
+      timer = window.setTimeout(refresh, goalPollDelay(snapshot, selectedSessionStatus));
+    };
     const refresh = (): void => {
       if (!active || refreshing) return;
       refreshing = true;
       void backend
         .getGoal(selectedSessionId)
         .then((snapshot) => {
-          if (active && selectedIdRef.current === selectedSessionId)
-            setGoal(snapshot);
+          if (!active || selectedIdRef.current !== selectedSessionId) return;
+          setGoal(snapshot);
+          schedule(snapshot);
         })
         .catch(() => {
-          if (active && selectedIdRef.current === selectedSessionId)
-            setGoal({ enabled: false, completed: 0, total: 0 });
+          if (!active || selectedIdRef.current !== selectedSessionId) return;
+          const snapshot = { enabled: false, completed: 0, total: 0 };
+          setGoal(snapshot);
+          schedule(snapshot);
         })
         .finally(() => { refreshing = false; });
     };
+    goalRescheduleRef.current = (snapshot) => {
+      if (active) schedule(snapshot);
+    };
+    // Goal and todo state advance at tool-call pace, not at streaming pace. No
+    // active goal backs off to 30s; a goal operation reschedules immediately from
+    // the snapshot it already received instead of issuing another query.
     queueMicrotask(refresh);
-    // Goal and todo state advance at tool-call pace, not at streaming pace. Two
-    // round trips every 1.5s against the host's GJC connection cost more than the
-    // freshness is worth while a turn is running. A hidden window has nobody to
-    // show the result to, and it refreshes on the way back in.
-    const timer = window.setInterval(
-      () => {
-        if (!document.hidden) refresh();
-      },
-      selectedSessionStatus === "running" ? 4_000 : 10_000,
-    );
     const refreshOnVisible = (): void => {
-      if (!document.hidden) refresh();
+      if (document.hidden) return;
+      clearTimer();
+      refresh();
     };
     document.addEventListener("visibilitychange", refreshOnVisible);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      clearTimer();
+      goalRescheduleRef.current = () => undefined;
       document.removeEventListener("visibilitychange", refreshOnVisible);
     };
   }, [backend, selectedSessionId, selectedSessionStatus]);
@@ -1580,7 +1597,10 @@ export default function App() {
     setGoalBusySessionId(sessionId);
     try {
       const snapshot = await backend.operateGoal(sessionId, operation);
-      if (selectedIdRef.current === sessionId) setGoal(snapshot);
+      if (selectedIdRef.current === sessionId) {
+        setGoal(snapshot);
+        goalRescheduleRef.current(snapshot);
+      }
     } catch (error) {
       if (selectedIdRef.current === sessionId)
         setAppError(humanErrorMessage(error));
