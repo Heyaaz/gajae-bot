@@ -246,12 +246,12 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.client.sendMessage(sessionId, input);
   }
 
-  async steerSession(sessionId: string, input: MessageInput): Promise<void> {
-    await this.client.steer(sessionId, input);
+  steerSession(sessionId: string, input: MessageInput): Promise<MessageDelivery> {
+    return this.client.steer(sessionId, input);
   }
 
-  async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
-    await this.client.queueFollowUp(sessionId, input);
+  queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery> {
+    return this.client.queueFollowUp(sessionId, input);
   }
 
   async flushQueuedNow(sessionId: string): Promise<boolean> {

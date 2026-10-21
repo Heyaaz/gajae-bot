@@ -69,6 +69,7 @@ import {
   GjcSdkCli,
   SdkCliError,
   brokerExec,
+  envelopeResult,
   freshOperationRef,
   isLifecycleUncertain,
   isSessionMissing,
@@ -107,8 +108,6 @@ import {
   OWNED_STOP_UNAVAILABLE_MESSAGE,
   OwnedStopUnavailableError,
   PENDING_ASYNC_RECONCILE_INTERVAL_MS,
-  PROMPT_SETTLE_ATTEMPTS,
-  PROMPT_SETTLE_INTERVAL_MS,
   PendingPermission,
   PersistedTurnState,
   PlanEntry,
@@ -120,6 +119,9 @@ import {
   SDK_SERVICE_TIER_OFF,
   SDK_SLASH_COMMAND_SPECS,
   PROMPT_NOT_EXECUTED_MESSAGE,
+  promptPreflightNotExecutedError,
+  promptPreflightNotExecutedReceipt,
+  requestFailureDetail,
   SHARED_ROUTE_UNAVAILABLE_MESSAGE,
   STARTUP_TIMEOUT_MS,
   SdkSlashCommandSpec,
@@ -272,6 +274,9 @@ function statsRevision(info: Stats): string {
  * control deadline reports a false uncertainty while the host is still working.
  */
 const COMPACTION_TIMEOUT_MS = 300_000;
+const REQUEST_OUTCOME_RECONCILIATION_BUDGET_MS = 20_000;
+const REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS = 400;
+const REQUEST_OUTCOME_QUERY_TIMEOUT_MS = 2_000;
 
 function commandPublicationKey(commands: readonly AgentCommand[]): string {
   return commands
@@ -318,7 +323,7 @@ export class GjcSdkController {
   private readonly cancellingSessions = new Set<string>();
   private readonly cancellationPromises = new Map<string, Promise<void>>();
   private readonly flushingSessions = new Set<string>();
-  private readonly pendingSteers = new Map<string, Promise<void>>();
+  private readonly pendingSteers = new Map<string, Promise<MessageDelivery>>();
   private readonly suppressedUserMessageKeys = new Map<string, Set<string>>();
   // A prompt renders its own user bubble immediately so an ordinary chat message
   // appears without waiting for the agent round trip. GJC echoes the same prompt
@@ -2822,7 +2827,8 @@ export class GjcSdkController {
     sessionId: string,
     input: ResolvedMessageInput,
     options?: { echo?: boolean },
-  ): Promise<void> {
+  ): Promise<MessageDelivery> {
+    this.locallyAbortedSessions.delete(sessionId);
     const text = messageTextWithFiles(input)
       .replace(/^\/steer(?:\s+|$)/u, "")
       .trim();
@@ -2833,10 +2839,58 @@ export class GjcSdkController {
     // turn and reads as the window having swallowed the message. Callers that
     // already echoed the same text pass echo: false so it is not shown twice.
     if (options?.echo !== false) this.appendLocalUserMessage(sessionId, text, input);
-    const pending = this.controlSession(sessionId, "turn.steer", {
-      text,
-      clientRef: `gajae-steer-${randomUUID()}`,
-    }).then(() => undefined);
+    const clientRef = `gajae-steer-${randomUUID()}`;
+    const pending = (async (): Promise<MessageDelivery> => {
+      let receipt: Record<string, unknown> | undefined;
+      try {
+        receipt = await this.controlSession(sessionId, "turn.steer", {
+          text,
+          clientRef,
+        });
+      } catch (error) {
+        if (!promptPreflightNotExecutedError(error)) throw error;
+        return {
+          kind: "not_executed",
+          detail: error.message,
+        };
+      }
+      if (receipt?.accepted === false || receipt?.status === "rejected") {
+        if (promptPreflightNotExecutedReceipt(receipt))
+          return {
+            kind: "not_executed",
+            detail: requestFailureDetail(receipt, "GJC rejected the steering request."),
+          };
+        // Upstream session-runtime.ts catches every sendUserMessage rejection for
+        // turn.steer, and AgentSession.#queueSteer can mutate its queue before a
+        // downstream throw. A generic rejected receipt therefore does not prove
+        // that no work began; only the canonical typed preflight error does.
+        throw new Error(
+          requestFailureDetail(receipt, "GJC rejected the steering request."),
+        );
+      }
+      const status = await this.reconcileRequestQuery(
+        sessionId,
+        "turn.steer_status",
+        { clientRef },
+        (record) =>
+          record.status === "accepted" ||
+          record.status === "rejected" ||
+          record.status === "unknown" ||
+          (record.status === "uncertain" &&
+            typeof record.terminalAt === "number"),
+      );
+      if (status?.status === "rejected") {
+        if (promptPreflightNotExecutedReceipt(status))
+          return {
+            kind: "not_executed",
+            detail: requestFailureDetail(status, "GJC rejected the steering request."),
+          };
+        throw new Error(
+          requestFailureDetail(status, "GJC rejected the steering request."),
+        );
+      }
+      return "steer";
+    })();
     const previous = this.pendingSteers.get(sessionId);
     const chained = previous
       ? previous.then(
@@ -2846,14 +2900,18 @@ export class GjcSdkController {
       : pending;
     this.pendingSteers.set(sessionId, chained);
     try {
-      await pending;
+      return await pending;
     } finally {
       if (this.pendingSteers.get(sessionId) === chained)
         this.pendingSteers.delete(sessionId);
     }
   }
 
-  async queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<void> {
+  async queueFollowUp(
+    sessionId: string,
+    input: ResolvedMessageInput,
+  ): Promise<MessageDelivery> {
+    this.locallyAbortedSessions.delete(sessionId);
     const text = messageTextWithFiles(input);
     if (!text) throw new Error("Follow-up text is required");
     try {
@@ -2865,7 +2923,60 @@ export class GjcSdkController {
       )
         throw new Error("세션 제어 상태를 확인할 수 없어 후속 메시지를 보내지 않았습니다.");
     }
-    await this.controlSession(sessionId, "turn.follow_up", { text });
+    let receipt: Record<string, unknown> | undefined;
+    try {
+      receipt = await this.controlSession(sessionId, "turn.follow_up", {
+        text,
+      });
+    } catch (error) {
+      if (!promptPreflightNotExecutedError(error)) throw error;
+      return {
+        kind: "not_executed",
+        detail: error.message,
+      };
+    }
+    if (receipt?.accepted === false || receipt?.status === "rejected") {
+      if (promptPreflightNotExecutedReceipt(receipt))
+        return {
+          kind: "not_executed",
+          detail: requestFailureDetail(receipt, "GJC rejected the follow-up request."),
+        };
+      throw new Error(
+        requestFailureDetail(receipt, "GJC rejected the follow-up request."),
+      );
+    }
+    const commandId = receipt?.commandId;
+    const turnId = receipt?.turnId;
+    if (typeof commandId !== "string" || typeof turnId !== "string")
+      return "prompt";
+    const result = await this.reconcileRequestQuery(
+      sessionId,
+      "turn.result",
+      { kind: "prompt", commandId, turnId },
+      (record) =>
+        record.status === "terminal_ok" ||
+        record.status === "failed" ||
+        record.status === "unknown",
+    );
+    if (result?.status === "failed") {
+      if (result.startedAt === undefined)
+        return {
+          kind: "not_executed",
+          detail: requestFailureDetail(
+            result,
+            "GJC confirmed that the follow-up failed before execution.",
+          ),
+        };
+      if (typeof result.startedAt !== "number" || !Number.isFinite(result.startedAt))
+        return "prompt";
+      throw new Error(
+        requestFailureDetail(
+          result,
+          "GJC reported a follow-up failure after execution started.",
+        ),
+      );
+    }
+    return "prompt";
   }
 
   /**
@@ -3437,8 +3548,7 @@ export class GjcSdkController {
       return "prompt";
     const value = input.text.trim();
     if (/^\/steer(?:\s+|$)/u.test(value)) {
-      await this.steerSession(sessionId, input);
-      return "steer";
+      return await this.steerSession(sessionId, input);
     }
     // `bare` is the user's own text; `promptText` adds the attachment block.
     // steerSession composes the block itself, so the steer fallbacks below hand
@@ -3451,12 +3561,28 @@ export class GjcSdkController {
       this.activePromptSessions.has(sessionId) ||
       session?.status === "running"
     ) {
-      await this.steerSession(sessionId, { ...input, text: bare });
-      return "steer";
+      return await this.steerSession(sessionId, { ...input, text: bare });
     }
     const admission = Symbol(sessionId);
     this.activePromptAdmissions.set(sessionId, admission);
     this.activePromptSessions.add(sessionId);
+    const settleNotExecuted = async (detail: string): Promise<MessageDelivery> => {
+      if (this.activePromptAdmissions.get(sessionId) !== admission)
+        return "prompt";
+      const settlementGeneration = this.generation;
+      const settlementRevision = this.currentRunRevision(sessionId);
+      this.activePromptAdmissions.delete(sessionId);
+      this.activePromptSessions.delete(sessionId);
+      const runState = await this.discoveredRunState(sessionId);
+      if (
+        runState !== undefined &&
+        this.activePromptAdmissions.get(sessionId) === undefined &&
+        settlementGeneration === this.generation &&
+        settlementRevision === this.currentRunRevision(sessionId)
+      )
+        this.updateSessionStatus(sessionId, runState, { announce: false });
+      return { kind: "not_executed", detail };
+    };
 
     // The bubble is echoed before any await so the window shows the request the
     // moment it is submitted. Connecting and attaching are round trips, and doing
@@ -3488,14 +3614,23 @@ export class GjcSdkController {
         // reference instead.
         uncertain = true;
       }
-      if (accepted?.status === "failed")
-        throw new Error("GJC rejected the prompt");
       // `send` returning means the prompt was *accepted*, not that the agent
       // stopped. A follow-up turn, a released steer, or background work keeps running
       // and keeps appending to the transcript, so closing the row here reported 완료
       // over live work. The prompt record and the session's own transcript are the
       // accounts that cover what a single CLI call cannot see, so they decide.
-      let settlement = await this.awaitPromptSettlement(sessionId, operationRef);
+      const settledOperationRef = accepted?.operationRef ?? operationRef;
+      const settlement =
+        accepted?.status === "failed"
+          ? {
+              kind: "not_executed" as const,
+              detail: "GJC rejected the prompt",
+            }
+          : await this.awaitPromptSettlement(
+              sessionId,
+              settledOperationRef,
+              () => this.activePromptAdmissions.get(sessionId) === admission,
+            );
       if (settlement === "unknown" && uncertain) {
         // This send may have been cancelled and replaced while its settlement
         // was being read. Only the original admission may publish the run state.
@@ -3503,24 +3638,8 @@ export class GjcSdkController {
           this.updateSessionStatus(sessionId, "running");
         return "prompt";
       }
-      if (settlement === "not_executed") {
-        if (this.activePromptAdmissions.get(sessionId) !== admission)
-          return "prompt";
-        // The host accepted the prompt but dropped it before the agent started:
-        // gjc/0.18.12 waits 30s for the previous run's context maintenance and then
-        // fails the prompt ("Timed out waiting for prior agent run to finish"), or
-        // cancels its preflight. The record proves the text never ran. A follow-up
-        // is queued behind that maintenance instead of racing it (verified on a
-        // TUI-hosted session: two prompts failed while a follow-up ran at once),
-        // and the transcript watcher reports the run it starts.
-        try {
-          await this.controlSession(sessionId, "turn.follow_up", {
-            text: promptText,
-          });
-        } catch {
-          throw new Error(PROMPT_NOT_EXECUTED_MESSAGE);
-        }
-        settlement = "unknown";
+      if (typeof settlement === "object") {
+        return await settleNotExecuted(settlement.detail);
       }
       if (settlement === "unknown") {
         // Poll exhaustion or unavailable evidence is not a terminal event. The
@@ -3553,13 +3672,11 @@ export class GjcSdkController {
       const stillRunning = await this.discoveredRunState(sessionId);
       if (
         ownsRow &&
+        stillRunning !== undefined &&
         settlementGeneration === this.generation &&
         settlementRevision === this.currentRunRevision(sessionId)
       )
-        this.updateSessionStatus(
-          sessionId,
-          stillRunning === "running" ? "running" : "idle",
-        );
+        this.updateSessionStatus(sessionId, stillRunning);
     } catch (caught) {
       let error: unknown = caught;
       // The user cancelled this send, or a newer prompt took the row while this
@@ -3569,14 +3686,15 @@ export class GjcSdkController {
       // prompt that was already cancelled.
       if (this.activePromptAdmissions.get(sessionId) !== admission)
         return "prompt";
+      if (promptPreflightNotExecutedError(error))
+        return await settleNotExecuted(error.message);
       if (busyPromptError(error)) {
         this.activePromptSessions.delete(sessionId);
-        await this.steerSession(
+        return await this.steerSession(
           sessionId,
           { ...input, text: bare },
           { echo: false },
         );
-        return "steer";
       }
       if (isSessionUnreachable(error)) {
         this.markTerminalOnly(sessionId);
@@ -3616,69 +3734,129 @@ export class GjcSdkController {
   }
 
   /**
+   * Reconciles one exact SDK selector for at most twenty seconds. `turn.result`
+   * and `turn.steer_status` are read-only; unknown, unavailable, and timed-out
+   * outcomes remain unknown and never authorize another submission.
+   */
+  private async reconcileRequestQuery(
+    sessionId: string,
+    query: "turn.result" | "turn.steer_status",
+    input: Record<string, unknown>,
+    isTerminal: (record: Record<string, unknown>) => boolean,
+    isCurrent?: () => boolean,
+  ): Promise<Record<string, unknown> | undefined> {
+    const generation = this.generation;
+    const cancellationWatermark = this.cancellationWatermarks.get(sessionId);
+    const deadline = Date.now() + REQUEST_OUTCOME_RECONCILIATION_BUDGET_MS;
+    const wasCancelledOrReplaced = () =>
+      this.disposed ||
+      generation !== this.generation ||
+      this.locallyAbortedSessions.has(sessionId) ||
+      this.cancellationWatermarks.get(sessionId) !== cancellationWatermark ||
+      isCurrent?.() === false;
+
+    while (!wasCancelledOrReplaced()) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return undefined;
+      let record: Record<string, unknown> | undefined;
+      let queryFailed = false;
+      try {
+        const cli = await this.requireCli();
+        if (wasCancelledOrReplaced()) return undefined;
+        const queryTimeout = Math.min(
+          REQUEST_OUTCOME_QUERY_TIMEOUT_MS,
+          deadline - Date.now(),
+        );
+        if (queryTimeout <= 0) return undefined;
+        const envelope = await cli.rawQuery(sessionId, query, input, {
+          repo: this.repoFor(sessionId),
+          timeoutMs: queryTimeout,
+        });
+        record = envelopeResult(envelope);
+      } catch {
+        if (wasCancelledOrReplaced()) return undefined;
+        queryFailed = true;
+      }
+      if (wasCancelledOrReplaced()) return undefined;
+      if (queryFailed) {
+        const waitMs = Math.min(
+          REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS,
+          deadline - Date.now(),
+        );
+        if (waitMs <= 0) return undefined;
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+      if (!record) return { status: "unknown" };
+      const normalized = {
+        ...record,
+        status: typeof record.status === "string" ? record.status : "unknown",
+      };
+      if (normalized.status === "unknown" || isTerminal(normalized))
+        return normalized;
+      const waitMs = Math.min(
+        REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS,
+        deadline - Date.now(),
+      );
+      if (waitMs <= 0) return undefined;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    return undefined;
+  }
+
+  /**
    * Waits for an accepted prompt to reach a terminal record.
    *
    * The semantic `send` call returns at acceptance rather than holding open for the
    * whole turn, so the window's spinner and final status need reconciliation. The
-   * turn is followed here instead: `status` is the lossless record, and the
+   * turn is followed here instead: `turn.result` is the lossless record, and the
    * transcript is watched in parallel by the session-file watcher.
    *
    * A prompt that is still running when the poll budget ends is left running. This
    * never forces the row idle and never reports a cancel, because `unknown` and
    * "still going" are both uncertainty, not proof the work stopped.
    *
-   * `not_executed` is a failed record that never started: the host dropped the
-   * request before the agent ran it, so the caller may deliver it again.
+   * A failed record without `startedAt` is returned as a request-scoped outcome.
+   * Poll exhaustion, query errors, and unknown selectors remain unknown; callers
+   * must not replay any of them.
    */
   private async awaitPromptSettlement(
     sessionId: string,
     operationRef: string,
-  ): Promise<"terminal" | "unknown" | "not_executed"> {
-    const generation = this.generation;
-    for (let attempt = 0; attempt < PROMPT_SETTLE_ATTEMPTS; attempt += 1) {
-      // A cancel or a newer turn owns the row now; stop following this one.
-      if (
-        this.disposed ||
-        generation !== this.generation ||
-        this.locallyAbortedSessions.has(sessionId)
-      )
+    isCurrent?: () => boolean,
+  ): Promise<
+    | "terminal"
+    | "unknown"
+    | { kind: "not_executed"; detail: string }
+  > {
+    const record = await this.reconcileRequestQuery(
+      sessionId,
+      "turn.result",
+      { kind: "prompt", clientRef: operationRef },
+      (result) =>
+        result.status === "terminal_ok" ||
+        result.status === "failed" ||
+        result.status === "unknown",
+      isCurrent,
+    );
+    if (!record || record.status === "unknown") return "unknown";
+    if (record.status === "failed") {
+      if (record.startedAt === undefined)
+        return {
+          kind: "not_executed",
+          detail: requestFailureDetail(record, PROMPT_NOT_EXECUTED_MESSAGE),
+        };
+      if (typeof record.startedAt !== "number" || !Number.isFinite(record.startedAt))
         return "unknown";
-      await new Promise((resolve) =>
-        setTimeout(resolve, PROMPT_SETTLE_INTERVAL_MS),
-      );
-      let record: Awaited<ReturnType<GjcSdkCli["promptStatus"]>> | undefined;
-      try {
-        const cli = await this.requireCli();
-        record = await cli.promptStatus(sessionId, operationRef, {
-          repo: this.repoFor(sessionId),
-        });
-      } catch (error) {
-        // A session that cannot answer its own prompt record is not proof the prompt
-        // failed; the transcript still accounts for it.
-        if (isSessionMissing(error)) return "unknown";
-        continue;
-      }
-      if (!record.completed) continue;
-      if (record.status === "failed") {
-        // A Stop pressed while this was read owns the outcome.
-        if (this.locallyAbortedSessions.has(sessionId)) return "unknown";
-        if (!record.started) return "not_executed";
-        const message = record.error?.message ?? "GJC run failed";
-        // An interrupted run -- the user's Stop or a newer message that took over
-        // the turn -- is not a failure. The host records it as `cancelled` with a
-        // generic message, which read as "GJC run failed" and published idle over
-        // the turn the newer message had started.
-        if (
-          record.error?.code === "aborted" ||
-          record.error?.code === "cancelled" ||
-          /abort|cancel/iu.test(message)
-        )
-          return "terminal";
-        throw new Error(message);
-      }
-      return "terminal";
+      const error =
+        record.error && typeof record.error === "object"
+          ? (record.error as Record<string, unknown>)
+          : undefined;
+      if (error?.code === "aborted" || error?.code === "cancelled")
+        return "terminal";
+      throw new Error(requestFailureDetail(record, "GJC run failed."));
     }
-    return "unknown";
+    return record.status === "terminal_ok" ? "terminal" : "unknown";
   }
 
   async cancelRun(sessionId: string): Promise<void> {

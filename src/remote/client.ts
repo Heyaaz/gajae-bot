@@ -1,5 +1,6 @@
 import type {
   AgentEvent,
+  MessageDelivery,
   TranscriptChange,
   TranscriptPage,
   TranscriptPageRequest,
@@ -655,15 +656,15 @@ export class RemoteClient {
   }
 
   sendMessage(sessionId: string, input: unknown) {
-    return this.control<"prompt" | "steer">(REMOTE_API.messages(sessionId), { input });
+    return this.control<MessageDelivery>(REMOTE_API.messages(sessionId), { input });
   }
 
   steer(sessionId: string, input: unknown) {
-    return this.control<void>(REMOTE_API.steer(sessionId), { input });
+    return this.control<MessageDelivery>(REMOTE_API.steer(sessionId), { input });
   }
 
   queueFollowUp(sessionId: string, input: unknown) {
-    return this.control<void>(REMOTE_API.followUps(sessionId), { input });
+    return this.control<MessageDelivery>(REMOTE_API.followUps(sessionId), { input });
   }
 
   flushFollowUps(sessionId: string) {

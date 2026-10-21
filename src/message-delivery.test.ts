@@ -2,12 +2,19 @@ import { describe, expect, it } from "vitest";
 import type { MessageInput, TranscriptItem } from "../shared/agent-contract";
 import {
   MESSAGE_DELIVERY_IDLE_GRACE_MS,
+  MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS,
   MessageDeliveryTracker,
   isTrackableMessageInput,
 } from "./message-delivery";
 
 const attachedIdle = {
   status: "idle" as const,
+  attachment: "attached" as const,
+  connection: "connected" as const,
+};
+
+const attachedRunning = {
+  status: "running" as const,
   attachment: "attached" as const,
   connection: "connected" as const,
 };
@@ -68,6 +75,148 @@ describe("message delivery tracker", () => {
     tracker.advance(1_000 + MESSAGE_DELIVERY_IDLE_GRACE_MS);
     expect(tracker.snapshot("session-1")[0]).toMatchObject({ id, state: "failed" });
     expect(tracker.beginRetry(id)).toMatchObject({ input: input("lost request") });
+  });
+
+  it("keeps authoritative not-executed outcomes visible while the session keeps working", () => {
+    const tracker = new MessageDeliveryTracker();
+    const id = tracker.submit("session-1", input("rejected request"), [], 0, attachedRunning);
+    const generation = tracker.submissionGeneration(id)!;
+    tracker.markNotExecuted(id, "Prompt preflight cancelled", generation, 1);
+
+    for (const [state, now] of [
+      [{ ...attachedRunning, status: "running" as const }, 2],
+      [{ ...attachedRunning, phase: "compacting" }, 3],
+      [{ ...attachedRunning, connection: "disconnected" as const }, 4],
+    ] as const) {
+      tracker.observeSession("session-1", state, now);
+      tracker.advance(now + 60_000);
+      expect(tracker.snapshot("session-1")).toMatchObject([{
+        id,
+        state: "failed",
+        failure: { kind: "not_executed", detail: "Prompt preflight cancelled" },
+      }]);
+    }
+    expect(tracker.beginRetry(id)?.input).toEqual(input("rejected request"));
+  });
+
+  it("ignores a late old send response after a manual retry has locked the attempt", () => {
+    const tracker = new MessageDeliveryTracker();
+    const id = tracker.submit("session-1", input("retry me"), [], 0, attachedRunning);
+    const originalGeneration = tracker.submissionGeneration(id)!;
+    tracker.markNotExecuted(id, "first attempt rejected", originalGeneration, 1);
+    expect(tracker.beginRetry(id)).toBeDefined();
+    const retryGeneration = tracker.submissionGeneration(id)!;
+
+    tracker.acceptSubmission(id, 2, originalGeneration);
+    tracker.markNotExecuted(id, "late old rejection", originalGeneration, 3);
+
+    expect(retryGeneration).toBeGreaterThan(originalGeneration);
+    expect(tracker.snapshot("session-1")).toMatchObject([{
+      id,
+      state: "pending",
+      retrying: true,
+      submitting: true,
+    }]);
+    expect(tracker.snapshot("session-1")[0]?.failure).toBeUndefined();
+  });
+
+  it("shows an honest unconfirmed retry state while active instead of claiming failure", () => {
+    const tracker = new MessageDeliveryTracker();
+    const id = tracker.submit("session-1", input("still working"), [], 0, attachedRunning);
+    tracker.acceptSubmission(id, 1, tracker.submissionGeneration(id)!);
+    tracker.observeTranscript("session-1", [], { kind: "latest", complete: true, requestedAt: 2 }, 3);
+
+    expect(tracker.needsLatestRead("session-1")).toBe(true);
+    expect(tracker.nextDeadline()).toBe(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+    for (let now = 5_000; now < MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS; now += 5_000) {
+      tracker.observeSession("session-1", attachedRunning, now);
+      expect(tracker.nextDeadline()).toBe(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+    }
+    tracker.advance(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS - 1);
+    expect(tracker.snapshot("session-1")[0]?.state).toBe("pending");
+    tracker.advance(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+    expect(tracker.snapshot("session-1")).toMatchObject([{
+      id,
+      state: "unconfirmed",
+      submitting: false,
+    }]);
+    expect(tracker.snapshot("session-1")[0]?.state).not.toBe("failed");
+    expect(tracker.beginRetry(id)?.input).toEqual(input("still working"));
+  });
+
+  it("requires a latest read requested after submission before showing an active outcome as unknown", () => {
+    const tracker = new MessageDeliveryTracker();
+    const id = tracker.submit("session-1", input("fresh read required"), [], 10_000, attachedRunning);
+    tracker.acceptSubmission(id, 10_001, tracker.submissionGeneration(id)!);
+    tracker.observeTranscript("session-1", [], { kind: "latest", complete: true, requestedAt: 9_999 }, 10_002);
+
+    tracker.advance(10_000 + MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+
+    expect(tracker.snapshot("session-1")).toMatchObject([{ id, state: "pending" }]);
+  });
+
+  it("does not infer absence while compacting or from an unknown initial baseline", () => {
+    const compacting = new MessageDeliveryTracker();
+    const id = compacting.submit("session-1", input("compacting"), [], 0, attachedRunning);
+    compacting.observeTranscript("session-1", [], { kind: "latest", complete: true, requestedAt: 1 }, 2);
+    compacting.observeSession("session-1", { ...attachedRunning, phase: "compacting" }, 3);
+    compacting.advance(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+    expect(compacting.needsLatestRead("session-1")).toBe(false);
+    expect(compacting.snapshot("session-1")).toMatchObject([{ id, state: "pending" }]);
+
+    const unknownBaseline = new MessageDeliveryTracker();
+    unknownBaseline.submit("session-1", input("unknown baseline"), [], 0, attachedRunning, false);
+    unknownBaseline.observeTranscript("session-1", [], { kind: "latest", complete: true }, 1);
+    unknownBaseline.advance(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS * 2);
+    expect(unknownBaseline.needsLatestRead("session-1")).toBe(false);
+    expect(unknownBaseline.snapshot("session-1")[0]?.state).toBe("pending");
+  });
+
+  it("clears a failed request when matching durable evidence arrives later", () => {
+    const tracker = new MessageDeliveryTracker();
+    const id = tracker.submit("session-1", input("eventually persisted"), [], 0, attachedRunning);
+    tracker.markNotExecuted(id, "request rejected", tracker.submissionGeneration(id)!, 1);
+
+    tracker.observeUserEvent("session-1", user("durable-after-reject", "eventually persisted"), 2);
+
+    expect(tracker.snapshot("session-1")).toEqual([]);
+  });
+
+  it("skips permanent failures but keeps the submission fence for unconfirmed snapshot reconciliation", () => {
+    const fence = user("old-fence", "previous request");
+    const failed = new MessageDeliveryTracker();
+    const failedId = failed.submit("session-1", input("rejected"), [fence], 0, attachedRunning);
+    failed.markNotExecuted(failedId, "preflight cancelled", failed.submissionGeneration(failedId)!, 1);
+    expect(failed.coversPendingAttempts("session-1", [user("tail", "newer")], true)).toBe(true);
+
+    const uncertain = new MessageDeliveryTracker();
+    const uncertainId = uncertain.submit("session-1", input("unknown"), [fence], 0, attachedRunning);
+    uncertain.acceptSubmission(uncertainId, 1, uncertain.submissionGeneration(uncertainId)!);
+    uncertain.observeTranscript("session-1", [fence], { kind: "latest", complete: true, requestedAt: 2 }, 3);
+    uncertain.advance(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+    expect(uncertain.snapshot("session-1")[0]?.state).toBe("unconfirmed");
+    expect(uncertain.coversPendingAttempts("session-1", [user("tail", "newer")], true)).toBe(false);
+    expect(uncertain.coversPendingAttempts("session-1", [fence, user("tail", "newer")], true)).toBe(true);
+  });
+
+  it("reconciles an unconfirmed attempt against a later durable snapshot if its live event was missed", () => {
+    const fence = user("old-fence", "previous request");
+    const tracker = new MessageDeliveryTracker();
+    const id = tracker.submit("session-1", input("persisted during work"), [fence], 0, attachedRunning);
+    tracker.acceptSubmission(id, 1, tracker.submissionGeneration(id)!);
+    tracker.observeTranscript("session-1", [fence], { kind: "latest", complete: true, requestedAt: 2 }, 3);
+    tracker.advance(MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS);
+    expect(tracker.snapshot("session-1")[0]?.state).toBe("unconfirmed");
+    expect(tracker.needsLatestRead("session-1")).toBe(true);
+
+    tracker.observeTranscript(
+      "session-1",
+      [fence, user("missed-live-event", "persisted during work")],
+      { kind: "latest", complete: true, requestedAt: MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS + 1 },
+      MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS + 2,
+    );
+
+    expect(tracker.snapshot("session-1")).toEqual([]);
   });
 
   it("confirms normal sends, steers, and queued follow-ups only from durable user rows", () => {

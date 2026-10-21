@@ -14,6 +14,7 @@ import type {
   ForkSessionInput,
   GitStatusSnapshot,
   HistorySession,
+  MessageDelivery,
 } from "../../shared/agent-contract";
 
 class FakeGjcBridge implements GjcDesktopBridge {
@@ -138,14 +139,14 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async queueFollowUp(
     _sessionId: string,
     _input: MessageInput,
-  ): Promise<void> {}
+  ): Promise<MessageDelivery> { return "prompt"; }
   async listQueuedMessages(_sessionId: string): Promise<[]> {
     return [];
   }
   async flushQueuedNow(_sessionId: string): Promise<boolean> {
     return false;
   }
-  async steerSession(_sessionId: string, _input: MessageInput): Promise<void> {}
+  async steerSession(_sessionId: string, _input: MessageInput): Promise<MessageDelivery> { return "steer"; }
   async renameSession(sessionId: string, title: string): Promise<void> {
     this.renamed.push({ sessionId, title });
   }

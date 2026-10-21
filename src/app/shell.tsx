@@ -262,6 +262,12 @@ function deliverySessionState(
   };
 }
 
+function isNotExecutedDelivery(
+  value: MessageDelivery,
+): value is Extract<MessageDelivery, { kind: "not_executed" }> {
+  return typeof value !== "string" && value.kind === "not_executed";
+}
+
 /**
  * Whether the composer has to treat the selected session as mid-turn.
  *
@@ -461,7 +467,8 @@ export default function App() {
             Date.now(),
           );
           const afterCount = tracker.snapshot(sessionId).length;
-          if (complete || afterCount !== beforeCount) {
+          const needsAnotherRead = tracker.needsLatestRead(sessionId);
+          if ((complete || afterCount !== beforeCount) && !needsAnotherRead) {
             deliveryPageRetryAfterRef.current.delete(sessionId);
             const timer = deliveryRetryTimersRef.current.get(sessionId);
             if (timer !== undefined) window.clearTimeout(timer);
@@ -478,6 +485,8 @@ export default function App() {
               }, 5_000);
               deliveryRetryTimersRef.current.set(sessionId, timer);
             }
+            if (complete || afterCount !== beforeCount)
+              setMessageDeliveryRevision((revision) => revision + 1);
           }
         })()
           .catch(() => undefined)
@@ -2162,11 +2171,23 @@ export default function App() {
     // Answering the reader is part of sending: the transcript takes the view to the
     // newest content, so the request they just made and the reply to it appear where
     // they are looking instead of below a scroll position they had left behind.
-    if (options.quiet !== true) setSentRequestToken((token) => token + 1);
+    if (
+      options.quiet !== true &&
+      selectedIdRef.current === resolvedSessionId
+    ) {
+      setSentRequestToken((token) => token + 1);
+    }
     try {
       const result = await backend.sendMessage(resolvedSessionId, input);
       if (deliveryAttemptId && generation !== undefined) {
-        if (options.retryId)
+        if (isNotExecutedDelivery(result))
+          tracker.markNotExecuted(
+            deliveryAttemptId,
+            result.detail,
+            generation,
+            Date.now(),
+          );
+        else if (options.retryId)
           tracker.finishRetry(deliveryAttemptId, Date.now(), generation);
         else tracker.acceptSubmission(deliveryAttemptId, Date.now(), generation);
         setMessageDeliveryRevision((revision) => revision + 1);

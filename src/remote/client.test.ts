@@ -400,6 +400,20 @@ describe("authenticated requests", () => {
 describe("control operations", () => {
   const message = { text: "안녕", images: [], files: [] };
 
+  it.each(["sendMessage", "steer", "queueFollowUp"] as const)("preserves request rejection through %s without replay", async (method) => {
+    const outcome = { kind: "not_executed", detail: "Prompt preflight was cancelled before execution." };
+    const { fetchImpl, calls } = recorder((call) => jsonResponse(200, {
+      operationId: (call.body as { operationId: string }).operationId,
+      state: "completed",
+      result: outcome,
+      at: new Date(0).toISOString(),
+    }));
+    const client = new RemoteClient({ baseUrl: "https://host", storage: memoryStorage(TOKEN), fetchImpl });
+    await expect(client[method]("s-1", message)).resolves.toEqual(outcome);
+    expect(calls).toHaveLength(1);
+    client.dispose();
+  });
+
   it("sends an operation ID and returns the recorded result", async () => {
     const { fetchImpl, calls } = recorder((call) => {
       if (call.method === "POST")

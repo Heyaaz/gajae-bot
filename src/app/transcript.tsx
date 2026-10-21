@@ -2035,20 +2035,33 @@ function MessageDeliveryFailureRow({
       )}
       <div className="message-meta">
         <span role="status">
-          {attempt.state === "failed"
-            ? t("전달 상태를 기록에서 확인하지 못했습니다.")
-            : attempt.retrying
-              ? t("다시 보내는 중…")
-              : t("전달 확인 중…")}
+          {attempt.failure?.kind === "not_executed"
+            ? t`요청이 실행되지 않았습니다: ${attempt.failure.detail}`
+            : attempt.state === "unconfirmed"
+              ? t("전달 결과를 알 수 없습니다. 아직 대기 중일 수 있습니다.")
+              : attempt.state === "failed"
+                ? t("전달 상태를 기록에서 확인하지 못했습니다.")
+                : attempt.retrying
+                  ? t("다시 보내는 중…")
+                  : t("전달 확인 중…")}
         </span>
-        {attempt.state === "failed" && onRetry && (
+        {(attempt.state === "failed" || attempt.state === "unconfirmed") && onRetry && (
           <button
             type="button"
             className="notice-card-retry"
             disabled={attempt.retrying || attempt.submitting}
-            onClick={() => onRetry(attempt.id)}
+            onClick={() => {
+              if (
+                attempt.state === "unconfirmed" &&
+                !window.confirm(t("전달 결과를 확인할 수 없습니다. 아직 대기 중일 수 있어 다시 시도하면 중복 실행될 수 있습니다. 그래도 다시 시도할까요?"))
+              )
+                return;
+              onRetry(attempt.id);
+            }}
           >
-            {t("전달 안 됨 · 다시 보내기")}
+            {attempt.state === "unconfirmed"
+              ? t("결과 알 수 없음 · 다시 시도")
+              : t("전달 안 됨 · 다시 보내기")}
           </button>
         )}
       </div>

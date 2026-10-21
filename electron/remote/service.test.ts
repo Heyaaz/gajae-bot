@@ -104,9 +104,11 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
     },
     async steerSession(sessionId: string) {
       calls.push(`steer:${sessionId}`);
+      return "steer";
     },
     async queueFollowUp(sessionId: string) {
       calls.push(`queue:${sessionId}`);
+      return "prompt";
     },
     async flushQueuedNow() {
       return true;

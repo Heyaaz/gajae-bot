@@ -141,14 +141,64 @@ export function brokerFailureMessage(error: unknown): string {
     : String(error);
 }
 
+/** Returns only an explicit diagnostic field from a request outcome receipt. */
+export function requestFailureDetail(
+  value: unknown,
+  fallback: string,
+): string {
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return value.message;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return fallback;
+  const receipt = value as Record<string, unknown>;
+  if (typeof receipt.error === "string") return receipt.error;
+  if (receipt.error && typeof receipt.error === "object" && !Array.isArray(receipt.error)) {
+    const detail = (receipt.error as Record<string, unknown>).message;
+    if (typeof detail === "string") return detail;
+  }
+  if (typeof receipt.message === "string") return receipt.message;
+  if (typeof receipt.detail === "string") return receipt.detail;
+  return fallback;
+}
+
+export const PROMPT_PREFLIGHT_CANCELLED_MESSAGE =
+  "Prompt preflight was cancelled before execution.";
+
+/** Only this typed host outcome proves that an admission never executed. */
+export function promptPreflightNotExecutedError(
+  error: unknown,
+): error is SdkCliError {
+  return (
+    error instanceof SdkCliError &&
+    error.code === "busy" &&
+    error.message === PROMPT_PREFLIGHT_CANCELLED_MESSAGE
+  );
+}
+
+/** Checks the same typed preflight outcome after the SDK persists its receipt. */
+export function promptPreflightNotExecutedReceipt(
+  value: unknown,
+): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const receipt = value as Record<string, unknown>;
+  if (receipt.accepted !== false && receipt.status !== "rejected")
+    return false;
+  if (!receipt.error || typeof receipt.error !== "object" || Array.isArray(receipt.error))
+    return false;
+  const error = receipt.error as Record<string, unknown>;
+  return (
+    error.code === "busy" &&
+    error.message === PROMPT_PREFLIGHT_CANCELLED_MESSAGE
+  );
+}
+
 // Shown when a live session has no shared control route this window can use. It
 // names the route and the retry rather than the process that might hold the
 // session: a live row the broker cannot route to is not proof that a terminal owns
 // it, and the session itself is never closed, resumed, or replaced by this message.
-// Shown when GJC accepted a prompt, dropped it before the agent started -- the
-// previous run's context maintenance outlived the host's wait -- and also refused
-// it as a follow-up. The record proves the text never ran, so the user is told
-// to send it again.
+// Fallback diagnostic used when GJC proves a request failed before execution but
+// supplies no request-specific error detail. Manual retry remains the user's choice.
 export const PROMPT_NOT_EXECUTED_MESSAGE =
   "GJC가 메시지를 받았지만 실행을 시작하기 전에 취소했습니다(이전 작업이나 컨텍스트 압축이 끝나지 않음). 메시지는 실행되지 않았으니 다시 보내 주세요.";
 

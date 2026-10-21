@@ -888,70 +888,328 @@ describe("GjcSdkController CLI seam", () => {
     expect(internals.sessions.get("s1")?.status).toBe("running");
   });
 
-  it("queues a prompt the host dropped before it ran as a follow-up", async () => {
+  it("returns a proved preflight rejection for the original prompt without replaying it", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     internals.transcripts.set("s1", []); internals.messageKeys.set("s1", new Map());
     internals.attachedSessions.add("s1");
-    internals.awaitPromptSettlement = vi.fn(async () => "not_executed");
+    internals.awaitPromptSettlement = vi.fn(async () => ({
+      kind: "not_executed",
+      detail: "Prompt preflight was cancelled before execution.",
+    }));
+    internals.discoveredRunState = vi.fn(async () => "running");
     await expect(
       controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
-    ).resolves.toBe("prompt");
-    // Resending the prompt would race the same maintenance; the follow-up waits it out.
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Prompt preflight was cancelled before execution.",
+    });
     expect(cli.send).toHaveBeenCalledTimes(1);
-    expect(cli.rawControl).toHaveBeenCalledWith("s1", "turn.follow_up", { text: "hello" }, expect.anything());
-    expect(internals.transcripts.get("s1").filter((item: any) => item.kind === "notice")).toEqual([]);
+    expect(cli.rawControl).not.toHaveBeenCalledWith("s1", "turn.follow_up", expect.anything(), expect.anything());
     // The request is echoed once, not once per delivery.
     expect(internals.transcripts.get("s1").filter((item: any) => item.role === "user")).toHaveLength(1);
-    // The run the follow-up starts is reported by the transcript watcher.
+    expect(internals.discoveredRunState).toHaveBeenCalledWith("s1");
     expect(internals.sessions.get("s1")?.status).toBe("running");
   });
 
-  it("tells the user when a dropped prompt cannot be queued either", async () => {
+  it("preserves a typed prompt preflight rejection without falling back to a steer", async () => {
     const { controller, cli, internals } = harness();
-    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
-    internals.transcripts.set("s1", []); internals.messageKeys.set("s1", new Map());
-    internals.attachedSessions.add("s1");
-    internals.refreshContextUsage = vi.fn(async () => undefined);
-    internals.awaitPromptSettlement = vi.fn(async () => "not_executed");
-    (cli.rawControl as any).mockRejectedValue(new Error("refused"));
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.ensureAttached = vi.fn(async () => undefined);
+    internals.discoveredRunState = vi.fn(async () => "running");
+    (cli.send as any).mockRejectedValue(
+      new SdkCliError(
+        "busy",
+        "Prompt preflight was cancelled before execution.",
+      ),
+    );
     await expect(
       controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
-    ).rejects.toThrow(/실행되지 않았으니 다시 보내 주세요/u);
-    expect(internals.transcripts.get("s1").at(-1)).toMatchObject({ kind: "notice", title: "GJC run failed" });
-    expect(internals.sessions.get("s1")?.status).toBe("idle");
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Prompt preflight was cancelled before execution.",
+    });
+    expect(cli.send).toHaveBeenCalledTimes(1);
+    expect(cli.rawControl).not.toHaveBeenCalled();
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+  });
+
+  it("does not claim a generic accepted-false steer receipt proves non-execution", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.rawControl as any).mockResolvedValue({
+      accepted: false,
+      status: "rejected",
+      error: { code: "busy", message: "The steering request was rejected." },
+    });
+    await expect(
+      controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
+    ).rejects.toThrow("The steering request was rejected.");
+    expect(cli.rawQuery).not.toHaveBeenCalled();
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+  });
+
+  it("maps an accepted-false steer receipt only with explicit preflight evidence", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.rawControl as any).mockResolvedValue({
+      accepted: false,
+      status: "rejected",
+      error: {
+        code: "busy",
+        message: "Prompt preflight was cancelled before execution.",
+      },
+    });
+    await expect(
+      controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Prompt preflight was cancelled before execution.",
+    });
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+  });
+
+  it("does not treat a generic rejected steer status as proof of non-execution", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.rawControl as any).mockResolvedValue({ accepted: true });
+    (cli.rawQuery as any).mockResolvedValue({
+      result: {
+        status: "rejected",
+        error: { code: "agent_error", message: "Steer delivery failed." },
+      },
+    });
+    await expect(
+      controller.sendMessage("s1", { text: "hello", images: [], files: [] }),
+    ).rejects.toThrow("Steer delivery failed.");
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+  });
+
+  it("maps only the typed preflight-cancelled steer refusal to not-executed", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.rawControl as any).mockRejectedValue(
+      new SdkCliError(
+        "busy",
+        "Prompt preflight was cancelled before execution.",
+      ),
+    );
+    await expect(
+      controller.sendMessage("s1", { text: "same text", images: [], files: [] }),
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Prompt preflight was cancelled before execution.",
+    });
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "turn.steer",
+      expect.objectContaining({ text: "same text", clientRef: expect.any(String) }),
+      expect.anything(),
+    );
+    expect(cli.rawQuery).not.toHaveBeenCalled();
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+  });
+
+  it("correlates identical steer text only by each request's clientRef", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.sessionCwds.set("s1", "/repo");
+    const refs: string[] = [];
+    (cli.rawControl as any).mockImplementation(
+      async (_sessionId: string, _operation: string, input: { clientRef: string }) => {
+        refs.push(input.clientRef);
+        return { accepted: true, clientRef: input.clientRef };
+      },
+    );
+    (cli.rawQuery as any).mockImplementation(
+      async (_sessionId: string, query: string, input: { clientRef: string }) => ({
+        result:
+          query === "turn.steer_status" && input.clientRef === refs[0]
+            ? {
+                status: "rejected",
+                error: {
+                  code: "busy",
+                  message: "Prompt preflight was cancelled before execution.",
+                },
+              }
+            : { status: "accepted" },
+      }),
+    );
+    const input = { text: "duplicate text", images: [], files: [] };
+    const outcomes = await Promise.all([
+      controller.sendMessage("s1", input),
+      controller.sendMessage("s1", input),
+    ]);
+    expect(refs).toHaveLength(2);
+    expect(refs[0]).not.toBe(refs[1]);
+    expect(outcomes).toEqual([
+      {
+        kind: "not_executed",
+        detail: "Prompt preflight was cancelled before execution.",
+      },
+      "steer",
+    ]);
+    expect(cli.rawQuery).toHaveBeenCalledWith(
+      "s1",
+      "turn.steer_status",
+      { clientRef: refs[0] },
+      expect.anything(),
+    );
+    expect(cli.rawQuery).toHaveBeenCalledWith(
+      "s1",
+      "turn.steer_status",
+      { clientRef: refs[1] },
+      expect.anything(),
+    );
+  });
+
+  it("reconciles an accepted follow-up by its returned command and turn IDs", async () => {
+    const { controller, cli, internals } = harness();
+    internals.ensureAttached = vi.fn(async () => undefined);
+    (cli.rawControl as any).mockResolvedValue({
+      accepted: true,
+      commandId: "command-1",
+      turnId: "turn-1",
+    });
+    (cli.rawQuery as any).mockResolvedValue({
+      result: {
+        status: "failed",
+        error: { code: "busy", message: "Follow-up failed before execution." },
+      },
+    });
+    await expect(
+      controller.queueFollowUp("s1", { text: "follow up", images: [], files: [] }),
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Follow-up failed before execution.",
+    });
+    expect(cli.rawQuery).toHaveBeenCalledWith(
+      "s1",
+      "turn.result",
+      { kind: "prompt", commandId: "command-1", turnId: "turn-1" },
+      expect.anything(),
+    );
+    expect(cli.send).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("maps only the typed follow-up preflight rejection without resubmitting", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.ensureAttached = vi.fn(async () => undefined);
+    (cli.rawControl as any).mockRejectedValue(
+      new SdkCliError(
+        "busy",
+        "Prompt preflight was cancelled before execution.",
+      ),
+    );
+    await expect(
+      controller.queueFollowUp("s1", { text: "follow up", images: [], files: [] }),
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Prompt preflight was cancelled before execution.",
+    });
+    expect(cli.rawQuery).not.toHaveBeenCalled();
+    expect(cli.rawControl).toHaveBeenCalledTimes(1);
+    expect(cli.send).not.toHaveBeenCalled();
+    expect(internals.sessions.get("s1")?.status).toBe("running");
+    controller.dispose();
+  });
+
+  it("does not classify a failed follow-up with startedAt as safe to retry", async () => {
+    const { controller, cli, internals } = harness();
+    internals.ensureAttached = vi.fn(async () => undefined);
+    (cli.rawControl as any).mockResolvedValue({
+      accepted: true,
+      commandId: "command-2",
+      turnId: "turn-2",
+    });
+    (cli.rawQuery as any).mockResolvedValue({
+      result: {
+        status: "failed",
+        startedAt: 123,
+        error: { code: "provider_error", message: "Provider failed after start." },
+      },
+    });
+    await expect(
+      controller.queueFollowUp("s1", { text: "do not replay", images: [], files: [] }),
+    ).rejects.toThrow("Provider failed after start.");
+    expect(cli.send).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it.each([null, "123", Number.NaN])("does not infer non-execution from malformed startedAt %s", async (startedAt) => {
+    const { controller, cli, internals } = harness();
+    internals.ensureAttached = vi.fn(async () => undefined);
+    (cli.rawControl as any).mockResolvedValue({ accepted: true, commandId: "command-malformed", turnId: "turn-malformed" });
+    (cli.rawQuery as any).mockResolvedValue({ result: { status: "failed", startedAt, error: { message: "uncertain" } } });
+    await expect(controller.queueFollowUp("s1", { text: "do not replay", images: [], files: [] })).resolves.toBe("prompt");
+    expect(cli.rawControl).toHaveBeenCalledTimes(1);
+    expect(cli.send).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("leaves an unknown follow-up outcome unknown without retrying", async () => {
+    const { controller, cli, internals } = harness();
+    internals.ensureAttached = vi.fn(async () => undefined);
+    (cli.rawControl as any).mockResolvedValue({
+      accepted: true,
+      commandId: "command-3",
+      turnId: "turn-3",
+    });
+    (cli.rawQuery as any).mockResolvedValue({ result: { status: "unknown" } });
+    await expect(
+      controller.queueFollowUp("s1", { text: "unknown outcome", images: [], files: [] }),
+    ).resolves.toBe("prompt");
+    expect(cli.rawQuery).toHaveBeenCalledTimes(1);
+    expect(cli.rawControl).toHaveBeenCalledTimes(1);
+    expect(cli.send).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
+  it("bounds pending request reconciliation to twenty seconds", async () => {
+    vi.useFakeTimers();
+    const { controller, cli, internals } = harness();
+    (cli.rawQuery as any).mockResolvedValue({
+      result: { status: "in_flight", startedAt: 1 },
+    });
+    try {
+      const startedAt = Date.now();
+      const pending = internals.awaitPromptSettlement("s1", "op-timeout");
+      await vi.advanceTimersByTimeAsync(20_000);
+      await expect(pending).resolves.toBe("unknown");
+      expect(Date.now() - startedAt).toBeLessThanOrEqual(20_000);
+      expect(cli.rawQuery).toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it("classifies prompt records by whether the agent ever ran them", async () => {
-    vi.useFakeTimers();
-    try {
-      const { cli, internals } = harness();
-      const settle = async (record: Record<string, unknown>) => {
-        (cli.promptStatus as any).mockResolvedValueOnce(record);
-        const pending = internals.awaitPromptSettlement("s1", "op1");
-        // Observed now; the rejection lands while the timers advance.
-        pending.catch(() => undefined);
-        await vi.advanceTimersByTimeAsync(1_000);
-        return await pending;
-      };
-      // Dropped before execution: safe to deliver again.
-      await expect(
-        settle({ status: "failed", completed: true, started: false, error: { code: "internal", message: "Prompt submission failed." } }),
-      ).resolves.toBe("not_executed");
-      // Interrupted by a newer message: the host's generic text is not a failure.
-      await expect(
-        settle({ status: "failed", completed: true, started: true, error: { code: "cancelled", message: "Agent run failed after execution started." } }),
-      ).resolves.toBe("terminal");
-      // A run that really failed is still reported.
-      const failed = settle({ status: "failed", completed: true, started: true, error: { code: "agent_error", message: "provider exploded" } });
-      await expect(failed).rejects.toThrow("provider exploded");
-      // A Stop pressed meanwhile owns the outcome, so nothing is redelivered.
-      internals.locallyAbortedSessions.add("s1");
-      (cli.promptStatus as any).mockResolvedValueOnce({ status: "failed", completed: true, started: false });
-      await expect(internals.awaitPromptSettlement("s1", "op1")).resolves.toBe("unknown");
-    } finally {
-      vi.useRealTimers();
-    }
+    const { cli, internals } = harness();
+    const settle = (record: Record<string, unknown>) => {
+      (cli.rawQuery as any).mockResolvedValueOnce({ result: record });
+      return internals.awaitPromptSettlement("s1", "op1");
+    };
+    await expect(
+      settle({ status: "failed", error: { code: "internal", message: "Prompt submission failed." } }),
+    ).resolves.toEqual({
+      kind: "not_executed",
+      detail: "Prompt submission failed.",
+    });
+    await expect(
+      settle({ status: "failed", startedAt: 1, error: { code: "cancelled", message: "Agent run failed after execution started." } }),
+    ).resolves.toBe("terminal");
+    const failed = settle({ status: "failed", startedAt: 1, error: { code: "agent_error", message: "provider exploded" } });
+    await expect(failed).rejects.toThrow("provider exploded");
+    internals.locallyAbortedSessions.add("s1");
+    await expect(internals.awaitPromptSettlement("s1", "op1")).resolves.toBe("unknown");
   });
 
   it("falls back from busy send to turn.steer", async () => {

@@ -130,7 +130,7 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.compactSession(sessionId);
   }
 
-  queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
+  queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery> {
     return this.bridge.queueFollowUp(sessionId, input);
   }
 
@@ -142,7 +142,7 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.flushQueuedNow(sessionId);
   }
 
-  steerSession(sessionId: string, input: MessageInput): Promise<void> {
+  steerSession(sessionId: string, input: MessageInput): Promise<MessageDelivery> {
     return this.bridge.steerSession(sessionId, input);
   }
 

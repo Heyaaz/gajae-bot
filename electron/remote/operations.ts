@@ -51,8 +51,8 @@ export interface RemoteOperationsHost {
   getDiff(sessionId: string): Promise<unknown>;
   readArtifact(sessionId: string, artifactId: string): Promise<unknown>;
   sendMessage(sessionId: string, input: ResolvedMessageInput): Promise<MessageDelivery>;
-  steerSession(sessionId: string, input: ResolvedMessageInput): Promise<void>;
-  queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<void>;
+  steerSession(sessionId: string, input: ResolvedMessageInput): Promise<MessageDelivery>;
+  queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<MessageDelivery>;
   flushQueuedNow(sessionId: string): Promise<boolean>;
   cancelRun(sessionId: string): Promise<void>;
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;

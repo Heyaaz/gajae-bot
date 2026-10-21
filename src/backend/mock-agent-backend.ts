@@ -23,6 +23,7 @@ import type {
   GoalOperation,
   GoalSnapshot,
   HistorySession,
+  MessageDelivery,
   QueuedMessage,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
@@ -695,7 +696,7 @@ export class MockAgentBackend implements AgentBackend {
     this.emit({ type: "session.updated", session: cloneSession(session) });
   }
 
-  async steerSession(sessionId: string, input: MessageInput): Promise<void> {
+  async steerSession(sessionId: string, input: MessageInput): Promise<MessageDelivery> {
     const session = this.sessionStore.find(
       (candidate) => candidate.id === sessionId,
     );
@@ -709,6 +710,7 @@ export class MockAgentBackend implements AgentBackend {
       label: "Steer",
     });
     this.queuedStore.set(sessionId, queue);
+    return "steer";
   }
 
   async listQueuedMessages(sessionId: string): Promise<QueuedMessage[]> {
@@ -735,7 +737,7 @@ export class MockAgentBackend implements AgentBackend {
     return true;
   }
 
-  async queueFollowUp(sessionId: string, input: MessageInput): Promise<void> {
+  async queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery> {
     const session = this.sessionStore.find(
       (candidate) => candidate.id === sessionId,
     );
@@ -749,6 +751,7 @@ export class MockAgentBackend implements AgentBackend {
       label: "Queued",
     });
     this.queuedStore.set(sessionId, queue);
+    return "prompt";
   }
 
   async sendMessage(sessionId: string, input: MessageInput): Promise<"prompt"> {

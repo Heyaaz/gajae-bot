@@ -7,6 +7,7 @@ import { copyableMessageText } from "./transcript-utils";
 import { isImmediateSdkCommandSubmission, normalizeComposerText } from "./composer-utils";
 
 export const MESSAGE_DELIVERY_IDLE_GRACE_MS = 10_000;
+export const MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS = 30_000;
 
 export interface MessageDeliverySessionState {
   status: SessionStatus;
@@ -25,7 +26,8 @@ export interface MessageDeliveryAttempt {
   id: string;
   sessionId: string;
   input: MessageInput;
-  state: "pending" | "failed";
+  state: "pending" | "failed" | "unconfirmed";
+  failure?: { kind: "not_executed"; detail: string };
   retrying: boolean;
   submitting: boolean;
 }
@@ -140,6 +142,13 @@ function promptHasPayload(
 
 function canStartIdleGrace(state: MessageDeliverySessionState | undefined): boolean {
   return state?.status === "idle" &&
+    state.phase !== "compacting" &&
+    state.attachment === "attached" &&
+    state.connection === "connected";
+}
+
+function canReadLatest(state: MessageDeliverySessionState | undefined): boolean {
+  return state !== undefined &&
     state.phase !== "compacting" &&
     state.attachment === "attached" &&
     state.connection === "connected";
@@ -275,7 +284,7 @@ export class MessageDeliveryTracker {
         if (attempt.idleSince === undefined) attempt.idleSince = now;
       } else {
         attempt.idleSince = undefined;
-        if (attempt.state === "failed") attempt.state = "pending";
+        if (attempt.state === "failed" && !attempt.failure) attempt.state = "pending";
       }
     }
     this.advance(now);
@@ -283,15 +292,31 @@ export class MessageDeliveryTracker {
 
   advance(now: number): void {
     for (const attempt of this.attempts) {
-      if (attempt.state !== "pending" || attempt.retrying || !attempt.baselineKnown) continue;
+      if (attempt.state === "failed" || attempt.retrying || attempt.failure) continue;
       const session = this.sessions.get(attempt.sessionId);
+      if (!canReadLatest(session)) {
+        attempt.idleSince = undefined;
+        continue;
+      }
+      const coverage = this.latestCoverage.get(attempt.sessionId);
+      const latestCoversSubmission = attempt.baselineKnown &&
+        coverage?.complete === true &&
+        coverage.requestedAt >= attempt.submittedAt &&
+        coverage.readAt >= attempt.submittedAt;
+
+      if (attempt.state === "pending" && latestCoversSubmission &&
+        now - attempt.submittedAt >= MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS) {
+        attempt.state = "unconfirmed";
+        attempt.submitting = false;
+      }
+
       if (!canStartIdleGrace(session)) {
         attempt.idleSince = undefined;
         continue;
       }
       if (attempt.idleSince === undefined) attempt.idleSince = now;
-      const coverage = this.latestCoverage.get(attempt.sessionId);
       if (
+        attempt.baselineKnown &&
         coverage?.complete &&
         coverage.requestedAt >= attempt.idleSince &&
         coverage.readAt >= attempt.idleSince &&
@@ -309,8 +334,9 @@ export class MessageDeliveryTracker {
 
   beginRetry(id: string): { sessionId: string; input: MessageInput } | undefined {
     const attempt = this.attempts.find((candidate) => candidate.id === id);
-    if (!attempt || attempt.state !== "failed" || attempt.retrying) return undefined;
+    if (!attempt || (attempt.state !== "failed" && attempt.state !== "unconfirmed") || attempt.retrying) return undefined;
     attempt.state = "pending";
+    attempt.failure = undefined;
     attempt.retrying = true;
     attempt.submitting = true;
     attempt.submissionGeneration += 1;
@@ -362,6 +388,18 @@ export class MessageDeliveryTracker {
     this.advance(now);
   }
 
+  markNotExecuted(id: string, detail: string, generation: number, now: number): void {
+    const attempt = this.attempts.find((candidate) => candidate.id === id);
+    if (!attempt || attempt.submissionGeneration !== generation) return;
+    attempt.state = "failed";
+    attempt.failure = { kind: "not_executed", detail };
+    attempt.retrying = false;
+    attempt.submitting = false;
+    attempt.idleSince = undefined;
+    attempt.submissionGeneration += 1;
+    this.advance(now);
+  }
+
   rejectSubmission(id: string, now: number, generation: number, preserve: boolean): void {
     const attempt = this.attempts.find((candidate) => candidate.id === id);
     if (!attempt || attempt.submissionGeneration !== generation) return;
@@ -372,17 +410,19 @@ export class MessageDeliveryTracker {
     attempt.retrying = false;
     attempt.submitting = false;
     attempt.state = "failed";
+    attempt.failure = undefined;
     attempt.idleSince = canStartIdleGrace(this.sessions.get(attempt.sessionId)) ? now : undefined;
   }
 
   snapshot(sessionId: string): MessageDeliveryAttempt[] {
     return this.attempts
       .filter((attempt) => attempt.sessionId === sessionId)
-      .map(({ id, input, state, retrying, submitting, sessionId: owner }) => ({
+      .map(({ id, input, state, failure, retrying, submitting, sessionId: owner }) => ({
         id,
         sessionId: owner,
         input: copyInput(input),
         state,
+        ...(failure ? { failure: { ...failure } } : {}),
         retrying,
         submitting,
       }));
@@ -399,32 +439,46 @@ export class MessageDeliveryTracker {
     hasMoreBefore: boolean,
   ): boolean {
     const ids = new Set(durableUserRows(items).map((item) => item.id));
-    return this.attempts.filter((attempt) => attempt.sessionId === sessionId).every(
-      (attempt) => attempt.baselineKnown && (attempt.baselineFenceId
-        ? ids.has(attempt.baselineFenceId)
-        : !hasMoreBefore),
+    const boundaryAttempts = this.attempts.filter((attempt) =>
+      attempt.sessionId === sessionId &&
+      attempt.state !== "failed" &&
+      !attempt.retrying &&
+      !attempt.failure &&
+      attempt.baselineKnown,
     );
+    return boundaryAttempts.every((attempt) => {
+      return attempt.baselineFenceId
+        ? ids.has(attempt.baselineFenceId)
+        : !hasMoreBefore;
+    });
   }
 
   needsLatestRead(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
-    if (!canStartIdleGrace(session)) return false;
+    if (!session || !canReadLatest(session)) return false;
     const coverage = this.latestCoverage.get(sessionId);
     return this.attempts.some((attempt) => {
-      if (attempt.sessionId !== sessionId || attempt.state !== "pending" || attempt.retrying || !attempt.baselineKnown)
+      if (attempt.sessionId !== sessionId || attempt.retrying || attempt.failure || !attempt.baselineKnown || attempt.state === "failed")
         return false;
+      if (session.status !== "idle") return true;
       const boundary = Math.max(attempt.submittedAt, attempt.idleSince ?? 0);
-      return !coverage || !coverage.complete ||
-        coverage.requestedAt < boundary || coverage.readAt < boundary;
+      return !coverage || !coverage.complete || coverage.requestedAt < boundary || coverage.readAt < boundary;
     });
   }
 
   nextDeadline(): number | undefined {
     let deadline: number | undefined;
     for (const attempt of this.attempts) {
-      if (attempt.state !== "pending" || attempt.retrying || !attempt.baselineKnown) continue;
-      if (!canStartIdleGrace(this.sessions.get(attempt.sessionId)) || attempt.idleSince === undefined) continue;
+      if (attempt.state === "failed" || attempt.retrying || attempt.failure) continue;
+      const session = this.sessions.get(attempt.sessionId);
+      if (!canReadLatest(session)) continue;
       const coverage = this.latestCoverage.get(attempt.sessionId);
+      if (attempt.state === "pending" && attempt.baselineKnown && coverage?.complete &&
+        coverage.requestedAt >= attempt.submittedAt && coverage.readAt >= attempt.submittedAt) {
+        const due = attempt.submittedAt + MESSAGE_DELIVERY_UNCONFIRMED_AFTER_MS;
+        if (deadline === undefined || due < deadline) deadline = due;
+      }
+      if (!canStartIdleGrace(session) || attempt.idleSince === undefined || !attempt.baselineKnown) continue;
       if (
         !coverage?.complete ||
         coverage.requestedAt < attempt.idleSince ||

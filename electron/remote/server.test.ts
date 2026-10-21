@@ -126,9 +126,11 @@ function fakeHost(): FakeHost {
     },
     async steerSession(sessionId: string) {
       calls.push(`steer:${sessionId}`);
+      return "steer";
     },
     async queueFollowUp(sessionId: string) {
       calls.push(`queue:${sessionId}`);
+      return "prompt";
     },
     async flushQueuedNow(sessionId: string) {
       calls.push(`flush:${sessionId}`);
