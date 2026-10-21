@@ -858,6 +858,12 @@ export class GjcSdkController {
       }
       if (session.repo) liveWorkspaces.add(session.repo);
     });
+    // The host's activity report is the live signal while a turn is running and
+    // the transcript has not grown yet. Keep the state, not the heartbeat clock:
+    // an idle heartbeat must not trigger a rescan every few seconds.
+    const brokerActivity = new Map(
+      liveRows.map((row) => [row.sessionId, row.activityState ?? ""]),
+    );
     const workspaces = [
       ...new Set([
         this.workspace,
@@ -930,6 +936,7 @@ export class GjcSdkController {
       .sort();
     const liveFingerprint = JSON.stringify([
       [...liveRanks.entries()].sort(),
+      [...brokerActivity.entries()].sort(),
       workspaces.slice().sort(),
       runStates,
       ownStatuses,
@@ -1030,6 +1037,7 @@ export class GjcSdkController {
       const statusRevision = this.currentRunRevision(info.sessionId);
       const transcriptStatus = await this.discoveredRunState(info.sessionId);
       const currentSession = this.sessions.get(info.sessionId) ?? existing;
+      const brokerActive = brokerActivity.get(info.sessionId) === "active";
       const revisionChanged =
         statusRevision !== this.currentRunRevision(info.sessionId);
       // A row the live latch left running is settled here instead of by the status
@@ -1038,29 +1046,38 @@ export class GjcSdkController {
       // revision the report advanced is only consumed by a transcript read that
       // agrees it is still current, so a read it deferred never re-derives the row
       // either -- this reconciliation has to stand on its own.
-      const quietSettle = this.settleQuietRunningRow(
+      const quietSettle = !brokerActive && this.settleQuietRunningRow(
         info.sessionId,
         transcriptStatus,
         currentSession,
       );
+      const runningStatus =
+        currentSession?.status === "failed" ||
+        currentSession?.status === "starting"
+          ? currentSession.status
+          : ("running" as const);
+      const runningEvidence =
+        this.activePromptSessions.has(info.sessionId) ||
+        (this.liveRunningSessions.has(info.sessionId) &&
+          !this.liveEvidenceQuiet(info.sessionId)) ||
+        (this.workingPhaseSessions.has(info.sessionId) &&
+          !this.runtimeIdleSessions.has(info.sessionId) &&
+          !this.liveEvidenceQuiet(info.sessionId)) ||
+        transcriptStatus === "running";
       const discoveredStatus = quietSettle
         ? "idle"
         : this.locallyAbortedSessions.has(info.sessionId)
           ? "idle"
-          : revisionChanged && currentSession
-          ? currentSession.status
-          : this.activePromptSessions.has(info.sessionId) ||
-              (this.liveRunningSessions.has(info.sessionId) &&
-                !this.liveEvidenceQuiet(info.sessionId)) ||
-              (this.workingPhaseSessions.has(info.sessionId) &&
-                !this.runtimeIdleSessions.has(info.sessionId) &&
-                !this.liveEvidenceQuiet(info.sessionId)) ||
-              transcriptStatus === "running"
-            ? (currentSession?.status ?? "idle")
-            : currentSession?.status === "failed" ||
-                currentSession?.status === "starting"
+          : brokerActive
+            ? runningStatus
+            : revisionChanged && currentSession
               ? currentSession.status
-              : (transcriptStatus ?? currentSession?.status ?? "idle");
+              : runningEvidence
+                ? runningStatus
+                : currentSession?.status === "failed" ||
+                    currentSession?.status === "starting"
+                  ? currentSession.status
+                  : (transcriptStatus ?? currentSession?.status ?? "idle");
       // Lineage is not on the broker row this loop is reading, so it comes from the
       // session's own envelope.
       const parentId = await this.sessionParentId(info.sessionId);

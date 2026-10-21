@@ -1853,6 +1853,54 @@ describe("GjcSdkController CLI seam", () => {
     }
   });
 
+  it("keeps a newly discovered session running when its transcript says so", async () => {
+    const { controller, cli, internals } = harness();
+    (cli.listSessions as any).mockResolvedValue([
+      {
+        sessionId: "s1",
+        title: "One",
+        repo: "/repo",
+        live: true,
+        runtime: "gjc",
+        activityState: "idle",
+      },
+    ]);
+    internals.liveRouteReachable = vi.fn(async () => true);
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    internals.discoveredRunState = vi.fn(async () => "running");
+    internals.sessionParentId = vi.fn(async () => undefined);
+    try {
+      const rows = await controller.listSessions();
+      expect(rows.find((row) => row.id === "s1")?.status).toBe("running");
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("shows a live external session as running while the broker reports activity", async () => {
+    const { controller, cli, internals } = harness();
+    (cli.listSessions as any).mockResolvedValue([
+      {
+        sessionId: "s1",
+        title: "One",
+        repo: "/repo",
+        live: true,
+        runtime: "gjc",
+        activityState: "active",
+      },
+    ]);
+    internals.liveRouteReachable = vi.fn(async () => true);
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    internals.discoveredRunState = vi.fn(async () => "idle");
+    internals.sessionParentId = vi.fn(async () => undefined);
+    try {
+      const rows = await controller.listSessions();
+      expect(rows.find((row) => row.id === "s1")?.status).toBe("running");
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("lists sessions through the CLI and catches up tail cursors", async () => {
     const { cli, internals } = harness();
     (cli.listSessions as any).mockResolvedValue([{ sessionId: "s1", title: "One", repo: "/repo", live: true, runtime: "gjc", activityState: "idle" }]);
