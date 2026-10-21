@@ -1127,7 +1127,13 @@ export default function App() {
         observeSessionRun(event.session);
         setSessions((current) =>
           current.map((session) =>
-            session.id === event.session.id ? event.session : session,
+            session.id === event.session.id &&
+            discoveryRevisionIsFresh(
+              session.runRevision,
+              event.session.runRevision,
+            )
+              ? event.session
+              : session,
           ),
         );
       } else if (event.type === "session.deleted") {

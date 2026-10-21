@@ -1871,6 +1871,65 @@ describe("GjcSdkController CLI seam", () => {
     }
   });
 
+  it("does not let replayed tail session metadata renew working lifecycle evidence", () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", { ...session(), status: "idle" });
+    const now = Date.now();
+    internals.projectTailItems("s1", [
+      { kind: "turn_start", generation: 1, seq: 9, payload: {} },
+      {
+        kind: "session_update",
+        generation: 1,
+        seq: 10,
+        payload: {
+          sessionUpdate: "session_info_update",
+          title: "Historical title",
+          updatedAt: new Date(now).toISOString(),
+          _meta: { gjcRunning: true, gjcPhase: "working" },
+        },
+      },
+    ]);
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    expect(internals.sessions.get("s1").title).toBe("Historical title");
+    expect(internals.liveEvidenceAt.has("s1")).toBe(false);
+    expect(internals.workingPhaseSessions.has("s1")).toBe(false);
+
+    // This historical update carries a newer wall-clock timestamp but its tail
+    // position is behind the established watermark; it must not renew liveness.
+    internals.projectTailItems("s1", [
+      {
+        kind: "session_update",
+        generation: 1,
+        seq: 10,
+        payload: {
+          sessionUpdate: "session_info_update",
+          title: "Replayed title",
+          updatedAt: new Date(now + 60_000).toISOString(),
+          _meta: { gjcRunning: true, gjcPhase: "working" },
+        },
+      },
+    ]);
+    expect(internals.sessions.get("s1").status).toBe("idle");
+    expect(internals.sessions.get("s1").title).toBe("Replayed title");
+    expect(internals.liveEvidenceAt.has("s1")).toBe(false);
+
+    internals.projectTailItems("s1", [
+      {
+        kind: "session_info_update",
+        generation: 1,
+        seq: 11,
+        payload: {
+          sessionUpdate: "session_info_update",
+          updatedAt: new Date(now + 120_000).toISOString(),
+          _meta: { gjcRunning: true, gjcPhase: "working" },
+        },
+      },
+    ]);
+    expect(internals.sessions.get("s1").status).toBe("running");
+    expect(internals.liveEvidenceAt.has("s1")).toBe(true);
+    controller.dispose();
+  });
+
   it("drops a checkpoint the reader refuses instead of retrying it forever", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
@@ -3939,6 +3998,64 @@ describe("detached task launch markers", () => {
       expect(await internals.discoveredRunState("s1")).toBe("idle");
       expect(cli.queryItems).toHaveBeenCalledTimes(2);
       expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("reconciles persisted task markers on a latched live session during discovery", async () => {
+    const { cli, internals, jobs, cleanup } = await markerHarness([
+      taskLaunch("job-1"),
+      terminalStop(),
+    ]);
+    jobs(runningJob("job-1"));
+    internals.sessions.set("s1", { ...session(), status: "running" });
+    internals.liveRunningSessions.add("s1");
+    (cli.listSessions as any).mockResolvedValue([
+      {
+        sessionId: "s1",
+        repo: "/repo",
+        live: true,
+        deleted: false,
+        endpointGeneration: 1,
+        runtime: "gjc",
+      },
+    ]);
+    try {
+      await internals.refreshTranscriptFromFile("s1");
+      const transcriptPath = await internals.locateSharedTranscriptFile("s1");
+      const transcriptSize = (await stat(transcriptPath)).size;
+      expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
+      expect(await internals.discoveredRunState("s1")).toBe("running");
+      // The live report has gone quiet; the marker is now the sole unresolved
+      // authority, while a fresh live report must continue to keep the row busy.
+      internals.liveEvidenceAt.set("s1", Date.now() - LIVE_EVIDENCE_GRACE_MS - 1);
+
+      // Keep session identity, transcript bytes, and the live latch fixed. Only the
+      // runtime's authoritative job list changes after its normal throttle expires.
+      const record = internals.asyncJobReconciliations.get("s1");
+      internals.asyncJobReconciliations.set("s1", {
+        ...record,
+        checkedAt: record.checkedAt - 60_000,
+      });
+      jobs(runningJob("job-1", "paused"));
+      const listed = await internals.listSessions();
+      expect(cli.queryItems).toHaveBeenCalledTimes(2);
+      expect((await stat(transcriptPath)).size).toBe(transcriptSize);
+      expect(internals.pendingAsyncWorkSessions.has("s1")).toBe(false);
+      expect(listed.find((row: any) => row.id === "s1")?.status).toBe("idle");
+      expect(internals.sessions.get("s1").status).toBe("idle");
+
+      // A failed/unknown runtime answer cannot retire the marker or settle the row.
+      internals.sessions.get("s1").status = "running";
+      internals.pendingAsyncWorkSessions.set("s1", ["job-1"]);
+      internals.liveRunningSessions.add("s1");
+      internals.liveEvidenceAt.set("s1", Date.now() - LIVE_EVIDENCE_GRACE_MS - 1);
+      internals.asyncJobReconciliations.delete("s1");
+      (cli.queryItems as any).mockRejectedValue(new Error("runtime unavailable"));
+      const stillListed = await internals.listSessions();
+      expect(internals.pendingAsyncWorkSessions.get("s1")).toEqual(["job-1"]);
+      expect(stillListed.find((row: any) => row.id === "s1")?.status).toBe("running");
     } finally {
       await cleanup();
     }

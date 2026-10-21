@@ -14,6 +14,8 @@ const probe = vi.hoisted(() => ({
   transcript: null as null | Record<string, unknown>,
   renders: 0,
   listeners: new Set<(event: AgentEvent) => void>(),
+  sessions: [] as AgentSession[],
+  initialSession: null as AgentSession | null,
 }));
 
 vi.mock("../backend/use-agent-backend", () => {
@@ -24,6 +26,7 @@ vi.mock("../backend/use-agent-backend", () => {
     workspace: "/tmp/gajae-bot",
     runtime: "gjc",
     status: "running",
+    runRevision: 1,
     updatedAt: "10:00",
     updatedAtMs: 1,
     pinned: false,
@@ -32,6 +35,8 @@ vi.mock("../backend/use-agent-backend", () => {
     ownership: "gajae",
     attachment: "attached",
   };
+  probe.initialSession = session;
+  probe.sessions = [session];
   const items: TranscriptItem[] = [
     {
       id: "u-1",
@@ -61,7 +66,7 @@ vi.mock("../backend/use-agent-backend", () => {
         detail: "ready",
         workspace: "/tmp/gajae-bot",
       }),
-      listSessions: async () => [session],
+      listSessions: async () => probe.sessions,
       getTranscript: async () => items.map((item) => ({ ...item })),
       getTranscriptPage: async (
         _sessionId: string,
@@ -155,6 +160,7 @@ describe("streaming does not rebuild sidebar or composer props", () => {
     probe.transcript = null;
     probe.renders = 0;
     probe.listeners.clear();
+    probe.sessions = probe.initialSession ? [probe.initialSession] : [];
   });
 
   it("keeps memo inputs stable across a message delta", async () => {
@@ -204,5 +210,89 @@ describe("streaming does not rebuild sidebar or composer props", () => {
     expect(probe.transcript!.onRetryLastRequest).toBe(transcript.onRetryLastRequest);
     expect(probe.transcript!.autoDenyHint).toBe(transcript.autoDenyHint);
     expect(probe.transcript!.onResolveTool).toBe(transcript.onResolveTool);
+  });
+
+  it("rejects stale session updates but accepts equal and newer revisions", async () => {
+    probe.sessions = [
+      {
+        id: "s-1",
+        title: "idle N",
+        subtitle: "gajae-bot",
+        workspace: "/tmp/gajae-bot",
+        runtime: "gjc",
+        status: "idle",
+        runRevision: 4,
+        updatedAt: "10:00",
+        updatedAtMs: 1,
+        pinned: false,
+        unread: false,
+        accent: "#ff8a34",
+        ownership: "gajae",
+        attachment: "attached",
+      },
+    ];
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(App));
+    });
+    await vi.waitFor(() => {
+      expect(probe.sidebar?.sessions).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ status: "idle", runRevision: 4 }),
+        ]),
+      );
+    });
+
+    const emit = async (session: AgentSession): Promise<void> => {
+      await act(async () => {
+        for (const listener of probe.listeners)
+          listener({ type: "session.updated", session });
+      });
+    };
+    const update = (
+      status: AgentSession["status"],
+      runRevision: number,
+      title: string,
+    ): AgentSession => ({
+      ...probe.sessions[0]!,
+      status,
+      runRevision,
+      title,
+    });
+
+    await emit(update("running", 3, "stale"));
+    expect(probe.sidebar!.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "idle",
+          runRevision: 4,
+          title: "idle N",
+        }),
+      ]),
+    );
+
+    await emit(update("idle", 4, "equal revision title"));
+    expect(probe.sidebar!.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "idle",
+          runRevision: 4,
+          title: "equal revision title",
+        }),
+      ]),
+    );
+
+    await emit(update("running", 5, "new running"));
+    expect(probe.sidebar!.sessions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "running",
+          runRevision: 5,
+          title: "new running",
+        }),
+      ]),
+    );
   });
 });

@@ -821,7 +821,8 @@ export class GjcSdkController {
     const observedSessionIds = [...liveRanks.keys()].filter(
       (sessionId) =>
         !this.activePromptSessions.has(sessionId) &&
-        !this.liveRunningSessions.has(sessionId),
+        (!this.liveRunningSessions.has(sessionId) ||
+          this.pendingAsyncWorkSessions.has(sessionId)),
     );
     // Polling/fingerprint eligibility intentionally excludes a live signal: its
     // transcript may still be the pre-start snapshot. Watcher eligibility is
@@ -858,11 +859,12 @@ export class GjcSdkController {
         ];
       })
       .filter(([, status]) => status !== "");
-    // A latched session is left out of `runStates`, so nothing in the fingerprint
-    // moves when the only thing that changes about it is that its reports stopped --
-    // the one event that has to re-derive the row. Naming the latches whose evidence
-    // has gone quiet makes that scan differ from the previous one, and the settled
-    // scan drops back to the base fingerprint.
+    // A latched session without detached work is left out of `runStates`, so nothing
+    // in the fingerprint moves when the only thing that changes about it is that its
+    // reports stopped -- the one event that has to re-derive the row. Naming quiet
+    // latches makes that scan differ from the previous one; sessions with pending
+    // detached work stay observed so each discovery can consult the throttled runtime
+    // reconciliation even when all transcript inputs are unchanged.
     const quietLatchedSessionIds = [
       ...new Set([...this.liveRunningSessions, ...this.workingPhaseSessions]),
     ]
@@ -1163,7 +1165,11 @@ export class GjcSdkController {
         const filePath = await this.locateSharedTranscriptFile(sessionId);
         if (!filePath) return;
         try {
-          if ((await stat(filePath)).size === seenSize) return;
+          if (
+            (await stat(filePath)).size === seenSize &&
+            !this.pendingAsyncWorkSessions.has(sessionId)
+          )
+            return;
         } catch {
           return;
         }
@@ -3606,6 +3612,7 @@ export class GjcSdkController {
       return await this.steerSession(sessionId, { ...input, text: bare });
     }
     const admission = Symbol(sessionId);
+    const admissionGeneration = this.generation;
     this.activePromptAdmissions.set(sessionId, admission);
     this.activePromptSessions.add(sessionId);
     const settleNotExecuted = async (detail: string): Promise<MessageDelivery> => {
@@ -3770,6 +3777,17 @@ export class GjcSdkController {
       if (this.activePromptAdmissions.get(sessionId) === admission) {
         this.activePromptAdmissions.delete(sessionId);
         this.activePromptSessions.delete(sessionId);
+        queueMicrotask(() => {
+          if (
+            this.disposed ||
+            admissionGeneration !== this.generation ||
+            this.activePromptAdmissions.has(sessionId) ||
+            this.activePromptSessions.has(sessionId) ||
+            this.sessions.get(sessionId)?.status !== "running"
+          )
+            return;
+          void this.republishRunState(sessionId);
+        });
       }
     }
     return "prompt";
@@ -6421,17 +6439,6 @@ export class GjcSdkController {
         !Array.isArray(payload.update)
           ? (payload.update as Record<string, unknown>)
           : undefined;
-      if (typeof directUpdate === "string")
-        this.handleSessionUpdate({
-          sessionId,
-          update: payload as unknown as SessionUpdate,
-        });
-      else if (typeof nested?.sessionUpdate === "string")
-        this.handleSessionUpdate({
-          sessionId,
-          update: nested as unknown as SessionUpdate,
-        });
-      if (item.kind === "transcript") transcriptEvidence = true;
       const positioned =
         typeof item.generation === "number" && typeof item.seq === "number";
       const isNewTailEvent =
@@ -6440,6 +6447,27 @@ export class GjcSdkController {
         (item.generation! > priorPosition.generation ||
           (item.generation === priorPosition.generation &&
             item.seq! > priorPosition.seq));
+      const projectUpdate = (source: Record<string, unknown>) => {
+        if (typeof source.sessionUpdate !== "string") return;
+        let update = source;
+        if (!isNewTailEvent) {
+          const meta = source._meta;
+          if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+            const otherMeta = { ...(meta as Record<string, unknown>) };
+            delete otherMeta.gjcRunning;
+            delete otherMeta.gjcPhase;
+            delete otherMeta.gjcCompactionState;
+            update = { ...source, _meta: otherMeta };
+          }
+        }
+        this.handleSessionUpdate({
+          sessionId,
+          update: update as unknown as SessionUpdate,
+        });
+      };
+      if (typeof directUpdate === "string") projectUpdate(payload!);
+      else if (typeof nested?.sessionUpdate === "string") projectUpdate(nested);
+      if (item.kind === "transcript") transcriptEvidence = true;
       if (
         positioned &&
         (!newestPosition || item.generation! > newestPosition.generation ||
@@ -6456,9 +6484,12 @@ export class GjcSdkController {
         isNewTailEvent
       )
         this.updateSessionStatus(sessionId, "running");
-      if (item.kind === "agent_failed")
+      if (item.kind === "agent_failed" && isNewTailEvent)
         this.updateSessionStatus(sessionId, "failed", { announce: false });
-      if (item.kind === "turn_end" || item.kind === "agent_end")
+      if (
+        isNewTailEvent &&
+        (item.kind === "turn_end" || item.kind === "agent_end")
+      )
         void this.reconcileTailTerminalState(sessionId);
       if (item.kind === "session_closed" || item.kind === "session_terminated")
         this.stopTailFollower(sessionId);
