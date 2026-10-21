@@ -9,7 +9,7 @@ export function contentSecurityPolicy(development: boolean): string {
   // loopback (`electron/desktop-event-stream.ts`), so the port cannot be named here, and
   // the window's preload reads frames from it. Nothing else on the network is reachable:
   // the origin is loopback, the scheme is http, and the port is whatever the stream took.
-  return "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-src data: 'self'; connect-src http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'"
+  return "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; frame-src data: 'self'; connect-src http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'"
 }
 
 export function replaceCspMarker(html: string, development: boolean): string {

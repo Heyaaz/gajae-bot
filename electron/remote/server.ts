@@ -126,6 +126,7 @@ const CONTENT_TYPES: Record<string, string> = {
   ".ico": "image/vnd.microsoft.icon",
   ".txt": "text/plain; charset=utf-8",
   ".woff2": "font/woff2",
+  ".ttf": "font/ttf",
 };
 
 export class RemoteOperationLog {

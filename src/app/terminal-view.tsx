@@ -73,7 +73,7 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       }
       bridge.resize(term.cols, term.rows);
     };
-    fontsLoaded = document.fonts.ready.then((loadedFonts) => {
+    fontsLoaded = document.fonts.load('14px "Gajae Terminal Symbols"', "󰆍").then(() => document.fonts.ready).then((loadedFonts) => {
       fontsReady = true;
       applySize();
       return loadedFonts;
@@ -92,9 +92,9 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
         cursorBlink: true,
         cursorStyle: "block",
         fontFamily:
-          'FiraCode, Menlo, "FiraCode Nerd Font", "CaskaydiaCove Nerd Font", "MesloLGS NF", "Hack Nerd Font", monospace',
+          '"Fira Code", Menlo, "Gajae Terminal Symbols", monospace',
         fontSize: 14,
-        lineHeight: 1.25,
+        lineHeight: 1.1,
         scrollback: 5000,
         theme: readTerminalTheme(),
         macOptionClickForcesSelection: true,

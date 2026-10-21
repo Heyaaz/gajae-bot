@@ -76,6 +76,29 @@ export function attachTerminalSmoke(window: BrowserWindow): void {
         if (!keyReport.terminalFocused || !terminalWrites.includes('\x1b[Z'))
           throw new Error("Native Shift+Tab did not reach the focused PTY: " + JSON.stringify(keyReport));
         console.log("Native terminal Shift+Tab isolation passed", JSON.stringify(keyReport));
+        const overflow = await window.webContents.executeJavaScript(`(async () => {
+          await document.fonts.load('14px "Gajae Terminal Symbols"', '');
+          const panel = document.createElement('aside');
+          panel.style.cssText = 'position:fixed;width:260px;top:0;left:0;z-index:10000';
+          const section = document.createElement('section'); section.className = 'inspector-section';
+          const card = document.createElement('details'); card.className = 'subagent-card'; card.open = true;
+          const summary = document.createElement('summary'); summary.innerHTML = '<span></span><strong>bash</strong><em>Complete</em>';
+          const id = document.createElement('small'); id.textContent = 'call_' + 'x'.repeat(500);
+          const command = document.createElement('p'); command.textContent = 'command_' + 'x'.repeat(5000);
+          const output = document.createElement('pre'); output.className = 'inspector-work-output'; output.textContent = ('output_' + 'x'.repeat(1000) + '\\n').repeat(40);
+          card.append(summary,id,command,output); section.append(card); panel.append(section); document.body.append(panel);
+          const result = { panelWidth: panel.clientWidth, panelScrollWidth: panel.scrollWidth,
+            cardWidth: card.getBoundingClientRect().width, outputHeight: output.clientHeight,
+            outputScrollHeight: output.scrollHeight, commandHeight: command.clientHeight,
+            commandScrollHeight: command.scrollHeight,
+            glyphFontLoaded: document.fonts.check('14px "Gajae Terminal Symbols"', '') };
+          panel.remove(); return result;
+        })()`);
+        if (overflow.panelScrollWidth > overflow.panelWidth + 1 || overflow.outputHeight > 320 ||
+          overflow.commandHeight > 160 || overflow.outputScrollHeight <= overflow.outputHeight ||
+          overflow.commandScrollHeight <= overflow.commandHeight || !overflow.glyphFontLoaded)
+          throw new Error("Prompt font or shell-card containment failed: " + JSON.stringify(overflow));
+        console.log("Shell card containment passed", JSON.stringify(overflow));
         const image = await window.capturePage();
         const directories = [
           path.join(app.getAppPath(), "artifacts"),
