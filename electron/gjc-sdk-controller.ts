@@ -67,6 +67,7 @@ import {
   workflowGateRecord,
 } from "../shared/workflow-question.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
+import { ImageDataUrlCache } from "./image-data-cache.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 import {
   GjcSdkCli,
@@ -603,7 +604,7 @@ export class GjcSdkController {
     string,
     ReturnType<typeof setTimeout>
   >();
-  private readonly imageDataUrls = new Map<string, string>();
+  private readonly imageDataUrls = new ImageDataUrlCache();
   private readonly attachAttempts = new Map<string, number>();
   private readonly contextUsageQueries = new Map<string, Promise<void>>();
   /** Last usage observation (query or live event) used to pace watcher repairs. */
@@ -2835,15 +2836,14 @@ export class GjcSdkController {
           await Promise.all(
             item.images.map(async (image) => {
               if (image.dataUrl || !image.blobId) return image;
-              const cached = this.imageDataUrls.get(image.blobId);
-              if (cached) return { mimeType: image.mimeType, dataUrl: cached };
+                const cached = this.imageDataUrls.get(image.blobId);
+                if (cached) return { mimeType: image.mimeType, dataUrl: cached };
               try {
                 const file = path.join(blobDirectory, image.blobId);
                 const info = await stat(file);
                 if (!info.isFile() || info.size > 12 * 1024 * 1024)
                   return undefined;
                 const dataUrl = `data:${image.mimeType};base64,${(await readFile(file)).toString("base64")}`;
-                if (this.imageDataUrls.size > 64) this.imageDataUrls.clear();
                 this.imageDataUrls.set(image.blobId, dataUrl);
                 return { mimeType: image.mimeType, dataUrl };
               } catch {
