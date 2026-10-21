@@ -1,6 +1,8 @@
 import { app, type BrowserWindow } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { ipcMain } from "electron";
+import { TERMINAL_IPC } from "../shared/terminal-ipc.js";
 
 /**
  * Opens the mock chat, switches to Terminal, and checks that a real login
@@ -51,6 +53,29 @@ export function attachTerminalSmoke(window: BrowserWindow): void {
           echoed: boolean;
           sample: string;
         };
+        const terminalWrites: string[] = [];
+        const observeWrite = (event: Electron.IpcMainEvent, data: unknown): void => {
+          if (event.sender.id === window.webContents.id && typeof data === "string") terminalWrites.push(data);
+        };
+        ipcMain.on(TERMINAL_IPC.input, observeWrite);
+        const effortBefore = await window.webContents.executeJavaScript(`(() => {
+          document.querySelector('.terminal-pane .xterm-helper-textarea')?.focus();
+          return document.querySelector('.composer-model button > span')?.textContent ?? '';
+        })()`);
+        window.webContents.focus();
+        window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Tab", modifiers: ["shift"] });
+        window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Tab", modifiers: ["shift"] });
+        await new Promise(resolve => setTimeout(resolve, 150));
+        const keyReport = await window.webContents.executeJavaScript(`({
+          effort: document.querySelector('.composer-model button > span')?.textContent ?? '',
+          terminalFocused: Boolean(document.activeElement?.closest('.terminal-pane')),
+          background: getComputedStyle(document.querySelector('.xterm-viewport')).backgroundColor,
+        })`);
+        ipcMain.removeListener(TERMINAL_IPC.input, observeWrite);
+        if (keyReport.effort !== effortBefore) throw new Error("Terminal Shift+Tab changed Chat reasoning effort");
+        if (!keyReport.terminalFocused || !terminalWrites.includes('\x1b[Z'))
+          throw new Error("Native Shift+Tab did not reach the focused PTY: " + JSON.stringify(keyReport));
+        console.log("Native terminal Shift+Tab isolation passed", JSON.stringify(keyReport));
         const image = await window.capturePage();
         const directories = [
           path.join(app.getAppPath(), "artifacts"),

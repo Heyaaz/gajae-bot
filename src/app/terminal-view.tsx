@@ -53,7 +53,6 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
     let removeOutput = (): void => undefined;
     let removeExit = (): void => undefined;
     let resizeObserver: ResizeObserver | undefined;
-    let themeObserver: MutationObserver | undefined;
     const gate = createOutputGate({
       highWater: TERMINAL_OUTPUT_HIGH_WATER,
       lowWater: TERMINAL_OUTPUT_LOW_WATER,
@@ -61,9 +60,11 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
     });
 
     let fitAddon: { fit(): void } | null = null;
+    let fontsReady = document.fonts.status === "loaded";
+    let fontsLoaded: Promise<FontFaceSet>;
     const applySize = (): void => {
       const term = termRef.current;
-      if (!term || !fitAddon || !activeRef.current) return;
+      if (!term || !fitAddon || !activeRef.current || !fontsReady) return;
       if (host.clientWidth < 8 || host.clientHeight < 8) return;
       try {
         fitAddon.fit();
@@ -72,6 +73,11 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       }
       bridge.resize(term.cols, term.rows);
     };
+    fontsLoaded = document.fonts.ready.then((loadedFonts) => {
+      fontsReady = true;
+      applySize();
+      return loadedFonts;
+    });
     fitRef.current = applySize;
 
     void (async () => {
@@ -86,8 +92,9 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
         cursorBlink: true,
         cursorStyle: "block",
         fontFamily:
-          'ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace',
-        fontSize: 13,
+          'FiraCode, Menlo, "FiraCode Nerd Font", "CaskaydiaCove Nerd Font", "MesloLGS NF", "Hack Nerd Font", monospace',
+        fontSize: 14,
+        lineHeight: 1.25,
         scrollback: 5000,
         theme: readTerminalTheme(),
         macOptionClickForcesSelection: true,
@@ -105,13 +112,6 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       termRef.current = term;
       resizeObserver = new ResizeObserver(() => applySize());
       resizeObserver.observe(host);
-      themeObserver = new MutationObserver(() => {
-        term.options.theme = readTerminalTheme();
-      });
-      themeObserver.observe(document.documentElement, {
-        attributes: true,
-        attributeFilter: ["data-theme"],
-      });
       applySize();
       try {
         const started = await bridge.start({
@@ -135,7 +135,13 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
         });
         setPhase("running");
         setDetail("");
-        if (activeRef.current) term.focus();
+        if (activeRef.current) {
+          await fontsLoaded;
+          if (!disposed && activeRef.current) {
+            applySize();
+            term.focus();
+          }
+        }
       } catch (error) {
         if (disposed) return;
         setPhase("error");
@@ -150,7 +156,6 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
     return () => {
       disposed = true;
       resizeObserver?.disconnect();
-      themeObserver?.disconnect();
       removeOutput();
       removeExit();
       gate.reset();
@@ -164,8 +169,11 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
   useEffect(() => {
     activeRef.current = active;
     if (!active) return;
-    fitRef.current?.();
-    termRef.current?.focus();
+    void document.fonts.ready.then(() => {
+      if (!activeRef.current) return;
+      fitRef.current?.();
+      termRef.current?.focus();
+    });
   }, [active]);
 
   const status =
@@ -182,6 +190,7 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       className="terminal-pane"
       hidden={hidden}
       data-terminal-state={phase}
+      aria-label={t("터미널")}
     >
       <div className="terminal-pane__host" ref={hostRef} />
       <footer className="terminal-pane__bar">
@@ -199,31 +208,28 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
   );
 }
 
-function readTerminalTheme(): ITheme {
-  const style = getComputedStyle(document.documentElement);
-  const color = (name: string, fallback: string): string =>
-    style.getPropertyValue(name).trim() || fallback;
+export function readTerminalTheme(): ITheme {
   return {
-    background: color("--bg-app", "#09090a"),
-    foreground: color("--text-primary", "#f1f1f3"),
-    cursor: color("--accent-bright", "#ff9238"),
-    cursorAccent: color("--bg-app", "#09090a"),
+    background: "#17191d",
+    foreground: "#e6e8eb",
+    cursor: "#ffad66",
+    cursorAccent: "#17191d",
     selectionBackground: "rgba(240, 100, 22, 0.35)",
-    black: "#1b1b1e",
-    red: "#ee7b7b",
-    green: "#67d6a5",
-    yellow: "#e3b36a",
-    blue: "#8ab4ff",
+    black: "#343840",
+    red: "#ff7b72",
+    green: "#7ee787",
+    yellow: "#e3b341",
+    blue: "#79c0ff",
     magenta: "#d2a8ff",
-    cyan: "#7ddec8",
-    white: "#f1f1f3",
-    brightBlack: "#707077",
-    brightRed: "#ff9a9a",
-    brightGreen: "#8cf0c0",
-    brightYellow: "#f3d08a",
-    brightBlue: "#b3cdff",
-    brightMagenta: "#e2c2ff",
-    brightCyan: "#a8f0e0",
+    cyan: "#56d4dd",
+    white: "#e6e8eb",
+    brightBlack: "#8b949e",
+    brightRed: "#ffa198",
+    brightGreen: "#aff5b4",
+    brightYellow: "#f2cc60",
+    brightBlue: "#a5d6ff",
+    brightMagenta: "#e2c5ff",
+    brightCyan: "#a5f3fc",
     brightWhite: "#ffffff",
   };
 }

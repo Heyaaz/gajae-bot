@@ -949,6 +949,7 @@ export default function App() {
         event.ctrlKey ||
         event.altKey ||
         event.shiftKey ||
+        surfaceRef.current === "terminal" ||
         event.key.toLowerCase() !== "k"
       )
         return;
@@ -1953,6 +1954,7 @@ export default function App() {
     const unsubscribe = window.agentControlDesktop?.onSessionShortcut(
       (shortcut) => {
         if (shortcut.type === "abort") {
+          if (surfaceRef.current === "terminal") return;
           const session = selectedSessionRef.current;
           if (session) void cancelRun(session.id).catch(() => undefined);
           return;
@@ -1968,10 +1970,12 @@ export default function App() {
       },
     );
     const unsubscribeAbort = window.agentControlDesktop?.onAbortRun(() => {
+      if (surfaceRef.current === "terminal") return;
       const session = selectedSessionRef.current;
       if (session) void cancelRun(session.id).catch(() => undefined);
     });
     function abortWithEscape(event: globalThis.KeyboardEvent): void {
+      if (surfaceRef.current === "terminal") return;
       if (
         !escapeCancelsRun({
           key: event.key,

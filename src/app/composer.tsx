@@ -1014,6 +1014,16 @@ export const Composer = memo(function Composer({
   );
 
   useEffect(() => {
+    function isTerminalSurface(eventTarget?: EventTarget | null): boolean {
+      const textarea = textareaRef.current;
+      const target = eventTarget instanceof Element ? eventTarget : null;
+      const activeElement = document.activeElement;
+      return Boolean(
+        textarea?.closest("[hidden]") ||
+        target?.closest(".terminal-pane") ||
+        (activeElement instanceof Element && activeElement.closest(".terminal-pane")),
+      );
+    }
     function applyEffortCycle(): void {
       setConfigMenu(null);
       onCycleThinking();
@@ -1027,12 +1037,15 @@ export const Composer = memo(function Composer({
         event.key !== "Tab"
       )
         return;
+      if (isTerminalSurface(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
       applyEffortCycle();
     }
     const unsubscribeNative =
-      window.agentControlDesktop?.onCycleEffort(applyEffortCycle);
+      window.agentControlDesktop?.onCycleEffort(() => {
+        if (!isTerminalSurface()) applyEffortCycle();
+      });
     window.addEventListener("keydown", handleKeyboard, true);
     return () => {
       unsubscribeNative?.();

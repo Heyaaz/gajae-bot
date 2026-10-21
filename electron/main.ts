@@ -349,17 +349,6 @@ function createWindow(): BrowserWindow {
 
   window.webContents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
-    if (
-      input.key === "Tab" &&
-      input.shift &&
-      !input.meta &&
-      !input.control &&
-      !input.alt
-    ) {
-      event.preventDefault();
-      window.webContents.send(DESKTOP_IPC.cycleEffort);
-      return;
-    }
     // Escape is deliberately not forwarded from here. This handler runs before the
     // renderer sees the key and cannot tell a rename editor or a dialog field from
     // the transcript, so re-sending every Escape as an abort cancelled runs the user
@@ -820,8 +809,8 @@ function createWindow(): BrowserWindow {
             await wait(50);
             assert(buttonWithText('현재 상태에서 포크'), 'Latest-state session fork action did not render');
             document.querySelector('.chat-header')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-            assert(!document.querySelector('button[title="터미널"]'), 'Removed integrated terminal action still renders');
-            assert(!window.agentControlDesktop?.terminal, 'Removed terminal bridge is still exposed');
+            assert(document.querySelector('[data-terminal-toggle]'), 'Terminal surface toggle is missing');
+            assert(typeof window.agentControlDesktop?.terminal?.start === 'function', 'Terminal bridge is missing');
 
             const approve = buttonWithText('이번만 허용');
             assert(approve, 'Approval action did not render');

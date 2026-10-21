@@ -413,8 +413,8 @@ describe("Escape keyboard routing", () => {
     expect(body).toBeTruthy();
     expect(body).not.toContain('input.key === "Escape"');
     expect(body).not.toMatch(/send\(DESKTOP_IPC\.abortRun\)/u);
-    // Shift+Tab is still forwarded: it is a shell-wide command with no editor meaning.
-    expect(body).toContain("DESKTOP_IPC.cycleEffort");
+    // DOM ownership is required so terminal and native text inputs retain Shift+Tab.
+    expect(body).not.toContain("DESKTOP_IPC.cycleEffort");
   });
 
   it("listens in the bubble phase so a nearer handler gets the key first", async () => {
@@ -438,6 +438,22 @@ describe("Escape keyboard routing", () => {
       "deleteCandidate",
     ])
       expect(gate).toContain(surface);
+  });
+
+  it("does not claim shell shortcuts while the terminal surface is active", async () => {
+    const shell = await source("src/app/shell.tsx");
+    expect(shell).toMatch(/surfaceRef\.current === "terminal"[\s\S]*?setSearchOpen\(true\)/u);
+    expect(shell).toMatch(/shortcut\.type === "abort"\) \{\s*if \(surfaceRef\.current === "terminal"\)/u);
+    expect(shell).toMatch(/onAbortRun\(\(\) => \{\s*if \(surfaceRef\.current === "terminal"\)/u);
+    expect(shell).toMatch(/function abortWithEscape[\s\S]*?if \(surfaceRef\.current === "terminal"\) return;/u);
+  });
+
+  it("leaves composer Shift+Tab to the terminal when it is active or hidden", async () => {
+    const composer = await source("src/app/composer.tsx");
+    expect(composer).toContain('textarea?.closest("[hidden]")');
+    expect(composer).toContain('target?.closest(".terminal-pane")');
+    expect(composer).toContain('activeElement.closest(".terminal-pane")');
+    expect(composer).toMatch(/onCycleEffort\(\(\) => \{\s*if \(!isTerminalSurface\(\)\) applyEffortCycle\(\);/u);
   });
 });
 
