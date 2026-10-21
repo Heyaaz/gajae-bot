@@ -26,6 +26,7 @@ import {
   todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
 import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
+import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 import {
   DEFAULT_MODEL_PRESET,
   TRANSCRIPT_BODY_ARTIFACT_PREFIX,
@@ -2308,6 +2309,30 @@ describe("SDK slash commands", () => {
     } finally {
       controller.dispose();
     }
+  });
+
+  it("resolves a projected tool body from the installed transcript without cloning it", async () => {
+    const { controller, internals } = harness();
+    const output = `${"output-prefix ".repeat(200)}OUTPUT_SENTINEL`;
+    const full = {
+      id: "tool-cached",
+      kind: "tool" as const,
+      sessionId: "s1",
+      name: "bash",
+      description: "bash",
+      status: "completed" as const,
+      createdAt: "t1",
+      output,
+    };
+    const projected = projectTranscriptItemForDelivery(full) as ToolActivity;
+    internals.transcripts.set("s1", [full]);
+    internals.getTranscript = vi.fn(() => {
+      throw new Error("must not clone the whole transcript");
+    });
+    await expect(
+      controller.readArtifact("s1", projected.outputArtifactId!),
+    ).resolves.toMatchObject({ text: output, complete: true });
+    expect(internals.getTranscript).not.toHaveBeenCalled();
   });
 
   it("projects completed tool bodies only at delivery and resolves their full source", async () => {

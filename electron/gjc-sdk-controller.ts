@@ -4491,10 +4491,15 @@ export class GjcSdkController {
     if (!/^[A-Za-z0-9._-]+$/.test(artifactId))
       throw new Error("Invalid artifact id");
     if (artifactId.startsWith(TRANSCRIPT_BODY_ARTIFACT_PREFIX)) {
+      // The installed array is authoritative. Only load it when this window has
+      // not read the session yet; `getTranscript` clones every row, and opening a
+      // large tool body should not copy the whole history each time.
+      if (!this.transcripts.has(sessionId))
+        await this.getTranscript(sessionId);
       const content = resolveTranscriptBodyArtifact(
         sessionId,
         artifactId,
-        await this.getTranscript(sessionId),
+        this.transcripts.get(sessionId) ?? [],
       );
       if (!content)
         throw new Error(`Invalid transcript body artifact reference: ${artifactId}`);
