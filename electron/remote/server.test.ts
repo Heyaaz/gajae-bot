@@ -3,7 +3,12 @@ import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import type { AgentEvent, TranscriptItem } from "../../shared/agent-contract.js";
+import type {
+  AgentEvent,
+  TranscriptItem,
+  TranscriptPage,
+  TranscriptPageRequest,
+} from "../../shared/agent-contract.js";
 import { REMOTE_API, REMOTE_PROTOCOL_VERSION } from "../../shared/remote-protocol.js";
 import { DeviceStore } from "./devices.js";
 import type { RemoteOperationsHost } from "./operations.js";
@@ -20,14 +25,17 @@ afterEach(async () => {
 interface FakeHost extends RemoteOperationsHost {
   calls: string[];
   transcript: TranscriptItem[];
+  pageRequests: Array<{ sessionId: string; request?: TranscriptPageRequest }>;
 }
 
 function fakeHost(): FakeHost {
   const calls: string[] = [];
   const transcript: TranscriptItem[] = [];
+  const pageRequests: Array<{ sessionId: string; request?: TranscriptPageRequest }> = [];
   return {
     calls,
     transcript,
+    pageRequests,
     async getConnection() {
       return {
         state: "connected" as const,
@@ -63,6 +71,23 @@ function fakeHost(): FakeHost {
     async getTranscript(sessionId: string) {
       calls.push(`transcript:${sessionId}`);
       return transcript.slice();
+    },
+    async getTranscriptPage(sessionId: string, request?: TranscriptPageRequest) {
+      calls.push(`transcript-page:${sessionId}`);
+      pageRequests.push({
+        sessionId,
+        ...(request === undefined ? {} : { request: { ...request } }),
+      });
+      const items = transcript.slice();
+      const page: TranscriptPage = {
+        items,
+        hasMoreBefore: request?.beforeId !== undefined,
+        hasMoreAfter: request?.aroundId !== undefined,
+        ...(items[0] ? { firstId: items[0].id } : {}),
+        ...(items.at(-1) ? { lastId: items.at(-1)!.id } : {}),
+        requests: [],
+      };
+      return page;
     },
     async getTranscriptRevision(sessionId: string) {
       calls.push(`transcript-revision:${sessionId}`);
@@ -455,6 +480,122 @@ describe("remote server permissions", () => {
     expect(changes.status).toBe(200);
     expect(await changes.json()).toEqual({
       result: { kind: "full", items: [] },
+    });
+  });
+
+  it("serves transcript pages to view-only devices with the requested anchors", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const message: TranscriptItem = {
+      id: "message-1",
+      sessionId: "s-1",
+      kind: "message",
+      role: "assistant",
+      content: "page row",
+      createdAt: new Date(0).toISOString(),
+    };
+    base.host.transcript.push(message);
+
+    const initial = await fetch(base.url(REMOTE_API.transcriptPage("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(initial.status).toBe(200);
+    const expectedPage = {
+      items: [message],
+      hasMoreBefore: false,
+      hasMoreAfter: false,
+      firstId: message.id,
+      lastId: message.id,
+      requests: [],
+    };
+    expect(await initial.json()).toEqual({ result: expectedPage });
+
+    const beforeId = "before /? #message";
+    const before = await fetch(
+      base.url(`${REMOTE_API.transcriptPage("s-1")}?beforeId=${encodeURIComponent(beforeId)}`),
+      { headers: bearer(device.token) },
+    );
+    expect(before.status).toBe(200);
+    expect(await before.json()).toEqual({
+      result: { ...expectedPage, hasMoreBefore: true },
+    });
+
+    const aroundId = "around ü message";
+    const around = await fetch(
+      base.url(`${REMOTE_API.transcriptPage("s-1")}?aroundId=${encodeURIComponent(aroundId)}`),
+      { headers: bearer(device.token) },
+    );
+    expect(around.status).toBe(200);
+    expect(await around.json()).toEqual({
+      result: { ...expectedPage, hasMoreAfter: true },
+    });
+    expect(base.host.pageRequests).toEqual([
+      { sessionId: "s-1" },
+      { sessionId: "s-1", request: { beforeId } },
+      { sessionId: "s-1", request: { aroundId } },
+    ]);
+  });
+
+  it("rejects malformed transcript page cursors before reaching the host", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const endpoint = REMOTE_API.transcriptPage("s-1");
+    const malformedQueries = [
+      "?beforeId=first&beforeId=second",
+      "?aroundId=first&aroundId=second",
+      "?unknown=message",
+      "?beforeId=",
+      `?aroundId=${"x".repeat(513)}`,
+      "?beforeId=first&aroundId=second",
+    ];
+
+    for (const query of malformedQueries) {
+      const response = await fetch(base.url(`${endpoint}${query}`), {
+        headers: bearer(device.token),
+      });
+      expect(response.status, query).toBe(400);
+      expect((await response.json()).error.code, query).toBe("invalid");
+    }
+    expect(base.host.pageRequests).toEqual([]);
+    expect(base.host.calls).toEqual([]);
+  });
+
+  it("does not change the delta baseline when a device reads a transcript page", async () => {
+    const base = await harness();
+    const device = await base.pair("view");
+    const first: TranscriptItem = {
+      id: "m-1",
+      sessionId: "s-1",
+      kind: "message",
+      role: "assistant",
+      content: "first",
+      createdAt: new Date(0).toISOString(),
+    };
+    base.host.transcript.push(first);
+    const initial = await fetch(base.url(REMOTE_API.transcript("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(await initial.json()).toEqual({ result: [first] });
+
+    const page = await fetch(base.url(REMOTE_API.transcriptPage("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(await page.json()).toMatchObject({ result: { items: [first] } });
+
+    const second: TranscriptItem = {
+      id: "m-2",
+      sessionId: "s-1",
+      kind: "message",
+      role: "assistant",
+      content: "second",
+      createdAt: new Date(1000).toISOString(),
+    };
+    base.host.transcript.push(second);
+    const changes = await fetch(base.url(REMOTE_API.transcriptChanges("s-1")), {
+      headers: bearer(device.token),
+    });
+    expect(await changes.json()).toEqual({
+      result: { kind: "patch", items: [second] },
     });
   });
 

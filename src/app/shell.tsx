@@ -8,6 +8,9 @@ import type {
   HistorySession,
   MessageDelivery,
   SubagentSnapshot,
+  TranscriptPage,
+  TranscriptPageRequest,
+  TranscriptRequestSummary,
 } from "../../shared/agent-contract";
 import type {
   AgentCommand,
@@ -21,15 +24,12 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
-import { isImmediateSdkCommandSubmission } from "../composer-utils";
 import {
   MessageDeliveryTracker,
   isTrackableMessageInput,
 } from "../message-delivery";
 import type { MessageDeliverySessionState } from "../message-delivery";
 import {
-  applyTranscriptPatch,
-  applyTranscriptRead,
   cacheTranscript,
   initialSessionId,
   discoveryRevisionIsFresh,
@@ -39,7 +39,11 @@ import {
   pendingToolApprovals,
   updateTranscriptItem,
 } from "../transcript-utils";
-import { readTranscriptForSafetyNet } from "../transcript-sync";
+import {
+  mergeRequestSummaries,
+  mergeTranscriptPage,
+  mergeTranscriptTail,
+} from "../transcript-pages";
 import { getLanguage, t, useLanguage } from "../i18n";
 import { FolderGit2, GitBranch, Layers, Menu, PanelRight, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -105,6 +109,72 @@ type ShellSendMessage = (
   input: MessageInput,
   options?: ShellSendOptions,
 ) => Promise<MessageDelivery>;
+
+type TranscriptPageScope =
+  | { kind: "latest" }
+  | { kind: "around"; id: string };
+
+type TranscriptPageMergeMode = "replace" | "prepend" | "tail" | "around";
+
+interface SessionTranscriptPageState {
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+  firstId?: string;
+  lastId?: string;
+  scope: TranscriptPageScope;
+  loadingPage: boolean;
+  pageError: string;
+  loadingEarlier: boolean;
+  earlierError: string;
+}
+
+const EMPTY_TRANSCRIPT_PAGE_STATE: SessionTranscriptPageState = {
+  hasMoreBefore: false,
+  hasMoreAfter: false,
+  scope: { kind: "latest" },
+  loadingPage: false,
+  pageError: "",
+  loadingEarlier: false,
+  earlierError: "",
+};
+
+function reconcilePageRequestIndex(
+  existing: TranscriptRequestSummary[],
+  incoming: TranscriptRequestSummary[],
+  eventVersions: ReadonlyMap<string, number> | undefined,
+  readVersion: number,
+): TranscriptRequestSummary[] {
+  const existingById = new Map(existing.map((request) => [request.id, request]));
+  const incomingIds = new Set(incoming.map((request) => request.id));
+  const requests = incoming.map((request) =>
+    (eventVersions?.get(request.id) ?? 0) > readVersion
+      ? existingById.get(request.id) ?? request
+      : request,
+  );
+  for (const request of existing) {
+    if (
+      !incomingIds.has(request.id) &&
+      (eventVersions?.get(request.id) ?? 0) > readVersion
+    )
+      requests.push(request);
+  }
+  return requests;
+}
+
+function lastDurableUserRequest(
+  items: readonly TranscriptItem[],
+): Extract<TranscriptItem, { kind: "message" }> | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (
+      item.kind === "message" &&
+      item.role === "user" &&
+      !item.id.startsWith("local-prompt-")
+    )
+      return item;
+  }
+  return undefined;
+}
 
 /**
  * Whether a key press is the shell's abort gesture.
@@ -276,10 +346,22 @@ export default function App() {
   >({});
   const transcriptsRef = useRef(transcripts);
   transcriptsRef.current = transcripts;
+  const [transcriptPageStates, setTranscriptPageStates] = useState<
+    Record<string, SessionTranscriptPageState>
+  >({});
+  const transcriptPageStatesRef = useRef(transcriptPageStates);
+  transcriptPageStatesRef.current = transcriptPageStates;
+  const [requestSummariesBySession, setRequestSummariesBySession] = useState<
+    Record<string, TranscriptRequestSummary[]>
+  >({});
+  const requestSummariesRef = useRef(requestSummariesBySession);
+  requestSummariesRef.current = requestSummariesBySession;
   const messageDeliveryTrackerRef = useRef<MessageDeliveryTracker | null>(null);
   if (!messageDeliveryTrackerRef.current)
     messageDeliveryTrackerRef.current = new MessageDeliveryTracker();
   const deliveryPageReadsRef = useRef(new Set<string>());
+  const deliveryPageRetryAfterRef = useRef(new Map<string, number>());
+  const deliveryRetryTimersRef = useRef(new Map<string, number>());
   const [messageDeliveryRevision, setMessageDeliveryRevision] = useState(0);
   const [commands, setCommands] = useState<Record<string, AgentCommand[]>>({});
   const [configOptions, setConfigOptions] = useState<
@@ -333,25 +415,82 @@ export default function App() {
       );
       if (
         tracker.needsLatestRead(sessionId) &&
-        !deliveryPageReadsRef.current.has(sessionId)
+        !deliveryPageReadsRef.current.has(sessionId) &&
+        Date.now() >= (deliveryPageRetryAfterRef.current.get(sessionId) ?? 0)
       ) {
         deliveryPageReadsRef.current.add(sessionId);
         const requestedAt = Date.now();
-        void backend.getTranscript(sessionId)
-          .then((items) => {
-            tracker.observeTranscript(
+        const beforeCount = tracker.snapshot(sessionId).length;
+        void (async () => {
+          let latest = await backend.getTranscriptPage(sessionId);
+          const latestHasMoreAfter = latest.hasMoreAfter;
+          let items = latest.items;
+          let hasMoreBefore = latest.hasMoreBefore;
+          let covered = tracker.coversPendingAttempts(
+            sessionId,
+            items,
+            hasMoreBefore,
+          );
+          while (!latestHasMoreAfter && !covered && hasMoreBefore && latest.firstId) {
+            const older = await backend.getTranscriptPage(sessionId, {
+              beforeId: latest.firstId,
+            });
+            items = mergeTranscriptPage(items, older, "prepend");
+            latest = {
+              ...latest,
+              firstId: older.firstId,
+              lastId: latest.lastId,
+              hasMoreBefore: older.hasMoreBefore,
+              items,
+            };
+            hasMoreBefore = older.hasMoreBefore;
+            covered = tracker.coversPendingAttempts(
               sessionId,
               items,
-              { kind: "latest", complete: true, requestedAt },
-              Date.now(),
+              hasMoreBefore,
             );
+          }
+          const complete = !latestHasMoreAfter && covered;
+          tracker.observeTranscript(
+            sessionId,
+            items,
+            { kind: "latest", complete, requestedAt },
+            Date.now(),
+          );
+          const afterCount = tracker.snapshot(sessionId).length;
+          if (complete || afterCount !== beforeCount) {
+            deliveryPageRetryAfterRef.current.delete(sessionId);
+            const timer = deliveryRetryTimersRef.current.get(sessionId);
+            if (timer !== undefined) window.clearTimeout(timer);
+            deliveryRetryTimersRef.current.delete(sessionId);
             setMessageDeliveryRevision((revision) => revision + 1);
-          })
+          } else {
+            const retryAt = Date.now() + 5_000;
+            deliveryPageRetryAfterRef.current.set(sessionId, retryAt);
+            if (!deliveryRetryTimersRef.current.has(sessionId)) {
+              const timer = window.setTimeout(() => {
+                deliveryRetryTimersRef.current.delete(sessionId);
+                deliveryPageRetryAfterRef.current.delete(sessionId);
+                setMessageDeliveryRevision((revision) => revision + 1);
+              }, 5_000);
+              deliveryRetryTimersRef.current.set(sessionId, timer);
+            }
+          }
+        })()
           .catch(() => undefined)
           .finally(() => deliveryPageReadsRef.current.delete(sessionId));
       }
     }
   }, [backend, sessions, connection.state, messageDeliveryRevision]);
+
+  useEffect(
+    () => () => {
+      for (const timer of deliveryRetryTimersRef.current.values())
+        window.clearTimeout(timer);
+      deliveryRetryTimersRef.current.clear();
+    },
+    [],
+  );
 
   useEffect(() => {
     const due = messageDeliveryTrackerRef.current!.nextDeadline();
@@ -424,6 +563,261 @@ export default function App() {
   const pendingSessions = useRef(new Map<string, Promise<AgentSession>>());
   const selectedIdRef = useRef<string | null>(null);
   const navigationGenerationRef = useRef(0);
+  const transcriptPageGenerationsRef = useRef(new Map<string, number>());
+  const initialPageReadsRef = useRef(new Map<string, Promise<TranscriptPage | undefined>>());
+  const transcriptPageInFlightRef = useRef(new Set<string>());
+  const transcriptEventVersionsRef = useRef(new Map<string, number>());
+  const transcriptItemVersionsRef = useRef(new Map<string, Map<string, number>>());
+  const transcriptRequestEventVersionsRef = useRef(new Map<string, Map<string, number>>());
+  const pendingTranscriptScopesRef = useRef(new Map<string, TranscriptPageScope>());
+  const revealRequestGenerationRef = useRef(0);
+
+  useEffect(() => {
+    const cachedIds = new Set(Object.keys(transcripts));
+    const prune = <T,>(source: Record<string, T>): Record<string, T> =>
+      Object.fromEntries(
+        Object.entries(source).filter(([sessionId]) => cachedIds.has(sessionId)),
+      );
+    const pages = prune(transcriptPageStatesRef.current);
+    if (Object.keys(pages).length !== Object.keys(transcriptPageStatesRef.current).length) {
+      transcriptPageStatesRef.current = pages;
+      setTranscriptPageStates(pages);
+    }
+    const summaries = prune(requestSummariesRef.current);
+    if (Object.keys(summaries).length !== Object.keys(requestSummariesRef.current).length) {
+      requestSummariesRef.current = summaries;
+      setRequestSummariesBySession(summaries);
+    }
+  }, [transcripts]);
+
+  function updateTranscriptPageState(
+    sessionId: string,
+    update: (current: SessionTranscriptPageState) => SessionTranscriptPageState,
+  ): void {
+    const current = transcriptPageStatesRef.current;
+    const next = {
+      ...current,
+      [sessionId]: update(
+        current[sessionId] ?? EMPTY_TRANSCRIPT_PAGE_STATE,
+      ),
+    };
+    transcriptPageStatesRef.current = next;
+    setTranscriptPageStates(next);
+  }
+
+  function noteTranscriptEvent(sessionId: string, itemIds: string[] = []): void {
+    const version = (transcriptEventVersionsRef.current.get(sessionId) ?? 0) + 1;
+    transcriptEventVersionsRef.current.set(sessionId, version);
+    if (itemIds.length === 0) return;
+    let itemVersions = transcriptItemVersionsRef.current.get(sessionId);
+    if (!itemVersions) {
+      itemVersions = new Map();
+      transcriptItemVersionsRef.current.set(sessionId, itemVersions);
+    }
+    for (const id of itemIds) itemVersions.set(id, version);
+    let requestVersions = transcriptRequestEventVersionsRef.current.get(sessionId);
+    if (!requestVersions) {
+      requestVersions = new Map();
+      transcriptRequestEventVersionsRef.current.set(sessionId, requestVersions);
+    }
+    for (const id of itemIds) requestVersions.set(id, version);
+  }
+
+  function tracksTranscriptSession(sessionId: string): boolean {
+    return Boolean(transcriptsRef.current[sessionId]) ||
+      transcriptPageInFlightRef.current.has(sessionId);
+  }
+
+  function updateRequestSummaries(
+    sessionId: string,
+    items: readonly TranscriptItem[],
+  ): void {
+    const current = requestSummariesRef.current;
+    const next = {
+      ...current,
+      [sessionId]: mergeRequestSummaries(current[sessionId] ?? [], items),
+    };
+    requestSummariesRef.current = next;
+    setRequestSummariesBySession(next);
+  }
+
+  function mergePageRequestSummaries(
+    sessionId: string,
+    requests: TranscriptRequestSummary[],
+    readVersion: number,
+  ): void {
+    const current = requestSummariesRef.current;
+    const next = {
+      ...current,
+      [sessionId]: reconcilePageRequestIndex(
+        current[sessionId] ?? [],
+        requests,
+        transcriptRequestEventVersionsRef.current.get(sessionId),
+        readVersion,
+      ),
+    };
+    requestSummariesRef.current = next;
+    setRequestSummariesBySession(next);
+  }
+
+  async function readTranscriptPage(
+    sessionId: string,
+    request: TranscriptPageRequest | undefined,
+    mode: TranscriptPageMergeMode,
+    scope: TranscriptPageScope,
+  ): Promise<TranscriptPage | undefined> {
+    const generation = (transcriptPageGenerationsRef.current.get(sessionId) ?? 0) + 1;
+    transcriptPageGenerationsRef.current.set(sessionId, generation);
+    const protectsHistoricalView =
+      scope.kind === "around" && mode !== "prepend";
+    if (protectsHistoricalView)
+      pendingTranscriptScopesRef.current.set(sessionId, scope);
+    transcriptPageInFlightRef.current.add(sessionId);
+    const readVersion = transcriptEventVersionsRef.current.get(sessionId) ?? 0;
+    let page: TranscriptPage;
+    try {
+      page = await backend.getTranscriptPage(sessionId, request);
+    } catch (error) {
+      if (transcriptPageGenerationsRef.current.get(sessionId) === generation) {
+        transcriptPageInFlightRef.current.delete(sessionId);
+        pendingTranscriptScopesRef.current.delete(sessionId);
+      }
+      throw error;
+    }
+    if (transcriptPageGenerationsRef.current.get(sessionId) !== generation)
+      return undefined;
+
+    setTranscripts((current) => {
+      if (transcriptPageGenerationsRef.current.get(sessionId) !== generation)
+        return current;
+      const currentItems = current[sessionId] ?? [];
+      const currentById = new Map(currentItems.map((item) => [item.id, item]));
+      const itemVersions = transcriptItemVersionsRef.current.get(sessionId);
+      const freshPage: TranscriptPage = {
+        ...page,
+        items: page.items.map((item) =>
+          (itemVersions?.get(item.id) ?? 0) > readVersion
+            ? currentById.get(item.id) ?? item
+            : item,
+        ),
+      };
+      let items: TranscriptItem[];
+      if (mode === "prepend") {
+        items = mergeTranscriptPage(currentItems, freshPage, "prepend");
+      } else if (mode === "tail") {
+        items = mergeTranscriptTail(currentItems, freshPage.items);
+      } else if (mode === "around") {
+        items = mergeTranscriptPage(currentItems, freshPage, "replace");
+      } else {
+        items = mergeTranscriptPage(currentItems, freshPage, "replace");
+      }
+      if (
+        scope.kind === "latest" &&
+        mode !== "prepend" &&
+        mode !== "around"
+      ) {
+        const installedIds = new Set(items.map((item) => item.id));
+        const arrivedDuringRead = currentItems.filter(
+          (item) =>
+            !installedIds.has(item.id) &&
+            (itemVersions?.get(item.id) ?? 0) > readVersion,
+        );
+        if (arrivedDuringRead.length > 0) items = [...items, ...arrivedDuringRead];
+      }
+      const next = cacheTranscript(current, sessionId, items);
+      transcriptsRef.current = next;
+      return next;
+    });
+    if (transcriptPageGenerationsRef.current.get(sessionId) !== generation)
+      return undefined;
+
+    const previous = transcriptPageStatesRef.current[sessionId] ?? EMPTY_TRANSCRIPT_PAGE_STATE;
+    const pageState: SessionTranscriptPageState = {
+      ...previous,
+      scope,
+      loadingPage: false,
+      pageError: "",
+      loadingEarlier: false,
+      earlierError: "",
+    };
+    if (mode === "prepend") {
+      pageState.hasMoreBefore = page.hasMoreBefore;
+      pageState.hasMoreAfter = previous.hasMoreAfter;
+      pageState.firstId = page.firstId ?? previous.firstId;
+      pageState.lastId = previous.lastId ?? page.lastId;
+    } else if (mode === "tail") {
+      pageState.hasMoreBefore = previous.hasMoreBefore || page.hasMoreBefore;
+      pageState.hasMoreAfter = page.hasMoreAfter;
+      pageState.firstId = previous.firstId ?? page.firstId;
+      pageState.lastId = page.lastId ?? previous.lastId;
+    } else if (mode === "around") {
+      pageState.hasMoreBefore = page.hasMoreBefore;
+      pageState.hasMoreAfter = page.hasMoreAfter;
+      pageState.firstId = page.firstId;
+      pageState.lastId = page.lastId;
+    } else {
+      pageState.hasMoreBefore = page.hasMoreBefore;
+      pageState.hasMoreAfter = page.hasMoreAfter;
+      pageState.firstId = page.firstId;
+      pageState.lastId = page.lastId;
+    }
+    updateTranscriptPageState(sessionId, () => pageState);
+    mergePageRequestSummaries(sessionId, page.requests, readVersion);
+    transcriptPageInFlightRef.current.delete(sessionId);
+    pendingTranscriptScopesRef.current.delete(sessionId);
+    const finishedVersion = transcriptEventVersionsRef.current.get(sessionId) ?? 0;
+    if (finishedVersion !== readVersion) {
+      window.setTimeout(() => {
+        if (
+          transcriptEventVersionsRef.current.get(sessionId) === finishedVersion &&
+          transcriptsRef.current[sessionId]
+        )
+          void refreshTranscriptPage(sessionId).catch(() => undefined);
+      }, 200);
+    }
+    return page;
+  }
+
+  async function refreshTranscriptPage(sessionId: string): Promise<void> {
+    if (!transcriptsRef.current[sessionId]) return;
+    const pageState = transcriptPageStatesRef.current[sessionId];
+    if (
+      pageState?.scope.kind === "around" ||
+      pageState?.hasMoreAfter
+    ) {
+      const anchorId = pageState?.scope.kind === "around"
+        ? pageState.scope.id
+        : pageState?.firstId ?? transcriptsRef.current[sessionId]?.[0]?.id;
+      if (!anchorId) return;
+      await readTranscriptPage(
+        sessionId,
+        { aroundId: anchorId },
+        "around",
+        { kind: "around", id: anchorId },
+      );
+      return;
+    }
+    await readTranscriptPage(sessionId, undefined, "tail", { kind: "latest" });
+  }
+
+  function mergeLiveTranscriptItems(
+    sessionId: string,
+    current: TranscriptItem[],
+    incoming: readonly TranscriptItem[],
+  ): TranscriptItem[] {
+    const pageState = transcriptPageStatesRef.current[sessionId];
+    const pendingScope = pendingTranscriptScopesRef.current.get(sessionId);
+    const historical =
+      pageState?.scope.kind === "around" ||
+      pageState?.hasMoreAfter ||
+      pendingScope?.kind === "around";
+    let next = current;
+    for (const item of incoming) {
+      if (historical && !next.some((existing) => existing.id === item.id)) continue;
+      next = mergeTranscriptItem(next, item);
+    }
+    return next;
+  }
 
   useEffect(() => {
     if (!appError) return;
@@ -574,7 +968,7 @@ export default function App() {
           text: request.text,
           images: request.images,
           files: request.files,
-        }, false);
+        }, { quiet: true });
       }, () => selectedIdRef.current === selectedAtRelease)
         .catch((error: unknown) => setAppError(humanErrorMessage(error)));
     };
@@ -626,52 +1020,34 @@ export default function App() {
         .catch(() => undefined)
         .finally(() => { listing = false; });
     };
-    // A live tail can miss a file write when a watcher or endpoint drops. The
-    // session list poll alone would then leave the selected conversation frozen at
-    // an old row and an idle header. Re-read the selected transcript on the same
-    // low-frequency beat so the durable session file is a safety net, not only the
-    // event stream. A later read sends only changed rows. The first read, and a
-    // backend without that method, still returns the merged view, including
-    // app-owned plan/todo rows, so replacing the cache does not discard them.
-    let refreshingTranscript = false;
+    // Poll only sessions already in the three-session transcript cache. A bounded page
+    // repairs missed watcher events without ever turning a historical view into a tail.
+    const refreshingTranscripts = new Set<string>();
+    const queuedTranscriptRefreshes = new Set<string>();
+    const refreshTranscript = (id: string): void => {
+      if (!active || !transcriptsRef.current[id]) return;
+      if (refreshingTranscripts.has(id)) {
+        queuedTranscriptRefreshes.add(id);
+        return;
+      }
+      refreshingTranscripts.add(id);
+      const startedAtVersion = transcriptEventVersionsRef.current.get(id) ?? 0;
+      void refreshTranscriptPage(id)
+        .catch(() => undefined)
+        .finally(() => {
+          refreshingTranscripts.delete(id);
+          const changedDuringRead =
+            (transcriptEventVersionsRef.current.get(id) ?? 0) !== startedAtVersion;
+          if (
+            active &&
+            (queuedTranscriptRefreshes.delete(id) || changedDuringRead)
+          )
+            window.setTimeout(() => refreshTranscript(id), 200);
+        });
+    };
     const refreshSelectedTranscript = (): void => {
       const id = selectedIdRef.current;
-      if (!id || refreshingTranscript) return;
-      refreshingTranscript = true;
-      void (async () => {
-        const outcome = await readTranscriptForSafetyNet({
-          knownRevision: transcriptRevisions.current.get(id),
-          readRevision: backend.getTranscriptRevision
-            ? () => backend.getTranscriptRevision!(id)
-            : undefined,
-          readItems: () =>
-            backend.getTranscriptChanges
-              ? backend.getTranscriptChanges(id)
-              : backend.getTranscript(id),
-        });
-        if (!active || outcome.kind === "skipped") return;
-        let missedPatch = false;
-        setTranscripts((current) => {
-          if (outcome.change.kind === "patch") {
-            if (!current[id]) {
-              missedPatch = true;
-              return current;
-            }
-            return applyTranscriptPatch(current, id, outcome.change.items);
-          }
-          return applyTranscriptRead(current, id, outcome.change.items);
-        });
-        if (missedPatch) {
-          const items = await backend.getTranscript(id);
-          if (!active) return;
-          setTranscripts((current) =>
-            current[id] ? current : applyTranscriptRead(current, id, items),
-          );
-        }
-        if (outcome.revision) transcriptRevisions.current.set(id, outcome.revision);
-      })()
-        .catch(() => undefined)
-        .finally(() => { refreshingTranscript = false; });
+      if (id) refreshTranscript(id);
     };
     const refreshVisibleState = (): void => {
       loadSessions(false);
@@ -726,22 +1102,31 @@ export default function App() {
       } else if (event.type === "session.deleted") {
         forgetSession(event.sessionId);
       } else if (event.type === "transcript.appended") {
+        const tracked = tracksTranscriptSession(event.item.sessionId);
+        if (tracked) noteTranscriptEvent(event.item.sessionId, [event.item.id]);
         messageDeliveryTrackerRef.current!.observeUserEvent(
           event.item.sessionId,
           event.item,
           Date.now(),
         );
         setMessageDeliveryRevision((revision) => revision + 1);
+        if (tracked && !event.item.id.startsWith("local-prompt-"))
+          updateRequestSummaries(event.item.sessionId, [event.item]);
         setTranscripts((current) => {
           const items = current[event.item.sessionId];
           if (!items) return current;
-          return cacheTranscript(
+          const next = cacheTranscript(
             current,
             event.item.sessionId,
-            mergeTranscriptItem(items, event.item),
+            mergeLiveTranscriptItems(event.item.sessionId, items, [event.item]),
           );
+          transcriptsRef.current = next;
+          return next;
         });
       } else if (event.type === "transcript.synced") {
+        const tracked = tracksTranscriptSession(event.sessionId);
+        if (tracked)
+          noteTranscriptEvent(event.sessionId, event.items.map((item) => item.id));
         messageDeliveryTrackerRef.current!.observeTranscript(
           event.sessionId,
           event.items,
@@ -749,12 +1134,41 @@ export default function App() {
           Date.now(),
         );
         setMessageDeliveryRevision((revision) => revision + 1);
-        setTranscripts((current) =>
-          cacheTranscript(current, event.sessionId, event.items),
-        );
+        if (tracked)
+          updateRequestSummaries(
+            event.sessionId,
+            event.items.filter(
+              (item) =>
+                item.kind !== "message" ||
+                item.role !== "user" ||
+                !item.id.startsWith("local-prompt-"),
+            ),
+          );
+        setTranscripts((current) => {
+          const existing = current[event.sessionId];
+          if (!existing) return current;
+          const pageState = transcriptPageStatesRef.current[event.sessionId];
+          const historical = pageState?.scope.kind === "around" || pageState?.hasMoreAfter;
+          const items = historical
+            ? mergeLiveTranscriptItems(
+                event.sessionId,
+                existing,
+                event.items.filter((item) => existing.some((row) => row.id === item.id)),
+              )
+            : mergeTranscriptTail(existing, event.items);
+          const next = cacheTranscript(current, event.sessionId, items);
+          transcriptsRef.current = next;
+          return next;
+        });
+      } else if (event.type === "transcript.invalidated") {
+        if (tracksTranscriptSession(event.sessionId))
+          noteTranscriptEvent(event.sessionId);
+        refreshTranscript(event.sessionId);
       } else if (event.type === "message.delta") {
-        setTranscripts((current) =>
-          updateTranscriptItem(
+        if (tracksTranscriptSession(event.sessionId))
+          noteTranscriptEvent(event.sessionId, [event.messageId]);
+        setTranscripts((current) => {
+          const next = updateTranscriptItem(
             current,
             event.sessionId,
             event.messageId,
@@ -766,26 +1180,37 @@ export default function App() {
                     streaming: event.streaming,
                   }
                 : item,
-          ),
-        );
+          );
+          transcriptsRef.current = next;
+          return next;
+        });
       } else if (event.type === "message.updated") {
+        const tracked = tracksTranscriptSession(event.message.sessionId);
+        if (tracked)
+          noteTranscriptEvent(event.message.sessionId, [event.message.id]);
         messageDeliveryTrackerRef.current!.observeUserEvent(
           event.message.sessionId,
           event.message,
           Date.now(),
         );
         setMessageDeliveryRevision((revision) => revision + 1);
-        setTranscripts((current) =>
-          updateTranscriptItem(
+        if (tracked && !event.message.id.startsWith("local-prompt-"))
+          updateRequestSummaries(event.message.sessionId, [event.message]);
+        setTranscripts((current) => {
+          const next = updateTranscriptItem(
             current,
             event.message.sessionId,
             event.message.id,
             () => event.message,
-          ),
-        );
+          );
+          transcriptsRef.current = next;
+          return next;
+        });
       } else if (event.type === "thought.delta") {
-        setTranscripts((current) =>
-          updateTranscriptItem(
+        if (tracksTranscriptSession(event.sessionId))
+          noteTranscriptEvent(event.sessionId, [event.thoughtId]);
+        setTranscripts((current) => {
+          const next = updateTranscriptItem(
             current,
             event.sessionId,
             event.thoughtId,
@@ -797,17 +1222,23 @@ export default function App() {
                     streaming: event.streaming,
                   }
                 : item,
-          ),
-        );
+          );
+          transcriptsRef.current = next;
+          return next;
+        });
       } else if (event.type === "plan.updated") {
-        setTranscripts((current) =>
-          updateTranscriptItem(
+        if (tracksTranscriptSession(event.plan.sessionId))
+          noteTranscriptEvent(event.plan.sessionId, [event.plan.id]);
+        setTranscripts((current) => {
+          const next = updateTranscriptItem(
             current,
             event.plan.sessionId,
             event.plan.id,
             () => event.plan,
-          ),
-        );
+          );
+          transcriptsRef.current = next;
+          return next;
+        });
       } else if (event.type === "session.commands") {
         setCommands((current) => ({
           ...current,
@@ -819,14 +1250,18 @@ export default function App() {
           [event.sessionId]: event.options,
         }));
       } else if (event.type === "tool.updated") {
-        setTranscripts((current) =>
-          updateTranscriptItem(
+        if (tracksTranscriptSession(event.tool.sessionId))
+          noteTranscriptEvent(event.tool.sessionId, [event.tool.id]);
+        setTranscripts((current) => {
+          const next = updateTranscriptItem(
             current,
             event.tool.sessionId,
             event.tool.id,
             () => event.tool,
-          ),
-        );
+          );
+          transcriptsRef.current = next;
+          return next;
+        });
       } else if (event.type === "session.activity") {
         setSessions((current) =>
           current.map((s) =>
@@ -861,17 +1296,6 @@ export default function App() {
   selectedSessionRef.current = selectedSession;
   selectedIdRef.current = selectedId;
   const cachedSelectedTranscript = selectedId ? transcripts[selectedId] : undefined;
-  const transcriptReads = useMemo(
-    () => ({
-      backend,
-      pending: new Map<
-        string,
-        Promise<{ items: TranscriptItem[]; revision: string | undefined }>
-      >(),
-    }),
-    [backend],
-  );
-  const transcriptRevisions = useRef(new Map<string, string>());
 
   useEffect(() => {
     const ids = Object.keys(transcripts);
@@ -882,49 +1306,40 @@ export default function App() {
   useEffect(() => {
     if (!selectedId || cachedSelectedTranscript) return;
     let active = true;
-    let read = transcriptReads.pending.get(selectedId);
+    updateTranscriptPageState(selectedId, (current) => ({
+      ...current,
+      loadingPage: true,
+      pageError: "",
+      scope: { kind: "latest" },
+    }));
+    let read = initialPageReadsRef.current.get(selectedId);
     if (!read) {
-      read = readTranscriptForSafetyNet({
-        knownRevision: undefined,
-        readRevision: transcriptReads.backend.getTranscriptRevision
-          ? () => transcriptReads.backend.getTranscriptRevision!(selectedId)
-          : undefined,
-        readItems: () => transcriptReads.backend.getTranscript(selectedId),
-      }).then((outcome) =>
-        outcome.kind === "loaded"
-          ? { items: outcome.items, revision: outcome.revision }
-          : { items: [], revision: undefined },
-      );
-      const current = read;
-      void current.finally(() => {
-        if (transcriptReads.pending.get(selectedId) === current)
-          transcriptReads.pending.delete(selectedId);
-      });
-      transcriptReads.pending.set(selectedId, read);
+      read = readTranscriptPage(selectedId, undefined, "replace", { kind: "latest" });
+      initialPageReadsRef.current.set(selectedId, read);
+      const pending = read;
+      const release = (): void => {
+        if (initialPageReadsRef.current.get(selectedId) === pending)
+          initialPageReadsRef.current.delete(selectedId);
+      };
+      void read.then(release, release);
     }
     void read
-      .then((loaded) => {
-        if (active) {
-          if (loaded.revision)
-            transcriptRevisions.current.set(selectedId, loaded.revision);
-          setTranscripts((current) =>
-            current[selectedId]
-              ? current
-              : cacheTranscript(current, selectedId, loaded.items),
-          );
-          void transcriptReads.backend
-            .refreshSessionContext?.(selectedId)
-            .catch(() => undefined);
-        }
+      .then((page) => {
+        if (active && page)
+          void backend.refreshSessionContext?.(selectedId).catch(() => undefined);
       })
       .catch((error) => {
         if (!active) return;
-        setAppError(humanErrorMessage(error));
+        updateTranscriptPageState(selectedId, (current) => ({
+          ...current,
+          loadingPage: false,
+          pageError: humanErrorMessage(error),
+        }));
       });
     return () => {
       active = false;
     };
-  }, [backend, selectedId, cachedSelectedTranscript, transcriptReads]);
+  }, [backend, selectedId, cachedSelectedTranscript]);
 
   useEffect(() => {
     if (!selectedSessionId) return;
@@ -1181,6 +1596,118 @@ export default function App() {
   const completeReveal = useCallback((itemId: string) => {
     setRevealTarget((current) => (current?.itemId === itemId ? null : current));
   }, []);
+  const selectedTranscriptPageState = selectedId
+    ? transcriptPageStates[selectedId] ?? EMPTY_TRANSCRIPT_PAGE_STATE
+    : EMPTY_TRANSCRIPT_PAGE_STATE;
+  async function loadEarlierTranscript(): Promise<void> {
+    const sessionId = selectedIdRef.current;
+    if (!sessionId) return;
+    const pageState = transcriptPageStatesRef.current[sessionId] ?? EMPTY_TRANSCRIPT_PAGE_STATE;
+    const beforeId = pageState.firstId ?? transcriptsRef.current[sessionId]?.[0]?.id;
+    if (!pageState.hasMoreBefore || !beforeId) return;
+    updateTranscriptPageState(sessionId, (current) => ({
+      ...current,
+      loadingEarlier: true,
+      earlierError: "",
+    }));
+    try {
+      const page = await readTranscriptPage(
+        sessionId,
+        { beforeId },
+        "prepend",
+        pageState.scope,
+      );
+      if (!page)
+        updateTranscriptPageState(sessionId, (current) => ({
+          ...current,
+          loadingEarlier: false,
+        }));
+    } catch (error) {
+      updateTranscriptPageState(sessionId, (current) => ({
+        ...current,
+        loadingEarlier: false,
+        earlierError: humanErrorMessage(error),
+      }));
+    }
+  }
+  async function returnTranscriptToLatest(): Promise<void> {
+    const sessionId = selectedIdRef.current;
+    if (!sessionId) return;
+    revealRequestGenerationRef.current += 1;
+    setRevealTarget(null);
+    updateTranscriptPageState(sessionId, (current) => ({
+      ...current,
+      loadingPage: true,
+      pageError: "",
+    }));
+    try {
+      const page = await readTranscriptPage(
+        sessionId,
+        undefined,
+        "replace",
+        { kind: "latest" },
+      );
+      if (page && selectedIdRef.current === sessionId)
+        setSentRequestToken((token) => token + 1);
+    } catch (error) {
+      updateTranscriptPageState(sessionId, (current) => ({
+        ...current,
+        loadingPage: false,
+        pageError: humanErrorMessage(error),
+      }));
+    }
+  }
+  function revealTranscriptItem(itemId: string): void {
+    const sessionId = selectedIdRef.current;
+    if (!sessionId) return;
+    if (transcriptsRef.current[sessionId]?.some((item) => item.id === itemId)) {
+      setRevealTarget({ sessionId, itemId });
+      return;
+    }
+    const generation = ++revealRequestGenerationRef.current;
+    void readTranscriptPage(
+      sessionId,
+      { aroundId: itemId },
+      "replace",
+      { kind: "around", id: itemId },
+    ).then((page) => {
+      if (
+        !page ||
+        selectedIdRef.current !== sessionId ||
+        revealRequestGenerationRef.current !== generation
+      )
+        return;
+      if (!page.items.some((item) => item.id === itemId)) {
+        setAppError(t("요청 위치를 대화에서 찾지 못했습니다."));
+        return;
+      }
+      setRevealTarget({ sessionId, itemId });
+    }).catch((error) => {
+      if (selectedIdRef.current === sessionId &&
+          revealRequestGenerationRef.current === generation)
+        setAppError(humanErrorMessage(error));
+    });
+  }
+  async function retrySelectedTranscriptPage(): Promise<void> {
+    const sessionId = selectedIdRef.current;
+    if (!sessionId) return;
+    updateTranscriptPageState(sessionId, (current) => ({
+      ...current,
+      loadingPage: true,
+      pageError: "",
+      scope: { kind: "latest" },
+    }));
+    try {
+      await readTranscriptPage(sessionId, undefined, "replace", { kind: "latest" });
+      void backend.refreshSessionContext?.(sessionId).catch(() => undefined);
+    } catch (error) {
+      updateTranscriptPageState(sessionId, (current) => ({
+        ...current,
+        loadingPage: false,
+        pageError: humanErrorMessage(error),
+      }));
+    }
+  }
   const selectedCommands = useMemo(() => {
     const live = selectedId ? (commands[selectedId] ?? []) : [];
     return [
@@ -1459,7 +1986,6 @@ export default function App() {
   ): Promise<MessageDelivery> {
     const resolvedSessionId = await resolveSessionId(sessionId);
     const tracker = messageDeliveryTrackerRef.current!;
-    const now = Date.now();
     const session =
       sessionsRef.current.find((candidate) => candidate.id === resolvedSessionId) ??
       (await pendingSessions.current.get(sessionId));
@@ -1467,14 +1993,72 @@ export default function App() {
       transcriptsRef.current[resolvedSessionId] ??
       transcriptsRef.current[sessionId];
     let baselineKnown = baseline !== undefined;
-    if (!baselineKnown) {
+    const pageState = transcriptPageStatesRef.current[resolvedSessionId];
+    const isSelectedSend =
+      options.quiet !== true && selectedIdRef.current === resolvedSessionId;
+    const mustInstallLatest =
+      isSelectedSend &&
+      (pageState?.scope.kind === "around" || pageState?.hasMoreAfter === true);
+    const needsLatestBaseline =
+      !baselineKnown ||
+      pageState?.scope.kind === "around" ||
+      pageState?.hasMoreAfter === true;
+    if (needsLatestBaseline) {
       try {
-        baseline = await backend.getTranscript(resolvedSessionId);
-        baselineKnown = true;
-      } catch {
-        baseline = [];
+        if (isSelectedSend)
+          updateTranscriptPageState(resolvedSessionId, (current) => ({
+            ...current,
+            loadingPage: true,
+            pageError: "",
+          }));
+        const latest = isSelectedSend
+          ? await readTranscriptPage(
+              resolvedSessionId,
+              undefined,
+              "replace",
+              { kind: "latest" },
+            )
+          : await backend.getTranscriptPage(resolvedSessionId);
+        if (!latest) throw new Error(t("최신 대화를 불러오지 못했습니다."));
+        baseline = latest.items;
+        const lastDurableRequest = lastDurableUserRequest(latest.items);
+        const latestIndexedRequest = latest.requests.at(-1);
+        baselineKnown = lastDurableRequest
+          ? latestIndexedRequest?.id === lastDurableRequest.id
+          : latest.requests.length === 0 && !latest.hasMoreBefore;
+      } catch (error) {
+        if (isSelectedSend)
+          updateTranscriptPageState(resolvedSessionId, (current) => ({
+            ...current,
+            loadingPage: false,
+            pageError: humanErrorMessage(error),
+          }));
+        if (mustInstallLatest) {
+          if (options.retryId) {
+            const retryGeneration = tracker.submissionGeneration(options.retryId);
+            if (retryGeneration !== undefined) {
+              tracker.rejectSubmission(
+                options.retryId,
+                Date.now(),
+                retryGeneration,
+                true,
+              );
+              setMessageDeliveryRevision((revision) => revision + 1);
+            }
+          }
+          throw error;
+        }
+        baseline = baseline ?? [];
+        baselineKnown = false;
       }
+    } else if (baseline) {
+      const durable = lastDurableUserRequest(baseline);
+      const summaries = requestSummariesRef.current[resolvedSessionId] ?? [];
+      baselineKnown = durable
+        ? summaries.length === 0 || summaries.at(-1)?.id === durable.id
+        : summaries.length === 0 && !pageState?.hasMoreBefore;
     }
+    const now = Date.now();
     const sessionState = deliverySessionState(
       session,
       connectionRef.current.state,
@@ -1522,9 +2106,13 @@ export default function App() {
         ...(input.images.length ? { images: input.images } : {}),
       };
       rendererEchoId = echo.id;
-      setTranscripts((current) => cacheTranscript(current, resolvedSessionId,
-        mergeTranscriptItem(current[resolvedSessionId] ?? [], echo),
-      ));
+      setTranscripts((current) => {
+        const next = cacheTranscript(current, resolvedSessionId,
+          mergeTranscriptItem(current[resolvedSessionId] ?? [], echo),
+        );
+        transcriptsRef.current = next;
+        return next;
+      });
     }
     // Answering the reader is part of sending: the transcript takes the view to the
     // newest content, so the request they just made and the reply to it appear where
@@ -2268,13 +2856,20 @@ export default function App() {
               )}
               <RecentRequestStrip
                 items={selectedTranscript}
-                onReveal={(itemId) =>
-                  setRevealTarget({ sessionId: selectedSession.id, itemId })
-                }
+                requestSummaries={requestSummariesBySession[selectedSession.id]}
+                onReveal={revealTranscriptItem}
               />
               <Transcript
                 sessionId={selectedSession.id}
                 items={selectedTranscript}
+                hasMoreBefore={selectedTranscriptPageState.hasMoreBefore}
+                loadingEarlier={selectedTranscriptPageState.loadingEarlier}
+                loadEarlierError={selectedTranscriptPageState.earlierError}
+                loadingPage={selectedTranscriptPageState.loadingPage}
+                pageLoadError={selectedTranscriptPageState.pageError}
+                onLoadEarlier={loadEarlierTranscript}
+                onReturnToLatest={returnTranscriptToLatest}
+                onRetryPage={retrySelectedTranscriptPage}
                 deliveryAttempts={selectedDeliveryAttempts}
                 onRetryDelivery={retryMessageDelivery}
                 sentRequestToken={sentRequestToken}

@@ -340,6 +340,49 @@ describe("authenticated requests", () => {
     client.dispose();
   });
 
+  it("URL-encodes before and around transcript page cursors", async () => {
+    const page = {
+      items: [],
+      hasMoreBefore: true,
+      hasMoreAfter: false,
+      firstId: "first",
+      lastId: "last",
+      requests: [],
+    };
+    const { fetchImpl, calls } = recorder((call) =>
+      call.url.includes(REMOTE_API.transcriptPage("s/1"))
+        ? jsonResponse(200, { result: page })
+        : undefined,
+    );
+    const client = new RemoteClient({
+      baseUrl: "https://host",
+      storage: memoryStorage(TOKEN),
+      fetchImpl,
+    });
+    const beforeId = "before /?&=한글";
+    const aroundId = "around +% #한글";
+
+    await expect(client.transcriptPage("s/1", { beforeId })).resolves.toEqual(page);
+    await expect(client.transcriptPage("s/1", { aroundId })).resolves.toEqual(page);
+
+    expect(calls).toHaveLength(2);
+    expect(calls.map((call) => call.method)).toEqual(["GET", "GET"]);
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      REMOTE_API.transcriptPage("s/1"),
+      REMOTE_API.transcriptPage("s/1"),
+    ]);
+    expect(calls.map((call) => [...new URL(call.url).searchParams.entries()])).toEqual([
+      [["beforeId", beforeId]],
+      [["aroundId", aroundId]],
+    ]);
+    expect(calls[0].url).toContain("%2F");
+    expect(calls[0].url).toContain("%26");
+    expect(calls[0].url).toContain("%3D");
+    expect(calls[0].url).toContain("%ED%95%9C");
+    expect(calls[1].url).toContain("%2B%25");
+    client.dispose();
+  });
+
   it("treats a 401 as revocation and forgets the token", async () => {
     const storage = memoryStorage(TOKEN);
     const { fetchImpl } = recorder(() => jsonResponse(401, { error: { code: "revoked", message: "no" } }));

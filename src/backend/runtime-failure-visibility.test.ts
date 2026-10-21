@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 import { MockAgentBackend } from "./mock-agent-backend";
 
 /**
@@ -37,18 +38,24 @@ function selectBackendBody(text: string): string {
 }
 
 function sendMessageBody(text: string): string {
-  const start = text.indexOf("async function sendMessage");
-  expect(start).toBeGreaterThan(-1);
-  const open = text.indexOf("{", start);
-  let depth = 0;
-  for (let index = open; index < text.length; index += 1) {
-    if (text[index] === "{") depth += 1;
-    if (text[index] === "}") {
-      depth -= 1;
-      if (depth === 0) return text.slice(open, index + 1);
+  const source = ts.createSourceFile(
+    "shell.tsx",
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+  let body: ts.Block | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "sendMessage") {
+      body = node.body;
+      return;
     }
-  }
-  throw new Error("sendMessage body was not found");
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  if (!body) throw new Error("sendMessage body was not found");
+  return body.getText(source);
 }
 
 describe("backend selection when GJC is unavailable", () => {
@@ -128,11 +135,14 @@ describe("shell rendering while the runtime is unreachable", () => {
 
   it("surfaces delivery failures and rejects them for queue retention", () => {
     const body = sendMessageBody(shellSource);
-    expect(body).toContain("return await backend.sendMessage(");
+    expect(body).toContain("const result = await backend.sendMessage(");
+    expect(body).toContain("return result;");
     expect(body).toContain("setAppError(humanErrorMessage(error));");
     expect(body).toMatch(
       /setAppError\(humanErrorMessage\(error\)\);[\s\S]*throw error;/u,
     );
     expect(body).not.toContain("return undefined");
+    // The composer must receive the rejected promise so its draft remains queued.
+    expect(shellSource).toContain("return current.sendMessage(session.id, input);");
   });
 });

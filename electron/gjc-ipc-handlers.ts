@@ -1,5 +1,8 @@
 import { ipcMain } from "electron";
-import type { MessageDelivery } from "../shared/agent-contract.js";
+import type {
+  MessageDelivery,
+  TranscriptPageRequest,
+} from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
 import {
   createSessionInput,
@@ -20,6 +23,41 @@ import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
 import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
 import type { IpcSecurity } from "./ipc-security.js";
+
+function transcriptPageRequest(
+  value: unknown,
+): TranscriptPageRequest | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Transcript page request must be an object");
+
+  const candidate = value as Record<string, unknown>;
+  for (const key of Object.keys(candidate)) {
+    if (key !== "beforeId" && key !== "aroundId")
+      throw new Error("Transcript page request contains an unknown field");
+  }
+
+  const beforeId = candidate.beforeId;
+  const aroundId = candidate.aroundId;
+  const request: TranscriptPageRequest = {};
+  for (const [name, id] of [
+    ["beforeId", beforeId],
+    ["aroundId", aroundId],
+  ] as const) {
+    if (id !== undefined) {
+      const anchor = requiredString(id, `Transcript page ${name}`);
+      if (anchor !== id || id.length > 256)
+        throw new Error(`Transcript page ${name} is invalid`);
+      request[name] = anchor;
+    }
+  }
+  if (beforeId !== undefined && aroundId !== undefined)
+    throw new Error(
+      "Transcript page request cannot use both beforeId and aroundId",
+    );
+
+  return request;
+}
 
 export async function withResolvedMessageInput<T>(
   attachments: AttachmentStore,
@@ -217,6 +255,14 @@ export function registerGjcIpcHandlers(
   });
   handle(GJC_IPC.getTranscript, (_event, sessionId: unknown) =>
     controller.getTranscript(requiredId(sessionId, "Session ID")),
+  );
+  handle(
+    GJC_IPC.getTranscriptPage,
+    (_event, sessionId: unknown, request: unknown) =>
+      controller.getTranscriptPage(
+        requiredId(sessionId, "Session ID"),
+        transcriptPageRequest(request),
+      ),
   );
   handle(GJC_IPC.getTranscriptChanges, (_event, sessionId: unknown) =>
     controller.getTranscriptChanges(requiredId(sessionId, "Session ID")),

@@ -251,7 +251,7 @@ export class MessageDeliveryTracker {
     const actual = transcriptRequest(item);
     const attempt = this.attempts.find((candidate) =>
       candidate.sessionId === sessionId &&
-      (!candidate.baselineKnown || !candidate.baselineUserIds.has(item.id)) &&
+      candidate.baselineKnown && !candidate.baselineUserIds.has(item.id) &&
       sameRequest(userRequest(candidate.input), actual),
     );
     if (attempt) {
@@ -283,7 +283,7 @@ export class MessageDeliveryTracker {
 
   advance(now: number): void {
     for (const attempt of this.attempts) {
-      if (attempt.state !== "pending" || attempt.retrying) continue;
+      if (attempt.state !== "pending" || attempt.retrying || !attempt.baselineKnown) continue;
       const session = this.sessions.get(attempt.sessionId);
       if (!canStartIdleGrace(session)) {
         attempt.idleSince = undefined;
@@ -392,12 +392,26 @@ export class MessageDeliveryTracker {
     return [...new Set(this.attempts.map((attempt) => attempt.sessionId))];
   }
 
+  /** A tail page proves absence only when it includes every submission fence. */
+  coversPendingAttempts(
+    sessionId: string,
+    items: readonly TranscriptItem[],
+    hasMoreBefore: boolean,
+  ): boolean {
+    const ids = new Set(durableUserRows(items).map((item) => item.id));
+    return this.attempts.filter((attempt) => attempt.sessionId === sessionId).every(
+      (attempt) => attempt.baselineKnown && (attempt.baselineFenceId
+        ? ids.has(attempt.baselineFenceId)
+        : !hasMoreBefore),
+    );
+  }
+
   needsLatestRead(sessionId: string): boolean {
     const session = this.sessions.get(sessionId);
     if (!canStartIdleGrace(session)) return false;
     const coverage = this.latestCoverage.get(sessionId);
     return this.attempts.some((attempt) => {
-      if (attempt.sessionId !== sessionId || attempt.state !== "pending" || attempt.retrying)
+      if (attempt.sessionId !== sessionId || attempt.state !== "pending" || attempt.retrying || !attempt.baselineKnown)
         return false;
       const boundary = Math.max(attempt.submittedAt, attempt.idleSince ?? 0);
       return !coverage || !coverage.complete ||
@@ -408,7 +422,7 @@ export class MessageDeliveryTracker {
   nextDeadline(): number | undefined {
     let deadline: number | undefined;
     for (const attempt of this.attempts) {
-      if (attempt.state !== "pending" || attempt.retrying) continue;
+      if (attempt.state !== "pending" || attempt.retrying || !attempt.baselineKnown) continue;
       if (!canStartIdleGrace(this.sessions.get(attempt.sessionId)) || attempt.idleSince === undefined) continue;
       const coverage = this.latestCoverage.get(attempt.sessionId);
       if (

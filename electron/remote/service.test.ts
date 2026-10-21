@@ -25,6 +25,7 @@ const OPERATIONS: RemoteOperationName[] = [
   "state",
   "history-sessions",
   "transcript",
+  "transcript-page",
   "transcript-changes",
   "transcript-revision",
   "context",
@@ -65,6 +66,9 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
     async getTranscript(sessionId: string) {
       calls.push(`transcript:${sessionId}`);
       return [];
+    },
+    async getTranscriptPage() {
+      return { items: [], hasMoreBefore: false, hasMoreAfter: false, requests: [] };
     },
     async getTranscriptRevision(sessionId: string) {
       calls.push(`transcript-revision:${sessionId}`);
@@ -122,6 +126,7 @@ describe("remote operation surface", () => {
     for (const operation of OPERATIONS) {
       expect(REMOTE_OPERATION_ACCESS[operation]).toMatch(/^(view|control)$/u);
     }
+    expect(REMOTE_OPERATION_ACCESS["transcript-page"]).toBe("view");
     expect(Object.keys(REMOTE_OPERATION_ACCESS).sort()).toEqual([...OPERATIONS].sort());
   });
 

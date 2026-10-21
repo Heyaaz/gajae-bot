@@ -23,17 +23,23 @@ const items = [
  { id: 'instructions', sessionId, kind: 'system', sourceType: 'skill-prompt', title: '스킬', content, createdAt: '01:41' },
  { id: 'answer', sessionId, kind: 'message', role: 'assistant', content: '요청한 변경과 실제 동작을 확인했습니다.\\n\\n- 초기 목록의 중복 조회를 제거했습니다.\\n- 저장된 대화는 먼저 표시합니다.\\n- 상세 스킬 지침은 위에서 펼쳐볼 수 있습니다.', createdAt: '01:42' },
 ];
+const page = { items, requests: [{ id: 'request', text: '/skill:whip 조회 성능 개선 결과를 확인해줘', createdAt: '01:41' }], hasMoreBefore: false, hasMoreAfter: false, firstId: 'request', lastId: 'answer' };
+const emitCommands = () => setTimeout(() => listeners.forEach(fn => fn({ type: 'session.commands', sessionId, commands: [
+  { name: 'skill:whip', description: '완료된 작업이 요청대로 반영됐는지 검증합니다', hint: '[검증할 내용]' },
+  { name: 'skill:deep-interview', description: '질문을 통해 요구사항과 목표를 구체화합니다', hint: '[주제]' },
+  { name: 'skill:frontend-design', description: '완성도 높은 사용자 인터페이스를 설계합니다', hint: '[요청]' },
+  { name: 'context', description: '현재 컨텍스트 사용량을 확인합니다', hint: '[검증할 내용]' },
+] })), 100);
 window.agentControlDesktop = {
  onSessionShortcut: () => () => {}, onAbortRun: () => () => {}, onCycleEffort: () => () => {},
  gjc: {
   getConnection: async () => ({ state: 'connected', backend: 'gjc', label: 'GJC', workspace: '/repo/gajae-bot', modelPreset: 'codex-pro' }),
   listSessions: async () => [session],
-  getTranscript: async () => { setTimeout(() => listeners.forEach(fn => fn({ type: 'session.commands', sessionId, commands: [
-    { name: 'skill:whip', description: '완료된 작업이 요청대로 반영됐는지 검증합니다', hint: '[검증할 내용]' },
-    { name: 'skill:deep-interview', description: '질문을 통해 요구사항과 목표를 구체화합니다', hint: '[주제]' },
-    { name: 'skill:frontend-design', description: '완성도 높은 사용자 인터페이스를 설계합니다', hint: '[요청]' },
-    { name: 'context', description: '현재 컨텍스트 사용량을 확인합니다' },
-  ] })), 100); return items; },
+  getTranscript: async () => { emitCommands(); return items; },
+  getTranscriptPage: async () => { emitCommands(); return page; },
+  getTranscriptRevision: async () => undefined,
+  getTranscriptChanges: async () => ({ kind: 'patch', items: [] }),
+  watchTranscripts: () => {}, refreshSessionContext: async () => {},
   getGoal: async () => ({ enabled: false, completed: 0, total: 0 }), getGitStatus: async () => null,
   markSessionRead: async () => {}, listQueuedMessages: async () => [], listSubagents: async () => [],
   onEvent: fn => { listeners.add(fn); return () => listeners.delete(fn); }, dispose: () => {},

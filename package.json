@@ -31,6 +31,8 @@
     "desktop:attachment-smoke": "electron scripts/attachment-render-smoke.mjs",
     "desktop:inspector-smoke": "electron scripts/inspector-open-smoke.mjs",
     "desktop:session-read-smoke": "electron scripts/session-read-smoke.mjs",
+    "desktop:message-delivery-smoke": "electron scripts/message-delivery-smoke.mjs",
+    "desktop:transcript-page-smoke": "electron scripts/transcript-page-smoke.mjs",
     "desktop:skill-ui-smoke": "electron scripts/skill-ui-smoke.mjs",
     "desktop:queued-send-smoke": "electron scripts/queued-send-smoke.mjs",
     "desktop:clean-install-smoke": "node scripts/packaged-clean-install-smoke.mjs",
@@ -39,7 +41,7 @@
     "gjc:e2e": "npm run build && node scripts/gjc-sdk-e2e.mjs",
     "lint": "oxlint",
     "test": "vitest run",
-    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke && npm run desktop:offline-smoke && npm run desktop:attachment-smoke && npm run desktop:inspector-smoke && npm run desktop:session-read-smoke && npm run desktop:skill-ui-smoke && npm run desktop:queued-send-smoke && npm run desktop:remote-smoke && npm run desktop:gjc-smoke",
+    "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke && npm run desktop:offline-smoke && npm run desktop:attachment-smoke && npm run desktop:inspector-smoke && npm run desktop:session-read-smoke && npm run desktop:message-delivery-smoke && npm run desktop:transcript-page-smoke && npm run desktop:skill-ui-smoke && npm run desktop:queued-send-smoke && npm run desktop:remote-smoke && npm run desktop:gjc-smoke",
     "verify:gjc": "npm run build && npm run desktop:gjc-smoke && node scripts/gjc-sdk-e2e.mjs",
     "preview": "vite preview"
   },

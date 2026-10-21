@@ -2,6 +2,7 @@ import ReactMarkdown from "react-markdown";
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
   ArtifactContent,
+  TranscriptRequestSummary,
   TodoSnapshotTask,
 } from "../../shared/agent-contract";
 import type { ToolActivity, ToolViewMode, TranscriptItem } from "../backend/types";
@@ -381,6 +382,14 @@ function layoutTopWithin(
 export interface TranscriptProps {
   sessionId: string;
   items: TranscriptItem[];
+  hasMoreBefore?: boolean;
+  loadingEarlier?: boolean;
+  loadEarlierError?: string;
+  loadingPage?: boolean;
+  pageLoadError?: string;
+  onRetryPage?: () => void;
+  onLoadEarlier?: (anchor: TranscriptViewportAnchor | null) => void | Promise<void>;
+  onReturnToLatest?: () => void;
   deliveryAttempts?: MessageDeliveryAttempt[];
   onRetryDelivery?: (attemptId: string) => void;
   /**
@@ -433,6 +442,14 @@ export interface TranscriptProps {
 export function Transcript({
   sessionId,
   items,
+  hasMoreBefore = false,
+  loadingEarlier = false,
+  loadEarlierError = "",
+  loadingPage = false,
+  pageLoadError = "",
+  onRetryPage,
+  onLoadEarlier,
+  onReturnToLatest,
   deliveryAttempts = [],
   onRetryDelivery,
   sentRequestToken = 0,
@@ -510,6 +527,12 @@ export function Transcript({
     follow: boolean;
     anchor: TranscriptViewportAnchor | null;
   } | null>(null);
+  const pendingPrependRef = useRef<{
+    sessionId: string;
+    firstId: string | undefined;
+    itemCount: number;
+  } | null>(null);
+  const earlierRequestSessionRef = useRef<{ sessionId: string } | null>(null);
   const [following, setFollowing] = useState(true);
   // The send this view has already answered for. Seeded with the token it mounted with so
   // opening a session is not read as a request that was just typed.
@@ -593,6 +616,19 @@ export function Transcript({
   });
 
   const virtualItems = virtualizer.getVirtualItems();
+
+  useLayoutEffect(() => {
+    const pending = pendingPrependRef.current;
+    if (!pending) return;
+    if (pending.sessionId !== sessionId) {
+      pendingPrependRef.current = null;
+      return;
+    }
+    if (items[0]?.id === pending.firstId && items.length <= pending.itemCount)
+      return;
+    pendingPrependRef.current = null;
+    startResizeRestore();
+  }, [items, rows.length, virtualizer]);
 
   function rememberViewport(): void {
     const scroller = transcriptRef.current;
@@ -813,6 +849,48 @@ export function Transcript({
       });
     }
     return transcriptViewportAnchor(rows, scroller.scrollTop);
+  }
+
+  function loadEarlier(): void {
+    if (
+      !hasMoreBefore ||
+      loadingEarlier ||
+      !onLoadEarlier ||
+      earlierRequestSessionRef.current?.sessionId === sessionId
+    )
+      return;
+    const request = { sessionId };
+    earlierRequestSessionRef.current = request;
+    const scroller = transcriptRef.current;
+    const content = scroller?.querySelector<HTMLElement>(".transcript-window");
+    const windowTop = scroller && content ? layoutTopWithin(content, scroller) : null;
+    const anchor = scroller && windowTop !== null
+      ? currentViewportAnchor(scroller, windowTop)
+      : null;
+    if (scroller && windowTop !== null) {
+      stableViewportRef.current = {
+        width: transcriptReadingWidth(scroller),
+        follow: false,
+        anchor,
+      };
+    }
+    pendingPrependRef.current = {
+      sessionId,
+      firstId: items[0]?.id,
+      itemCount: items.length,
+    };
+    followingRef.current = false;
+    scrolledAwayRef.current = true;
+    setFollowing(false);
+    void Promise.resolve(onLoadEarlier(anchor)).catch(() => undefined).finally(() => {
+      if (earlierRequestSessionRef.current === request)
+        earlierRequestSessionRef.current = null;
+      requestAnimationFrame(() => {
+        if (pendingPrependRef.current?.firstId === items[0]?.id &&
+            pendingPrependRef.current.itemCount === items.length)
+          pendingPrependRef.current = null;
+      });
+    });
   }
 
   function releaseResizeRestore(): void {
@@ -1042,32 +1120,45 @@ export function Transcript({
     if (index < 0) return;
     // A search hit is usually not mounted, so it has to be scrolled to by index before
     // its element exists to highlight. Navigation wins over a pending restoration.
+    earlierRequestSessionRef.current = null;
+    pendingPrependRef.current = null;
     cancelResizeRestore();
     cancelHandBack();
     followingRef.current = false;
+    scrolledAwayRef.current = true;
+    gestureAtRef.current = performance.now();
     setFollowing(false);
-    virtualizer.scrollToIndex(index, { align: "center" });
-    let highlightFrame = 0;
-    let removeTimer = 0;
-    const highlight = window.setTimeout(() => {
-      highlightFrame = requestAnimationFrame(() => {
-        const target = document.getElementById(
-          `transcript-${encodeURIComponent(revealItemId)}`,
-        );
-        if (!target) return;
-        target.scrollIntoView({ block: "center" });
-        target.classList.add("is-search-reveal");
-        removeTimer = window.setTimeout(
-          () => target.classList.remove("is-search-reveal"),
-          2200,
-        );
-      });
-      onRevealComplete?.(revealItemId);
-    }, 60);
+    selfScrollingRef.current = true;
+    let frame = 0;
+    let attempts = 0;
+    const reveal = (): void => {
+      virtualizer.scrollToIndex(index, { align: "center" });
+      const target = document.getElementById(`transcript-${encodeURIComponent(revealItemId)}`);
+      const scroller = transcriptRef.current;
+      if (target && scroller) {
+        const targetBox = target.getBoundingClientRect();
+        const viewport = scroller.getBoundingClientRect();
+        scroller.scrollTop += targetBox.top - viewport.top - Math.max(0, (viewport.height - targetBox.height) / 2);
+      }
+      // A newly selected page initially carries estimated heights from the previous
+      // window. Keep the target anchored while mounted rows acquire real heights.
+      attempts += 1;
+      if (attempts < 12) {
+        frame = requestAnimationFrame(reveal);
+      } else {
+        selfScrollingRef.current = false;
+        rememberViewport();
+        if (target) {
+          target.classList.add("is-search-reveal");
+          window.setTimeout(() => target.classList.remove("is-search-reveal"), 2200);
+        }
+        onRevealComplete?.(revealItemId);
+      }
+    };
+    frame = requestAnimationFrame(reveal);
     return () => {
-      window.clearTimeout(highlight);
-      window.clearTimeout(removeTimer);
-      cancelAnimationFrame(highlightFrame);
+      cancelAnimationFrame(frame);
+      selfScrollingRef.current = false;
     };
   }, [grouped, onRevealComplete, revealItemId, virtualizer]);
 
@@ -1163,6 +1254,8 @@ export function Transcript({
   }, [sentRequestToken]);
 
   function scrollToLatest(): void {
+    earlierRequestSessionRef.current = null;
+    pendingPrependRef.current = null;
     cancelResizeRestore();
     followingRef.current = true;
     setFollowing(true);
@@ -1250,6 +1343,17 @@ export function Transcript({
           <img src={gajaeIconUrl} alt="" />
         </span>
         <h2>{t("Gajae에게 어떤 작업을 맡길까요?")}</h2>
+        {loadingPage && <p role="status">{t("최근 대화 불러오는 중…")}</p>}
+        {pageLoadError && (
+          <p role="alert">
+            {pageLoadError}{" "}
+            {onRetryPage && (
+              <button type="button" className="button-secondary" onClick={onRetryPage}>
+                {t("다시 불러오기")}
+              </button>
+            )}
+          </p>
+        )}
         {emptyStateMeta && (
           <div className="empty-conversation__meta">
             <dl>
@@ -1303,13 +1407,45 @@ export function Transcript({
   }
 
   return (
-    <div
-      className="transcript"
-      aria-live="polite"
-      ref={transcriptRef}
-      onScroll={() => {
-        updateScrollFollowing();
-      }}
+    <div style={{ display: "flex", flex: 1, flexDirection: "column", minHeight: 0 }}>
+      {loadingPage && items.length > 0 && (
+        <div role="status" style={{ flex: "none", padding: "4px 12px", textAlign: "center" }}>
+          {t("대화 페이지 불러오는 중…")}
+        </div>
+      )}
+      {pageLoadError && items.length > 0 && (
+        <div role="alert" style={{ flex: "none", padding: "4px 12px", textAlign: "center" }}>
+          <span>{pageLoadError}</span>{" "}
+          {onRetryPage && (
+            <button type="button" className="button-secondary" onClick={onRetryPage}>
+              {t("다시 불러오기")}
+            </button>
+          )}
+        </div>
+      )}
+      {hasMoreBefore && (
+        <div className="transcript-load-earlier" style={{ flex: "none", padding: "6px 12px", textAlign: "center" }}>
+          <button
+            type="button"
+            className="button-secondary"
+            disabled={loadingEarlier}
+            onClick={loadEarlier}
+          >
+            {loadingEarlier ? t("이전 대화 불러오는 중…") : loadEarlierError ? t("이전 대화 다시 불러오기") : t("이전 대화 불러오기")}
+          </button>
+          {loadEarlierError && <span role="alert" style={{ marginLeft: 8 }}>{loadEarlierError}</span>}
+        </div>
+      )}
+      <div
+        className="transcript"
+        aria-live="polite"
+        ref={transcriptRef}
+        onScroll={() => {
+          updateScrollFollowing();
+          const scroller = transcriptRef.current;
+          if (scroller && !followingRef.current && scroller.scrollTop <= 24 && hasMoreBefore && !loadingEarlier && !loadEarlierError)
+            loadEarlier();
+        }}
       // Input direction carries intent: upward means "reading older content", downward means
       // "moving toward the newest content". Neither direction is a hand-back -- arriving at
       // the newest content is, and so is asking for it outright. The resulting position
@@ -1385,10 +1521,14 @@ export function Transcript({
         <button
           className="scroll-to-latest"
           type="button"
-          onClick={scrollToLatest}
+          onClick={() => {
+            onReturnToLatest?.();
+            scrollToLatest();
+          }}
         >
           {t("최신 내용으로")} </button>
       )}
+      </div>
     </div>
   );
 }
@@ -2314,9 +2454,11 @@ export function ToolCard({
 
 export function RecentRequestStrip({
   items,
+  requestSummaries,
   onReveal,
 }: {
   items: TranscriptItem[];
+  requestSummaries?: TranscriptRequestSummary[];
   onReveal: (id: string) => void;
 }) {
   const [timelineOpen, setTimelineOpen] = useState(false);
@@ -2324,8 +2466,8 @@ export function RecentRequestStrip({
   // The full timeline covers every user prompt the chips cannot: it is only worth
   // offering once there is a prompt the chip strip left out.
   const timeline = useMemo(
-    () => recentUserRequests(items, Number.POSITIVE_INFINITY),
-    [items],
+    () => requestSummaries ?? recentUserRequests(items, Number.POSITIVE_INFINITY),
+    [items, requestSummaries],
   );
   if (requests.length === 0) return null;
   return (

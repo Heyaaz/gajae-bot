@@ -1,5 +1,16 @@
 /** English copy for every translated source string. */
 export const MESSAGES: Readonly<Record<string, string>> = {
+  "요청 위치를 대화에서 찾지 못했습니다.": "Could not locate this request in the conversation.",
+  "최신 대화를 불러오지 못했습니다.": "Could not load the latest conversation.",
+  "최근 대화 불러오는 중…": "Loading recent messages…",
+  "대화 페이지 불러오는 중…": "Loading conversation page…",
+  "전달 상태를 기록에서 확인하지 못했습니다.": "Delivery could not be confirmed in the conversation history.",
+  "전달 안 됨 · 다시 보내기": "Not delivered · Resend",
+  "전달 확인 중…": "Confirming delivery…",
+  "다시 보내는 중…": "Resending…",
+  "이전 대화 불러오는 중…": "Loading earlier messages…",
+  "이전 대화 다시 불러오기": "Retry loading earlier messages",
+  "이전 대화 불러오기": "Load earlier messages",
   "지금 보내기": "Send now",
   "대기 메시지 수정": "Edit queued message",
   "현재 작업 후 자동 전송 · 지금 보내기는 작업을 중지하지 않고 전달합니다": "Sent after the current task · Send now steers without stopping it",

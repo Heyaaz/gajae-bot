@@ -30,4 +30,7 @@ export type {
   UiLanguage,
   TranscriptItem,
   TranscriptChange,
+  TranscriptPage,
+  TranscriptPageRequest,
+  TranscriptRequestSummary,
 } from "../../shared/agent-contract";

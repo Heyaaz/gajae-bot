@@ -22,7 +22,7 @@ import {
   type RemoteResyncFrame,
 } from "../../shared/remote-protocol.js";
 import type { DeviceStore } from "./devices.js";
-import { requiredId } from "../gjc-input-validation.js";
+import { requiredId, requiredString } from "../gjc-input-validation.js";
 import {
   runRemoteOperation,
   type RemoteOperationParams,
@@ -419,6 +419,15 @@ export class RemoteServer {
       this.sendError(response, 404, "not-found", "Unknown endpoint");
       return;
     }
+    let params = route.params;
+    if (route.operation === "transcript-page") {
+      try {
+        params = { ...params, ...transcriptPageQuery(url.searchParams) };
+      } catch (error) {
+        this.sendError(response, 400, "invalid", describeError(error));
+        return;
+      }
+    }
     if (!permissionAllows(access.permission, route.operation)) {
       this.sendError(response, 403, "forbidden", "This device is view-only");
       return;
@@ -429,10 +438,10 @@ export class RemoteServer {
       return;
     }
     if (readOnly) {
-      await this.runRead(response, access, route.operation, route.params);
+      await this.runRead(response, access, route.operation, params);
       return;
     }
-    await this.runControl(request, response, access, route.operation, route.params);
+    await this.runControl(request, response, access, route.operation, params);
   }
 
   private applySecurityHeaders(response: ServerResponse): void {
@@ -961,6 +970,7 @@ const READ_OPERATIONS = new Set<RemoteOperationName>([
   "state",
   "history-sessions",
   "transcript",
+  "transcript-page",
   "transcript-changes",
   "transcript-revision",
   "context",
@@ -983,6 +993,7 @@ interface MatchedRoute {
 
 const SESSION_ROUTES: Record<string, RemoteOperationName> = {
   transcript: "transcript",
+  "transcript-page": "transcript-page",
   "transcript-changes": "transcript-changes",
   "transcript-revision": "transcript-revision",
   context: "context",
@@ -1040,6 +1051,35 @@ function validateRouteParams(params: RemoteOperationParams): void {
   if (params.sessionId !== undefined) requiredId(params.sessionId, "Session ID");
   if (params.toolId !== undefined) requiredId(params.toolId, "Tool call ID");
   if (params.artifactId !== undefined) requiredId(params.artifactId, "Artifact ID");
+  if (params.beforeId !== undefined) validateTranscriptAnchor(params.beforeId, "beforeId");
+  if (params.aroundId !== undefined) validateTranscriptAnchor(params.aroundId, "aroundId");
+  if (params.beforeId !== undefined && params.aroundId !== undefined)
+    throw new Error("beforeId and aroundId cannot be used together");
+}
+
+function transcriptPageQuery(
+  searchParams: URLSearchParams,
+): Pick<RemoteOperationParams, "beforeId" | "aroundId"> {
+  const result: Pick<RemoteOperationParams, "beforeId" | "aroundId"> = {};
+  for (const [key, value] of searchParams) {
+    if (key !== "beforeId" && key !== "aroundId")
+      throw new Error(`Unknown transcript page query parameter: ${key}`);
+    if (key === "beforeId") {
+      if (result.beforeId !== undefined) throw new Error("beforeId may only be specified once");
+      result.beforeId = value;
+    } else {
+      if (result.aroundId !== undefined) throw new Error("aroundId may only be specified once");
+      result.aroundId = value;
+    }
+  }
+  if (result.beforeId !== undefined && result.aroundId !== undefined)
+    throw new Error("beforeId and aroundId cannot be used together");
+  return result;
+}
+
+function validateTranscriptAnchor(value: string, label: string): void {
+  const anchor = requiredString(value, label);
+  if (anchor !== value || value.length > 256) throw new Error(`${label} is invalid`);
 }
 
 function hostnameOf(host: string): string {

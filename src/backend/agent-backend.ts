@@ -7,6 +7,8 @@ import type {
   ToolDecision,
   TranscriptChange,
   TranscriptItem,
+  TranscriptPage,
+  TranscriptPageRequest,
 } from "./types";
 import type {
   ArtifactContent,
@@ -42,6 +44,7 @@ export interface AgentBackend {
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  getTranscriptPage(sessionId: string, request?: TranscriptPageRequest): Promise<TranscriptPage>;
   /**
    * Safety-net read that returns changed rows when the caller already has the
    * conversation. Omitted backends still use `getTranscript`.

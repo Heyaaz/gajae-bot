@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GjcSdkController } from "./gjc-sdk-controller.js";
+import type { TranscriptPage } from "../shared/agent-contract.js";
 import type { IpcSecurity } from "./ipc-security.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
 import { AttachmentStore } from "./attachment-store.js";
@@ -182,7 +183,7 @@ describe("attachment IPC validation", () => {
     ).toBe("스크린샷 메모.md");
   });
 
-  it("resolves a same-sender capability and consumes it after success", async () => {
+  it("resolves a same-sender capability and retains it for delivery retry", async () => {
     const { file, metadata } = await nativeFile();
     const store = new AttachmentStore();
     store.activateSender(7);
@@ -222,9 +223,9 @@ describe("attachment IPC validation", () => {
         },
       ],
     });
-    await expect(store.acquire(7, [capability.token])).rejects.toThrow(
-      "Attachment is unavailable",
-    );
+    await expect(store.acquire(7, [capability.token])).resolves.toEqual([
+      expect.objectContaining({ token: capability.token, nativePath: await realpath(file) }),
+    ]);
   });
 
   it("releases a capability after a failed send and rejects another sender", async () => {
@@ -328,6 +329,65 @@ describe("attachment IPC validation", () => {
       ),
     ).rejects.toThrow("Attachment size limit exceeded");
     expect(operation).not.toHaveBeenCalled();
+  });
+});
+
+describe("transcript page IPC", () => {
+  const page: TranscriptPage = {
+    items: [],
+    hasMoreBefore: true,
+    hasMoreAfter: false,
+    firstId: "first",
+    lastId: "last",
+    requests: [],
+  };
+
+  function setup() {
+    const getTranscriptPage = vi.fn().mockResolvedValue(page);
+    const guarded = vi.fn(
+      (handler: (...args: unknown[]) => unknown) =>
+        async (...args: unknown[]) => handler(...args),
+    );
+    registerGjcIpcHandlers(
+      { getTranscriptPage } as unknown as GjcSdkController,
+      new AttachmentStore(),
+      { guarded } as unknown as IpcSecurity,
+    );
+    return getTranscriptPage;
+  }
+
+  it("passes initial, before, and around requests through and returns the controller page", async () => {
+    const getTranscriptPage = setup();
+    const handler = handled.get(GJC_IPC.getTranscriptPage)!;
+
+    await expect(handler({}, "session-a")).resolves.toBe(page);
+    await expect(handler({}, "session-a", { beforeId: "message-before" })).resolves.toBe(page);
+    await expect(handler({}, "session-a", { aroundId: "message-around" })).resolves.toBe(page);
+
+    expect(getTranscriptPage.mock.calls).toEqual([
+      ["session-a", undefined],
+      ["session-a", { beforeId: "message-before" }],
+      ["session-a", { aroundId: "message-around" }],
+    ]);
+  });
+
+  it("rejects invalid request types, unknown fields, and conflicting cursors before the controller", async () => {
+    const getTranscriptPage = setup();
+    const handler = handled.get(GJC_IPC.getTranscriptPage)!;
+    const invalidRequests: unknown[] = [
+      null,
+      [],
+      "before",
+      1,
+      { beforeId: "" },
+      { beforeId: "x".repeat(513) },
+      { afterId: "message-after" },
+      { beforeId: "message-before", aroundId: "message-around" },
+    ];
+
+    for (const request of invalidRequests)
+      await expect(handler({}, "session-a", request)).rejects.toThrow();
+    expect(getTranscriptPage).not.toHaveBeenCalled();
   });
 });
 

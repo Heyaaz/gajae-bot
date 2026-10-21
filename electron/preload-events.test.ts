@@ -126,7 +126,7 @@ describe("preload SSE event handling", () => {
     vi.useRealTimers();
   });
 
-  it("rebuilds sessions and transcripts after a replay gap, exposing resync failure", async () => {
+  it("rebuilds sessions and invalidates transcripts after a replay gap, exposing resync failure", async () => {
     vi.useFakeTimers();
     const stream = responseStream();
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
@@ -135,11 +135,9 @@ describe("preload SSE event handling", () => {
       body: stream.body,
     } as Response);
     const session = { id: "session-1", title: "one" };
-    const transcript = [{ id: "item-1", type: "message" }];
     const invoke = vi.fn(async (channel: string) => {
       if (channel === GJC_IPC.eventStream) return { port: 4321, token: "secret", seq: 0 };
       if (channel === GJC_IPC.listSessions) return [session];
-      if (channel === GJC_IPC.getTranscript) return transcript;
       if (channel === GJC_IPC.getConnection) return { state: "connected", backend: "gjc" };
       throw new Error(`Unexpected IPC: ${channel}`);
     });
@@ -149,14 +147,15 @@ describe("preload SSE event handling", () => {
     await waitFor(() => fetchMock.mock.calls.length === 1);
     stream.controller.enqueue(bytes('id: 9\nevent: resync\ndata: {"resync":true}\n\n'));
     await waitFor(() => received.length === 2);
-    expect(invoke.mock.calls.map(([channel]) => channel)).toContain(GJC_IPC.listSessions);
-    expect(invoke).toHaveBeenCalledWith(GJC_IPC.getTranscript, "session-1");
+    expect(invoke).toHaveBeenCalledWith(GJC_IPC.listSessions);
+    expect(invoke.mock.calls.some(([channel]) => channel === GJC_IPC.getTranscript)).toBe(false);
     expect(received).toEqual([
       { type: "session.updated", session },
-      { type: "transcript.synced", sessionId: "session-1", items: transcript },
+      { type: "transcript.invalidated", sessionId: "session-1" },
     ]);
 
     received.length = 0;
+    invoke.mockClear();
     invoke.mockImplementation(async (channel: string) => {
       if (channel === GJC_IPC.eventStream) return { port: 4321, token: "secret", seq: 0 };
       if (channel === GJC_IPC.listSessions) throw new Error("session read failed");
@@ -165,6 +164,9 @@ describe("preload SSE event handling", () => {
     });
     stream.controller.enqueue(bytes('id: 10\nevent: resync\ndata: {"resync":true}\n\n'));
     await waitFor(() => received.length === 1);
+    expect(invoke).toHaveBeenCalledWith(GJC_IPC.listSessions);
+    expect(invoke).toHaveBeenCalledWith(GJC_IPC.getConnection);
+    expect(invoke.mock.calls.some(([channel]) => channel === GJC_IPC.getTranscript)).toBe(false);
     expect(received).toEqual([{
       type: "connection.updated",
       connection: {
@@ -178,7 +180,7 @@ describe("preload SSE event handling", () => {
     vi.useRealTimers();
   });
 
-  it("reloads only the watched transcripts after a replay gap", async () => {
+  it("invalidates only the watched transcripts after a replay gap", async () => {
     const stream = responseStream();
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue({
       ok: true,
@@ -186,10 +188,9 @@ describe("preload SSE event handling", () => {
       body: stream.body,
     } as Response);
     const sessions = [{ id: "visible" }, { id: "cached" }, { id: "idle" }];
-    const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
+    const invoke = vi.fn(async (channel: string) => {
       if (channel === GJC_IPC.eventStream) return { port: 4321, token: "secret", seq: 0 };
       if (channel === GJC_IPC.listSessions) return sessions;
-      if (channel === GJC_IPC.getTranscript) return [{ id: args[0] }];
       throw new Error(`Unexpected IPC: ${channel}`);
     });
     const bridge = createHarness(invoke, fetchMock);
@@ -198,10 +199,15 @@ describe("preload SSE event handling", () => {
     const unsubscribe = bridge.gjc.onEvent((event) => received.push(event));
     await waitFor(() => fetchMock.mock.calls.length === 1);
     stream.controller.enqueue(bytes('id: 9\nevent: resync\ndata: {"resync":true}\n\n'));
-    await waitFor(() => received.filter((event) => event.type === "transcript.synced").length === 2);
-    const transcripts = invoke.mock.calls.filter(([channel]) => channel === GJC_IPC.getTranscript);
-    expect(transcripts.map(([, sessionId]) => sessionId)).toEqual(["visible", "cached"]);
+    await waitFor(() => received.filter((event) => event.type === "transcript.invalidated").length === 2);
+    expect(invoke).toHaveBeenCalledWith(GJC_IPC.listSessions);
+    expect(invoke.mock.calls.some(([channel]) => channel === GJC_IPC.getTranscript)).toBe(false);
     expect(received.filter((event) => event.type === "session.updated")).toHaveLength(3);
+    expect(
+      received
+        .filter((event) => event.type === "transcript.invalidated")
+        .map((event) => event.sessionId),
+    ).toEqual(["visible", "cached"]);
     unsubscribe();
     stream.controller.close();
   });

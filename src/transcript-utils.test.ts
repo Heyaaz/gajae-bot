@@ -892,6 +892,15 @@ describe("cacheTranscript", () => {
     expect(mergeTranscriptItem(merged, repeat)).toHaveLength(2);
   });
 
+  it("retires one renderer echo when a durable user event has a backend-specific id", () => {
+    const local = { ...message, id: "local-prompt-renderer-1", role: "user" as const, content: "same request" };
+    const second = { ...local, id: "local-prompt-renderer-2" };
+    const durable = { ...local, id: "message-99" };
+    const merged = mergeTranscriptItem([local, second], durable);
+    expect(merged.map((item) => item.id)).toEqual([durable.id, second.id]);
+    expect(mergeTranscriptItem(merged, durable).map((item) => item.id)).toEqual([durable.id, second.id]);
+  });
+
   it("retires the renderer prompt when a controller transcript carries its echo", () => {
     const renderer = { ...message, id: "local-prompt-renderer-1", role: "user" as const, content: "너가 해결해줘 송수신 제대로 안돼" };
     const controllerEcho = { ...renderer, id: "local-prompt-7" };

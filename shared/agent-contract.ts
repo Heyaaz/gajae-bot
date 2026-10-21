@@ -590,12 +590,32 @@ export type TranscriptItem =
 /**
  * A safety-net read of a transcript the caller already has.
  *
- * `full` is the merged conversation. `patch` is only the rows that changed or
- * were appended, in their current order of appearance.
+ * `full` is the current synchronization window. `patch` is only rows that
+ * changed or were appended within that window, in their current order.
  */
 export type TranscriptChange =
   | { kind: "full"; items: TranscriptItem[] }
   | { kind: "patch"; items: TranscriptItem[] };
+
+export interface TranscriptPageRequest {
+  beforeId?: string;
+  aroundId?: string;
+}
+
+export interface TranscriptRequestSummary {
+  id: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface TranscriptPage {
+  items: TranscriptItem[];
+  hasMoreBefore: boolean;
+  hasMoreAfter: boolean;
+  firstId?: string;
+  lastId?: string;
+  requests: TranscriptRequestSummary[];
+}
 
 export type AgentEvent =
   | { type: "connection.updated"; connection: BackendConnection }
@@ -603,6 +623,7 @@ export type AgentEvent =
   | { type: "session.updated"; session: AgentSession }
   | { type: "session.deleted"; sessionId: string }
   | { type: "transcript.appended"; item: TranscriptItem }
+  | { type: "transcript.invalidated"; sessionId: string }
   | { type: "transcript.synced"; sessionId: string; items: TranscriptItem[] }
   | {
       type: "message.delta";
@@ -651,6 +672,8 @@ export function eventSessionId(event: AgentEvent): string | undefined {
       return event.session.id;
     case "transcript.appended":
       return event.item.sessionId;
+    case "transcript.invalidated":
+      return event.sessionId;
     case "message.updated":
       return event.message.sessionId;
     case "plan.updated":
@@ -721,6 +744,10 @@ export interface GjcDesktopBridge {
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  getTranscriptPage(
+    sessionId: string,
+    request?: TranscriptPageRequest,
+  ): Promise<TranscriptPage>;
   /**
    * Safety-net read that sends changed rows instead of the whole conversation.
    * The first read is `full`.

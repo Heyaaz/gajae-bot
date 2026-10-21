@@ -23,6 +23,7 @@ export const GJC_IPC = {
   deleteSession: "agent-control:gjc:delete-session",
   hideSession: "agent-control:gjc:hide-session",
   getTranscript: "agent-control:gjc:get-transcript",
+  getTranscriptPage: "agent-control:gjc:get-transcript-page",
   getTranscriptChanges: "agent-control:gjc:get-transcript-changes",
   getTranscriptRevision: "agent-control:gjc:get-transcript-revision",
   refreshSessionContext: "agent-control:gjc:refresh-session-context",

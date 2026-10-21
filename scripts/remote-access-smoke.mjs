@@ -84,6 +84,8 @@ async function main() {
     listSessions: async () => [session],
     listHistorySessions: async () => [],
     getTranscript: async () => [],
+    getTranscriptPage: async () => ({ items: [], requests: [], hasMoreBefore: false, hasMoreAfter: false }),
+    getTranscriptRevision: async () => undefined,
     listQueuedMessages: async () => [],
     getGoal: async () => ({ enabled: false, completed: 0, total: 0 }),
     listSubagents: async () => [],
@@ -123,6 +125,9 @@ async function main() {
     GJC_IPC.listSessions,
     GJC_IPC.listHistorySessions,
     GJC_IPC.getTranscript,
+    GJC_IPC.getTranscriptPage,
+    GJC_IPC.getTranscriptChanges,
+    GJC_IPC.getTranscriptRevision,
     GJC_IPC.listQueuedMessages,
     GJC_IPC.getGoal,
     GJC_IPC.listSubagents,
@@ -138,6 +143,14 @@ async function main() {
   ipcMain.handle(GJC_IPC.listSessions, () => [session])
   ipcMain.handle(GJC_IPC.listHistorySessions, () => [])
   ipcMain.handle(GJC_IPC.getTranscript, () => [])
+  ipcMain.handle(GJC_IPC.getTranscriptPage, () => ({
+    items: [],
+    requests: [],
+    hasMoreBefore: false,
+    hasMoreAfter: false,
+  }))
+  ipcMain.handle(GJC_IPC.getTranscriptChanges, () => ({ kind: 'patch', items: [] }))
+  ipcMain.handle(GJC_IPC.getTranscriptRevision, () => undefined)
   ipcMain.handle(GJC_IPC.listQueuedMessages, () => [])
   ipcMain.handle(GJC_IPC.getGoal, () => ({ enabled: false, completed: 0, total: 0 }))
   ipcMain.handle(GJC_IPC.listSubagents, () => [])
@@ -252,16 +265,23 @@ async function main() {
   require_(refused.status === 403, `A view-only device could still control the host (${refused.status})`)
 
   const pairingPanel = await window.webContents.executeJavaScript(`(async () => {
+    const until = async predicate => {
+      for (let i = 0; i < 100; i++) {
+        const value = predicate();
+        if (value) return value;
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      throw Error('Remote settings condition timed out');
+    };
     const settingsButton = Array.from(document.querySelectorAll('.sidebar-footer button')).find(
-      (button) => button.textContent?.includes('설정'),
+      (button) => /설정|Settings/.test(button.textContent ?? ''),
     )
     settingsButton?.click()
-    await new Promise((resolve) => setTimeout(resolve, 300))
-    const tab = Array.from(document.querySelectorAll('.settings-dialog nav button')).find(
-      (button) => button.textContent?.includes('원격 접속'),
-    )
+    const tab = await until(() => Array.from(document.querySelectorAll('.settings-dialog nav button')).find(
+      (button) => /원격 접속|Remote access/i.test(button.textContent ?? ''),
+    ))
     tab?.click()
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await until(() => document.querySelector('.remote-panel')?.textContent?.includes('Smoke iPhone'))
     const body = document.querySelector('.settings-content')?.textContent ?? ''
     const panel = document.querySelector('.remote-panel')
     const toggle = panel?.querySelector('[role="switch"]')
@@ -271,7 +291,7 @@ async function main() {
       panelMounted: Boolean(document.querySelector('.remote-panel')),
       mentionsTailscale: body.includes('Tailscale'),
       listsDevice: body.includes('Smoke iPhone'),
-      showsPermission: body.includes('보기 전용'),
+      showsPermission: /보기 전용|View only|View-only/i.test(body),
       noHorizontalOverflow: Boolean(panel && panel.scrollWidth <= panel.clientWidth + 1),
       switchLabelFits: Boolean(toggle && toggle.scrollWidth <= toggle.clientWidth + 1),
       hasAccessibleSwitch: Boolean(toggle?.getAttribute('aria-labelledby')),

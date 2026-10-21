@@ -61,4 +61,21 @@ describe("RecentRequestStrip prompt timeline", () => {
     // Closed by default: the popover itself is not in the initial markup.
     expect(markup).not.toContain("prompt-timeline");
   });
+
+  it("keeps unloaded historical requests in the full timeline", () => {
+    const markup = renderToStaticMarkup(
+      createElement(RecentRequestStrip, {
+        items: [userMessage("loaded", "recent request")],
+        requestSummaries: [
+          { id: "old", text: "request outside the loaded page", createdAt: "earlier" },
+          { id: "loaded", text: "recent request", createdAt: "now" },
+        ],
+        onReveal: vi.fn(),
+      }),
+    );
+    expect(markup).toContain("타임라인 (2)");
+    // The chip strip stays bounded to loaded rows; the timeline count comes from the
+    // all-history summary index rather than that shorter list.
+    expect(markup).not.toContain("request outside the loaded page");
+  });
 });

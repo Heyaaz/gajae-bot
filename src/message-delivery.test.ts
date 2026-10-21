@@ -29,6 +29,28 @@ function user(id: string, content: string, extras: Partial<Extract<TranscriptIte
 }
 
 describe("message delivery tracker", () => {
+  it("does not infer delivery or failure when the submission history was unavailable", () => {
+    const tracker = new MessageDeliveryTracker();
+    tracker.submit("session-1", input("repeat"), [], 0, attachedIdle, false);
+    tracker.observeUserEvent("session-1", user("replayed-old", "repeat"), 1);
+    tracker.observeTranscript("session-1", [], { kind: "latest", complete: true }, 2);
+    tracker.advance(60_000);
+    expect(tracker.snapshot("session-1")[0]?.state).toBe("pending");
+    expect(tracker.nextDeadline()).toBeUndefined();
+  });
+
+  it("requires a paged absence check to include the submission boundary", () => {
+    const tracker = new MessageDeliveryTracker();
+    const fence = user("before-submit", "previous request");
+    tracker.submit("session-1", input("lost"), [fence], 0, attachedIdle);
+    expect(tracker.coversPendingAttempts("session-1", [user("newer", "unrelated")], true)).toBe(false);
+    expect(tracker.coversPendingAttempts("session-1", [fence, user("newer", "unrelated")], true)).toBe(true);
+    const empty = new MessageDeliveryTracker();
+    empty.submit("session-1", input("first"), [], 0, attachedIdle);
+    expect(empty.coversPendingAttempts("session-1", [], true)).toBe(false);
+    expect(empty.coversPendingAttempts("session-1", [], false)).toBe(true);
+  });
+
   it("shows a dropped request only after a fresh complete idle read and grace period", () => {
     const tracker = new MessageDeliveryTracker();
     const id = tracker.submit("session-1", input("lost request"), [], 1_000, attachedIdle);
@@ -134,7 +156,7 @@ describe("message delivery tracker", () => {
       files: [{ id: "file-1", name: "report.pdf", mimeType: "application/pdf", size: 4, token: "token-1" }],
     });
     const tracker = new MessageDeliveryTracker();
-    const id = tracker.submit("session-1", original, [], 0, attachedIdle);
+    tracker.submit("session-1", original, [], 0, attachedIdle);
     original.text = "changed after submit";
     original.images[0]!.data = "changed";
 

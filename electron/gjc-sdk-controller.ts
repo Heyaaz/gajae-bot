@@ -45,9 +45,15 @@ import type {
   QueuedMessage,
   SubagentSnapshot,
   SystemNoticeActivity,
+  TranscriptPage,
+  TranscriptPageRequest,
 } from "../shared/agent-contract.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
 import { transcriptDelivery } from "../shared/transcript-item-equal.js";
+import {
+  selectTranscriptPage,
+  transcriptSyncWindow,
+} from "../shared/transcript-page.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
 import {
@@ -293,6 +299,7 @@ export class GjcSdkController {
   private readonly sessionCwds = new Map<string, string>();
   private readonly attachedSessions = new Set<string>();
   private readonly transcripts = new Map<string, TranscriptItem[]>();
+  private readonly desktopTranscriptBaselines = new Map<string, TranscriptItem[]>();
   private readonly messageKeys = new Map<string, Map<string, string>>();
   private readonly activeAssistantMessages = new Map<string, string>();
   private readonly activeThoughts = new Map<string, string>();
@@ -1928,15 +1935,28 @@ export class GjcSdkController {
     return (this.transcripts.get(sessionId) ?? []).map(cloneTranscriptItem);
   }
 
-  /**
-   * Safety-net read. The first observation is the whole merged transcript.
-   * Later reads send only the rows that changed, which is what the file watcher
-   * already does through `publishTranscriptSync`.
-   */
+  async getTranscriptPage(
+    sessionId: string,
+    request?: TranscriptPageRequest,
+  ): Promise<TranscriptPage> {
+    return selectTranscriptPage(await this.getTranscript(sessionId), request);
+  }
+
+  /** Safety-net read using the session's bounded desktop snapshot as its baseline. */
   async getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
-    const previous = this.transcripts.get(sessionId)?.slice();
     const items = await this.getTranscript(sessionId);
-    return transcriptDelivery(previous, items);
+    const previous = this.desktopTranscriptBaselines.get(sessionId);
+    const next = transcriptSyncWindow(items, previous);
+    const change = transcriptDelivery(previous, next);
+    if (this.sessions.has(sessionId))
+      this.desktopTranscriptBaselines.set(sessionId, next);
+    else this.desktopTranscriptBaselines.delete(sessionId);
+    return change;
+  }
+
+  private invalidateDesktopTranscript(sessionId: string): void {
+    this.desktopTranscriptBaselines.delete(sessionId);
+    this.emitEvent({ type: "transcript.invalidated", sessionId });
   }
 
   /**
@@ -2381,39 +2401,30 @@ export class GjcSdkController {
   /**
    * Publish a transcript rescan as the items that actually changed.
    *
-   * A rescan usually adds one row to an unchanged history, so shipping the whole
-   * array cost a full clone plus a multi-megabyte IPC hop each time, and handed
-   * the renderer fresh objects for every row -- which defeats the memo on each
-   * transcript item and re-renders the entire list. Appends go out as individual
-   * items; a rewritten history (compaction) still needs the full array.
+   * Ordinary changes go out as individual rows. When a rescan cannot be expressed
+   * as appended or changed rows, invalidate the renderer's bounded snapshot so it
+   * can reload a fresh page instead of shipping the full history over IPC.
    */
   private publishTranscriptSync(
     sessionId: string,
     previous: TranscriptItem[] | undefined,
     items: TranscriptItem[],
   ): void {
-    const syncWholeHistory = (): void => {
-      this.emitEvent({
-        type: "transcript.synced",
-        sessionId,
-        items: items.map(cloneTranscriptItem),
-      });
-    };
+    const invalidate = (): void => this.invalidateDesktopTranscript(sessionId);
 
     // No prior history, or a shorter one because compaction rewrote it.
     if (!previous || previous.length > items.length) {
-      syncWholeHistory();
+      invalidate();
       return;
     }
 
     // A row can also disappear without the history getting shorter: a live row the
     // rebuild recorded under its own id, or one the ended turn never recorded. An
-    // appended event cannot take a row away, so a history that dropped one is
-    // republished whole -- the renderer's own merge retires the row when the rebuild
-    // carries the same block, and this is what covers the rest.
+    // appended event cannot take a row away, so a history that dropped one must
+    // invalidate the renderer's snapshot and let it reload a bounded page.
     const present = new Set(items.map((item) => item.id));
     if (previous.some((item) => !present.has(item.id))) {
-      syncWholeHistory();
+      invalidate();
       return;
     }
 
@@ -2430,13 +2441,13 @@ export class GjcSdkController {
     // a parallel tool can settle on its original row long after 32 newer rows
     // were appended, and an id-only check left that card running here while the
     // installed history already had its result. Identity changes cannot be
-    // expressed as appended items, so those still take the full-history route.
+    // expressed as appended items, so those still require invalidation.
     for (let index = 0; index < windowStart; index += 1) {
       const before = previous[index];
       const after = items[index];
       if (!before || !after) break;
       if (before.id !== after.id) {
-        syncWholeHistory();
+        invalidate();
         return;
       }
       if (!sameTranscriptItem(before, after)) changedIndices.push(index);
@@ -2448,25 +2459,25 @@ export class GjcSdkController {
       if (!before || !after) break;
       if (sameTranscriptItem(before, after)) continue;
       if (before.id !== after.id) {
-        syncWholeHistory();
+        invalidate();
         return;
       }
       changedIndices.push(index);
       if (index === windowStart) reachedWindowStart = true;
     }
     // The disagreement reaches the edge of a partial window, so rows before it
-    // may have changed too; the whole history is the only safe account.
+    // may have changed too; invalidate rather than publish an incomplete patch.
     if (reachedWindowStart && windowStart > 0) {
-      syncWholeHistory();
+      invalidate();
       return;
     }
     // Additions after the shared prefix are always new rows.
     for (let index = shared; index < items.length; index += 1)
       changedIndices.push(index);
     if (changedIndices.length === 0) return;
-    // Replacing many rows is cheaper as one array than as a burst of events.
+    // For many changed rows, invalidation avoids a burst of events.
     if (changedIndices.length > 16) {
-      syncWholeHistory();
+      invalidate();
       return;
     }
     changedIndices.sort((left, right) => left - right);
@@ -4482,6 +4493,7 @@ export class GjcSdkController {
     // nothing owned by another window can be disturbed by it.
     this.cli = undefined;
     this.startup = undefined;
+    this.desktopTranscriptBaselines.clear();
     this.routeProbes.clear();
     this.permissionModeApplied.clear();
     for (const sessionId of this.toolObservers.keys())
@@ -4763,6 +4775,7 @@ export class GjcSdkController {
     this.attachedSessions.delete(sessionId);
     this.transcriptAttachments.delete(sessionId);
     this.transcripts.delete(sessionId);
+    this.desktopTranscriptBaselines.delete(sessionId);
     this.messageKeys.delete(sessionId);
     this.activeAssistantMessages.delete(sessionId);
     this.activeThoughts.delete(sessionId);
@@ -4869,6 +4882,7 @@ export class GjcSdkController {
     this.sharedSessionFiles.clear();
     this.sessionParents.clear();
     this.transcripts.clear();
+    this.desktopTranscriptBaselines.clear();
     this.messageKeys.clear();
     this.activeAssistantMessages.clear();
     this.activeThoughts.clear();
@@ -5285,7 +5299,7 @@ export class GjcSdkController {
       if (this.disposed || generation !== this.generation || !this.sessions.has(sessionId))
         throw new Error("GJC session history opening was cancelled");
       this.markTerminalOnly(sessionId);
-      const installed = this.installTranscript(sessionId, items);
+      this.installTranscript(sessionId, items);
       // The row is not discovered, so nothing else describes its run state. The
       // transcript is the only account of a CLI that is still working, and the
       // freshly opened row must not claim it finished.
@@ -5302,11 +5316,7 @@ export class GjcSdkController {
         opened.status = status;
         this.emitEvent({ type: "session.updated", session: { ...opened } });
       }
-      this.emitEvent({
-        type: "transcript.synced",
-        sessionId,
-        items: installed.map(cloneTranscriptItem),
-      });
+      this.invalidateDesktopTranscript(sessionId);
       return { ...this.sessions.get(sessionId)! };
     }
   }
@@ -5354,14 +5364,9 @@ export class GjcSdkController {
     }
     const resumed = this.sessions.get(sessionId);
     if (!resumed) throw new Error(`Unknown GJC session: ${sessionId}`);
-    // The transcript is republished so the window shows the history the resumed
-    // session actually has, not the read-only snapshot it was left with.
-    const items = await this.getTranscript(sessionId);
-    this.emitEvent({
-      type: "transcript.synced",
-      sessionId,
-      items: items.map(cloneTranscriptItem),
-    });
+    // The renderer reloads a bounded page after this invalidation, rather than
+    // receiving the entire transcript over IPC.
+    this.invalidateDesktopTranscript(sessionId);
     return { ...resumed };
   }
 

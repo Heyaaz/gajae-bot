@@ -1081,7 +1081,7 @@ export function mergeTranscriptItem(
     return items.map((existing, at) => (at === index ? item : existing));
   }
   if (item.kind === "message" && item.role === "user" &&
-    item.id.startsWith("local-prompt-") && !item.id.startsWith("local-prompt-renderer-")) {
+    !item.id.startsWith("gjc-message-") && !item.id.startsWith("local-prompt-renderer-")) {
     const pending = items.findIndex((existing) => existing.kind === "message" &&
       existing.role === "user" && existing.id.startsWith("local-prompt-renderer-") &&
       sameUserRequest(existing, item));

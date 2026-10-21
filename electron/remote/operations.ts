@@ -3,11 +3,14 @@ import type {
   BackendConnection,
   HistorySession,
   MessageDelivery,
+  TranscriptPage,
+  TranscriptPageRequest,
   ToolDecision,
   TranscriptChange,
   TranscriptItem,
 } from "../../shared/agent-contract.js";
 import { transcriptDelivery } from "../../shared/transcript-item-equal.js";
+import { transcriptSyncWindow } from "../../shared/transcript-page.js";
 import type { RemoteOperationName } from "../../shared/remote-protocol.js";
 import type { ResolvedMessageInput } from "../gjc-sdk-controller.js";
 import { messageInput, requiredId, toolDecision } from "../gjc-input-validation.js";
@@ -27,6 +30,10 @@ export interface RemoteOperationsHost {
   listSessions(): Promise<AgentSession[]>;
   listHistorySessions(): Promise<HistorySession[]>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
+  getTranscriptPage(
+    sessionId: string,
+    request?: TranscriptPageRequest,
+  ): Promise<TranscriptPage>;
   getTranscriptRevision(sessionId: string): Promise<string | undefined>;
   refreshSessionContext(sessionId: string): Promise<void>;
   listQueuedMessages(sessionId: string): Promise<{ id: string; text: string; mode: string; label: string }[]>;
@@ -48,6 +55,8 @@ export interface RemoteOperationParams {
   sessionId?: string;
   toolId?: string;
   artifactId?: string;
+  beforeId?: string;
+  aroundId?: string;
 }
 
 /**
@@ -110,13 +119,22 @@ export async function runRemoteOperation(
       transcript?.remember?.(items);
       return items;
     }
+    case "transcript-page": {
+      const request =
+        params.beforeId === undefined && params.aroundId === undefined
+          ? undefined
+          : {
+              ...(params.beforeId === undefined ? {} : { beforeId: params.beforeId }),
+              ...(params.aroundId === undefined ? {} : { aroundId: params.aroundId }),
+            };
+      return host.getTranscriptPage(sessionId!, request);
+    }
     case "transcript-changes": {
+      const previous = transcript?.baseline;
       const items = await host.getTranscript(sessionId!);
-      const change: TranscriptChange = transcriptDelivery(
-        transcript?.baseline,
-        items,
-      );
-      transcript?.remember?.(items);
+      const window = transcriptSyncWindow(items, previous);
+      const change: TranscriptChange = transcriptDelivery(previous, window);
+      transcript?.remember?.(window);
       return change;
     }
     case "transcript-revision":

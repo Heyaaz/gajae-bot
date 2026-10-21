@@ -9,6 +9,8 @@ import type {
   ToolDecision,
   TranscriptChange,
   TranscriptItem,
+  TranscriptPage,
+  TranscriptPageRequest,
 } from "./types";
 import type {
   ArtifactContent,
@@ -89,6 +91,10 @@ export class GjcAgentBackend implements AgentBackend {
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     return this.bridge.getTranscript(sessionId);
+  }
+
+  getTranscriptPage(sessionId: string, request?: TranscriptPageRequest): Promise<TranscriptPage> {
+    return this.bridge.getTranscriptPage(sessionId, request);
   }
 
   getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {

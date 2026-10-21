@@ -179,12 +179,17 @@ describe("history opening with an unavailable endpoint", () => {
       expect(internals.attachedSessions.has("s1")).toBe(false);
       expect(cli.rawGlobal).not.toHaveBeenCalled();
       expect(cli.rawControl).not.toHaveBeenCalled();
-      const synced = emit.mock.calls.map(([event]) => event).filter((event) => event.type === "transcript.synced").at(-1);
-      expect(synced.items).toEqual(expect.arrayContaining([
+      const invalidated = emit.mock.calls
+        .map(([event]) => event)
+        .filter((event) => event.type === "transcript.invalidated");
+      expect(invalidated).toContainEqual({ type: "transcript.invalidated", sessionId: "s1" });
+      const calls = cli.queryItems.mock.calls.length;
+      const page = await controller.getTranscriptPage("s1");
+      expect(page.items).toEqual(expect.arrayContaining([
         expect.objectContaining({ kind: "message", role: "user", content: "saved history" }),
         expect.objectContaining({ kind: "notice", title: "기록 보기 전용 · 실행 연결 없음" }),
       ]));
-      const calls = cli.queryItems.mock.calls.length;
+      expect(cli.queryItems).toHaveBeenCalledTimes(calls);
       const refreshed = await controller.getTranscript("s1");
       expect(refreshed).toEqual(expect.arrayContaining([
         expect.objectContaining({ content: "saved history" }),
@@ -1180,7 +1185,7 @@ describe("GjcSdkController CLI seam", () => {
     );
     internals.publishTranscriptSync("s1", previous, next);
     const events = emit.mock.calls.map(([event]) => event);
-    expect(events.some((event) => event.type === "transcript.synced")).toBe(
+    expect(events.some((event) => event.type === "transcript.invalidated")).toBe(
       false,
     );
     const appended = events.filter(
@@ -1227,13 +1232,13 @@ describe("GjcSdkController CLI seam", () => {
       status: "completed",
       output: "ok",
     });
-    expect(events.some((event) => event.type === "transcript.synced")).toBe(
+    expect(events.some((event) => event.type === "transcript.invalidated")).toBe(
       false,
     );
     controller.dispose();
   });
 
-  it("republishes history when an out-of-window row changed identity", () => {
+  it("invalidates history when an out-of-window row changed identity", () => {
     const emit = vi.fn();
     const { controller, internals } = harness({ emit });
     const toolRow = (id: string) =>
@@ -1254,12 +1259,17 @@ describe("GjcSdkController CLI seam", () => {
     );
     internals.publishTranscriptSync("s1", previous, next);
     // A replacement outside the diff window shifts row identity; appended events
-    // cannot describe it, so the whole history is authoritative.
-    expect(
-      emit.mock.calls.some(
-        ([event]) => event.type === "transcript.synced",
-      ),
-    ).toBe(true);
+    // cannot describe it, so the renderer must reload a page.
+    const transcriptEvents = emit.mock.calls
+      .map(([event]) => event)
+      .filter(
+        (event) =>
+          event.type === "transcript.invalidated" ||
+          event.type === "transcript.appended",
+      );
+    expect(transcriptEvents).toEqual([
+      { type: "transcript.invalidated", sessionId: "s1" },
+    ]);
     controller.dispose();
   });
 
@@ -1806,17 +1816,27 @@ describe("SDK slash commands", () => {
     }
   });
 
-  it("ships only changed rows after the first transcript read", async () => {
+  it("keeps the last delivered safety baseline across transcript and page reads", async () => {
     const { controller, internals } = harness();
-    const message = (content: string, id = "m1") => ({
-      id,
+    const user = (index: number, content = `request ${index}`) => ({
+      id: `user-${index}`,
+      kind: "message" as const,
+      sessionId: "s1",
+      role: "user" as const,
+      content,
+      createdAt: `t${index}`,
+    });
+    const assistant = (index: number, content = `response ${index}`) => ({
+      id: `response-${index}`,
       kind: "message" as const,
       sessionId: "s1",
       role: "assistant" as const,
       content,
-      createdAt: "t",
+      createdAt: `t${index}`,
     });
-    let rows = [message("one")];
+    const conversation = (count: number) =>
+      Array.from({ length: count }, (_, index) => [user(index), assistant(index)]).flat();
+    let rows = conversation(25);
     internals.sessions.set("s1", session());
     internals.readSharedTranscript = vi.fn(async () =>
       rows.map((row) => ({ ...row })),
@@ -1825,20 +1845,41 @@ describe("SDK slash commands", () => {
       const first = await controller.getTranscriptChanges("s1");
       expect(first.kind).toBe("full");
       if (first.kind !== "full") return;
-      expect(first.items.map((item) => item.id)).toEqual(["m1"]);
+      expect(first.items).toHaveLength(40);
+      expect(first.items[0]?.id).toBe("user-5");
+      expect(first.items.at(-1)?.id).toBe("response-24");
 
-      rows = [message("one"), message("two", "m2")];
-      const appended = await controller.getTranscriptChanges("s1");
-      expect(appended).toMatchObject({
-        kind: "patch",
-        items: [{ id: "m2", content: "two" }],
-      });
+      rows = conversation(26);
+      rows[11] = assistant(5, "edited response 5");
+      // A watcher refresh can install newer rows before the safety-net request is
+      // made. That cache update is not an acknowledgement that these rows reached
+      // the renderer.
+      internals.installTranscript("s1", rows.map((row) => ({ ...row })));
 
-      rows = [message("ONE"), message("two", "m2")];
-      const edited = await controller.getTranscriptChanges("s1");
-      expect(edited).toMatchObject({
+      // Another renderer can request a page without advancing this window's
+      // last-delivered safety baseline either.
+      const page = await controller.getTranscriptPage("s1");
+      expect(page.items).toHaveLength(40);
+      expect(page.items.map((item) => item.id)).toEqual(
+        Array.from({ length: 20 }, (_, index) => [
+          `user-${index + 6}`,
+          `response-${index + 6}`,
+        ]).flat(),
+      );
+      expect(page.firstId).toBe("user-6");
+      expect(page.lastId).toBe("response-25");
+      expect(page.requests.map((request) => request.id)).toEqual(
+        Array.from({ length: 26 }, (_, index) => `user-${index}`),
+      );
+
+      const updated = await controller.getTranscriptChanges("s1");
+      expect(updated).toEqual({
         kind: "patch",
-        items: [{ id: "m1", content: "ONE" }],
+        items: [
+          { ...assistant(5, "edited response 5") },
+          { ...user(25) },
+          { ...assistant(25) },
+        ],
       });
     } finally {
       controller.dispose();

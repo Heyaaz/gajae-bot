@@ -463,9 +463,15 @@ describe("sidebar rename failures", () => {
 describe("transcript loading failures", () => {
   it("does not cache a failed fetch as an empty transcript", async () => {
     const shell = await source("src/app/shell.tsx");
+    const transcript = await source("src/app/transcript.tsx");
     const failure = shell.match(/\.catch\(\(error\) => \{\n        if \(!active\) return;([\s\S]*?)\n      \}\);/u)?.[1];
-    expect(failure).toContain("setAppError(humanErrorMessage(error))");
+    expect(failure).toContain("pageError: humanErrorMessage(error)");
     expect(failure).not.toContain("cacheTranscript");
+    expect(shell).toContain("pageLoadError={selectedTranscriptPageState.pageError}");
+    expect(shell).toContain("onRetryPage={retrySelectedTranscriptPage}");
+    expect(transcript).toContain("{pageLoadError && (");
+    expect(transcript).toContain('<p role="alert">');
+    expect(transcript).toContain("{pageLoadError}");
   });
 });
 

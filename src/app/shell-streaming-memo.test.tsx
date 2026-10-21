@@ -4,6 +4,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { TranscriptPageRequest } from "../../shared/agent-contract";
+import { selectTranscriptPage } from "../../shared/transcript-page";
 import type { AgentEvent, AgentSession, TranscriptItem } from "../backend/types";
 
 const probe = vi.hoisted(() => ({
@@ -61,6 +63,12 @@ vi.mock("../backend/use-agent-backend", () => {
       }),
       listSessions: async () => [session],
       getTranscript: async () => items.map((item) => ({ ...item })),
+      getTranscriptPage: async (
+        _sessionId: string,
+        request?: TranscriptPageRequest,
+      ) => selectTranscriptPage(items, request),
+      getTranscriptRevision: async () => undefined,
+      getTranscriptChanges: async () => ({ kind: "patch" as const, items: [] }),
       subscribe: (listener: (event: AgentEvent) => void) => {
         probe.listeners.add(listener);
         return () => probe.listeners.delete(listener);

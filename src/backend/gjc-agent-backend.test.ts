@@ -34,6 +34,7 @@ class FakeGjcBridge implements GjcDesktopBridge {
   listSubagents = vi.fn().mockResolvedValue([]);
   getTranscriptRevision = vi.fn().mockResolvedValue("rev-1");
   getTranscriptChanges = vi.fn().mockResolvedValue({ kind: "full", items: [] });
+  getTranscriptPage = vi.fn().mockResolvedValue({ items: [], requests: [], hasMoreBefore: false, hasMoreAfter: false });
   watchTranscripts = vi.fn();
   refreshSessionContext = vi.fn().mockResolvedValue(undefined);
   readonly created: AgentSession[] = [];

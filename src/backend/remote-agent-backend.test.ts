@@ -18,10 +18,28 @@ function streamResponse(chunks: string[]): Response {
   });
 }
 
+function liveEventStream() {
+  const encoder = new TextEncoder();
+  let push!: (chunk: string) => void;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        push = (chunk) => controller.enqueue(encoder.encode(chunk));
+      },
+    }),
+    { status: 200, headers: { "Content-Type": "text/event-stream" } },
+  );
+  return { response, push: (chunk: string) => push(chunk) };
+}
+
 interface Call {
   url: string;
   method: string;
   body?: unknown;
+}
+
+function snapshotCount(calls: readonly Call[]): number {
+  return calls.filter((call) => call.url.endsWith(REMOTE_API.state)).length;
 }
 
 function storage() {
@@ -47,6 +65,8 @@ function backend(
     };
     calls.push(call);
     if (url === "/api/state" || url.endsWith(REMOTE_API.state)) {
+      const custom = respond(call);
+      if (custom) return custom;
       return new Response(
         JSON.stringify({
           connection: {
@@ -229,285 +249,147 @@ describe("remote agent backend", () => {
     instance.dispose();
   });
 
-  it("reloads only watched transcripts after a replay gap", async () => {
+  it("invalidates only watched transcripts from the replay-gap snapshot", async () => {
     const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    const { instance, calls } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
-      if (call.url.includes("/transcript"))
-        return new Response(JSON.stringify({ result: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      return undefined;
-    }, { sessionIds: ["s-1", "s-2", "s-3"] });
-    instance.watchTranscripts(["s-2"]);
-    const synced: string[] = [];
-    instance.subscribe((event) => {
-      if (event.type === "transcript.synced") synced.push(event.sessionId);
-    });
-    await vi.waitFor(() => expect(synced).toEqual(["s-2"]));
-    const transcripts = calls
-      .map((call) => call.url)
-      .filter((url) => url.includes("/transcript"));
-    expect(transcripts).toEqual([REMOTE_API.transcript("s-2")]);
-    instance.dispose();
-  });
-
-  it("replaces cached transcripts after an SSE replay gap", async () => {
-    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    const transcript = [{ id: "m-1", role: "assistant", content: "complete snapshot" }];
-    const { instance, calls } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
-      if (call.url.includes(REMOTE_API.transcript("s-1")))
-        return new Response(JSON.stringify({ result: transcript }), { status: 200 });
-      return undefined;
-    });
-    const synchronized: unknown[][] = [];
-    instance.subscribe((event) => {
-      if (event.type === "transcript.synced") synchronized.push(event.items);
-    });
-    await vi.waitFor(() => expect(synchronized).toEqual([transcript]));
-    expect(calls.some((call) => call.url.includes(REMOTE_API.transcript("s-1")))).toBe(true);
-    instance.dispose();
-  });
-
-  it("discards a replay repair that went stale while its transcript was read", async () => {
-    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    const encoder = new TextEncoder();
-    let pushLive!: (chunk: string) => void;
-    const live = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode(gap));
-          pushLive = (chunk) => controller.enqueue(encoder.encode(chunk));
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    const live = liveEventStream();
+    const { instance, calls } = backend(
+      (call) => call.url.includes(REMOTE_API.events) ? live.response : undefined,
+      { sessionIds: ["s-1", "s-2", "s-3"] },
     );
-    let releaseTranscript!: (response: Response) => void;
-    const pendingTranscript = new Promise<Response>((resolve) => {
-      releaseTranscript = resolve;
-    });
-    let transcripts = 0;
+    await instance.getConnection();
+    const snapshotBaseline = snapshotCount(calls);
+    instance.watchTranscripts(["s-2"]);
+    const received: unknown[] = [];
+    instance.subscribe((event) => received.push(event));
+
+    live.push(gap);
+    await vi.waitFor(() =>
+      expect(received).toEqual([
+        { type: "transcript.invalidated", sessionId: "s-2" },
+      ]),
+    );
+
+    const urls = calls.map((call) => call.url);
+    expect(snapshotCount(calls) - snapshotBaseline).toBe(1);
+    expect(urls.filter((url) => url.includes("/transcript"))).toEqual([]);
+    instance.dispose();
+  });
+
+  it("retries a failed replay-gap snapshot before invalidating", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const live = liveEventStream();
+    let replayStarted = false;
+    let replaySnapshots = 0;
     const { instance, calls } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return live;
-      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
-        transcripts += 1;
-        if (transcripts === 1) return pendingTranscript as unknown as Response;
-        return new Response(
-          JSON.stringify({
-            result: [{ id: "m-1", role: "assistant", content: "repaired" }],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
+      if (call.url.includes(REMOTE_API.events)) return live.response;
+      if (call.url.endsWith(REMOTE_API.state)) {
+        if (replayStarted && ++replaySnapshots === 1)
+          return new Response(JSON.stringify({ error: { code: "unavailable" } }), { status: 502 });
       }
       return undefined;
     });
-    const received: unknown[][] = [];
-    const connectionDetails: string[] = [];
+    await instance.getConnection();
+    const snapshotBaseline = snapshotCount(calls);
+    replayStarted = true;
+    instance.watchTranscripts(["s-1"]);
+    const invalidated: string[] = [];
+    const failures: unknown[] = [];
     instance.subscribe((event) => {
-      if (event.type === "transcript.synced") received.push(event.items);
-      if (event.type === "connection.updated")
-        connectionDetails.push(event.connection.detail);
+      if (event.type === "transcript.invalidated") invalidated.push(event.sessionId);
+      if (event.type === "connection.updated" && event.connection.state === "error")
+        failures.push(event);
     });
-    await vi.waitFor(() =>
-      expect(
-        calls.some((call) => call.url.includes(REMOTE_API.transcript("s-1"))),
-      ).toBe(true),
-    );
-    pushLive(
-      `event: agent\ndata: ${JSON.stringify({
-        seq: 10,
-        event: {
-          type: "message.delta",
-          sessionId: "s-1",
-          messageId: "m-1",
-          delta: "live",
-          streaming: true,
-        },
-      })}\n\n`,
-    );
-    await vi.waitFor(() => expect(received).toHaveLength(0));
-    releaseTranscript(
+
+    live.push(gap);
+    await vi.waitFor(() => expect(invalidated).toEqual(["s-1"]), { timeout: 2000 });
+    expect(snapshotCount(calls) - snapshotBaseline).toBe(2);
+    expect(failures).toEqual([]);
+    expect(calls.map((call) => call.url).filter((url) => url.includes("/transcript"))).toEqual([]);
+    instance.dispose();
+  });
+
+  it("takes another snapshot when a replay gap arrives during repair", async () => {
+    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
+    const live = liveEventStream();
+    let releaseSnapshot!: (response: Response) => void;
+    const pendingSnapshot = new Promise<Response>((resolve) => {
+      releaseSnapshot = resolve;
+    });
+    let replayStarted = false;
+    let replaySnapshots = 0;
+    const { instance, calls } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return live.response;
+      if (call.url.endsWith(REMOTE_API.state)) {
+        if (replayStarted && ++replaySnapshots === 1)
+          return pendingSnapshot as unknown as Response;
+      }
+      return undefined;
+    });
+    await instance.getConnection();
+    const snapshotBaseline = snapshotCount(calls);
+    replayStarted = true;
+    instance.watchTranscripts(["s-1"]);
+    const invalidated: string[] = [];
+    instance.subscribe((event) => {
+      if (event.type === "transcript.invalidated") invalidated.push(event.sessionId);
+    });
+
+    live.push(gap);
+    await vi.waitFor(() => expect(snapshotCount(calls) - snapshotBaseline).toBe(1));
+    live.push(gap);
+    releaseSnapshot(
       new Response(
-        JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: "stale" }] }),
+        JSON.stringify({
+          connection: {
+            state: "connected",
+            backend: "gjc",
+            label: "GJC",
+            detail: "원격",
+            workspace: "/tmp/ws",
+          },
+          sessions: [{ id: "s-1", title: "세션" }],
+          device: { id: "d-1", name: "iPhone", permission: "control" },
+          server: { version: "0.1.0", time: new Date(0).toISOString(), workspace: "/tmp/ws", protocol: 1 },
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
     );
-    // The stale read is not applied, but discarding it is not a successful repair:
-    // a later read has to fill the gap and only then publish the cache.
-    await vi.waitFor(
-      () => expect(received).toEqual([[{ id: "m-1", role: "assistant", content: "repaired" }]]),
-      { timeout: 2000 },
-    );
-    expect(transcripts).toBe(2);
-    expect(connectionDetails).toEqual([]);
+
+    await vi.waitFor(() => expect(invalidated).toEqual(["s-1", "s-1"]), { timeout: 2000 });
+    expect(snapshotCount(calls) - snapshotBaseline).toBe(2);
+    expect(calls.map((call) => call.url).filter((url) => url.includes("/transcript"))).toEqual([]);
     instance.dispose();
   });
 
-  it("reports an incomplete cache when every repair read goes stale", async () => {
+  it("reports an incomplete cache after every replay-gap snapshot fails", async () => {
     const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    const encoder = new TextEncoder();
-    let pushLive!: (chunk: string) => void;
-    const live = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode(gap));
-          pushLive = (chunk) => controller.enqueue(encoder.encode(chunk));
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "text/event-stream" } },
-    );
-    const pending: Array<(response: Response) => void> = [];
-    let transcripts = 0;
-    const { instance } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return live;
-      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
-        transcripts += 1;
-        return new Promise<Response>((resolve) => pending.push(resolve)) as unknown as Response;
-      }
-      return undefined;
-    });
-    const synchronized: unknown[] = [];
-    const connections: Array<{ state: string; detail: string }> = [];
-    instance.subscribe((event) => {
-      if (event.type === "transcript.synced") synchronized.push(event);
-      if (event.type === "connection.updated")
-        connections.push({ state: event.connection.state, detail: event.connection.detail });
-    });
-
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      await vi.waitFor(() => expect(pending).toHaveLength(attempt + 1), {
-        timeout: 2000,
-      });
-      pushLive(
-        `event: agent\ndata: ${JSON.stringify({
-          seq: 10 + attempt,
-          event: {
-            type: "message.delta",
-            sessionId: "s-1",
-            messageId: "m-1",
-            delta: `live-${attempt}`,
-            streaming: true,
-          },
-        })}\n\n`,
-      );
-      // Wait until the live version bump is visible before releasing the read, so
-      // the snapshot is stale by the time it can be applied.
-      await vi.waitFor(() => expect(pending).toHaveLength(attempt + 1));
-      pending[attempt]!(
-        new Response(
-          JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: `stale-${attempt}` }] }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-    }
-
-    await vi.waitFor(() => expect(connections).toHaveLength(1), { timeout: 3000 });
-    expect(synchronized).toEqual([]);
-    expect(connections[0]).toMatchObject({ state: "error" });
-    expect(connections[0]?.detail).toContain("동기화에 실패");
-    expect(transcripts).toBe(3);
-    instance.dispose();
-  });
-
-  it("retries a replay repair before giving up", async () => {
-    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    let transcripts = 0;
-    const { instance } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
-      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
-        transcripts += 1;
-        if (transcripts === 1)
-          return new Response(JSON.stringify({ error: { code: "unavailable" } }), { status: 502 });
-        return new Response(JSON.stringify({ result: [{ id: "m-1", role: "assistant", content: "repaired" }] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return undefined;
-    });
-    const synchronized: unknown[][] = [];
-    const connections: string[] = [];
-    instance.subscribe((event) => {
-      if (event.type === "transcript.synced") synchronized.push(event.items);
-      if (event.type === "connection.updated") connections.push(event.connection.detail);
-    });
-    await vi.waitFor(() => expect(synchronized).toHaveLength(1), { timeout: 2000 });
-    expect(transcripts).toBe(2);
-    expect(connections).toEqual([]);
-    instance.dispose();
-  });
-
-  it("reports an incomplete cache when the repair keeps failing", async () => {
-    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    const { instance } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return streamResponse([gap]);
-      if (call.url.includes(REMOTE_API.transcript("s-1")))
+    const live = liveEventStream();
+    let replayStarted = false;
+    const { instance, calls } = backend((call) => {
+      if (call.url.includes(REMOTE_API.events)) return live.response;
+      if (call.url.endsWith(REMOTE_API.state) && replayStarted)
         return new Response(JSON.stringify({ error: { code: "unavailable" } }), { status: 502 });
       return undefined;
     });
     await instance.getConnection();
-    const synchronized: unknown[] = [];
+    const snapshotBaseline = snapshotCount(calls);
+    replayStarted = true;
+    instance.watchTranscripts(["s-1"]);
+    const invalidated: string[] = [];
     const connections: Array<{ state: string; detail: string }> = [];
     instance.subscribe((event) => {
-      if (event.type === "transcript.synced") synchronized.push(event);
+      if (event.type === "transcript.invalidated") invalidated.push(event.sessionId);
       if (event.type === "connection.updated")
         connections.push({ state: event.connection.state, detail: event.connection.detail });
     });
-    await vi.waitFor(
-      () => expect(connections).toHaveLength(1),
-      { timeout: 3000 },
-    );
-    expect(synchronized).toEqual([]);
+
+    live.push(gap);
+    await vi.waitFor(() => expect(connections).toHaveLength(1), { timeout: 3000 });
+    expect(invalidated).toEqual([]);
     expect(connections[0]).toMatchObject({ state: "error" });
     expect(connections[0]?.detail).toContain("동기화에 실패");
-    instance.dispose();
-  });
-
-  it("repairs again when another gap arrives during a repair", async () => {
-    const gap = `event: resync\ndata: ${JSON.stringify({ seq: 9, resync: true, reason: "gap" })}\n\n`;
-    const encoder = new TextEncoder();
-    let pushGap!: () => void;
-    const live = new Response(
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode(gap));
-          pushGap = () => controller.enqueue(encoder.encode(gap));
-        },
-      }),
-      { status: 200, headers: { "Content-Type": "text/event-stream" } },
-    );
-    let releaseFirst!: (response: Response) => void;
-    const firstTranscript = new Promise<Response>((resolve) => {
-      releaseFirst = resolve;
-    });
-    let transcripts = 0;
-    const { instance } = backend((call) => {
-      if (call.url.includes(REMOTE_API.events)) return live;
-      if (call.url.includes(REMOTE_API.transcript("s-1"))) {
-        transcripts += 1;
-        if (transcripts === 1) return firstTranscript as unknown as Response;
-        return new Response(JSON.stringify({ result: [] }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
-      }
-      return undefined;
-    });
-    const synchronized: unknown[] = [];
-    instance.subscribe((event) => {
-      if (event.type === "transcript.synced") synchronized.push(event);
-    });
-    await vi.waitFor(() => expect(transcripts).toBe(1));
-    pushGap();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    releaseFirst(new Response(JSON.stringify({ result: [] }), {
-      status: 200,
-      headers: { "Content-Type": "application/json" },
-    }));
-    await vi.waitFor(() => expect(transcripts).toBe(2), { timeout: 2000 });
-    await vi.waitFor(() => expect(synchronized).toHaveLength(2), { timeout: 2000 });
+    expect(snapshotCount(calls) - snapshotBaseline).toBe(3);
+    expect(calls.map((call) => call.url).filter((url) => url.includes("/transcript"))).toEqual([]);
     instance.dispose();
   });
 

@@ -1,5 +1,4 @@
 import {
-  eventSessionId,
   type ArtifactContent,
   type DiffSnapshot,
   type EffectiveRuntimeState,
@@ -11,6 +10,8 @@ import {
   type MessageDelivery,
   type QueuedMessage,
   type SubagentSnapshot,
+  type TranscriptPage,
+  type TranscriptPageRequest,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
 import type { RemoteAccessBridge, RemoteClientStatus } from "../../shared/remote-protocol";
@@ -90,23 +91,8 @@ export class RemoteAgentBackend implements AgentBackend {
     this.client.startRealtime();
   }
 
-  /** Bumped by every live event, so a replay read can see whether it went stale. */
-  private readonly eventVersions = new Map<string, number>();
-
-  /**
-   * Counts the event as soon as it arrives, then publishes text on the frame clock.
-   *
-   * Replay repair treats any live event during a transcript read as stale. Waiting
-   * to count until the joined delta is published would let that read land, and the
-   * delta that followed would append onto the snapshot it had just replaced.
-   */
+  /** Publishes text on the frame clock while keeping other events immediate. */
   private ingest(event: AgentEvent): void {
-    const sessionId = eventSessionId(event);
-    if (sessionId)
-      this.eventVersions.set(
-        sessionId,
-        (this.eventVersions.get(sessionId) ?? 0) + 1,
-      );
     this.coalescer.receive(event);
   }
 
@@ -154,27 +140,9 @@ export class RemoteAgentBackend implements AgentBackend {
         const sessions = watched
           ? snapshot.sessions.filter((session) => watched.has(session.id))
           : snapshot.sessions;
-        const applied = await Promise.all(
-          sessions.map(async (session) => {
-            // A transcript read can take long enough for the live stream to deliver
-            // newer deltas. Replacing the cache with that older read erased them, so
-            // a read is only applied when its session saw no live event meanwhile.
-            const version = this.eventVersions.get(session.id) ?? 0;
-            const items = await this.client.transcript(session.id).catch(() => undefined);
-            if (!items) return false;
-            // Discarding the stale read is not a repair. Leave the session
-            // unrepaired so this attempt fails and retries; treating it as applied
-            // reported success while the gap's history was still missing.
-            if ((this.eventVersions.get(session.id) ?? 0) !== version) return false;
-            this.ingest({
-              type: "transcript.synced",
-              sessionId: session.id,
-              items: items as TranscriptItem[],
-            });
-            return true;
-          }),
-        );
-        if (applied.every(Boolean)) return true;
+        for (const session of sessions)
+          this.ingest({ type: "transcript.invalidated", sessionId: session.id });
+        return true;
       }
       if (attempt < 2)
         await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
@@ -217,6 +185,13 @@ export class RemoteAgentBackend implements AgentBackend {
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
     return this.client.transcript(sessionId) as Promise<TranscriptItem[]>;
+  }
+
+  getTranscriptPage(
+    sessionId: string,
+    request?: TranscriptPageRequest,
+  ): Promise<TranscriptPage> {
+    return this.client.transcriptPage(sessionId, request);
   }
 
   getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {

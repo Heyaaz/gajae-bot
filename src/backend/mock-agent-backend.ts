@@ -9,7 +9,10 @@ import type {
   MessageInput,
   ToolActivity,
   ToolDecision,
+  TranscriptChange,
   TranscriptItem,
+  TranscriptPage,
+  TranscriptPageRequest,
 } from "./types";
 import type {
   ArtifactContent,
@@ -23,6 +26,11 @@ import type {
   QueuedMessage,
   SubagentSnapshot,
 } from "../../shared/agent-contract";
+import { transcriptDelivery } from "../../shared/transcript-item-equal";
+import {
+  selectTranscriptPage,
+  transcriptSyncWindow,
+} from "../../shared/transcript-page";
 
 const mockModelOptions = [
   {
@@ -296,6 +304,7 @@ export class MockAgentBackend implements AgentBackend {
       items.map(cloneItem),
     ]),
   );
+  private readonly transcriptChangeBaselines = new Map<string, TranscriptItem[]>();
   private readonly timers = new Map<
     string,
     Set<ReturnType<typeof setTimeout>>
@@ -500,8 +509,13 @@ export class MockAgentBackend implements AgentBackend {
     if (index < 0) return;
     this.sessionStore.splice(index, 1);
     this.transcriptStore.delete(sessionId);
+    this.transcriptChangeBaselines.delete(sessionId);
     this.clearTimers(sessionId);
     this.emit({ type: "session.deleted", sessionId });
+  }
+
+  async getTranscriptPage(sessionId: string, request?: TranscriptPageRequest): Promise<TranscriptPage> {
+    return selectTranscriptPage(await this.getTranscript(sessionId), request);
   }
 
   async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
@@ -585,6 +599,15 @@ export class MockAgentBackend implements AgentBackend {
       });
     }
     return (this.transcriptStore.get(sessionId) ?? []).map(cloneItem);
+  }
+
+  async getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
+    const previous = this.transcriptChangeBaselines.get(sessionId);
+    const items = await this.getTranscript(sessionId);
+    const next = transcriptSyncWindow(items, previous);
+    const change = transcriptDelivery(previous, next);
+    this.transcriptChangeBaselines.set(sessionId, next.map(cloneItem));
+    return change;
   }
 
   async cycleThinking(sessionId: string): Promise<string | undefined> {

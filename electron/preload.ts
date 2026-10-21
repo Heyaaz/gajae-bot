@@ -14,7 +14,7 @@ import type {
   SettingsDesktopBridge,
   ToolDecision,
   ToolViewMode,
-  TranscriptItem,
+  TranscriptPageRequest,
   ManagementDesktopBridge,
   McpServerInput,
   NotificationPreferences,
@@ -248,13 +248,9 @@ async function resyncAfterReplayGap(): Promise<void> {
         }
       }
       if (watched && !watched.has(session.id)) continue;
-      const items = (await ipcRenderer.invoke(
-        GJC_IPC.getTranscript,
-        session.id,
-      )) as TranscriptItem[];
       for (const listener of [...eventListeners]) {
         try {
-          listener({ type: "transcript.synced", sessionId: session.id, items });
+          listener({ type: "transcript.invalidated", sessionId: session.id });
         } catch (error) {
           console.error("Desktop event listener failed during resync", error);
         }
@@ -312,6 +308,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.hideSession, sessionId),
   getTranscript: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.getTranscript, sessionId),
+  getTranscriptPage: (sessionId: string, request?: TranscriptPageRequest) =>
+    ipcRenderer.invoke(GJC_IPC.getTranscriptPage, sessionId, request),
   getTranscriptChanges: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.getTranscriptChanges, sessionId),
   getTranscriptRevision: (sessionId: string) =>

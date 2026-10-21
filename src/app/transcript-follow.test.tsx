@@ -5,7 +5,11 @@ import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptItem } from "../backend/types";
-import { GESTURE_WINDOW_MS, Transcript } from "./transcript";
+import {
+  GESTURE_WINDOW_MS,
+  Transcript,
+  type TranscriptViewportAnchor,
+} from "./transcript";
 
 class NoopResizeObserver {
   observe(): void {}
@@ -73,7 +77,13 @@ describe("gesture window follow latch", () => {
     vi.unstubAllGlobals();
   });
 
-  async function render(items: TranscriptItem[]): Promise<{
+  async function render(
+    items: TranscriptItem[],
+    earlier?: {
+      hasMoreBefore?: boolean;
+      onLoadEarlier?: (anchor: TranscriptViewportAnchor | null) => void | Promise<void>;
+    },
+  ): Promise<{
     element: HTMLElement;
     scroll: ReturnType<typeof bindScroll>;
     update: (next: TranscriptItem[]) => Promise<void>;
@@ -86,6 +96,7 @@ describe("gesture window follow latch", () => {
         createElement(Transcript, {
           sessionId: "s-1",
           items: next,
+          ...earlier,
           onResolveTool: () => undefined,
         }) as ReactNode,
       );
@@ -146,5 +157,42 @@ describe("gesture window follow latch", () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
     });
     expect(scroll.scrollTop).toBe(scroll.bottom());
+  });
+
+  it("loads the earlier page with the visible row and offset as its prepend anchor", async () => {
+    const onLoadEarlier = vi.fn();
+    const { element, scroll } = await render([message("m-anchor", "visible")], {
+      hasMoreBefore: true,
+      onLoadEarlier,
+    });
+    scroll.scrollTop = 0;
+    // happy-dom does not perform layout for the virtualizer, so provide the mounted
+    // row geometry the real scroller reports before a user asks to load its prefix.
+    const slot = document.createElement("div");
+    slot.className = "transcript-slot";
+    slot.dataset.index = "0";
+    slot.style.transform = "translateY(0px)";
+    element.append(slot);
+    Object.defineProperty(slot, "offsetHeight", { configurable: true, value: 100 });
+    slot.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: 100,
+      left: 0,
+      right: 100,
+      width: 100,
+      height: 100,
+      x: 0,
+      y: 0,
+      toJSON: () => undefined,
+    });
+    const loadButton = host?.querySelector<HTMLButtonElement>(
+      ".transcript-load-earlier button",
+    );
+    if (!loadButton) throw new Error("load-earlier button did not mount");
+    await act(async () => {
+      loadButton.click();
+    });
+    expect(onLoadEarlier).toHaveBeenCalledWith({ key: "m-anchor", offset: 0 });
+    expect(element.className).toContain("transcript");
   });
 });

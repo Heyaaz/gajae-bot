@@ -174,6 +174,7 @@ export type RemoteOperationName =
   | "state"
   | "history-sessions"
   | "transcript"
+  | "transcript-page"
   | "transcript-changes"
   | "transcript-revision"
   | "context"
@@ -195,6 +196,7 @@ export const REMOTE_OPERATION_ACCESS: Record<RemoteOperationName, RemotePermissi
   state: "view",
   "history-sessions": "view",
   transcript: "view",
+  "transcript-page": "view",
   "transcript-changes": "view",
   "transcript-revision": "view",
   context: "view",
@@ -236,6 +238,8 @@ export const REMOTE_API = {
   sessions: "/api/sessions",
   session: (sessionId: string) => `/api/sessions/${encodeURIComponent(sessionId)}`,
   transcript: (sessionId: string) => `${REMOTE_API.session(sessionId)}/transcript`,
+  transcriptPage: (sessionId: string) =>
+    `${REMOTE_API.session(sessionId)}/transcript-page`,
   transcriptChanges: (sessionId: string) =>
     `${REMOTE_API.session(sessionId)}/transcript-changes`,
   transcriptRevision: (sessionId: string) =>

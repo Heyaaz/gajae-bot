@@ -1,4 +1,9 @@
-import type { AgentEvent, TranscriptChange } from "../../shared/agent-contract.js";
+import type {
+  AgentEvent,
+  TranscriptChange,
+  TranscriptPage,
+  TranscriptPageRequest,
+} from "../../shared/agent-contract.js";
 import {
   REMOTE_API,
   createRemoteOperationId,
@@ -590,6 +595,18 @@ export class RemoteClient {
 
   transcript(sessionId: string) {
     return this.readResult<unknown[]>(REMOTE_API.transcript(sessionId));
+  }
+
+  transcriptPage(
+    sessionId: string,
+    request?: TranscriptPageRequest,
+  ): Promise<TranscriptPage> {
+    const query = new URLSearchParams();
+    if (request?.beforeId !== undefined) query.set("beforeId", request.beforeId);
+    if (request?.aroundId !== undefined) query.set("aroundId", request.aroundId);
+    const queryString = query.toString();
+    const suffix = queryString ? `?${queryString}` : "";
+    return this.readResult<TranscriptPage>(`${REMOTE_API.transcriptPage(sessionId)}${suffix}`);
   }
 
   transcriptChanges(sessionId: string) {
