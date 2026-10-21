@@ -35,6 +35,17 @@ function createHarness(invoke: IpcInvoke, fetchMock: typeof fetch) {
     "../shared/productivity-ipc.js": { PRODUCTIVITY_IPC: {} },
     "../shared/automation-ipc.js": { AUTOMATION_IPC: {} },
     "../shared/repo-ipc.js": { REPO_IPC: {} },
+    "../shared/terminal-ipc.js": {
+      TERMINAL_IPC: {
+        start: "agent-control:terminal:start",
+        input: "agent-control:terminal:input",
+        resize: "agent-control:terminal:resize",
+        pause: "agent-control:terminal:pause",
+        dispose: "agent-control:terminal:dispose",
+        output: "agent-control:terminal:output",
+        exit: "agent-control:terminal:exit",
+      },
+    },
     "../shared/remote-ipc.js": { REMOTE_IPC: {} },
   };
   const source = readFileSync(new URL("./preload.ts", import.meta.url), "utf8");
