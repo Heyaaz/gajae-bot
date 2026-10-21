@@ -15,7 +15,6 @@ import {
   permissionAllows,
   type RemoteDeviceIdentity,
   type RemoteErrorCode,
-  type RemoteEventFrame,
   type RemoteOperationName,
   type RemoteOperationOutcome,
   type RemotePermission,
@@ -178,7 +177,8 @@ export class RemoteServer {
   private sequence = 0;
   /** Identifies this process's event log, so clients can tell a restart from a gap. */
   private readonly instance = randomUUID();
-  private buffer: RemoteEventFrame[] = [];
+  /** One serialized SSE data payload per frame, shared by every device. */
+  private buffer: Array<{ seq: number; data: string }> = [];
   /**
    * The transcript each device received last.
    *
@@ -289,9 +289,10 @@ export class RemoteServer {
   /** Fans one runtime event out to every connected remote device. */
   publish(event: AgentEvent): void {
     this.sequence += 1;
-    const frame: RemoteEventFrame = { seq: this.sequence, event };
-    this.buffer.push(frame);
-    if (this.buffer.length > EVENT_BUFFER_LIMIT) this.buffer = this.buffer.slice(-EVENT_BUFFER_LIMIT);
+    const seq = this.sequence;
+    this.buffer.push({ seq, data: JSON.stringify({ seq, event }) });
+    if (this.buffer.length > EVENT_BUFFER_LIMIT)
+      this.buffer = this.buffer.slice(-EVENT_BUFFER_LIMIT);
     for (const client of [...this.streams.values()]) this.pump(client);
   }
 
@@ -333,8 +334,11 @@ export class RemoteServer {
           this.sendHello(response, access);
           continue;
         }
-        const frame = this.buffer[client.cursor + 1 - (this.buffer[0]?.seq ?? 0)]!;
-        response.write(`id: ${frame.seq}\nevent: agent\ndata: ${JSON.stringify(frame)}\n\n`);
+        const frame =
+          this.buffer[client.cursor + 1 - (this.buffer[0]?.seq ?? 0)]!;
+        response.write(
+          `id: ${frame.seq}\nevent: agent\ndata: ${frame.data}\n\n`,
+        );
         client.cursor = frame.seq;
       } catch {
         this.dropStream(client);
