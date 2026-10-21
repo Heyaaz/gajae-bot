@@ -356,6 +356,8 @@ export class GjcSdkController {
     ReturnType<typeof setTimeout>
   >();
   private readonly transcripts = new Map<string, TranscriptItem[]>();
+  /** Rows mutated live that a later durable rescan must compare even when old. */
+  private readonly dirtyTranscriptRows = new Map<string, Set<string>>();
   private readonly desktopTranscriptBaselines = new Map<string, TranscriptItem[]>();
   private readonly messageKeys = new Map<string, Map<string, string>>();
   private readonly activeAssistantMessages = new Map<string, string>();
@@ -2127,6 +2129,7 @@ export class GjcSdkController {
     if (refreshTimer) clearTimeout(refreshTimer);
     this.sharedSessionRefreshTimers.delete(sessionId);
     this.transcripts.delete(sessionId);
+    this.dirtyTranscriptRows.delete(sessionId);
     this.desktopTranscriptBaselines.delete(sessionId);
     this.messageKeys.delete(sessionId);
     this.activeAssistantMessages.delete(sessionId);
@@ -2226,7 +2229,14 @@ export class GjcSdkController {
     return change;
   }
 
+  private markTranscriptRowDirty(sessionId: string, rowId: string): void {
+    let rows = this.dirtyTranscriptRows.get(sessionId);
+    if (!rows) this.dirtyTranscriptRows.set(sessionId, (rows = new Set()));
+    rows.add(rowId);
+  }
+
   private invalidateDesktopTranscript(sessionId: string): void {
+    this.dirtyTranscriptRows.delete(sessionId);
     this.desktopTranscriptBaselines.delete(sessionId);
     this.emitEvent({ type: "transcript.invalidated", sessionId });
   }
@@ -2710,6 +2720,8 @@ export class GjcSdkController {
       invalidate();
       return;
     }
+    const dirtyRows = this.dirtyTranscriptRows.get(sessionId);
+    const snapshots = this.toolSnapshots.get(sessionId);
 
     // A row can also disappear without the history getting shorter: a live row the
     // rebuild recorded under its own id, or one the ended turn never recorded. An
@@ -2729,45 +2741,36 @@ export class GjcSdkController {
     const shared = Math.min(previous.length, items.length);
     const windowStart = Math.max(0, shared - TRANSCRIPT_RESCAN_WINDOW);
     const changedIndices: number[] = [];
-    // The bounded window only limits how many changed rows are shipped in one
-    // batch. Content still has to be compared across the whole shared prefix:
-    // a parallel tool can settle on its original row long after 32 newer rows
-    // were appended, and an id-only check left that card running here while the
-    // installed history already had its result. Identity changes cannot be
-    // expressed as appended items, so those still require invalidation.
-    for (let index = 0; index < windowStart; index += 1) {
+    // The durable transcript is append-only. A row can still change in place when
+    // a tool result lands on an old call row, so an id-only tail check missed
+    // parallel completions (#97). Compare a bounded recent window plus rows that
+    // live edits marked dirty or that still have a live tool snapshot; every
+    // other row is immutable once written. Identity changes cannot be expressed
+    // as appended items, so they still invalidate the whole view.
+    for (let index = 0; index < shared; index += 1) {
       const before = previous[index];
       const after = items[index];
       if (!before || !after) break;
       if (before.id !== after.id) {
         invalidate();
         return;
+      }
+      if (index < windowStart) {
+        const mayChange =
+          dirtyRows?.has(before.id) === true ||
+          snapshots?.has(before.id) === true ||
+          (before.kind === "tool" && LIVE_TOOL_STATUSES.has(before.status));
+        if (!mayChange) continue;
       }
       if (!sameTranscriptItem(before, after)) changedIndices.push(index);
-    }
-    let reachedWindowStart = false;
-    for (let index = shared - 1; index >= windowStart; index -= 1) {
-      const before = previous[index];
-      const after = items[index];
-      if (!before || !after) break;
-      if (sameTranscriptItem(before, after)) continue;
-      if (before.id !== after.id) {
-        invalidate();
-        return;
-      }
-      changedIndices.push(index);
-      if (index === windowStart) reachedWindowStart = true;
-    }
-    // The disagreement reaches the edge of a partial window, so rows before it
-    // may have changed too; invalidate rather than publish an incomplete patch.
-    if (reachedWindowStart && windowStart > 0) {
-      invalidate();
-      return;
     }
     // Additions after the shared prefix are always new rows.
     for (let index = shared; index < items.length; index += 1)
       changedIndices.push(index);
-    if (changedIndices.length === 0) return;
+    if (changedIndices.length === 0) {
+      this.dirtyTranscriptRows.delete(sessionId);
+      return;
+    }
     // For many changed rows, invalidation avoids a burst of events.
     if (changedIndices.length > 16) {
       invalidate();
@@ -2780,6 +2783,7 @@ export class GjcSdkController {
         item: cloneTranscriptItem(items[index]!),
       });
     }
+    this.dirtyTranscriptRows.delete(sessionId);
   }
 
   /** Inline the GJC blob store bytes so a read image renders in the transcript. */
@@ -5329,6 +5333,7 @@ export class GjcSdkController {
     this.attachedSessions.delete(sessionId);
     this.transcriptAttachments.delete(sessionId);
     this.transcripts.delete(sessionId);
+    this.dirtyTranscriptRows.delete(sessionId);
     this.desktopTranscriptBaselines.delete(sessionId);
     this.messageKeys.delete(sessionId);
     this.activeAssistantMessages.delete(sessionId);
@@ -5445,6 +5450,7 @@ export class GjcSdkController {
     this.detachTimers.clear();
     this.watchedTranscripts = undefined;
     this.transcripts.clear();
+    this.dirtyTranscriptRows.clear();
     this.desktopTranscriptBaselines.clear();
     this.messageKeys.clear();
     this.activeAssistantMessages.clear();
@@ -6336,6 +6342,7 @@ export class GjcSdkController {
       this.sessionQuestions.set(question.sessionId, known);
     }
     known.set(question.id, stored);
+    this.markTranscriptRowDirty(question.sessionId, question.id);
     if (options?.announce) {
       this.emitActivity(question.sessionId, "permission");
       this.syncQuestionWait(question.sessionId);
@@ -6947,6 +6954,7 @@ export class GjcSdkController {
     // rebuild composes the same plan state instead of an earlier copy of it. An
     // update with no entries is still an update: it clears them.
     this.sessionPlans.set(sessionId, existing ?? plan);
+    this.markTranscriptRowDirty(sessionId, plan.id);
     this.emitEvent({
       type: "plan.updated",
       plan: { ...plan, entries: plan.entries.map((entry) => ({ ...entry })) },
@@ -7246,6 +7254,7 @@ export class GjcSdkController {
    * in its snapshot state, and the next install composes it in.
    */
   private publishAppRow(sessionId: string, row: SystemNoticeActivity): void {
+    this.markTranscriptRowDirty(sessionId, row.id);
     const items = this.transcripts.get(sessionId);
     if (items) {
       const index = items.findIndex((item) => item.id === row.id);
@@ -7788,6 +7797,7 @@ export class GjcSdkController {
       { sessionUpdate: "tool_call" | "tool_call_update" }
     >,
   ): void {
+    this.markTranscriptRowDirty(sessionId, update.toolCallId);
     const items = this.transcripts.get(sessionId) ?? [];
     const existing = items.find(
       (item): item is ToolActivity =>

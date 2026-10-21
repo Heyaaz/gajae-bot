@@ -1520,6 +1520,40 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("publishes an old app-owned row marked dirty by a live update", () => {
+    const emit = vi.fn();
+    const { controller, internals } = harness({ emit });
+    const row = (content: string) => ({
+      id: "row-0",
+      kind: "notice",
+      sessionId: "s1",
+      title: "todo",
+      content,
+      tone: "neutral",
+      createdAt: "now",
+    }) as any;
+    const previous = [
+      row("old"),
+      ...Array.from({ length: 39 }, (_value, index) => ({
+        id: `row-${index + 1}`,
+        kind: "message",
+        sessionId: "s1",
+        role: "assistant",
+        content: `answer ${index}`,
+        createdAt: "now",
+      })) as any[],
+    ];
+    const next = [{ ...previous[0], content: "new" }, ...previous.slice(1)];
+    internals.markTranscriptRowDirty("s1", "row-0");
+    internals.publishTranscriptSync("s1", previous, next);
+    const appended = emit.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "transcript.appended");
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.item).toMatchObject({ id: "row-0", content: "new" });
+    controller.dispose();
+  });
+
   it("invalidates history when an out-of-window row changed identity", () => {
     const emit = vi.fn();
     const { controller, internals } = harness({ emit });
