@@ -44,6 +44,7 @@ import {
 import {
   mergeRequestSummaries,
   mergeTranscriptPage,
+  mergeTranscriptPatch,
   mergeTranscriptTail,
   refreshTranscriptWindow,
 } from "../transcript-pages";
@@ -586,6 +587,8 @@ export default function App() {
   const initialPageReadsRef = useRef(new Map<string, Promise<TranscriptPage | undefined>>());
   const transcriptPageInFlightRef = useRef(new Set<string>());
   const transcriptEventVersionsRef = useRef(new Map<string, number>());
+  /** Last revision applied by the 5s safety net, per session. */
+  const transcriptRevisionsRef = useRef(new Map<string, string>());
   const transcriptItemVersionsRef = useRef(new Map<string, Map<string, number>>());
   const transcriptRequestEventVersionsRef = useRef(new Map<string, Map<string, number>>());
   const pendingTranscriptScopesRef = useRef(new Map<string, TranscriptPageScope>());
@@ -826,6 +829,36 @@ export default function App() {
         { kind: "around", id: anchorId },
       );
       return;
+    }
+    // The latest view is a synchronization window: a revision stat can prove
+    // that nothing changed, and a changed revision only needs the delta. The
+    // bounded page remains the fallback when the backend cannot answer.
+    if (backend.getTranscriptRevision && backend.getTranscriptChanges) {
+      try {
+        const revision = await backend.getTranscriptRevision(sessionId);
+        if (revision !== undefined) {
+          if (transcriptRevisionsRef.current.get(sessionId) === revision)
+            return;
+          const change = await backend.getTranscriptChanges(sessionId);
+          if (!transcriptsRef.current[sessionId]) return;
+          if (change.kind === "full" && change.items.length === 0) return;
+          transcriptRevisionsRef.current.set(sessionId, revision);
+          setTranscripts((current) => {
+            const currentItems = current[sessionId];
+            if (!currentItems) return current;
+            const items = change.kind === "full"
+              ? mergeTranscriptTail(currentItems, change.items)
+              : mergeTranscriptPatch(currentItems, change.items);
+            const next = cacheTranscript(current, sessionId, items);
+            transcriptsRef.current = next;
+            return next;
+          });
+          updateRequestSummaries(sessionId, change.items);
+          return;
+        }
+      } catch {
+        // Fall through to the bounded page read.
+      }
     }
     await readTranscriptPage(sessionId, undefined, "tail", { kind: "latest" });
   }
@@ -1198,6 +1231,7 @@ export default function App() {
           return next;
         });
       } else if (event.type === "transcript.invalidated") {
+        transcriptRevisionsRef.current.delete(event.sessionId);
         if (tracksTranscriptSession(event.sessionId))
           noteTranscriptEvent(event.sessionId);
         refreshTranscript(event.sessionId);
@@ -2484,6 +2518,7 @@ export default function App() {
       delete next[sessionId];
       return next;
     });
+    transcriptRevisionsRef.current.delete(sessionId);
   }, []);
 
   /**

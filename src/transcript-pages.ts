@@ -172,6 +172,23 @@ export function mergeTranscriptPage(
   return [...prepended, ...current];
 }
 
+/** Replaces changed rows in place and appends rows the current window lacks. */
+export function mergeTranscriptPatch(
+  current: readonly TranscriptItem[],
+  patch: readonly TranscriptItem[],
+): TranscriptItem[] {
+  const currentById = currentItemsById(current);
+  const patchById = new Map(patch.map((item) => [item.id, item]));
+  const next = current.map((item) => {
+    const incoming = patchById.get(item.id);
+    return incoming ? reuseEqualCurrentItem(incoming, currentById) : item;
+  });
+  for (const item of patch) {
+    if (!currentById.has(item.id)) next.push(item);
+  }
+  return next;
+}
+
 /** Applies a fresh tail, retaining the loaded prefix only when the tail overlaps it. */
 export function mergeTranscriptTail(
   current: TranscriptItem[],

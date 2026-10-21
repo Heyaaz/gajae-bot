@@ -10,6 +10,7 @@ import { selectTranscriptPage } from "../shared/transcript-page.js";
 import {
   mergeRequestSummaries,
   mergeTranscriptPage,
+  mergeTranscriptPatch,
   mergeTranscriptTail,
   refreshTranscriptWindow,
 } from "./transcript-pages.js";
@@ -131,6 +132,25 @@ describe("mergeTranscriptTail", () => {
 
     expect(mergeTranscriptTail(current, emptyTail)).toEqual([]);
     expect(current).toEqual(currentBefore);
+  });
+});
+
+describe("mergeTranscriptPatch", () => {
+  it("replaces changed rows in place and appends new rows", () => {
+    const first = message("first", "one");
+    const second = message("second", "two");
+    const replacement = message("first", "one updated");
+    const appended = message("third", "three");
+    expect(
+      mergeTranscriptPatch([first, second], [replacement, appended]),
+    ).toEqual([replacement, second, appended]);
+  });
+
+  it("reuses the current object when the patch row is equal", () => {
+    const first = message("first", "one");
+    const equal = message("first", "one");
+    const merged = mergeTranscriptPatch([first], [equal]);
+    expect(merged[0]).toBe(first);
   });
 });
 
