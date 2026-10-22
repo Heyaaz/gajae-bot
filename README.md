@@ -508,10 +508,24 @@ session containing tool execution still answered an unknown outcome on 0.18.12
 bash tool, and a separate empty session that never received a message, both got
 `operation_failed` with `outcomeCertainty: unknown` and stayed `deleted:false`.
 Neither response carried the `lifecycle_legacy_history_ambiguous` diagnostic, so
-per the 0.19.0 guidance the legacy ledger fence was not the reported cause of
-these refusals; do not attribute every unknown delete outcome to it. A live host
-this window created, forked, or resumed is closed first; a terminal's host is
-never signalled.
+per the 0.19.0 guidance the legacy ledger fence was not the reported cause.
+
+**Root cause identified on 0.19.0.** The broker settled each delete and persisted
+the correct terminal row, then rejected its own read-back: `readTerminal` scans
+every ledger row and returns `shape` on three rows from a 2026-10-15
+`cleanup_pending` receipt whose `artifactTree.snapshot.entries` array has 1066
+entries, over `isBoundedLedgerJson`'s 1024-element cap.
+`verifyTerminalPersistence` converts that rejection into `terminal_uncertain`, and
+the public CLI reports it as `operation_failed` without diagnostics. A copy of
+the ledger with only those three rows removed returns the real
+`invalid_input` / `lifecycle_input_refused` response, so this is GJC ledger
+self-poisoning, not an app path. Upstream report:
+[#7134](https://github.com/Yeachan-Heo/gajae-code/issues/7134). The owner-local
+CLI session picker does not go through this broker read-back and remains the
+supported way to delete saved history until GJC repairs or compacts the ledger.
+The app never edits, truncates, or deletes the ledger, and a live host this
+window created, forked, or resumed is closed first; a terminal's host is never
+signalled.
 
 Gajae now preserves the public envelope's diagnostics and outcome certainty.
 `lifecycle_input_refused` produces an actionable input-refusal error, but it is not
@@ -522,8 +536,10 @@ and still did on 0.19.0 with an unknown outcome and `deleted:false` (see
 [upstream #6828](https://github.com/Yeachan-Heo/gajae-code/issues/6828)).
 PR #6832 adds the `lifecycle_legacy_history_ambiguous` diagnostic, not permission
 to clear the admission fence, and v0.19.0 includes it. That diagnostic was absent
-from the 0.19.0 delete attempts above, so this machine's unresolved legacy
-`accepted` row is not proven to be their cause. Gajae surfaces the diagnostic
+from the 0.19.0 delete attempts above because admission passed: the failure came
+from the post-persistence read-back described above, not from the legacy
+`accepted` row. The isolation experiment removed rows only from a copy of the
+ledger; the live ledger was never edited. Gajae surfaces the diagnostic
 distinctly when a broker does return it and retains the session and evidence: the
 current request was not dispatched, but earlier effects remain unresolved.
 Preserve the original operation, request key, target, and ledger; do not edit the
