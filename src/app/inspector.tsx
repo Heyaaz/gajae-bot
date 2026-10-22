@@ -228,6 +228,17 @@ export function GoalProgressRow({
   );
 }
 
+/** One session's slice of the diff panel; another session's slice is never read. */
+type SessionScoped<T> = { sessionId: string; value: T };
+
+function scoped<T>(
+  state: SessionScoped<T> | null,
+  sessionId: string,
+  fallback: T,
+): T {
+  return state?.sessionId === sessionId ? state.value : fallback;
+}
+
 export function DiffPanel({
   session,
   backend,
@@ -243,20 +254,53 @@ export function DiffPanel({
   onRefresh: () => void;
   onClose: () => void;
 }) {
-  const [git, setGit] = useState<GitStatusSnapshot | null>(null);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [commitMessage, setCommitMessage] = useState("");
+  const sessionIdRef = useRef(session.id);
+  sessionIdRef.current = session.id;
+  const gitRequestRef = useRef(0);
+  const [gitState, setGitState] = useState<SessionScoped<GitStatusSnapshot> | null>(
+    null,
+  );
+  const [selectionState, setSelectionState] = useState<SessionScoped<string[]>>(
+    { sessionId: session.id, value: [] },
+  );
+  const [draftState, setDraftState] = useState<SessionScoped<string>>({
+    sessionId: session.id,
+    value: "",
+  });
+  const [busyState, setBusyState] = useState<SessionScoped<boolean> | null>(
+    null,
+  );
+  const [errorState, setErrorState] = useState<SessionScoped<string> | null>(
+    null,
+  );
   const commitMessageRevision = useRef(0);
-  const [gitBusy, setGitBusy] = useState(false);
-  const [gitError, setGitError] = useState("");
+  // Git state, selection and the commit draft belong to the session that made
+  // them: a late answer for the previous session is dropped and the old file list
+  // can never address the new session's repository.
+  const git = scoped(gitState, session.id, null);
+  const selected = scoped(selectionState, session.id, [] as string[]);
+  const commitMessage = scoped(draftState, session.id, "");
+  const gitBusy = scoped(busyState, session.id, false);
+  const gitError = scoped(errorState, session.id, "");
   const refreshGit = useCallback(() => {
-    setGitError("");
+    const sessionId = session.id;
+    const request = ++gitRequestRef.current;
+    setErrorState({ sessionId, value: "" });
     void backend
-      .getGitStatus(session.id)
-      .then(setGit)
-      .catch((error) =>
-        setGitError(error instanceof Error ? error.message : String(error)),
-      );
+      .getGitStatus(sessionId)
+      .then((status) => {
+        if (gitRequestRef.current !== request || sessionIdRef.current !== sessionId)
+          return;
+        setGitState({ sessionId, value: status });
+      })
+      .catch((error) => {
+        if (gitRequestRef.current !== request || sessionIdRef.current !== sessionId)
+          return;
+        setErrorState({
+          sessionId,
+          value: error instanceof Error ? error.message : String(error),
+        });
+      });
   }, [backend, session.id]);
   useEffect(() => {
     queueMicrotask(refreshGit);
@@ -265,18 +309,31 @@ export function DiffPanel({
   async function mutate(
     operation: () => Promise<GitStatusSnapshot>,
   ): Promise<boolean> {
-    setGitBusy(true);
-    setGitError("");
+    const sessionId = session.id;
+    const request = ++gitRequestRef.current;
+    setBusyState({ sessionId, value: true });
+    setErrorState({ sessionId, value: "" });
     try {
-      setGit(await operation());
-      setSelected([]);
+      const status = await operation();
+      if (gitRequestRef.current !== request || sessionIdRef.current !== sessionId)
+        return false;
+      setGitState({ sessionId, value: status });
+      setSelectionState({ sessionId, value: [] });
       onRefresh();
       return true;
     } catch (error) {
-      setGitError(error instanceof Error ? error.message : String(error));
+      if (gitRequestRef.current === request && sessionIdRef.current === sessionId)
+        setErrorState({
+          sessionId,
+          value: error instanceof Error ? error.message : String(error),
+        });
       return false;
     } finally {
-      setGitBusy(false);
+      setBusyState((current) =>
+        current?.sessionId === sessionId
+          ? { sessionId, value: false }
+          : current,
+      );
     }
   }
 
@@ -332,11 +389,16 @@ export function DiffPanel({
                   type="checkbox"
                   checked={selected.includes(file.path)}
                   onChange={(event) =>
-                    setSelected((current) =>
-                      event.target.checked
-                        ? [...new Set([...current, file.path])]
-                        : current.filter((path) => path !== file.path),
-                    )
+                    setSelectionState((current) => {
+                      const paths =
+                        current?.sessionId === session.id ? current.value : [];
+                      return {
+                        sessionId: session.id,
+                        value: event.target.checked
+                          ? [...new Set([...paths, file.path])]
+                          : paths.filter((path) => path !== file.path),
+                      };
+                    })
                   }
                 />
                 <code>
@@ -391,7 +453,7 @@ export function DiffPanel({
               value={commitMessage}
               onChange={(event) => {
                 commitMessageRevision.current += 1;
-                setCommitMessage(event.target.value);
+                setDraftState({ sessionId: session.id, value: event.target.value });
               }}
             />
             <button
@@ -417,7 +479,7 @@ export function DiffPanel({
                     )
                   ) {
                     commitMessageRevision.current += 1;
-                    setCommitMessage("");
+                    setDraftState({ sessionId: session.id, value: "" });
                   }
                 });
               }}

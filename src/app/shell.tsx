@@ -403,6 +403,11 @@ export default function App() {
   const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
   const [diff, setDiff] = useState<DiffSnapshot | null>(null);
+  const diffOpenRef = useRef(diffOpen);
+  diffOpenRef.current = diffOpen;
+  // Every diff belongs to the session it was requested for; bumping this drops
+  // an answer that arrives after the user moved on.
+  const diffRequestRef = useRef(0);
   const [selectedGit, setSelectedGit] = useState<GitStatusSnapshot | null>(
     null,
   );
@@ -1574,23 +1579,41 @@ export default function App() {
     };
   }, [backend, selectedSessionId, selectedSessionStatus]);
 
-  async function refreshDiff(): Promise<void> {
-    if (!selectedId) return;
+  const refreshDiff = useCallback(async (): Promise<void> => {
+    const sessionId = selectedId;
+    if (!sessionId) return;
+    const request = ++diffRequestRef.current;
+    const workspace = selectedSession?.workspace ?? "";
     setDiffLoading(true);
     try {
-      setDiff(await backend.getDiff(selectedId));
+      const snapshot = await backend.getDiff(sessionId);
+      if (diffRequestRef.current !== request || selectedIdRef.current !== sessionId)
+        return;
+      setDiff(snapshot);
     } catch (e) {
+      if (diffRequestRef.current !== request || selectedIdRef.current !== sessionId)
+        return;
       setDiff({
-        sessionId: selectedId,
-        workspace: selectedSession?.workspace ?? "",
+        sessionId,
+        workspace,
         files: [],
         refreshedAt: new Date().toISOString(),
         error: e instanceof Error ? e.message : String(e),
       });
     } finally {
-      setDiffLoading(false);
+      if (diffRequestRef.current === request) setDiffLoading(false);
     }
-  }
+  }, [backend, selectedId, selectedSession?.workspace]);
+
+  // A session switch invalidates the diff already on screen and anything still in
+  // flight, so those patches can never be read -- or acted on -- under the new
+  // session.
+  useEffect(() => {
+    diffRequestRef.current += 1;
+    setDiff(null);
+    setDiffLoading(false);
+    if (selectedId && diffOpenRef.current) void refreshDiff();
+  }, [selectedId, diffOpen, refreshDiff]);
 
   async function operateGoal(operation: GoalOperation): Promise<void> {
     const sessionId = selectedId;
@@ -3043,10 +3066,7 @@ export default function App() {
                 className={`icon-button ${diffOpen ? "is-active" : ""}`}
                 type="button"
                 title={t("변경 파일 보기")}
-                onClick={() => {
-                  setDiffOpen((open) => !open);
-                  if (!diffOpen) void refreshDiff();
-                }}
+                onClick={() => setDiffOpen((open) => !open)}
               >
                 <FolderGit2 size={18} />
               </button>
