@@ -208,8 +208,9 @@ at least one completed turn for the history/search journeys; no modal is open;
   ```bash
   cu "In Gajae, use a session that has executed a tool, right-click it, choose '삭제', confirm '삭제', and save $MAP_ROOT/evidence/SESSION-DELETE-03.png. Report the exact error and whether the row was restored."
   ```
-  Observable: on GJC 0.18.12 a session with tool execution commonly answers the delete
-  with an unknown outcome. The app preserves the transcript and marks the row
+  Observable: on GJC 0.18.12 and 0.19.0 a session with tool execution commonly
+  answers the delete with an unknown outcome. The app preserves the transcript and
+  marks the row
   `복구 필요 · 읽기 전용` instead of pretending deletion succeeded. This is a valid
   observed outcome, not a test failure; report it as the known limitation.
 
@@ -218,9 +219,10 @@ at least one completed turn for the history/search journeys; no modal is open;
 - The history picker reads `$GJC_CODING_AGENT_DIR/sessions`. If that environment variable
   is missing from the Electron process, it lists the real profile instead of the
   disposable one. Verify the path before trusting any history row.
-- `SESSION-DELETE` is not guaranteed on GJC 0.18.12. A session that has executed a tool
-  can return an uncertain delete outcome; the app keeps the row and transcript and marks
-  the session recovering/read-only. Do not retry with a new key or force-delete files.
+- `SESSION-DELETE` is not guaranteed on GJC 0.18.12 or 0.19.0. A session that has
+  executed a tool can return an uncertain delete outcome; the app keeps the row and
+  transcript and marks the session recovering/read-only. Do not retry with a new key
+  or force-delete files.
 - `SESSION-HIDE` is local bookkeeping only. It is not a soft delete and does not remove
   the transcript; the two context-menu items are separate for that reason.
 - Opening an old session can succeed as a read-only transcript with

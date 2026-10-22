@@ -12,14 +12,14 @@ files; they never share a TUI connection.
 
 - Apple-silicon macOS (arm64 only)
 - Bun 1.4 or newer for the GJC runtime
-- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.12` or newer (the current compatibility target is `gajae-code@0.18.12`)
+- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.12` or newer (the newest verified compatibility target is `gajae-code@0.19.0`)
 - Optional: the [`gh` CLI](https://cli.github.com), signed in with `gh auth login`, for the repository screen's issues, pull requests and CI
 
 For a clean install, install GJC first, then copy the notarized Gajae release to
 `/Applications`:
 
 ```bash
-bun add -g gajae-code@0.18.12
+bun add -g gajae-code@0.19.0
 cd Gajae-0.1.0-darwin-arm64
 shasum -a 256 -c Gajae-0.1.0-darwin-arm64.zip.sha256
 ditto -x -k Gajae-0.1.0-darwin-arm64.zip .
@@ -176,9 +176,11 @@ Gajae requests `session.delete` with the exact session ID, configured location a
 transcript path; it never calls `session.close` to make deletion possible. This
 preserves a CLI that may have switched to another conversation with `/new`.
 The CLI picker can delete old history through its owning `SessionManager`, but
-GJC 0.18.12's public SDK rejects live rows and does not expose that owner-local
-flow. A refusal or unknown outcome leaves the row and local evidence intact and
-shows an error; use that CLI's session picker for owner-local history deletion.
+GJC 0.19.0's public SDK still does not expose that owner-local flow; saved history
+deletion and its unknown-outcome fence are described under
+[GJC SDK session CLI compatibility](#gjc-sdk-session-cli-compatibility). A refusal
+or unknown outcome leaves the row and local evidence intact and shows an error;
+use that CLI's session picker for owner-local history deletion.
 
 ### Resume a session
 
@@ -401,8 +403,9 @@ the card's own title in a UI whose body text is 9–12px.
 ## GJC SDK session CLI compatibility
 
 Gajae targets installed `gajae-code` version `0.18.12` or newer. The live
-checks below distinguish confirmed behavior from remaining runtime limitations.
-It uses only the credential-free public surface:
+checks below distinguish confirmed behavior from remaining runtime limitations;
+the versions marked **verified on 0.19.0** were re-run against the installed
+`gjc/0.19.0` release. It uses only the credential-free public surface:
 
 ```text
 gjc sdk session list|inspect|send|status|tail
@@ -433,20 +436,17 @@ failure and is terminated on detach or shutdown, without signalling the agent.
 Durable tail/file reads remain authoritative. The app never opens a session
 WebSocket itself, reads endpoint credentials, or uses discovery records to attach.
 
-On the installed 0.18.12 build, a fresh host accepted this negotiation but emitted
-no `tool_execution_start/update/end` frames during a multi-second bash loop
-([upstream #6827](https://github.com/Yeachan-Heo/gajae-code/issues/6827)). Final
-output still arrives through the durable transcript. This is a live-verification
-blocker, not a claim that streaming works on that build. Run
+**Verified on 0.19.0.** The observer negotiation now delivers live
+`tool_execution_start/update/end` frames during a multi-second bash loop:
 `AGENT_CONTROL_GJC_PRESET=<working-profile> node scripts/gjc-tool-stream-e2e.mjs`
-after compiling Electron sources to reproduce it. Partial bash output is labelled
-as a snapshot whose beginning may be omitted: upstream tail-only updates do not
-always carry explicit truncation metadata.
-
-Upstream [PR #6832](https://github.com/Yeachan-Heo/gajae-code/pull/6832) fixes
-broker observer delivery, but it merged after v0.18.12 and is not in that release.
-The issue being closed upstream does not establish installed-runtime support;
-repeat the live probe on the release containing that fix.
+reported four intermediate running snapshots (`GJCLINE1` through `GJCLINE4`) that
+were replaced, never appended, plus the authoritative completed result. Upstream
+[PR #6832](https://github.com/Yeachan-Heo/gajae-code/pull/6832) fixed broker
+observer delivery after v0.18.12 and is included in v0.19.0. Until that release
+the same probe received no tool frames at all, so a build older than 0.19.0 still
+has no live tool output. Partial bash output is labelled as a snapshot whose
+beginning may be omitted: upstream tail-only updates do not always carry explicit
+truncation metadata.
 
 Desktop Esc/Stop sends:
 
@@ -479,12 +479,16 @@ lookup to the broker-authorized `operator` flag. On 0.18.12 the route does confi
 `turn:"stopped"` once the host has registered the active submission, and Gajae
 re-asks briefly because a local `running` event precedes that registration. The
 0.18.12 e2e still reproduced `no_active_turn` while a 30-second bash turn was
-verifiably running, so that path remains unconfirmed and is never reported as
-stopped; upstream #6860 tracks generation-zero broker identity after resume and
-fork. Only `turn:"stopped"` is treated as a confirmation. Confirmed cancellation
-remains idle during discovery even when the durable file ends at an aborted tool
-result rather than a terminal assistant message. The local cancellation notice
-survives durable refreshes.
+verifiably running; that path remains unconfirmed and is never reported as
+stopped. Re-run on 0.19.0, `scripts/gjc-cancel-e2e.mjs` reports
+`terminalAbortVerified: true`, `finalStatus: idle`, and `transcriptStable: true`
+with the host actually executing a bash turn. Only `turn:"stopped"` is treated as
+a confirmation. Confirmed cancellation remains idle during discovery even when
+the durable file ends at an aborted tool result rather than a terminal assistant
+message. The local cancellation notice survives durable refreshes. Upstream
+#6860 (in 0.19.0) also stopped a direct CLI `/new` from leaving the previous
+session id live; measured on 0.19.0, the old row became `live:false` and the new
+id was registered under the same pid.
 
 **Resolved in 0.18.12.** `session.delete` requires the durable transcript path,
 and a call that omits it is refused with `invalid_input` ("session.delete requires
@@ -496,23 +500,37 @@ half-applied. Upstream https://github.com/Yeachan-Heo/gajae-code/pull/6777 adds 
 `lifecycle_input_refused` diagnostic for that admission refusal. Gajae still passes
 the path it located; an unknown outcome preserves the transcript, metadata, and
 worktree and marks the session as recovering rather than reporting a deletion it
-cannot prove. Close-then-delete succeeds for a session that only replied, but the
-0.18.12 e2e still gets an unknown outcome for a session containing tool execution
-(upstream #6828). A live host this window created, forked, or resumed is closed
-first; a terminal's host is never signalled.
+cannot prove. Close-then-delete succeeds for a session that only replied, but a
+session containing tool execution still answered an unknown outcome on 0.18.12
+(upstream #6828).
+
+**Verified on 0.19.0.** The limitation remains: a disposable session that ran one
+bash tool, and a separate empty session that never received a message, both got
+`operation_failed` with `outcomeCertainty: unknown` and stayed `deleted:false`.
+Neither response carried the `lifecycle_legacy_history_ambiguous` diagnostic, so
+per the 0.19.0 guidance the legacy ledger fence was not the reported cause of
+these refusals; do not attribute every unknown delete outcome to it. A live host
+this window created, forked, or resumed is closed first; a terminal's host is
+never signalled.
 
 Gajae now preserves the public envelope's diagnostics and outcome certainty.
 `lifecycle_input_refused` produces an actionable input-refusal error, but it is not
 proof that deletion was unapplied: unless broker reconciliation proves deletion,
 the session remains recovering and all local evidence is retained. There is no
-automatic retry. The existing empty `27f32a06…` probe still failed deletion on
-0.18.12 with an unknown outcome and `deleted:false` (see
+automatic retry. The existing empty `27f32a06…` probe failed deletion on 0.18.12
+and still did on 0.19.0 with an unknown outcome and `deleted:false` (see
 [upstream #6828](https://github.com/Yeachan-Heo/gajae-code/issues/6828)).
 PR #6832 adds the `lifecycle_legacy_history_ambiguous` diagnostic, not permission
-to clear the admission fence. Gajae surfaces this refusal distinctly and retains
-the session and evidence: the current request was not dispatched, but earlier
-effects remain unresolved. Preserve the original operation, request key, target,
-and ledger; do not edit the ledger, force deletion, or retry under a new key.
+to clear the admission fence, and v0.19.0 includes it. That diagnostic was absent
+from the 0.19.0 delete attempts above, so this machine's unresolved legacy
+`accepted` row is not proven to be their cause. Gajae surfaces the diagnostic
+distinctly when a broker does return it and retains the session and evidence: the
+current request was not dispatched, but earlier effects remain unresolved.
+Preserve the original operation, request key, target, and ledger; do not edit the
+ledger, force deletion, or retry under a new key. v0.19.0's new
+`gjc sdk session retire` (`session.reconcile_uncertain`) only retires an indexed
+`terminalUncertain` create effect with dead-host proof; it is not an override for
+opaque legacy history.
 
 Older GJC versions are unsupported. After updating GJC, restart running `gjc` /
 `gjc --resume` session hosts because they do not hot-reload runtime code.
