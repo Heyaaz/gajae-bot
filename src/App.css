@@ -6261,6 +6261,9 @@
    */
   .composer textarea {
     padding: 11px 12px 6px;
+    /* iOS Safari zooms focused inputs below 16px, panning the toolbar and send
+       button out of the visual viewport when the keyboard opens. */
+    font-size: 16px;
   }
   .composer-toolbar {
     flex-wrap: nowrap;

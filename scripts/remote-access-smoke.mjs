@@ -238,6 +238,59 @@ async function main() {
     'The server echoed the device token back',
   )
 
+  // Render the served web client, not the desktop shell. Chromium cannot emulate
+  // Safari's focus zoom, so pin its 16px prevention threshold as well as geometry.
+  const mobileWindow = new BrowserWindow({
+    width: 390,
+    height: 844,
+    show: false,
+    webPreferences: { contextIsolation: true, sandbox: true },
+  })
+  await mobileWindow.loadURL(origin)
+  await mobileWindow.webContents.executeJavaScript(`(async () => {
+    for (let i = 0; i < 100; i++) {
+      if (document.body.innerText.includes('데스크톱에서 페어링 코드를 발급해 연결해 주세요.')) return;
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    throw Error('Initial remote admission did not settle');
+  })()`)
+  await mobileWindow.webContents.executeJavaScript(
+    `localStorage.setItem('gajae.remote.token', ${JSON.stringify(token)})`,
+  )
+  await mobileWindow.loadURL(origin)
+  const mobileLayouts = []
+  for (const [width, height] of [[320, 568], [390, 844], [390, 360], [430, 420]]) {
+    mobileWindow.setContentSize(width, height)
+    const layout = await mobileWindow.webContents.executeJavaScript(`(async () => {
+      for (let i = 0; i < 100; i++) {
+        if (document.querySelector('.composer textarea')) break;
+        document.querySelector('.session-row')?.click();
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      const input = document.querySelector('.composer textarea');
+      if (!input) throw Error('Mobile remote composer did not render: ' + document.body.innerText);
+      input.focus();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const button = document.querySelector('.composer-submit-actions button');
+      const bounds = button?.getBoundingClientRect();
+      return {
+        width: innerWidth,
+        height: innerHeight,
+        fontSize: parseFloat(getComputedStyle(input).fontSize),
+        focused: document.activeElement === input,
+        buttonVisible: Boolean(bounds && bounds.width > 0 && bounds.left >= 0 &&
+          bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight),
+        noPageOverflow: document.documentElement.scrollWidth <= innerWidth,
+      };
+    })()`)
+    mobileLayouts.push(layout)
+    require_(layout.fontSize >= 16, `Mobile input triggers Safari focus zoom at ${width}x${height}`)
+    require_(layout.focused, `Mobile composer did not focus at ${width}x${height}`)
+    require_(layout.buttonVisible, `Mobile submit button is clipped at ${width}x${height}`)
+    require_(layout.noPageOverflow, `Mobile page overflows horizontally at ${width}x${height}`)
+  }
+  mobileWindow.destroy()
+
   const crossOrigin = await request(`${origin}/api/sessions/${session.id}/cancel`, {
     method: 'POST',
     headers: {
@@ -343,6 +396,7 @@ async function main() {
     unauthenticatedStatus: unauthenticated.status,
     pairingCodeIssued: typeof code === 'string',
     authenticatedStatus: authorized.status,
+    mobileLayouts,
     crossOriginStatus: crossOrigin.status,
     viewOnlyStatus: refused.status,
     panel: pairingPanel,
