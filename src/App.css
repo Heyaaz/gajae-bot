@@ -6233,7 +6233,37 @@
     background: rgba(0, 0, 0, 0.5);
   }
   .chat-header {
-    padding-left: 54px;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+  .chat-identity {
+    width: 100%;
+    min-height: 34px;
+    padding-left: 42px;
+  }
+  .chat-identity > span:last-child {
+    flex: 1;
+  }
+  .chat-header__actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .chat-header__actions button {
+    min-width: 44px;
+    min-height: 44px;
+    flex-shrink: 0;
+  }
+  .surface-mode-toggle {
+    margin-right: 0;
+  }
+  .surface-mode-toggle button {
+    padding-inline: 8px;
+  }
+  :root body input,
+  :root body textarea {
+    /* Every editable field needs this threshold, not only the composer. */
+    font-size: 16px;
   }
   /* The branch lives in the session title's row, which has no room for it here;
      the same information is in the drawer's session rows. */
@@ -6242,6 +6272,13 @@
   }
   .composer {
     padding-bottom: 10px;
+  }
+  .composer-wrap {
+    flex-shrink: 0;
+  }
+  .empty-conversation {
+    min-height: 0;
+    overflow-y: auto;
   }
   .remote-strip {
     top: calc(8px + env(safe-area-inset-top, 0px));
@@ -6254,10 +6291,8 @@
     padding-left: env(safe-area-inset-left, 0px);
   }
   /*
-   * The composer's chips and its send button cannot share one 390px row, and
-   * wrapping them made the box a third of the screen tall. One row instead: the
-   * chips scroll sideways inside the space the button leaves, so the height is the
-   * same whether the model name is short or long.
+   * Shrink the chip labels, not the send button. A scrolling toolbar clips the
+   * popovers above it, so menus are anchored to the composer instead of a chip.
    */
   .composer textarea {
     padding: 11px 12px 6px;
@@ -6273,20 +6308,44 @@
     flex: 1 1 auto;
     min-width: 0;
     flex-wrap: nowrap;
-    overflow-x: auto;
-    scrollbar-width: none;
+    overflow: visible;
   }
-  .composer-toolbar > div:first-child::-webkit-scrollbar {
-    display: none;
-  }
-  .composer-context,
-  .composer-model {
+  .composer-toolbar .icon-button {
     flex: 0 0 auto;
-    max-width: 42vw;
+  }
+  .workspace-switcher {
+    position: static;
+    min-width: 0;
+    max-width: 32%;
+    flex: 0 1 auto;
+  }
+  .composer-model {
+    position: static;
+    min-width: 0;
+    flex: 1 1 0;
+  }
+  .composer-model > button {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
   }
   .composer-context {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .composer-context svg {
+    flex-shrink: 0;
+  }
+  .workspace-menu,
+  .config-option-menu--model,
+  .config-option-menu--effort {
+    left: 8px;
+    right: 8px;
+    bottom: calc(100% + 8px);
+    width: auto;
+    max-height: min(430px, 45dvh);
+    overflow-y: auto;
   }
   /*
    * Three request chips do not fit side by side; the title cell shrinks but the

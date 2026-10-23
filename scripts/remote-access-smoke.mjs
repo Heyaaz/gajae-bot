@@ -51,6 +51,9 @@ const session = {
   accent: '#f06416',
   ownership: 'gajae',
   attachment: 'attached',
+  modelDisplay: 'deepseek-v4.1-flash-ultra-long-mobile-model-name',
+  thinking: 'high',
+  usagePercent: 99.9,
 }
 
 const failures = []
@@ -273,11 +276,56 @@ async function main() {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const button = document.querySelector('.composer-submit-actions button');
       const bounds = button?.getBoundingClientRect();
+      const focused = document.activeElement === input;
+      const context = document.querySelector('.composer-context');
+      context?.click();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const menu = document.querySelector('.workspace-menu');
+      const menuBounds = menu?.getBoundingClientRect();
+      const menuButton = menu?.querySelector('button');
+      const menuButtonBounds = menuButton?.getBoundingClientRect();
+      const hit = menuButtonBounds && document.elementFromPoint(
+        menuButtonBounds.left + 10, menuButtonBounds.top + 10,
+      );
+      const menuVisible = Boolean(menuBounds && menuBounds.left >= 0 &&
+        menuBounds.right <= innerWidth && menuBounds.top >= 0 &&
+        menuButton?.contains(hit));
+      context?.click();
+      const modelTrigger = document.querySelector('.composer-model > button');
+      modelTrigger?.click();
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const modelMenu = document.querySelector('.config-option-menu--model');
+      const modelBounds = modelMenu?.getBoundingClientRect();
+      const modelChoice = modelMenu?.querySelector('.config-option-group > button');
+      const choiceBounds = modelChoice?.getBoundingClientRect();
+      const modelHit = choiceBounds && document.elementFromPoint(choiceBounds.left + 10, choiceBounds.top + 10);
+      const modelMenuVisible = Boolean(modelBounds && modelBounds.left >= 0 && modelBounds.right <= innerWidth &&
+        modelBounds.top >= 0 && modelChoice?.contains(modelHit));
+      modelTrigger?.click();
+      const headerButtons = [...document.querySelectorAll('.chat-header__actions button')];
+      const headerTargetsFit = headerButtons.every(button => {
+        const rect = button.getBoundingClientRect();
+        return rect.width >= 44 && rect.height >= 44 && rect.left >= 0 && rect.right <= innerWidth;
+      });
+      const titleBounds = document.querySelector('.chat-identity strong')?.getBoundingClientRect();
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
+      for (let i = 0; i < 100; i++) {
+        if (document.querySelector('.global-search-dialog input')) break;
+        await new Promise(resolve => setTimeout(resolve, 30));
+      }
+      const searchInput = document.querySelector('.global-search-dialog input');
+      const searchFontSize = searchInput ? parseFloat(getComputedStyle(searchInput).fontSize) : 0;
+      searchInput?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
       return {
         width: innerWidth,
         height: innerHeight,
         fontSize: parseFloat(getComputedStyle(input).fontSize),
-        focused: document.activeElement === input,
+        focused,
+        menuVisible,
+        modelMenuVisible,
+        headerTargetsFit,
+        titleHasRoom: Boolean(titleBounds && titleBounds.width >= 120),
+        searchFontSize,
         buttonVisible: Boolean(bounds && bounds.width > 0 && bounds.left >= 0 &&
           bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight),
         noPageOverflow: document.documentElement.scrollWidth <= innerWidth,
@@ -288,6 +336,11 @@ async function main() {
     require_(layout.focused, `Mobile composer did not focus at ${width}x${height}`)
     require_(layout.buttonVisible, `Mobile submit button is clipped at ${width}x${height}`)
     require_(layout.noPageOverflow, `Mobile page overflows horizontally at ${width}x${height}`)
+    require_(layout.menuVisible, `Mobile workspace menu is clipped or not clickable at ${width}x${height}`)
+    require_(layout.modelMenuVisible, `Mobile model menu is clipped or not clickable at ${width}x${height}`)
+    require_(layout.headerTargetsFit, `Mobile header touch targets are too small or clipped at ${width}x${height}`)
+    require_(layout.titleHasRoom, `Mobile session title has no room at ${width}x${height}`)
+    require_(layout.searchFontSize >= 16, `Mobile search input triggers Safari focus zoom at ${width}x${height}`)
   }
   mobileWindow.destroy()
 
