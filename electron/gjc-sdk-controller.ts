@@ -1254,6 +1254,13 @@ export class GjcSdkController {
     return true;
   }
 
+  /** The title the session list shows, cut to one readable line. */
+  sessionTitle(sessionId: string): string | undefined {
+    const title = this.sessions.get(sessionId)?.title.replace(/\s+/gu, " ").trim();
+    if (!title) return undefined;
+    return title.length > 72 ? `${title.slice(0, 71).trimEnd()}\u2026` : title;
+  }
+
   async listSessions(): Promise<AgentSession[]> {
     // Yield during the short steering request, not the whole prompt lifetime.
     // A prompt can run for minutes; freezing discovery for that entire interval

@@ -67,6 +67,7 @@ const actionProbe = vi.hoisted(() => {
     rename: vi.fn(),
     forkSession: vi.fn(),
     deleteSession: vi.fn(),
+    confirmSessionRemoval: vi.fn(),
     stateChanges,
     store,
     onRename: null as null | ((id: string, title: string) => void),
@@ -85,21 +86,18 @@ const actionProbe = vi.hoisted(() => {
     },
     repo: null as null | { project: { root: string } },
     projectsView: null as null | { projects: ProjectGroup[] },
-    deleteDialog: null as null | {
-      session: AgentSession;
-      onConfirm: () => void;
-    },
     reset(): void {
       store.reset();
       this.rename.mockReset();
       this.forkSession.mockReset();
       this.deleteSession.mockReset();
+      this.confirmSessionRemoval.mockReset();
+      this.confirmSessionRemoval.mockResolvedValue(true);
       stateChanges.mockReset();
       this.onRename = null;
       this.sidebar = null;
       this.repo = null;
       this.projectsView = null;
-      this.deleteDialog = null;
     },
   };
 });
@@ -117,12 +115,13 @@ vi.mock("../backend/use-agent-backend", () => ({
     renameSession: actionProbe.rename,
     forkSession: actionProbe.forkSession,
     deleteSession: actionProbe.deleteSession,
+    confirmSessionRemoval: actionProbe.confirmSessionRemoval,
   }),
 }));
 
 // The children are shallow stand-ins so the shell's own props and the store above
-// stay the only state in the tree; the sidebar and the delete dialog hold the
-// props the delete tests drive.
+// stay the only state in the tree; the sidebar holds the props the delete tests
+// drive.
 vi.mock("./sidebar", () => ({
   Sidebar: (props: {
     sessions: AgentSession[];
@@ -144,13 +143,6 @@ vi.mock("./sidebar", () => ({
 }));
 
 vi.mock("./dialogs", () => ({
-  DeleteSessionDialog: (props: {
-    session: AgentSession;
-    onConfirm: () => void;
-  }) => {
-    actionProbe.deleteDialog = props;
-    return null;
-  },
   GlobalSearchDialog: () => null,
   NewSessionDialog: () => null,
   ResumeSessionDialog: () => null,
@@ -455,7 +447,6 @@ describe("Escape keyboard routing", () => {
       "newSessionRequest",
       "resumeOpen",
       "settingsOpen",
-      "deleteCandidate",
     ])
       expect(gate).toContain(surface);
   });
@@ -537,7 +528,6 @@ describe("asynchronous session navigation", () => {
 /** The next state the shell would render, from the store's current slot values. */
 function renderApp(): string {
   actionProbe.sidebar = null;
-  actionProbe.deleteDialog = null;
   // These two record what the center area held in this pass, so they start empty
   // for every pass instead of reporting the last view that happened to render.
   actionProbe.repo = null;
@@ -609,36 +599,31 @@ describe("session delete optimism", () => {
     ]);
   }
 
-  /** Opens the delete dialog for the row and confirms it. */
-  function confirmDelete(row: AgentSession): void {
-    actionProbe.sidebar!.onDelete(row);
-    renderApp();
-    expect(actionProbe.deleteDialog!.session.id).toBe(row.id);
-    actionProbe.deleteDialog!.onConfirm();
-  }
-
-  it("drops the row before the backend delete settles, and keeps it gone", async () => {
+  it("drops the row once the host confirmation is answered, and keeps it gone", async () => {
     // The reported lag: the row stayed in the sidebar until close, broker lookup and
     // delete had each walked the CLI, because only the runtime's own event removed
-    // it. The confirm now removes it first and the event that follows is a no-op.
+    // it. The row now leaves as soon as the user agrees in the host's dialog, and
+    // the event that follows is a no-op.
     const row = session("session-1");
+    const answer = deferred<boolean>();
     const removal = deferred<void>();
+    actionProbe.confirmSessionRemoval.mockReturnValueOnce(answer.promise);
     actionProbe.deleteSession.mockReturnValueOnce(removal.promise);
 
     await seedRow(row);
-    confirmDelete(row);
+    actionProbe.sidebar!.onDelete(row);
+    await settle();
+    // Still listed while the host asks.
+    renderApp();
+    expect(actionProbe.sidebar!.sessions.map((item) => item.id)).toEqual([row.id]);
+    expect(actionProbe.confirmSessionRemoval).toHaveBeenCalledWith(row.id, "delete");
 
-    // The render right after the click already shows the sidebar without the row,
-    // and the backend has not even been asked yet -- the delete is still behind
-    // resolveSessionId. The detail pane left with the selection.
+    answer.resolve(true);
+    await settle();
     const markup = renderApp();
     expect(actionProbe.sidebar!.sessions).toEqual([]);
     expect(actionProbe.sidebar!.selectedId).toBeNull();
-    expect(actionProbe.deleteDialog).toBeNull();
     expect(markup).toContain("선택된 Gajae 세션이 없습니다");
-    expect(actionProbe.deleteSession).not.toHaveBeenCalled();
-
-    await settle();
     expect(actionProbe.deleteSession).toHaveBeenCalledWith(row.id);
 
     removal.resolve();
@@ -648,13 +633,27 @@ describe("session delete optimism", () => {
     expect(settled).not.toContain("app-error");
   });
 
+  it("leaves the row and deletes nothing when the user declines", async () => {
+    const row = session("session-1");
+    actionProbe.confirmSessionRemoval.mockResolvedValueOnce(false);
+
+    await seedRow(row);
+    actionProbe.sidebar!.onDelete(row);
+    await settle();
+    const markup = renderApp();
+    expect(actionProbe.sidebar!.sessions.map((item) => item.id)).toEqual([row.id]);
+    expect(actionProbe.deleteSession).not.toHaveBeenCalled();
+    expect(markup).not.toContain("app-error");
+  });
+
   it("puts the row and the selection back when the backend delete fails", async () => {
     const row = session("session-1");
     const removal = deferred<void>();
     actionProbe.deleteSession.mockReturnValueOnce(removal.promise);
 
     await seedRow(row);
-    confirmDelete(row);
+    actionProbe.sidebar!.onDelete(row);
+    await settle();
     renderApp();
     expect(actionProbe.sidebar!.sessions).toEqual([]);
 

@@ -86,9 +86,10 @@ describe("destructive message policy", () => {
       files: [],
     });
     // The same question the explicit delete action asks.
-    expect(confirm).toHaveBeenCalledExactlyOnceWith(event, {
-      message: "세션을 삭제할까요?",
-    });
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(
+      event,
+      expect.objectContaining({ message: "세션을 삭제할까요?", danger: true }),
+    );
     expect(send).toHaveBeenCalledExactlyOnceWith(
       "session-a",
       { text: "/session delete", images: [], files: [] },
@@ -109,7 +110,7 @@ describe("destructive message policy", () => {
         images: [],
         files: [],
       });
-      expect(confirm).toHaveBeenLastCalledWith(event, { message });
+      expect(confirm).toHaveBeenLastCalledWith(event, expect.objectContaining({ message }));
       expect(send).toHaveBeenLastCalledWith(
         "session-a",
         { text, images: [], files: [] },
@@ -400,7 +401,11 @@ describe("explicit compaction action", () => {
     const confirm = vi.fn().mockResolvedValue(undefined);
     const guarded = vi.fn((handler: (...args: unknown[]) => unknown) => async (...args: unknown[]) => handler(...args));
     registerGjcIpcHandlers(
-      { compactSession: compact, deleteSession: remove } as unknown as GjcSdkController,
+      {
+        compactSession: compact,
+        deleteSession: remove,
+        sessionTitle: () => "Release notes",
+      } as unknown as GjcSdkController,
       new AttachmentStore(),
       { guarded, authorizeDestructive: confirm } as unknown as IpcSecurity,
     );
@@ -444,7 +449,15 @@ describe("explicit compaction action", () => {
     const { remove, confirm } = setup();
     const event = {};
     await handled.get(GJC_IPC.deleteSession)!(event, "session-a");
-    expect(confirm).toHaveBeenCalledExactlyOnceWith(event, { message: "세션을 삭제할까요?" });
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(
+      event,
+      expect.objectContaining({
+        message: "세션을 삭제할까요?",
+        detail: expect.stringContaining("Release notes"),
+        danger: true,
+      }),
+      "delete:session-a",
+    );
     expect(remove).toHaveBeenCalledExactlyOnceWith("session-a");
   });
 });

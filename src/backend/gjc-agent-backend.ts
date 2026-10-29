@@ -82,6 +82,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.openHistorySession(sessionId);
   }
 
+  confirmSessionRemoval(sessionId: string, action: "delete" | "hide"): Promise<boolean> {
+    return this.bridge.confirmSessionRemoval(sessionId, action);
+  }
+
   deleteSession(sessionId: string): Promise<void> {
     return this.bridge.deleteSession(sessionId);
   }

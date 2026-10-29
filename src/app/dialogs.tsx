@@ -6,14 +6,12 @@ import type {
   WorktreePull,
 } from "../../shared/agent-contract";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
-import type { AgentSession } from "../backend/types";
 import {
   FileSearch,
   FolderOpen,
   Plus,
   RotateCcw,
   Search,
-  Trash2,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -351,45 +349,6 @@ export function NewSessionDialog({
           </button>
         </footer>
       </form>
-    </div>
-  );
-}
-
-export interface DeleteSessionDialogProps {
-  session: AgentSession;
-  onCancel: () => void;
-  onConfirm: () => void;
-}
-
-export function DeleteSessionDialog({
-  session,
-  onCancel,
-  onConfirm,
-}: DeleteSessionDialogProps) {
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
-      <section
-        className="confirm-dialog"
-        role="alertdialog"
-        aria-modal="true"
-        aria-label={t("세션 삭제")}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header>
-          <Trash2 size={18} />
-          <h2>{t("세션을 삭제할까요?")}</h2>
-        </header>
-        <p>
-          <>
-            <strong>{sessionTitleText(session.title)}</strong> {t("세션의 GJC 프로세스를 종료하고 대화 기록까지 삭제합니다. 목록에서만 숨기지 않습니다.")} </>
-        </p>
-        <footer>
-          <button type="button" className="button-secondary" onClick={onCancel}>
-            {t("취소")} </button>
-          <button type="button" className="button-danger" onClick={onConfirm}>
-            {t("삭제")} </button>
-        </footer>
-      </section>
     </div>
   );
 }

@@ -154,6 +154,9 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async renameSession(sessionId: string, title: string): Promise<void> {
     this.renamed.push({ sessionId, title });
   }
+  async confirmSessionRemoval(): Promise<boolean> {
+    return true;
+  }
   async deleteSession(sessionId: string): Promise<void> {
     this.deleted.push(sessionId);
   }

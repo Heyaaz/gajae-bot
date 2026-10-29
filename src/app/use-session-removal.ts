@@ -11,9 +11,21 @@ export function useSessionRemoval(
   resolveSessionId: (sessionId: string) => Promise<string>,
   setSessions: Dispatch<SetStateAction<AgentSession[]>>,
   setSelectedId: Dispatch<SetStateAction<string | null>>,
-  setDeleteCandidate: Dispatch<SetStateAction<AgentSession | null>>,
   setAppError: (message: string) => void,
 ) {
+  /** Asks the host first; a removal the user declines leaves the rail untouched. */
+  const confirmed = useCallback(
+    async (sessionId: string, action: "delete" | "hide"): Promise<boolean> => {
+      try {
+        return await backend.confirmSessionRemoval(sessionId, action);
+      } catch (error) {
+        setAppError(error instanceof Error ? error.message : String(error));
+        return false;
+      }
+    },
+    [backend, setAppError],
+  );
+
   /**
    * Hides a session from the rail without deleting anything GJC owns.
    *
@@ -40,12 +52,22 @@ export function useSessionRemoval(
 
   const onHideSession = useCallback(
     (session: AgentSession) => {
-      hideSession(session.id);
+      void confirmed(session.id, "hide").then((agreed) => {
+        if (agreed) hideSession(session.id);
+      });
     },
-    [hideSession],
+    [confirmed, hideSession],
   );
 
-  async function deleteSession(sessionId: string): Promise<void> {
+  const deleteSession = useCallback(async (sessionId: string): Promise<void> => {
+    let backendId: string;
+    try {
+      backendId = await resolveSessionId(sessionId);
+    } catch (error) {
+      setAppError(error instanceof Error ? error.message : String(error));
+      return;
+    }
+    if (!(await confirmed(backendId, "delete"))) return;
     // The user is the first to know: the backend's delete walks close, broker
     // lookup and delete one CLI call at a time, and the row used to sit in the
     // sidebar for all of it. Drop the row now, keep the copies needed to take it
@@ -60,9 +82,8 @@ export function useSessionRemoval(
         ? (sessions.find((session) => session.id !== sessionId)?.id ?? null)
         : selectionBefore;
     forgetSession(sessionId);
-    setDeleteCandidate(null);
     try {
-      await backend.deleteSession(await resolveSessionId(sessionId));
+      await backend.deleteSession(backendId);
     } catch (error) {
       // The row never really left. Put it back -- unless it reappeared on its own
       // while the backend worked -- and undo the selection move this delete made.
@@ -78,7 +99,11 @@ export function useSessionRemoval(
       );
       setAppError(error instanceof Error ? error.message : String(error));
     }
-  }
+  }, [backend, confirmed, forgetSession, resolveSessionId, selectedId, sessions, setAppError, setSelectedId, setSessions]);
 
-  return { onHideSession, deleteSession };
+  const onDeleteSession = useCallback((session: AgentSession) => {
+    void deleteSession(session.id);
+  }, [deleteSession]);
+
+  return { onHideSession, onDeleteSession };
 }

@@ -5466,39 +5466,6 @@ button.diff-line-number:hover {
   font-size: 10px;
 }
 
-.confirm-dialog {
-  width: min(390px, calc(100vw - 40px));
-  padding: 18px;
-  background: var(--bg-dialog);
-  border: 1px solid var(--border-strong);
-  border-radius: 12px;
-  box-shadow: var(--shadow-lg);
-}
-.confirm-dialog header {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: var(--danger);
-}
-.confirm-dialog h2 {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 15px;
-}
-.confirm-dialog p {
-  margin: 15px 0 20px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  line-height: 1.55;
-}
-.confirm-dialog p strong {
-  color: var(--text-primary);
-}
-.confirm-dialog footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 7px;
-}
 .new-session-dialog {
   width: min(520px, calc(100vw - 40px));
   padding: 20px;

@@ -322,6 +322,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
   listHistorySessions: () => ipcRenderer.invoke(GJC_IPC.listHistorySessions),
   openHistorySession: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.openHistorySession, sessionId),
+  confirmSessionRemoval: (sessionId: string, action: "delete" | "hide") =>
+    ipcRenderer.invoke(GJC_IPC.confirmSessionRemoval, sessionId, action),
   deleteSession: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.deleteSession, sessionId),
   hideSession: (sessionId: string) =>
@@ -468,6 +470,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
     ipcRenderer.invoke(SETTINGS_IPC.savePreferences, preferences),
   checkGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkGjcUpdate),
   installGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.installGjcUpdate),
+  confirm: (message: string, detail?: string) =>
+    ipcRenderer.invoke(SETTINGS_IPC.confirm, message, detail),
   getAppUpdateStatus: () => ipcRenderer.invoke(SETTINGS_IPC.getAppUpdateStatus),
   checkAppUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkAppUpdate),
   checkEnvironment: () => ipcRenderer.invoke(SETTINGS_IPC.checkEnvironment),

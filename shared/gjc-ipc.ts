@@ -20,6 +20,7 @@ export const GJC_IPC = {
   listHistorySessions: "agent-control:gjc:list-history-sessions",
   openHistorySession: "agent-control:gjc:open-history-session",
   renameSession: "agent-control:gjc:rename-session",
+  confirmSessionRemoval: "agent-control:gjc:confirm-session-removal",
   deleteSession: "agent-control:gjc:delete-session",
   hideSession: "agent-control:gjc:hide-session",
   getTranscript: "agent-control:gjc:get-transcript",

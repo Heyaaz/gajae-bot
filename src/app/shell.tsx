@@ -42,7 +42,6 @@ import {
   subscribeComposerReleaseRetry,
 } from "./composer";
 import {
-  DeleteSessionDialog,
   GlobalSearchDialog,
   NewSessionDialog,
   ResumeSessionDialog,
@@ -168,9 +167,6 @@ export default function App() {
   const [diffOpen, setDiffOpen] = useState(false);
 
   const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
-  const [deleteCandidate, setDeleteCandidate] = useState<AgentSession | null>(
-    null,
-  );
   // Each open is its own request: a second prefill while the dialog is up
   // remounts it with the new values instead of being dropped.
   const [newSessionRequest, setNewSessionRequest] = useState<{
@@ -951,8 +947,7 @@ export default function App() {
     newSessionRequest !== null ||
     resumeOpen ||
     settingsOpen ||
-    findOpen ||
-    deleteCandidate !== null;
+    findOpen;
 
   useEffect(() => {
     const unsubscribe = window.agentControlDesktop?.onSessionShortcut(
@@ -1419,7 +1414,7 @@ export default function App() {
     transcriptRevisionsRef.current.delete(sessionId);
   }, []);
 
-  const { onHideSession, deleteSession } = useSessionRemoval(
+  const { onHideSession, onDeleteSession } = useSessionRemoval(
     backend,
     sessions,
     selectedId,
@@ -1427,7 +1422,6 @@ export default function App() {
     resolveSessionId,
     setSessions,
     setSelectedId,
-    setDeleteCandidate,
     setAppError,
   );
 
@@ -1699,7 +1693,7 @@ export default function App() {
         onResume={startResume}
         onResumePicker={openResumePickerStable}
         onRename={startRename}
-        onDelete={setDeleteCandidate}
+        onDelete={onDeleteSession}
         onHide={onHideSession}
         onSettings={openSettings}
         workspaceLabel={workspaceLabel}
@@ -2029,13 +2023,6 @@ export default function App() {
           onCheckUpdate={() => void checkForUpdate()}
           onInstallUpdate={() => void installUpdate()}
           initialTab={settingsTab}
-        />
-      )}
-      {deleteCandidate && (
-        <DeleteSessionDialog
-          session={deleteCandidate}
-          onCancel={() => setDeleteCandidate(null)}
-          onConfirm={() => void deleteSession(deleteCandidate.id)}
         />
       )}
     </div>
