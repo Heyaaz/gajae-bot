@@ -3448,7 +3448,10 @@ export default function App() {
           }}
         />
       )}
-      {newSessionRequest && (
+      {/* One modal at a time. A link that arrives during the first run's
+          environment check waits until it closes: the session it starts needs
+          what the check is reporting on. */}
+      {newSessionRequest && !settingsOpen && (
         <NewSessionDialog
           key={newSessionRequest.serial}
           defaultWorkspace={connection.workspace}

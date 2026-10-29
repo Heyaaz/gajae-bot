@@ -504,7 +504,10 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
     // A scripted smoke drives the shell itself; a launch modal over it would be
     // in the way of what it checks, and it is nobody's first run.
     due: () =>
-      !smokeMode && !terminalSmokeMode && !desktopState.get().environmentReady,
+      !smokeMode &&
+      !terminalSmokeMode &&
+      !deepLinkSmokeMode &&
+      !desktopState.get().environmentReady,
   },
   quickInputShortcut,
   // The menu bar is drawn before the window resolves the language, and redraws

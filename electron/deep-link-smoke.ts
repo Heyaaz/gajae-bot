@@ -5,6 +5,8 @@ import path from "node:path";
 
 interface WindowView {
   dialog: { prompt: string; workspace: string } | null;
+  /** The settings dialog, which a first run opens on the environment check. */
+  settings: boolean;
   notice: string | null;
   selected: string | null;
 }
@@ -54,7 +56,7 @@ function currentWindow(): BrowserWindow {
 
 async function view(): Promise<WindowView> {
   const window = currentWindow();
-  if (window.webContents.isLoading()) return { dialog: null, notice: null, selected: null };
+  if (window.webContents.isLoading()) return { dialog: null, settings: false, notice: null, selected: null };
   return (await window.webContents.executeJavaScript(`(() => {
     const dialog = document.querySelector(".new-session-dialog");
     return {
@@ -62,10 +64,17 @@ async function view(): Promise<WindowView> {
         prompt: dialog.querySelector("textarea")?.value ?? "",
         workspace: dialog.querySelector(".project-location-field code")?.textContent ?? "",
       } : null,
+      settings: Boolean(document.querySelector(".settings-dialog")),
       notice: document.querySelector(".app-error span")?.textContent ?? null,
       selected: document.querySelector(".session-row.is-selected")?.textContent ?? null,
     };
   })()`)) as WindowView;
+}
+
+class StackedDialogs extends Error {
+  constructor(state: string) {
+    super(`The new-session dialog opened under the settings dialog: ${state}`);
+  }
 }
 
 async function waitFor(label: string, accept: (state: WindowView) => boolean): Promise<WindowView> {
@@ -74,11 +83,16 @@ async function waitFor(label: string, accept: (state: WindowView) => boolean): P
   while (Date.now() < deadline) {
     try {
       last = await view();
+      // Two modals at once leave the link's dialog under the other one, with its
+      // autofocused field taking the keys typed into the one on top.
+      if (last.dialog && last.settings)
+        throw new StackedDialogs(JSON.stringify(last));
       if (accept(last)) {
         console.log(`ok: ${label}`, JSON.stringify(last));
         return last;
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof StackedDialogs) throw error;
       // The window may be between documents; the next poll reads it again.
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
