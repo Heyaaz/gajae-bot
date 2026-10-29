@@ -70,6 +70,7 @@ import { useComposerCallbacks } from "./use-composer-callbacks";
 import { usePreferenceToggles } from "./use-preference-toggles";
 import { useComposerModel } from "./use-composer-model";
 import { useCreateSession } from "./use-create-session";
+import { useSessionRemoval } from "./use-session-removal";
 import { useProjectModel } from "./use-project-model";
 import { createBackendEventHandler } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
@@ -1400,71 +1401,17 @@ export default function App() {
     transcriptRevisionsRef.current.delete(sessionId);
   }, []);
 
-  /**
-   * Hides a session from the rail without deleting anything GJC owns.
-   *
-   * gjc/0.18.12 cannot complete a saved-history delete through the public SDK
-   * (session.delete answers operation_failed with an unknown outcome and leaves
-   * the row and transcript in place), so this is the only removal that finishes.
-   * It is offered as its own action; the delete path above stays as it was.
-   */
-  const hideSession = useCallback((sessionId: string): void => {
-    const removed = sessions.find((candidate) => candidate.id === sessionId);
-    forgetSession(sessionId);
-    void backend.hideSession(sessionId).catch((error: unknown) => {
-      // Hiding is local bookkeeping, so a failure leaves the rail unchanged and
-      // reports why instead of pretending the row went away.
-      if (removed)
-        setSessions((current) =>
-          current.some((session) => session.id === removed.id)
-            ? current
-            : [removed, ...current],
-        );
-      setAppError(error instanceof Error ? error.message : String(error));
-    });
-  }, [backend, forgetSession, sessions]);
-
-  const onHideSession = useCallback(
-    (session: AgentSession) => {
-      hideSession(session.id);
-    },
-    [hideSession],
+  const { onHideSession, deleteSession } = useSessionRemoval(
+    backend,
+    sessions,
+    selectedId,
+    forgetSession,
+    resolveSessionId,
+    setSessions,
+    setSelectedId,
+    setDeleteCandidate,
+    setAppError,
   );
-
-  async function deleteSession(sessionId: string): Promise<void> {
-    // The user is the first to know: the backend's delete walks close, broker
-    // lookup and delete one CLI call at a time, and the row used to sit in the
-    // sidebar for all of it. Drop the row now, keep the copies needed to take it
-    // back, and let the `session.deleted` event that follows be a no-op.
-    const removed = sessions.find((session) => session.id === sessionId) ?? null;
-    const selectionBefore = selectedId;
-    // What dropping the selected row will move the selection to; the delete only
-    // restores the old selection if it is still on this spot when the backend says
-    // no, so a selection the user made meanwhile stands.
-    const selectionAfter =
-      selectionBefore === sessionId
-        ? (sessions.find((session) => session.id !== sessionId)?.id ?? null)
-        : selectionBefore;
-    forgetSession(sessionId);
-    setDeleteCandidate(null);
-    try {
-      await backend.deleteSession(await resolveSessionId(sessionId));
-    } catch (error) {
-      // The row never really left. Put it back -- unless it reappeared on its own
-      // while the backend worked -- and undo the selection move this delete made.
-      if (removed) {
-        setSessions((current) =>
-          current.some((session) => session.id === removed.id)
-            ? current
-            : [removed, ...current],
-        );
-      }
-      setSelectedId((current) =>
-        current === selectionAfter ? selectionBefore : current,
-      );
-      setAppError(error instanceof Error ? error.message : String(error));
-    }
-  }
 
   // The sidebar is memoized so a streamed transcript chunk stops re-rendering it,
   // measured at 1.1-1.7ms per pass. That only holds if its callbacks keep the same
