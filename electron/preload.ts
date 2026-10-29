@@ -47,6 +47,11 @@ import {
   type QuickInputDesktopBridge,
   type QuickInputSubmission,
 } from "../shared/quick-input.js";
+import {
+  ONBOARDING_IPC,
+  type OnboardingDesktopBridge,
+  type OnboardingEvent,
+} from "../shared/onboarding.js";
 import type { RepoDesktopBridge } from "../shared/repo-ipc.js";
 import { PARALLEL_IPC } from "../shared/parallel-ipc.js";
 import type {
@@ -614,6 +619,21 @@ const parallel: ParallelDesktopBridge = Object.freeze({
     return () => ipcRenderer.removeListener(PARALLEL_IPC.changed, wrapped);
   },
 });
+const onboarding: OnboardingDesktopBridge = Object.freeze({
+  pendingStep: () => ipcRenderer.invoke(ONBOARDING_IPC.pendingStep),
+  installGjc: () => ipcRenderer.invoke(ONBOARDING_IPC.installGjc),
+  signIn: (providerId: string) => ipcRenderer.invoke(ONBOARDING_IPC.signIn, providerId),
+  answer: (text: string) => ipcRenderer.invoke(ONBOARDING_IPC.answer, text),
+  cancelSignIn: () => ipcRenderer.invoke(ONBOARDING_IPC.cancelSignIn),
+  dismiss: () => ipcRenderer.invoke(ONBOARDING_IPC.dismiss),
+  onEvent: (listener: (event: OnboardingEvent) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, payload: OnboardingEvent) => {
+      if (payload && typeof payload.type === "string") listener(payload);
+    };
+    ipcRenderer.on(ONBOARDING_IPC.event, wrapped);
+    return () => ipcRenderer.removeListener(ONBOARDING_IPC.event, wrapped);
+  },
+});
 // Main sends a gajae:// link once the document has loaded, which can be before the
 // app has subscribed. The link waits here instead of being dropped.
 let sessionShortcutListener: ((shortcut: SessionShortcut) => void) | undefined;
@@ -643,6 +663,7 @@ contextBridge.exposeInMainWorld(
     remote,
     terminal,
     quickInput,
+    onboarding,
     onCycleEffort: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on(DESKTOP_IPC.cycleEffort, wrapped);

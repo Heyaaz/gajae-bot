@@ -184,6 +184,11 @@ describe("checkEnvironment", () => {
     });
   });
 
+  it("knows the profile first-run setup picked for a provider", async () => {
+    const found = await rows({ ...ready, modelPreset: "claude-opus" });
+    expect(found["model-preset"]).toMatchObject({ status: "ok", detail: "claude-opus" });
+  });
+
   it("keeps gh and tailscale optional when they are not ready", async () => {
     const report = await checkEnvironment(
       context({

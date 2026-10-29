@@ -11,6 +11,7 @@ import type { ParallelDesktopBridge } from "../shared/parallel-ipc";
 import type { TerminalDesktopBridge } from "../shared/terminal-ipc";
 import type { SessionShortcut } from "../shared/settings-ipc";
 import type { QuickInputDesktopBridge } from "../shared/quick-input";
+import type { OnboardingDesktopBridge } from "../shared/onboarding";
 
 declare global {
   interface AgentControlDesktopBridge {
@@ -29,6 +30,8 @@ declare global {
     readonly parallel: ParallelDesktopBridge;
     readonly terminal: TerminalDesktopBridge;
     readonly quickInput: QuickInputDesktopBridge;
+    /** Absent from an older main or a window without first-run setup. */
+    readonly onboarding?: OnboardingDesktopBridge;
     onCycleEffort(listener: () => void): () => void;
     onAbortRun(listener: () => void): () => void;
     onSessionShortcut(

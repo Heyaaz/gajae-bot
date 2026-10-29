@@ -17,6 +17,8 @@ export interface DesktopState {
    * at launch; after that it lives only in settings.
    */
   environmentReady?: boolean
+  /** First-run setup finished or was dismissed; it does not open again. */
+  onboarded?: boolean
 }
 
 export class DesktopStateStore {
@@ -49,6 +51,7 @@ export class DesktopStateStore {
           ? { announcedAppVersion: value.announcedAppVersion }
           : {}),
         ...(value.environmentReady === true ? { environmentReady: true } : {}),
+        ...(value.onboarded === true ? { onboarded: true } : {}),
       }
     } catch {
       return {}

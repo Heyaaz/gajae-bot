@@ -12,6 +12,7 @@ import {
   type EnvironmentReport,
 } from "../shared/environment-check.js";
 import { compareGjcVersions } from "../shared/gjc-version.js";
+import { SIGN_IN_PROVIDERS } from "../shared/onboarding.js";
 import {
   findExecutable,
   firstExecutable,
@@ -178,7 +179,10 @@ export const ENVIRONMENT_CHECKS: readonly EnvironmentCheck[] = [
       const models = await context.readModelsFile();
       if (models && configuredProfileIds(models).includes(preset))
         return { detail: `${preset} · models.yml` };
-      if ((BUILT_IN_MODEL_PRESETS as readonly string[]).includes(preset))
+      if (
+        (BUILT_IN_MODEL_PRESETS as readonly string[]).includes(preset) ||
+        SIGN_IN_PROVIDERS.some((provider) => provider.preset === preset)
+      )
         return { detail: preset };
       return { problem: "unknown-preset", detail: preset };
     },

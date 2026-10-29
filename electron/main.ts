@@ -20,6 +20,7 @@ import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
+  type AgentControlPreferences,
   type AgentEvent,
   announcesSessionActivity,
   notificationDelivery,
@@ -66,7 +67,15 @@ import { desktopStatusRenderer } from "./desktop-status.js";
 import { electronStatusSurface } from "./desktop-status-surface.js";
 import { AppUpdateMonitor, githubRepository } from "./app-update.js";
 import { DesktopStateStore } from "./desktop-state-store.js";
-import { checkEnvironment, hostEnvironmentContext } from "./environment-check.js";
+import {
+  checkEnvironment,
+  hostEnvironmentContext,
+  runCommand,
+} from "./environment-check.js";
+import { installGjc } from "./gjc-installer.js";
+import { resolveGjcExecutable, runtimeEnvironment } from "./runtime-path.js";
+import { OnboardingService } from "./onboarding-service.js";
+import { registerOnboardingIpcHandlers } from "./onboarding-ipc-handlers.js";
 import { deepLinksInArgv, sessionShortcutForDeepLink } from "./deep-link.js";
 import { startDeepLinkSmoke } from "./deep-link-smoke.js";
 import { imageAttachments } from "./settings-ipc-handlers.js";
@@ -468,23 +477,26 @@ quickInput = new QuickInputWindow({
 const quickInputShortcut = new QuickInputShortcut(globalShortcut, () =>
   quickInput?.toggle(),
 );
+async function applyRuntimePreferences(
+  updated: AgentControlPreferences,
+): Promise<boolean> {
+  desktopManagement.setExecutable(
+    process.env.GJC_BIN || updated.gjcExecutable || "gjc",
+  );
+  await automationService.setGjcExecutable(
+    path.resolve(
+      process.env.GJC_BIN ||
+        updated.gjcExecutable ||
+        path.join(homedir(), ".bun/bin/gjc"),
+    ),
+  );
+  return gjcController.reconfigure(updated);
+}
 const unregisterSettingsIpc = registerSettingsIpcHandlers(
   settingsStore,
   attachmentStore,
   ipcSecurity,
-  async (updated) => {
-    desktopManagement.setExecutable(
-      process.env.GJC_BIN || updated.gjcExecutable || "gjc",
-    );
-    await automationService.setGjcExecutable(
-      path.resolve(
-        process.env.GJC_BIN ||
-          updated.gjcExecutable ||
-          path.join(homedir(), ".bun/bin/gjc"),
-      ),
-    );
-    return gjcController.reconfigure(updated);
-  },
+  applyRuntimePreferences,
   async () => {
     await gjcController.reconnect();
   },
@@ -564,6 +576,36 @@ void gjcController
   .then((sessions) => parallelRuns?.restore(sessions))
   .catch(() => undefined);
 const unregisterParallelIpc = registerParallelIpcHandlers(parallelRuns, ipcSecurity);
+const unregisterOnboardingIpc = registerOnboardingIpcHandlers(
+  new OnboardingService({
+    enabled: !smokeMode && !terminalSmokeMode && !deepLinkSmokeMode,
+    // A required environment check that passed once means GJC was already set up.
+    isDone: () => {
+      const state = desktopState.get();
+      return Boolean(state.onboarded || state.environmentReady);
+    },
+    markDone: () => desktopState.update({ onboarded: true }),
+    locateGjc: () =>
+      resolveGjcExecutable(
+        process.env.GJC_BIN || settingsStore.get().gjcExecutable || undefined,
+      ),
+    run: runCommand,
+    environment: () => runtimeEnvironment(),
+    install: (onProgress) => installGjc(onProgress),
+    reconnect: async () => {
+      await gjcController.reconnect();
+    },
+    applyModelPreset: async (modelPreset) => {
+      await applyRuntimePreferences(
+        settingsStore.save({ ...settingsStore.get(), modelPreset }),
+      );
+    },
+    openExternal: async (url) => {
+      if (new URL(url).protocol === "https:") await shell.openExternal(url);
+    },
+  }),
+  ipcSecurity,
+);
 const terminalIpc = registerTerminalIpcHandlers(ipcSecurity);
 
 function createWindow(): BrowserWindow {
@@ -1433,6 +1475,7 @@ app.on("before-quit", () => {
   unregisterRemoteIpc();
   unregisterRepoIpc();
   unregisterParallelIpc();
+  unregisterOnboardingIpc();
   terminalIpc.disposeAll();
   terminalIpc.unregister();
   unregisterEventStreamIpc();
