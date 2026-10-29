@@ -362,7 +362,9 @@ describe("session shortcuts from the main process", () => {
   // A function read, so the null written below does not narrow the probe for the checks after it.
   const shownSession = () => probe.composer?.sessionId;
 
-  it("opens a known session from another screen and ignores an unknown id", async () => {
+  const notice = () => host?.querySelector(".app-error span")?.textContent ?? null;
+
+  it("opens a known session from another screen and reports an unknown id", async () => {
     await mountApp();
     await act(async () => (probe.sidebar!.onOpenProjects as () => void)());
     probe.composer = null;
@@ -370,9 +372,40 @@ describe("session shortcuts from the main process", () => {
     await act(async () => shortcut!({ type: "open", sessionId: "missing" }));
     expect(shownSession()).toBeUndefined();
     expect(host!.querySelector(".workspace--empty")).toBeNull();
+    expect(notice()).toBe("링크가 가리키는 세션을 찾지 못했습니다.");
 
     await act(async () => shortcut!({ type: "open", sessionId: "s-2" }));
     expect(shownSession()).toBe("s-2");
+  });
+
+  it("holds a session link that arrives before the session list", async () => {
+    let releaseList: (sessions: AgentSession[]) => void = () => undefined;
+    const listed = new Promise<AgentSession[]>((resolve) => (releaseList = resolve));
+    const loaded = probe.sessions;
+    probe.sessions = listed as unknown as AgentSession[];
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(App)));
+    await vi.waitFor(() => expect(shortcut).toBeDefined());
+
+    await act(async () => shortcut!({ type: "open", sessionId: "s-2" }));
+    expect(notice()).toBeNull();
+
+    await act(async () => releaseList(loaded));
+    await vi.waitFor(() => expect(shownSession()).toBe("s-2"));
+    expect(notice()).toBeNull();
+  });
+
+  it("tells the user why a link was refused and opens nothing", async () => {
+    await mountApp();
+    await act(async () =>
+      shortcut!({ type: "invalidLink", reason: { kind: "path", path: "/no/such/folder" } }),
+    );
+    expect(notice()).toContain("/no/such/folder");
+    expect(probe.newSessionDialog).toBeNull();
+    expect(probe.createSession).not.toHaveBeenCalled();
+    expect(shownSession()).toBe("s-1");
   });
 
   it("creates at once for a plain new and waits for confirmation with a prefill", async () => {

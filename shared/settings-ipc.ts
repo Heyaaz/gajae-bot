@@ -37,6 +37,12 @@ export type NewSessionPrefill = {
   worktreeBranch?: string;
 };
 
+/** Why a gajae:// link was refused. `session` also covers an id the window does not know. */
+export type InvalidLinkReason =
+  | { kind: "path"; path: string }
+  | { kind: "prompt"; limit: number }
+  | { kind: "session" };
+
 /**
  * `new` without a prefill creates a session at once (⌘T). With a prefill it opens
  * the dialog instead, so text that arrived from outside waits for the user.
@@ -44,6 +50,7 @@ export type NewSessionPrefill = {
 export type SessionShortcut =
   | { type: "new"; prefill?: NewSessionPrefill }
   | { type: "open"; sessionId: string }
+  | { type: "invalidLink"; reason: InvalidLinkReason }
   | { type: "select"; index: number }
   | { type: "abort" };
 

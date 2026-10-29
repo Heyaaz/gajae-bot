@@ -567,6 +567,17 @@ const remote: RemoteDesktopBridge = Object.freeze({
     ipcRenderer.invoke(REMOTE_IPC.forgetDevice, deviceId),
   refresh: () => ipcRenderer.invoke(REMOTE_IPC.refresh),
 });
+// Main sends a gajae:// link once the document has loaded, which can be before the
+// app has subscribed. The link waits here instead of being dropped.
+let sessionShortcutListener: ((shortcut: SessionShortcut) => void) | undefined;
+const unheardSessionShortcuts: SessionShortcut[] = [];
+ipcRenderer.on(
+  DESKTOP_IPC.sessionShortcut,
+  (_event: Electron.IpcRendererEvent, shortcut: SessionShortcut) => {
+    if (sessionShortcutListener) sessionShortcutListener(shortcut);
+    else unheardSessionShortcuts.push(shortcut);
+  },
+);
 contextBridge.exposeInMainWorld(
   "agentControlDesktop",
   Object.freeze({
@@ -594,13 +605,12 @@ contextBridge.exposeInMainWorld(
       return () => ipcRenderer.removeListener(DESKTOP_IPC.abortRun, wrapped);
     },
     onSessionShortcut: (listener: (shortcut: SessionShortcut) => void) => {
-      const wrapped = (
-        _event: Electron.IpcRendererEvent,
-        shortcut: SessionShortcut,
-      ) => listener(shortcut);
-      ipcRenderer.on(DESKTOP_IPC.sessionShortcut, wrapped);
-      return () =>
-        ipcRenderer.removeListener(DESKTOP_IPC.sessionShortcut, wrapped);
+      sessionShortcutListener = listener;
+      for (const shortcut of unheardSessionShortcuts.splice(0)) listener(shortcut);
+      return () => {
+        if (sessionShortcutListener === listener)
+          sessionShortcutListener = undefined;
+      };
     },
   }),
 );

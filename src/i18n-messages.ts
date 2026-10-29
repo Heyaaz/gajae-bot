@@ -700,4 +700,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "리뷰 보내기": "Send review",
   "코멘트 수정": "Edit comment",
   "수정": "Edit",
+  "링크의 경로가 없거나 폴더가 아닙니다. 절대 경로로 된 폴더여야 합니다: {path}": "The link's path does not exist or is not a folder. It must be an absolute path to a folder: {path}",
+  "링크의 첫 요청이 너무 깁니다. {limit}자까지 받을 수 있습니다.": "The link's first request is too long. Up to {limit} characters are accepted.",
+  "링크가 가리키는 세션을 찾지 못했습니다.": "The session this link points to was not found.",
 };

@@ -114,7 +114,10 @@ import {
   summarizeSessionAttention,
 } from "../../shared/desktop-integration";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
-import type { NewSessionPrefill } from "../../shared/settings-ipc";
+import type {
+  InvalidLinkReason,
+  NewSessionPrefill,
+} from "../../shared/settings-ipc";
 
 interface ShellSendOptions {
   quiet?: boolean;
@@ -348,6 +351,18 @@ export function syncAppBadge(
   else void nav.clearAppBadge?.().catch(() => undefined);
 }
 
+function invalidLinkMessage(reason: InvalidLinkReason): string {
+  if (reason.kind === "path")
+    return t("링크의 경로가 없거나 폴더가 아닙니다. 절대 경로로 된 폴더여야 합니다: {path}", {
+      path: reason.path,
+    });
+  if (reason.kind === "prompt")
+    return t("링크의 첫 요청이 너무 깁니다. {limit}자까지 받을 수 있습니다.", {
+      limit: reason.limit,
+    });
+  return t("링크가 가리키는 세션을 찾지 못했습니다.");
+}
+
 export default function App() {
   const language = useLanguage();
   const backend = useAgentBackend();
@@ -557,6 +572,11 @@ export default function App() {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
   const [appError, setAppError] = useState("");
+  // A session link that arrived before the first session list waits for it, so a
+  // link that started the app is not reported missing before the list arrives.
+  const sessionLinkRef = useRef<{ listed: boolean; waiting?: string }>({
+    listed: false,
+  });
   // On a phone the session list is a drawer, not a column: 76px of permanent rail
   // is a fifth of the screen. Wide windows never see this control.
   const [navOpen, setNavOpen] = useState(false);
@@ -1111,10 +1131,12 @@ export default function App() {
     const loadSessions = (initial: boolean): void => {
       if (listing || !active) return;
       listing = true;
+      let listed: readonly AgentSession[] = [];
       void backend
         .listSessions()
         .then((loadedSessions) => {
           if (!active) return;
+          listed = loadedSessions;
           for (const session of loadedSessions) observeSessionRun(session);
           setSessions((current) =>
             mergeDiscoveredSessions(
@@ -1129,7 +1151,16 @@ export default function App() {
             );
         })
         .catch(() => undefined)
-        .finally(() => { listing = false; });
+        .finally(() => {
+          listing = false;
+          if (!initial || !active) return;
+          const link = sessionLinkRef.current;
+          link.listed = true;
+          if (link.waiting === undefined) return;
+          const sessionId = link.waiting;
+          link.waiting = undefined;
+          openLinkedSession(sessionId, [...sessionsRef.current, ...listed]);
+        });
     };
     // Poll only sessions already in the three-session transcript cache. A bounded page
     // repairs missed watcher events without ever turning a historical view into a tail.
@@ -1986,6 +2017,15 @@ export default function App() {
     );
   }, []);
 
+  const openLinkedSession = useCallback(
+    (sessionId: string, known: readonly AgentSession[]): void => {
+      if (known.some((session) => session.id === sessionId))
+        selectSession(sessionId);
+      else setAppError(invalidLinkMessage({ kind: "session" }));
+    },
+    [selectSession],
+  );
+
   const openNewSessionDialog = useCallback(
     (prefill?: NewSessionPrefill): void => {
       setNewSessionRequest((current) => ({
@@ -2115,12 +2155,13 @@ export default function App() {
           return;
         }
         if (shortcut.type === "open") {
-          if (
-            sessionsRef.current.some(
-              (session) => session.id === shortcut.sessionId,
-            )
-          )
-            selectSession(shortcut.sessionId);
+          if (sessionLinkRef.current.listed)
+            openLinkedSession(shortcut.sessionId, sessionsRef.current);
+          else sessionLinkRef.current.waiting = shortcut.sessionId;
+          return;
+        }
+        if (shortcut.type === "invalidLink") {
+          setAppError(invalidLinkMessage(shortcut.reason));
           return;
         }
         const session = shortcutSessions[shortcut.index];
@@ -2164,6 +2205,7 @@ export default function App() {
     connection.workspace,
     createSession,
     dismissibleSurfaceOpen,
+    openLinkedSession,
     openNewSessionDialog,
     selectSession,
     selectedSession?.workspace,

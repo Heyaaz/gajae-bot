@@ -169,6 +169,26 @@ desktop slash commands are not a complete copy of the CLI command surface.
 | Esc         | Abort the current run |
 | `Shift+Tab` | Cycle effort          |
 
+### Links from other apps
+
+Raycast, Alfred, a shell `open`, or any other app can hand Gajae a link:
+
+| Link | Action |
+| ---- | ------ |
+| `gajae://new?prompt=…&path=…` | Opens the new-session dialog with the folder and first request filled in |
+| `gajae://session/<id>` | Opens that session |
+
+Both parameters of `new` are optional. The dialog creates nothing until it is
+confirmed, and the first request is placed in the new session's message box, never
+sent. `path` must be an absolute path to an existing folder; a relative or missing
+path, a request over 20,000 characters, or a session id the window does not know is
+refused with a notice instead of opening anything. Other `gajae://` links are
+ignored. A link works whether Gajae is running or not: one that starts the app is
+held until the window has loaded, and a second launch hands its link to the running
+instance. The packaged app registers the scheme in its `Info.plist`; a development
+`electron .` run does not register it, and `npm run desktop:deep-link-smoke` drives
+the handlers instead.
+
 ### Session delete
 
 Delete targets saved history, not its host process and not just the sidebar row.

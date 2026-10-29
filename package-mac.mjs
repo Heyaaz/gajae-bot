@@ -79,6 +79,8 @@ const [outputDirectory] = await packager({
   },
   prune: true,
   appBundleId: 'com.gajae.desktop',
+  // Info.plist CFBundleURLTypes: macOS routes gajae:// links to this bundle.
+  protocols: [{ name: 'Gajae', schemes: ['gajae'] }],
   appVersion: packageJson.version,
   icon: path.join(root, 'src/assets/gajae-icon'),
   // The menu bar image is derived from this at runtime; see menuBarIconPath.

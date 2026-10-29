@@ -41,7 +41,7 @@ describe("IpcSecurity", () => {
       rendererLaunchConfig(
         true,
         { VITE_DEV_SERVER_URL: "https://attacker.example" },
-        ["Gajae", "--smoke", "--gjc-smoke"],
+        ["Gajae", "--smoke", "--gjc-smoke", "--deep-link-smoke"],
       ),
     ).toEqual({
       developmentUrl: undefined,
@@ -49,6 +49,7 @@ describe("IpcSecurity", () => {
       gjcSmokeMode: false,
       smokeMode: false,
       terminalSmokeMode: false,
+      deepLinkSmokeMode: false,
     });
     expect(
       rendererLaunchConfig(
@@ -62,11 +63,16 @@ describe("IpcSecurity", () => {
       gjcSmokeMode: false,
       smokeMode: true,
       terminalSmokeMode: false,
+      deepLinkSmokeMode: false,
     });
     expect(rendererLaunchConfig(false, {}, ["electron", "--terminal-smoke"])).toMatchObject({
       mockSmokeMode: false,
       smokeMode: false,
       terminalSmokeMode: true,
+    });
+    expect(rendererLaunchConfig(false, {}, ["electron", ".", "--deep-link-smoke"])).toMatchObject({
+      smokeMode: false,
+      deepLinkSmokeMode: true,
     });
   });
 

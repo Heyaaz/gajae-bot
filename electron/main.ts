@@ -9,6 +9,7 @@ import {
   powerSaveBlocker,
   shell,
   type MenuItemConstructorOptions,
+  type WebContents,
 } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -60,15 +61,28 @@ import { electronStatusSurface } from "./desktop-status-surface.js";
 import { AppUpdateMonitor, githubRepository } from "./app-update.js";
 import { DesktopStateStore } from "./desktop-state-store.js";
 import { checkEnvironment, hostEnvironmentContext } from "./environment-check.js";
+import { deepLinksInArgv, sessionShortcutForDeepLink } from "./deep-link.js";
+import { startDeepLinkSmoke } from "./deep-link-smoke.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode, terminalSmokeMode } =
-  rendererLaunchConfig(app.isPackaged);
+const {
+  developmentUrl,
+  mockSmokeMode,
+  gjcSmokeMode,
+  smokeMode,
+  terminalSmokeMode,
+  deepLinkSmokeMode,
+} = rendererLaunchConfig(app.isPackaged);
 if (terminalSmokeMode && !process.env.GAJAE_USER_DATA_DIR?.trim()) {
   process.env.GAJAE_USER_DATA_DIR = path.join(tmpdir(), "gajae-terminal-smoke");
 }
+if (deepLinkSmokeMode && !process.env.GAJAE_USER_DATA_DIR?.trim()) {
+  process.env.GAJAE_USER_DATA_DIR = path.join(tmpdir(), `gajae-deep-link-smoke-${process.pid}`);
+}
 const mockBackend =
-  !app.isPackaged && !developmentUrl && (mockSmokeMode || terminalSmokeMode);
+  !app.isPackaged &&
+  !developmentUrl &&
+  (mockSmokeMode || terminalSmokeMode || deepLinkSmokeMode);
 
 app.setName("Gajae");
 const isolatedUserData = process.env.GAJAE_USER_DATA_DIR?.trim();
@@ -78,6 +92,13 @@ app.setPath(
     ? path.resolve(isolatedUserData)
     : path.join(app.getPath("appData"), "Agent Control"),
 );
+// The lock lives in userData, so it is taken only after that path is final: an
+// isolated GAJAE_USER_DATA_DIR run has its own lock. The UI smokes skip it so a
+// developer's running Gajae cannot make them exit before they start.
+if (!smokeMode && !terminalSmokeMode && !app.requestSingleInstanceLock()) {
+  console.log("Gajae is already running; the launch was handed to it.");
+  app.exit(0);
+}
 const appIconPath = app.isPackaged
   ? path.join(process.resourcesPath, "electron.icns")
   : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
@@ -217,6 +238,55 @@ function broadcastAgentEvent(event: AgentEvent): void {
   lastNotification = { body: sessionActivityBody(event, settingsStore.get().language), at: Date.now() };
 }
 
+// gajae:// links wait here until a window has loaded: macOS delivers the link of a
+// cold launch before the app is ready, and with every window closed it arrives
+// while there is none.
+const pendingDeepLinks: SessionShortcut[] = [];
+const loadedRenderers = new WeakSet<WebContents>();
+
+function receiveDeepLink(url: string): void {
+  const shortcut = sessionShortcutForDeepLink(url, validDirectory);
+  if (!shortcut) return;
+  pendingDeepLinks.push(shortcut);
+  deliverDeepLinks();
+}
+
+function deliverDeepLinks(): void {
+  if (!pendingDeepLinks.length || !app.isReady()) return;
+  const window =
+    BrowserWindow.getFocusedWindow() ??
+    BrowserWindow.getAllWindows()[0] ??
+    createWindow();
+  revealWindow(window);
+  if (!loadedRenderers.has(window.webContents)) return;
+  for (const shortcut of pendingDeepLinks.splice(0))
+    window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut);
+}
+
+function revealWindow(window: BrowserWindow): void {
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+}
+
+app.on("open-url", (event, url) => {
+  event.preventDefault();
+  receiveDeepLink(url);
+});
+
+app.on("second-instance", (_event, argv) => {
+  const links = deepLinksInArgv(argv);
+  if (links.length) {
+    for (const url of links) receiveDeepLink(url);
+    return;
+  }
+  if (!app.isReady()) return;
+  revealWindow(BrowserWindow.getAllWindows()[0] ?? createWindow());
+});
+
+for (const url of deepLinksInArgv(process.argv)) receiveDeepLink(url);
+if (deepLinkSmokeMode) startDeepLinkSmoke();
+
 function sendSessionShortcut(shortcut: SessionShortcut): void {
   const window =
     BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
@@ -224,25 +294,11 @@ function sendSessionShortcut(shortcut: SessionShortcut): void {
   window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut);
 }
 
-function revealWindow(): BrowserWindow {
-  const existing = BrowserWindow.getAllWindows()[0];
-  const window =
-    existing && !existing.isDestroyed() ? existing : createWindow();
-  if (window.isMinimized()) window.restore();
-  window.show();
-  window.focus();
-  return window;
-}
-
+// A menu bar click takes the deep-link queue: it may have to create the window,
+// and the queue already waits for that window to load before sending.
 function openSessionFromMenuBar(sessionId: string): void {
-  const window = revealWindow();
-  const shortcut: SessionShortcut = { type: "open", sessionId };
-  // A window the click had to create has no listener yet.
-  if (window.webContents.isLoading())
-    window.webContents.once("did-finish-load", () =>
-      window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut),
-    );
-  else window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut);
+  pendingDeepLinks.push({ type: "open", sessionId });
+  deliverDeepLinks();
 }
 
 function installApplicationMenu(): void {
@@ -439,6 +495,11 @@ function createWindow(): BrowserWindow {
   window.webContents.once("destroyed", () =>
     attachmentStore.revokeSender(senderId),
   );
+
+  window.webContents.on("did-finish-load", () => {
+    loadedRenderers.add(window.webContents);
+    deliverDeepLinks();
+  });
 
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
@@ -1228,7 +1289,8 @@ app.whenReady().then(() => {
     electronStatusSurface({
       iconPath: menuBarIconPath,
       openSession: openSessionFromMenuBar,
-      openApp: () => void revealWindow(),
+      openApp: () =>
+        revealWindow(BrowserWindow.getAllWindows()[0] ?? createWindow()),
     }),
   );
   renderDesktopStatus(desktopIntegration.state());

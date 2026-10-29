@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import ts from "typescript";
 import type { AgentEvent } from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
+import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 
 type IpcInvoke = (channel: string, ...args: unknown[]) => Promise<unknown>;
 
@@ -29,7 +30,7 @@ function createHarness(invoke: IpcInvoke, fetchMock: typeof fetch) {
     "../shared/gjc-ipc.js": { GJC_IPC },
     "../shared/settings-ipc.js": {
       SETTINGS_IPC: {},
-      DESKTOP_IPC: {},
+      DESKTOP_IPC,
     },
     "../shared/desktop-services-ipc.js": { DESKTOP_SERVICES_IPC: { management: {} } },
     "../shared/productivity-ipc.js": { PRODUCTIVITY_IPC: {} },
@@ -69,12 +70,22 @@ function createHarness(invoke: IpcInvoke, fetchMock: typeof fetch) {
     setTimeout,
     TextDecoder,
   });
-  return exposed.agentControlDesktop as {
-    gjc: {
-      onEvent: (listener: (event: AgentEvent) => void) => () => void;
-      watchTranscripts: (sessionIds: readonly string[]) => void;
-    };
+  const sendFromMain = (channel: string, payload: unknown): void => {
+    for (const [registered, handler] of ipcRenderer.on.mock.calls as Array<
+      [string, (event: unknown, payload: unknown) => void]
+    >)
+      if (registered === channel) handler({}, payload);
   };
+  return Object.assign(
+    Object.create(exposed.agentControlDesktop as object) as {
+      gjc: {
+        onEvent: (listener: (event: AgentEvent) => void) => () => void;
+        watchTranscripts: (sessionIds: readonly string[]) => void;
+      };
+      onSessionShortcut: (listener: (shortcut: SessionShortcut) => void) => () => void;
+    },
+    { sendFromMain },
+  );
 }
 
 function responseStream(): { body: ReadableStream<Uint8Array>; controller: StreamController } {
@@ -245,5 +256,24 @@ describe("preload SSE event handling", () => {
     unsubscribe();
     stream.controller.close();
     vi.useRealTimers();
+  });
+});
+
+describe("preload session shortcuts", () => {
+  it("holds a link that arrives before the app subscribes and delivers it once", () => {
+    const bridge = createHarness(vi.fn(), vi.fn<typeof fetch>());
+    const early: SessionShortcut = { type: "open", sessionId: "s-1" };
+    bridge.sendFromMain(DESKTOP_IPC.sessionShortcut, early);
+
+    const first: SessionShortcut[] = [];
+    const unsubscribe = bridge.onSessionShortcut((shortcut) => first.push(shortcut));
+    expect(first).toEqual([early]);
+    unsubscribe();
+
+    const second: SessionShortcut[] = [];
+    bridge.onSessionShortcut((shortcut) => second.push(shortcut));
+    bridge.sendFromMain(DESKTOP_IPC.sessionShortcut, { type: "abort" });
+    expect(second).toEqual([{ type: "abort" }]);
+    expect(first).toEqual([early]);
   });
 });

@@ -10,6 +10,8 @@ export interface RendererLaunchConfig {
   smokeMode: boolean;
   /** Loads the mock backend without the assertion harness, for the terminal view. */
   terminalSmokeMode: boolean;
+  /** Loads the mock backend and drives gajae:// links through the real handlers. */
+  deepLinkSmokeMode: boolean;
 }
 
 export function rendererLaunchConfig(
@@ -24,17 +26,20 @@ export function rendererLaunchConfig(
       gjcSmokeMode: false,
       smokeMode: false,
       terminalSmokeMode: false,
+      deepLinkSmokeMode: false,
     };
   const developmentUrl = env.VITE_DEV_SERVER_URL?.trim() || undefined;
   const mockSmokeMode = argv.includes("--smoke");
   const gjcSmokeMode = argv.includes("--gjc-smoke");
   const terminalSmokeMode = argv.includes("--terminal-smoke");
+  const deepLinkSmokeMode = argv.includes("--deep-link-smoke");
   return {
     developmentUrl,
     mockSmokeMode,
     gjcSmokeMode,
     smokeMode: mockSmokeMode || gjcSmokeMode,
     terminalSmokeMode,
+    deepLinkSmokeMode,
   };
 }
 
