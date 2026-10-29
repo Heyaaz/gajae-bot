@@ -78,6 +78,7 @@ import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { goalPollDelay } from "./goal-poll";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
+  DeferredInboxView,
   DeferredProjectList,
   DeferredRepoView,
   DeferredSettingsDialog,
@@ -106,7 +107,10 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   DEFAULT_TOOL_VIEW_MODE,
 } from "../../shared/agent-contract";
-import { DEFAULT_DESKTOP_INTEGRATION } from "../../shared/desktop-integration";
+import {
+  DEFAULT_DESKTOP_INTEGRATION,
+  summarizeSessionAttention,
+} from "../../shared/desktop-integration";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
 
@@ -559,10 +563,11 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     ALL_PROJECTS_ID,
   );
-  // The center area shows one of three things. A session pick always returns to the
-  // conversation; the repository screen and the project list are entered on purpose.
+  // The center area shows one of four things. A session pick always returns to the
+  // conversation; the repository screen, the project list and the inbox are entered
+  // on purpose.
   const [centerView, setCenterView] = useState<
-    "conversation" | "repository" | "projects"
+    "conversation" | "repository" | "projects" | "inbox"
   >("conversation");
   const [surface, setSurface] = useState<"chat" | "terminal">("chat");
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -2057,7 +2062,10 @@ export default function App() {
   // close the surface, and cancelling a run behind the dialog the user is reading is
   // never what they asked for. The dialogs only bind Escape on their own fields, so
   // with focus anywhere else in the dialog the key used to reach the abort shortcut.
+  // The inbox covers the conversation, so Escape there must close it instead of
+  // cancelling a run the user cannot see.
   const dismissibleSurfaceOpen =
+    centerView === "inbox" ||
     searchOpen ||
     newSessionRequest !== null ||
     resumeOpen ||
@@ -2809,6 +2817,47 @@ export default function App() {
   const openRepository = useCallback(() => setCenterView("repository"), []);
   const openProjects = useCallback(() => setCenterView("projects"), []);
   const openConversation = useCallback(() => setCenterView("conversation"), []);
+  const toggleInbox = useCallback(() => {
+    // On a phone the rail is a drawer over the content; the inbox is what the
+    // user asked to see, so the drawer gets out of its way.
+    setNavOpen(false);
+    setCenterView((view) => (view === "inbox" ? "conversation" : "inbox"));
+  }, []);
+  // Picking the session already selected does not change the selection, so the
+  // effect that marks a selection read would not run for it.
+  const openInboxSession = useCallback(
+    (sessionId: string) => {
+      if (selectedIdRef.current === sessionId)
+        void backend.markSessionRead(sessionId).catch(() => undefined);
+      selectSession(sessionId);
+    },
+    [backend, selectSession],
+  );
+  const inboxCount = useMemo(() => {
+    const attention = summarizeSessionAttention(sessions);
+    return attention.needsInput + attention.unreadCompleted;
+  }, [sessions]);
+
+  // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
+  // Option turns the key into a dead key on macOS, so `key` is not "u".
+  useEffect(() => {
+    function onInboxShortcut(event: globalThis.KeyboardEvent): void {
+      if (
+        !event.metaKey ||
+        !event.altKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.code !== "KeyU" ||
+        surfaceRef.current === "terminal"
+      )
+        return;
+      event.preventDefault();
+      toggleInbox();
+    }
+    window.addEventListener("keydown", onInboxShortcut);
+    return () => window.removeEventListener("keydown", onInboxShortcut);
+  }, [toggleInbox]);
+
   const openRepositoryFor = useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
     setCenterView("repository");
@@ -2964,6 +3013,9 @@ export default function App() {
         onProjectChange={changeProject}
         onOpenRepository={openRepository}
         onOpenProjects={openProjects}
+        inboxCount={inboxCount}
+        inboxOpen={centerView === "inbox"}
+        onToggleInbox={toggleInbox}
         onOpenProjectGithub={openProjectGithub}
         onOpenProjectFolder={openProjectFolder}
         searchQuery={searchQuery}
@@ -3012,6 +3064,15 @@ export default function App() {
               {t("설정 열기")} </button>
           </div>
         </main>
+      ) : centerView === "inbox" ? (
+        <DeferredInboxView
+          sessions={sessions}
+          projects={projectGroups}
+          transcripts={transcripts}
+          automations={window.agentControlDesktop?.automations}
+          onOpenSession={openInboxSession}
+          onClose={openConversation}
+        />
       ) : centerView === "projects" ? (
         <DeferredProjectList
           projects={projectGroups}

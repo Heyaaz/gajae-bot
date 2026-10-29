@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, afterEach } from "vitest";
@@ -100,10 +102,10 @@ describe("Sidebar memoization", () => {
     expect(String(marker)).toBe("Symbol(react.memo)");
   });
 
-  it("keeps the search row to two cells so nothing wraps", () => {
-    // .sidebar-actions is a two-column grid: search plus one 32px button. A third
-    // child wrapped onto its own line, so the + button ate a full row of the rail
-    // while the search field stayed short of the edge.
+  it("keeps the search row to one cell per grid column so nothing wraps", async () => {
+    // .sidebar-actions is a grid: search plus fixed 32px buttons. A child the grid
+    // has no column for wrapped onto its own line, so the + button ate a full row
+    // of the rail while the search field stayed short of the edge.
     const markup = renderToStaticMarkup(
       createElement(Sidebar, props([session(0)])),
     );
@@ -111,8 +113,18 @@ describe("Sidebar memoization", () => {
       /<div class="sidebar-actions">([\s\S]*?)<div class="project-bar">/u,
     )?.[1];
     expect(row).toBeTruthy();
-    expect(row!.match(/<button/gu) ?? []).toHaveLength(1);
+    const css = await readFile(
+      path.resolve(__dirname, "../App.css"),
+      "utf8",
+    );
+    const columns = css
+      .match(/\.sidebar-actions \{[^}]*grid-template-columns:([^;]+);/u)?.[1]
+      ?.trim()
+      .split(/\s+(?![^(]*\))/u);
+    const buttons = row!.match(/<button/gu) ?? [];
+    expect(buttons.length + 1).toBe(columns?.length);
     expect(row).toContain('title="새 Gajae 세션"');
+    expect(row).toContain('title="Inbox (⌥⌘U)"');
     // Resume moved to the footer, where a label fits.
     expect(row).not.toContain("지난 세션");
     expect(markup).toContain("지난 세션 이어서 진행");

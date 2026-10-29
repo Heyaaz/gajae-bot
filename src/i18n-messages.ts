@@ -642,4 +642,11 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "앱 전체에 표시할 언어를 선택합니다.": "Choose the language used across the app.",
   "첫 요청": "First request",
   "세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.": "Placed in the message box once the session is created. You can edit it before sending.",
+  "Inbox (⌥⌘U)": "Inbox (⌥⌘U)",
+  "새로 완료": "Newly finished",
+  "자동화": "Automation",
+  "{0}개 항목": "{0} items",
+  "출력이 없습니다.": "No output.",
+  "자동화 실행 결과를 읽지 못했습니다.": "Could not read automation run results.",
+  "지금 확인할 세션이 없습니다.": "Nothing needs your attention right now.",
 };

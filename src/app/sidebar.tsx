@@ -8,6 +8,7 @@ import {
   FolderGit2,
   FolderOpen,
   GitFork,
+  Inbox,
   Layers,
   MoreHorizontal,
   Pencil,
@@ -249,6 +250,10 @@ export interface SidebarProps {
   onOpenRepository: () => void;
   /** Opens the project list, which is what 전체 프로젝트 can offer instead. */
   onOpenProjects: () => void;
+  /** Sessions across every project that wait on the user or finished unseen. */
+  inboxCount: number;
+  inboxOpen: boolean;
+  onToggleInbox: () => void;
   /** Right-click helpers: the browsable GitHub page and the local folder. */
   onOpenProjectGithub: () => void;
   onOpenProjectFolder: () => void;
@@ -288,6 +293,9 @@ function SidebarView({
   onProjectChange,
   onOpenRepository,
   onOpenProjects,
+  inboxCount,
+  inboxOpen,
+  onToggleInbox,
   onOpenProjectGithub,
   onOpenProjectFolder,
   searchQuery,
@@ -443,6 +451,21 @@ function SidebarView({
           />
           <kbd>⌘K</kbd>
         </label>
+        <button
+          className={`icon-button inbox-entry ${inboxOpen ? "is-active" : ""}`}
+          type="button"
+          title={t("Inbox (⌥⌘U)")}
+          aria-label={t("Inbox (⌥⌘U)")}
+          aria-pressed={inboxOpen}
+          onClick={onToggleInbox}
+        >
+          <Inbox size={17} />
+          {inboxCount > 0 && (
+            <span className="inbox-entry__count" aria-hidden="true">
+              {inboxCount > 99 ? "99+" : inboxCount}
+            </span>
+          )}
+        </button>
         <button
           className="icon-button"
           type="button"

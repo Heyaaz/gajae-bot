@@ -14,6 +14,9 @@ const ProjectListLazy = lazy(() =>
 const RepoViewLazy = lazy(() =>
   import("./repo-view").then((mod) => ({ default: mod.RepoView })),
 );
+const InboxViewLazy = lazy(() =>
+  import("./inbox-view").then((mod) => ({ default: mod.InboxView })),
+);
 const SettingsDialogLazy = lazy(() =>
   import("./settings").then((mod) => ({ default: mod.SettingsDialog })),
 );
@@ -36,6 +39,12 @@ export function DeferredRepoView(
   props: ComponentProps<typeof import("./repo-view").RepoView>,
 ) {
   return whenMounted(<RepoViewLazy {...props} />);
+}
+
+export function DeferredInboxView(
+  props: ComponentProps<typeof import("./inbox-view").InboxView>,
+) {
+  return whenMounted(<InboxViewLazy {...props} />);
 }
 
 export function DeferredSettingsDialog(
