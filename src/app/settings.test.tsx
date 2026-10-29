@@ -212,6 +212,8 @@ describe("settings desktop tab", () => {
       settings: {
         getPreferences: async () => loaded,
         setDesktopIntegration,
+        getAppUpdateStatus: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
+        checkAppUpdate: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
       },
     };
     const host = document.createElement("div");
@@ -260,6 +262,13 @@ describe("settings desktop tab", () => {
         dockBadge: false,
       });
       expect(toggle("메뉴바 상태 표시")?.checked).toBe(false);
+      await act(async () => toggle("Gajae 업데이트 확인")?.click());
+      expect(setDesktopIntegration).toHaveBeenLastCalledWith({
+        ...DEFAULT_DESKTOP_INTEGRATION,
+        menuBarStatus: false,
+        dockBadge: false,
+        checkAppUpdates: false,
+      });
     } finally {
       act(() => root.unmount());
       host.remove();
