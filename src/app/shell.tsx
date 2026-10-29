@@ -9,6 +9,7 @@ import type {
   AgentCommand,
   AgentConfigOption,
   AgentControlPreferences,
+  AgentEvent,
   AgentSession,
   BackendConnection,
   MessageInput,
@@ -33,7 +34,7 @@ import {
 import { getLanguage, t, useLanguage } from "../i18n";
 import { Menu, Plus, X } from "lucide-react";
 import { TerminalView } from "./terminal-view";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   Composer,
   releaseQueuedSession,
@@ -72,7 +73,7 @@ import { useComposerModel } from "./use-composer-model";
 import { useCreateSession } from "./use-create-session";
 import { useSessionRemoval } from "./use-session-removal";
 import { useProjectModel } from "./use-project-model";
-import { createBackendEventHandler } from "./backend-events";
+import { createBackendEventHandler, type BackendEventContext } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
 import { useMessageDelivery } from "./use-message-delivery";
@@ -351,6 +352,42 @@ export default function App() {
     };
   }, []);
 
+  // The subscription and the polling below live as long as `backend`. These run the
+  // latest render's functions each time they fire, not the ones from the render
+  // that subscribed.
+  const onBackendEvent = useEffectEvent(
+    (
+      event: AgentEvent,
+      local: Pick<BackendEventContext, "observeSessionRun" | "refreshTranscript">,
+    ): void =>
+      createBackendEventHandler({
+        setConnection,
+        setSessions,
+        setTranscripts,
+        setCommands,
+        setConfigOptions,
+        setMessageDeliveryRevision,
+        messageDeliveryTrackerRef,
+        transcriptsRef,
+        transcriptPageStatesRef,
+        transcriptRevisionsRef,
+        selectedIdRef,
+        forgetSession,
+        tracksTranscriptSession,
+        noteTranscriptEvent,
+        updateRequestSummaries,
+        mergeLiveTranscriptItems,
+        ...local,
+      })(event),
+  );
+  const openListedSession = useEffectEvent(
+    (sessionId: string, known: readonly AgentSession[]): void =>
+      openLinkedSession(sessionId, known),
+  );
+  const readTranscriptTail = useEffectEvent(
+    (id: string): Promise<void> => refreshTranscriptPage(id),
+  );
+
   useEffect(() => {
     let active = true;
     void backend.getConnection().then((currentConnection) => {
@@ -438,7 +475,7 @@ export default function App() {
           if (link.waiting === undefined) return;
           const sessionId = link.waiting;
           link.waiting = undefined;
-          openLinkedSession(sessionId, [...sessionsRef.current, ...listed]);
+          openListedSession(sessionId, [...sessionsRef.current, ...listed]);
         });
     };
     // Poll only sessions already in the three-session transcript cache. A bounded page
@@ -453,7 +490,7 @@ export default function App() {
       }
       refreshingTranscripts.add(id);
       const startedAtVersion = transcriptEventVersionsRef.current.get(id) ?? 0;
-      void refreshTranscriptPage(id)
+      void readTranscriptTail(id)
         .catch(() => undefined)
         .finally(() => {
           refreshingTranscripts.delete(id);
@@ -504,27 +541,8 @@ export default function App() {
     };
     document.addEventListener("visibilitychange", refreshOnVisible);
 
-    const unsubscribe = backend.subscribe(
-      createBackendEventHandler({
-        setConnection,
-        setSessions,
-        setTranscripts,
-        setCommands,
-        setConfigOptions,
-        setMessageDeliveryRevision,
-        messageDeliveryTrackerRef,
-        transcriptsRef,
-        transcriptPageStatesRef,
-        transcriptRevisionsRef,
-        selectedIdRef,
-        observeSessionRun,
-        forgetSession,
-        tracksTranscriptSession,
-        noteTranscriptEvent,
-        updateRequestSummaries,
-        mergeLiveTranscriptItems,
-        refreshTranscript,
-      }),
+    const unsubscribe = backend.subscribe((event) =>
+      onBackendEvent(event, { observeSessionRun, refreshTranscript }),
     );
 
     return () => {
