@@ -5,6 +5,7 @@ import type {
   QuickInputCapture,
   QuickInputDesktopBridge,
 } from "../../shared/quick-input";
+import { imeOwnsKey } from "../composer-utils";
 import { t } from "../i18n";
 import { humanErrorMessage } from "./format";
 import { projectNameOf } from "./project-model";
@@ -32,6 +33,8 @@ export function QuickInput({ bridge }: { bridge: QuickInputDesktopBridge }) {
   const [notice, setNotice] = useState<Notice>({ kind: "none" });
   const [busy, setBusy] = useState<"capturing" | "submitting" | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const composingRef = useRef(false);
+  const compositionEndedAtRef = useRef(Number.NEGATIVE_INFINITY);
 
   useEffect(() => {
     const refresh = () => {
@@ -96,11 +99,19 @@ export function QuickInput({ bridge }: { bridge: QuickInputDesktopBridge }) {
       void bridge.dismiss();
       return;
     }
-    // Enter that confirms a Korean or Japanese composition is not a submit.
+    // Enter that confirms a Korean or Japanese composition is not a submit, and
+    // Enter on the camera button or project select belongs to that control.
     if (
       event.key === "Enter" &&
       !event.shiftKey &&
-      !event.nativeEvent.isComposing
+      event.target === textareaRef.current &&
+      !imeOwnsKey({
+        isComposing: event.nativeEvent.isComposing,
+        keyCode: event.keyCode,
+        composing: composingRef.current,
+        compositionEndedAt: compositionEndedAtRef.current,
+        now: performance.now(),
+      })
     ) {
       event.preventDefault();
       void submit();
@@ -108,7 +119,17 @@ export function QuickInput({ bridge }: { bridge: QuickInputDesktopBridge }) {
   }
 
   return (
-    <main className="quick-input" onKeyDown={handleKeyDown}>
+    <main
+      className="quick-input"
+      onKeyDown={handleKeyDown}
+      onCompositionStart={() => {
+        composingRef.current = true;
+      }}
+      onCompositionEnd={() => {
+        composingRef.current = false;
+        compositionEndedAtRef.current = performance.now();
+      }}
+    >
       <textarea
         ref={textareaRef}
         autoFocus

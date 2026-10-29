@@ -379,6 +379,24 @@ export const IME_COMMIT_WINDOW_MS = 400;
 // of the Enter that ended the composition, rather than as a fresh keypress.
 export const IME_FOLLOWUP_WINDOW_MS = 100;
 
+// Whether a keydown still belongs to an IME: mid-composition (any of the signals
+// the Korean IME raises, keyCode 229 included) or the second delivery of the
+// Enter that just ended one.
+export function imeOwnsKey(input: {
+  isComposing: boolean;
+  keyCode: number;
+  composing: boolean;
+  compositionEndedAt: number;
+  now: number;
+}): boolean {
+  return (
+    input.isComposing ||
+    input.keyCode === 229 ||
+    input.composing ||
+    input.now - input.compositionEndedAt < IME_FOLLOWUP_WINDOW_MS
+  );
+}
+
 // Whether an IME commit may submit on behalf of an earlier Enter.
 //
 // The Korean IME delivers Enter while the final syllable is still composing, so

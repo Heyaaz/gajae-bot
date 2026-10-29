@@ -102,6 +102,28 @@ describe("QuickInput", () => {
     expect(bridge.dismiss).toHaveBeenCalledOnce();
   });
 
+  it("does not submit on the Enter delivered right after a composition commit", async () => {
+    const { bridge } = fakeBridge();
+    const host = await mount(bridge);
+    const textarea = await type(host, "한글");
+    await act(async () => {
+      textarea.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      textarea.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    });
+    await press(textarea, "Enter");
+    expect(bridge.submit).not.toHaveBeenCalled();
+    await press(textarea, "Enter", { keyCode: 229 });
+    expect(bridge.submit).not.toHaveBeenCalled();
+  });
+
+  it("leaves Enter on the camera button to the button", async () => {
+    const { bridge } = fakeBridge();
+    const host = await mount(bridge);
+    await type(host, "hello");
+    await press(host.querySelector<HTMLButtonElement>('button[aria-label="화면 캡처 첨부"]')!, "Enter");
+    expect(bridge.submit).not.toHaveBeenCalled();
+  });
+
   it("explains a denied Screen Recording permission and links to the setting", async () => {
     const { bridge } = fakeBridge([{ outcome: "permission-denied" }]);
     const host = await mount(bridge);
