@@ -87,11 +87,11 @@ before choosing values, because profiles depend on the disposable GJC profile.
 - **MODEL-DEFAULT — change the default for new sessions.**
   Action: open Settings, edit the GJC model profile, save, then create a session.
   ```bash
-  cu "In Gajae, click the sidebar button titled '설정'. Open the GJC tab. Save $MAP_ROOT/evidence/MODEL-DEFAULT-01.png and report the current '모델 프로필' value. Change it to codex-eco and click '저장'; confirm any native GJC settings confirmation and save $MAP_ROOT/evidence/MODEL-DEFAULT-02.png. Then create a new session in $MAP_ROOT/workspace and report which model profile its composer starts with."
+  cu "In Gajae, click the sidebar button titled '설정'. Open the GJC tab. Save $MAP_ROOT/evidence/MODEL-DEFAULT-01.png and report the current '모델 프로필' value. Change it to codex-eco and click '저장'; confirm the runtime settings confirmation and save $MAP_ROOT/evidence/MODEL-DEFAULT-02.png. Then create a new session in $MAP_ROOT/workspace and report which model profile its composer starts with."
   ```
   Observable: the settings field saves a non-empty profile ID; saving reconnects the GJC
-  runtime and opens a native confirmation titled `Apply runtime settings?` with
-  `Cancel`/`Continue`. The in-app `설정` dialog is not that confirmation. A newly created
+  runtime and opens the host confirmation `런타임 설정을 적용할까요? …` with
+  `취소`/`적용`. The `설정` dialog is not that confirmation. A newly created
   session starts from the new preset, while the already-open session keeps its current
   profile.
   Cross-check:
@@ -155,7 +155,7 @@ before choosing values, because profiles depend on the disposable GJC profile.
 - The committed default model affects only new sessions. The open session keeps its own
   profile; using an old session to prove `MODEL-DEFAULT` is invalid.
 - Saving Settings may re-run the runtime-settings authorization prompt and reconnect GJC.
-  The native confirmation is not the in-app `설정` dialog; a screenshot of the wrong
+  The host confirmation is not the `설정` dialog; a screenshot of the wrong
   surface does not prove the save.
 - The Fast badge is driven by the reported service tier. `Fast on` being pressed is not
   proof that the provider applied priority service; read the badge and any refusal.

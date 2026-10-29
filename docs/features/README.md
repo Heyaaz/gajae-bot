@@ -117,7 +117,6 @@ cu() {
 | `aria-label="새 GJC 세션"` | new-session dialog |
 | `aria-label="지난 세션 이어서 진행"` | history dialog |
 | `aria-label="전체 대화 검색"` | global search dialog |
-| `aria-label="세션 삭제"` | delete confirmation dialog |
 | `aria-label="<session title>에게 메시지 보내기"` | session composer |
 | `title="메시지 보내기"` / `title="이어서 보내기"` | submit arrow |
 | `title="작업 중단 (Esc)"` | Stop slot when the draft is empty and a turn runs |

@@ -392,7 +392,7 @@ before anything is created.
   context usage and its own `변경 파일` panel, side by side.
 - `이 시도 채택` keeps that attempt's branch and worktree and merges nothing. Commit,
   push or open a PR from its panel later.
-- Removing the other attempts always goes through the native confirmation. It
+- Removing the other attempts always goes through the host confirmation. It
   names each worktree and branch, the uncommitted files `--force` would discard,
   and the commits on a branch that are on no remote and no other local branch.
   Cancelling removes nothing and `나머지 정리` asks again. What is removed is read
@@ -435,10 +435,19 @@ What a paired device may do:
 | 보기 전용 (view)   | session list, status, transcripts, diffs, artifacts, queued messages                                | everything below                                                                  |
 | 조작 가능 (control) | those, plus send, steer, queue, cancel, tool approval, mark read                                   | create/delete/rename/compact sessions, git commit/push, file preview, host settings |
 
-Host-destructive work keeps its native confirmation dialog, which a remote
+Host-destructive work keeps its host confirmation dialog, which a remote
 device cannot answer, so it is not exposed at all. The permission is enforced in
 the host: a view-only device that calls the control endpoints directly gets
 `403`.
+
+The host confirmation is drawn in the app's style but owned by the main
+process (`electron/confirm-overlay.ts`): a separate window over Gajae with
+JavaScript off, whose two buttons submit to a URL that never loads; the main
+process reads the answer from the navigation it cancels. The renderer can ask
+for it but cannot answer it. Sidebar delete and hide ask first through
+`confirmSessionRemoval`, so the row leaves only after the user agrees, and the
+delete itself then reuses that answer once (`IpcSecurity.preauthorize`) instead
+of asking twice.
 
 Security shape:
 
@@ -490,7 +499,7 @@ contract:
 - Field-only channels validate one value, rewrite that one field and reuse the
   store's `persist()` — no prompt. Use them for display and reading preferences.
   `setWorkspaceLabel` and `setThoughtsExpanded` are the existing ones; a card
-  toggle that raised a native modal on every click is why the second exists.
+  toggle that raised a confirmation modal on every click is why the second exists.
   A new field-only channel needs all three pieces: an entry in
   `shared/settings-ipc.ts`, the bridge method in `electron/preload.ts`, and a
   handler in `electron/settings-ipc-handlers.ts` that validates the value and
@@ -692,7 +701,7 @@ ledger to clear it; the broker index is the recovery authority.
 - Force `idle` / “cancelled” UI from the abort ACK alone
 - Treat session delete as hiding a row in the list
 - Treat an unverifiable lifecycle receipt as a failed operation
-- Route a display-only preference through `settings.savePreferences` (whole-object save, native confirm modal); add a field-only channel instead
+- Route a display-only preference through `settings.savePreferences` (whole-object save, host confirmation modal); add a field-only channel instead
 - Keep a card's own copy of a window-wide preference, or let it fall behind the stored value
 - Render card text without a rule of its own and let the 16px browser default decide its size
 
