@@ -5,6 +5,7 @@
 // removed the only evidence a file was sent, and a transcript resync used to drop the
 // inline thumbnail on top of that. Unit tests can only pin the functions; this asserts
 // the rendered result.
+import './smoke-isolation.mjs'
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

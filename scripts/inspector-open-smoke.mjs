@@ -24,6 +24,7 @@
 //
 // Below 980px there is no room for a third column, so the panel is deliberately an
 // overlay; there it must be fully opaque instead of clear of the text.
+import './smoke-isolation.mjs'
 import { app, BrowserWindow } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'

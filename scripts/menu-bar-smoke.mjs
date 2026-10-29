@@ -1,3 +1,4 @@
+import './smoke-isolation.mjs'
 import { app, Tray } from 'electron'
 import assert from 'node:assert/strict'
 import path from 'node:path'
@@ -20,7 +21,6 @@ const appPath = path.resolve(import.meta.dirname, '..')
 const iconPath = path.join(appPath, 'src/assets/gajae-icon-ui.png')
 
 app.setName('Gajae Menu Bar Smoke')
-app.setPath('userData', path.join(app.getPath('appData'), 'Agent Control Menu Bar Smoke'))
 
 // Tray has no getter for its menu, so the smoke reads the one the adapter set.
 let liveTray

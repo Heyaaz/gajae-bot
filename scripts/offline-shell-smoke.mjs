@@ -1,3 +1,4 @@
+import './smoke-isolation.mjs'
 import { app, BrowserWindow, ipcMain } from 'electron'
 import path from 'node:path'
 import { GJC_IPC } from '../dist-electron/shared/gjc-ipc.js'
@@ -21,7 +22,6 @@ const appPath = path.resolve(import.meta.dirname, '..')
 const FAILURE_DETAIL = 'spawn /nonexistent/gjc ENOENT'
 
 app.setName('Gajae Offline Smoke')
-app.setPath('userData', path.join(app.getPath('appData'), 'Agent Control Offline Smoke'))
 
 const connectionFailure = {
   state: 'error',

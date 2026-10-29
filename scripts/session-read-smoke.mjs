@@ -1,3 +1,4 @@
+import './smoke-isolation.mjs'
 import { app, BrowserWindow } from 'electron';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
