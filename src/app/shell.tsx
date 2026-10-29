@@ -69,6 +69,7 @@ import {
   DeferredSettingsDialog,
 } from "./deferred-views";
 import { createTranscriptNavigation } from "./transcript-navigation";
+import { createSessionActions } from "./session-actions";
 import { createBackendEventHandler } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
@@ -1560,111 +1561,29 @@ export default function App() {
     void sendMessageRef.current(sessionId, { text, images: [], files: [] });
   }, []);
 
-  async function setSessionConfig(
-    sessionId: string,
-    configId: string,
-    value: string,
-  ): Promise<void> {
-    const previousValue = configOptions[sessionId]?.find(
-      (option) => option.id === configId,
-    )?.currentValue;
-    setConfigOptions((current) => ({
-      ...current,
-      [sessionId]: (current[sessionId] ?? []).map((option) =>
-        option.id === configId ? { ...option, currentValue: value } : option,
-      ),
-    }));
-    try {
-      await backend.setSessionConfig(
-        await resolveSessionId(sessionId),
-        configId,
-        value,
-      );
-    } catch (error) {
-      if (previousValue !== undefined) {
-        setConfigOptions((current) => ({
-          ...current,
-          [sessionId]: (current[sessionId] ?? []).map((option) =>
-            option.id === configId && option.currentValue === value
-              ? { ...option, currentValue: previousValue }
-              : option,
-          ),
-        }));
-      }
-      setAppError(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function cycleThinking(sessionId: string): Promise<void> {
-    try {
-      const level = await backend.cycleThinking(
-        await resolveSessionId(sessionId),
-      );
-      if (!level) {
-        setAppError(t("현재 모델은 추론 effort 전환을 지원하지 않습니다."));
-      }
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-    }
-  }
-
-  async function compactSession(sessionId: string): Promise<void> {
-    try {
-      await backend.compactSession(await resolveSessionId(sessionId));
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-    }
-  }
-
-  async function flushQueuedNow(sessionId: string): Promise<void> {
-    try {
-      const resolved = await resolveSessionId(sessionId);
-      await backend.flushQueuedNow(resolved);
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-      throw error;
-    }
-  }
-
-  async function renameWorkspace(label: string): Promise<void> {
-    try {
-      const saved =
-        await window.agentControlDesktop?.settings.setWorkspaceLabel(label);
-      if (saved)
-        setPreferences((current) => ({ ...current, workspaceLabel: saved }));
-    } catch (error) {
-      setAppError(error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  async function renameSession(
-    sessionId: string,
-    title: string,
-  ): Promise<void> {
-    // The sidebar commits a rename from Enter or blur, so no caller holds this
-    // promise: a refused rename reached the renderer's unhandled-rejection queue as
-    // its only record. Reporting here also makes the promise it hands back resolve.
-    try {
-      await backend.renameSession(await resolveSessionId(sessionId), title);
-    } catch (error) {
-      setAppError(humanErrorMessage(error));
-    }
-  }
-
-  function openResumePicker(): void {
-    setResumeOpen(true);
-    setHistoryLoading(true);
-    setHistoryError("");
-    void backend
-      .listHistorySessions()
-      .then(setHistorySessions)
-      .catch((error) =>
-        setHistoryError(
-          error instanceof Error ? error.message : String(error),
-        ),
-      )
-      .finally(() => setHistoryLoading(false));
-  }
+  const {
+    setSessionConfig,
+    cycleThinking,
+    compactSession,
+    flushQueuedNow,
+    renameWorkspace,
+    renameSession,
+    openResumePicker,
+    resumeSession,
+  } = createSessionActions({
+    backend,
+    configOptions,
+    resolveSessionId,
+    setAppError,
+    setConfigOptions,
+    setPreferences,
+    setSessions,
+    setResumeOpen,
+    setHistoryLoading,
+    setHistoryError,
+    setHistorySessions,
+    setResumingId,
+  });
 
   async function openHistorySession(sessionId: string): Promise<void> {
     const navigationGeneration = ++navigationGenerationRef.current;
@@ -1685,23 +1604,6 @@ export default function App() {
       ]);
       if (navigationGenerationRef.current === navigationGeneration)
         setSelectedId(opened.id);
-    } catch (error) {
-      setAppError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setResumingId(null);
-    }
-  }
-
-  async function resumeSession(sessionId: string): Promise<void> {
-    setResumingId(sessionId);
-    setAppError("");
-    try {
-      const resumed = await backend.resumeSession(
-        await resolveSessionId(sessionId),
-      );
-      setSessions((current) =>
-        current.map((item) => (item.id === resumed.id ? resumed : item)),
-      );
     } catch (error) {
       setAppError(error instanceof Error ? error.message : String(error));
     } finally {
