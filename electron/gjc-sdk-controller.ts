@@ -90,9 +90,7 @@ import {
   ATTACH_RETRY_INTERVAL_MS,
   AvailableCommand,
   CLOCK_LABEL,
-  CONTEXT_USAGE_REFRESH_INTERVAL_MS,
   ContentBlock,
-  EFFORT_LEVELS,
   GJC_ACCENT,
   GjcControllerOptions,
   HISTORY_SUMMARY_HEAD_BYTES,
@@ -133,7 +131,6 @@ import {
   ToolCallFields,
   ToolCallStatus,
   agentCommands,
-  agentConfigOptions,
   artifactReferences,
   attachedPathsText,
   brokerFailureMessage,
@@ -172,7 +169,6 @@ import {
   persistedTranscriptRunning,
   persistedTurnState,
   precedingSharedRow,
-  profileDefaultModelLabel,
   readTranscriptTail,
   readableModelLabel,
   readableSessionTitle,
@@ -189,7 +185,6 @@ import {
   taskStatus,
   taskSubagents,
   textFromContent,
-  thinkingOptionsForModelCatalog,
   timestampMs,
   todoSnapshotTask,
   toolDiffText,
@@ -207,6 +202,18 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  captureSessionState,
+  cycleThinking,
+  patchSessionRuntime,
+  refreshContextUsage,
+  refreshModelCapabilities,
+  refreshSessionConfigOptions,
+  refreshSessionSettings,
+  type SessionConfigHost,
+  sessionConfigRow,
+  setSessionConfig,
+} from "./gjc-sdk-session-config.js";
 import {
   clearProgress,
   clearTodoPoll,
@@ -811,6 +818,45 @@ export class GjcSdkController {
     get emitEvent() {
       return controller.emitEvent;
     },
+  }))(this);
+
+  private readonly sessionConfigHost: SessionConfigHost = ((controller: GjcSdkController): SessionConfigHost => ({
+    get modelProfiles() {
+      return controller.modelProfiles;
+    },
+    get modelPreset() {
+      return controller.modelPreset;
+    },
+    get modelPresetThinking() {
+      return controller.modelPresetThinking;
+    },
+    get explicitSessionThinking() {
+      return controller.explicitSessionThinking;
+    },
+    get sessionConfig() {
+      return controller.sessionConfig;
+    },
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    requireCli: () => controller.requireCli(),
+    repoFor: (sessionId) => controller.repoFor(sessionId),
+    get disposed() {
+      return controller.disposed;
+    },
+    get contextUsageObservedAt() {
+      return controller.contextUsageObservedAt;
+    },
+    get contextUsageQueries() {
+      return controller.contextUsageQueries;
+    },
+    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
+    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
+    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
   }))(this);
 
   constructor(options: GjcControllerOptions) {
@@ -3101,84 +3147,16 @@ export class GjcSdkController {
     };
   }
 
-  async setSessionConfig(
+  setSessionConfig(
     sessionId: string,
     configId: string,
     value: string,
   ): Promise<void> {
-    if (configId === "thinking") {
-      await this.controlSession(sessionId, "thinking.set", { level: value });
-      this.explicitSessionThinking.set(sessionId, value);
-      this.patchSessionRuntime(sessionId, { thinking: value });
-      const existing = this.sessionConfig.get(sessionId);
-      if (existing) {
-        const updated = existing.map((option) =>
-          option.category === "thought_level" || option.id === "thinking"
-            ? { ...option, currentValue: value }
-            : option,
-        );
-        this.sessionConfig.set(sessionId, updated);
-        this.emitEvent({ type: "session.config", sessionId, options: updated });
-      }
-      return;
-    }
-    if (configId === "model") {
-      await this.controlSession(sessionId, "model.profile.set", { id: value });
-      this.explicitSessionThinking.delete(sessionId);
-      const existing = this.sessionConfig.get(sessionId);
-      const selected = existing?.find(
-        (option) => option.category === "model" || option.id === "model",
-      );
-      const display =
-        selected?.options?.find((option) => option.value === value)?.name ??
-        value;
-      this.patchSessionRuntime(sessionId, {
-        model: value,
-        modelDisplay: display,
-      });
-      if (existing) {
-        const updated = existing.map((option) =>
-          option.category === "model" || option.id === "model"
-            ? { ...option, currentValue: value }
-            : option,
-        );
-        this.sessionConfig.set(sessionId, updated);
-        this.emitEvent({ type: "session.config", sessionId, options: updated });
-      }
-      await this.refreshSessionSettings(sessionId);
-      // The profile catalog does not change when one profile is selected; only the
-      // selected model's catalog details do. Read those after the receipt instead
-      // of making the switch wait on a second profile list.
-      void this.refreshModelCapabilities(sessionId);
-      return;
-    }
-    // Any other selector is a session config value; `config.patch` is the control
-    // operation that sets one, and the session's own config is re-read after.
-    await this.ensureAttached(sessionId, false);
-    await this.controlSession(sessionId, "config.patch", {
-      patch: { [configId]: value },
-    });
-    await this.refreshSessionConfigOptions(sessionId);
+    return setSessionConfig(this.sessionConfigHost, sessionId, configId, value);
   }
 
-  async cycleThinking(sessionId: string): Promise<string | undefined> {
-    const result = await this.controlSession(sessionId, "thinking.cycle", {});
-    const level =
-      result && typeof result.level === "string" ? result.level : undefined;
-    if (!level) return undefined;
-    this.explicitSessionThinking.set(sessionId, level);
-    this.patchSessionRuntime(sessionId, { thinking: level });
-    const existing = this.sessionConfig.get(sessionId);
-    if (existing) {
-      const updated = existing.map((option) =>
-        option.category === "thought_level" || option.id === "thinking"
-          ? { ...option, currentValue: level }
-          : option,
-      );
-      this.sessionConfig.set(sessionId, updated);
-      this.emitEvent({ type: "session.config", sessionId, options: updated });
-    }
-    return level;
+  cycleThinking(sessionId: string): Promise<string | undefined> {
+    return cycleThinking(this.sessionConfigHost, sessionId);
   }
 
   // A session proven uncontrollable is recorded so the row stops advertising a
@@ -6513,395 +6491,32 @@ export class GjcSdkController {
     options: SessionConfigOption[],
     mode?: string | null,
   ): void {
-    const normalized = agentConfigOptions(options);
-    const discoveredProfiles = this.modelProfiles.get(sessionId);
-    const modelOption = normalized.find(
-      (option) => option.category === "model" || option.id === "model",
-    );
-    const selectedPreset =
-      typeof modelOption?.currentValue === "string"
-        ? modelOption.currentValue.replace(/^gajae-code\//u, "")
-        : undefined;
-    const thinkingOption = normalized.find(
-      (option) =>
-        option.category === "thought_level" || option.id === "thinking",
-    );
-    if (
-      thinkingOption &&
-      selectedPreset === this.modelPreset &&
-      this.modelPresetThinking
-    ) {
-      thinkingOption.currentValue =
-        this.explicitSessionThinking.get(sessionId) ?? this.modelPresetThinking;
-    }
-    if (modelOption && discoveredProfiles?.length)
-      modelOption.options = discoveredProfiles;
-    this.sessionConfig.set(sessionId, normalized);
-    this.emitEvent({ type: "session.config", sessionId, options: normalized });
-    const model = normalized.find(
-      (option) => option.category === "model" || option.id === "model",
-    );
-    const thinking = normalized.find(
-      (option) =>
-        option.category === "thought_level" || option.id === "thinking",
-    );
-    const modelValue =
-      typeof model?.currentValue === "string" ? model.currentValue : undefined;
-    const currentSession = this.sessions.get(sessionId);
-    const modelChanged =
-      modelValue !== undefined && currentSession?.model !== modelValue;
-    this.patchSessionRuntime(sessionId, {
-      ...(mode ? { mode } : {}),
-      ...(modelValue !== undefined ? { model: modelValue } : {}),
-      ...(modelChanged ? { modelDisplay: undefined } : {}),
-      ...(typeof thinking?.currentValue === "string"
-        ? { thinking: thinking.currentValue }
-        : {}),
-    });
+    return captureSessionState(this.sessionConfigHost, sessionId, options, mode);
   }
 
-  /**
-   * Builds this session's config options from the session-scoped SDK config.
-   *
-   * The model/thinking selectors behind `/model` and Shift+Tab read these values.
-   * The
-   * session's own `config.list/get` is the authoritative source, and it answers the
-   * session's real preset rather than a process-wide launch flag.
-   */
-  private async refreshSessionConfigOptions(sessionId: string): Promise<void> {
-    // The model picker cannot open until this finishes. Reading the session row
-    // and the profile catalog in one round instead of two, and carrying the
-    // profiles into the first emitted option, is what removes both the extra CLI
-    // process and the empty picker that was on screen while the second read ran.
-    const [row, profiles] = await Promise.all([
-      this.sessionConfigRow(sessionId),
-      this.loadModelProfiles(sessionId),
-    ]);
-    if (profiles && profiles.length > 0)
-      this.modelProfiles.set(sessionId, profiles);
-    if (!row) return;
-    const availableProfiles =
-      profiles ?? this.modelProfiles.get(sessionId) ?? [];
-    const preset =
-      typeof row.modelPreset === "string" && row.modelPreset
-        ? row.modelPreset
-        : undefined;
-    const thinking =
-      typeof row.thinking === "string" && row.thinking ? row.thinking : undefined;
-    const mode = typeof row.mode === "string" && row.mode ? row.mode : undefined;
-    const options: SessionConfigOption[] = [
-      {
-        type: "select",
-        id: "model",
-        name: "Model",
-        category: "model",
-        currentValue: preset ?? this.modelPreset,
-        options: availableProfiles.map((profile) => ({
-          type: "item",
-          id: profile.value,
-          name: profile.name,
-          ...(profile.group ? { group: profile.group } : {}),
-          ...(profile.description ? { description: profile.description } : {}),
-        })),
-      },
-      {
-        type: "select",
-        id: "thinking",
-        name: "Thinking",
-        category: "thought_level",
-        currentValue:
-          this.explicitSessionThinking.get(sessionId) ??
-          thinking ??
-          this.modelPresetThinking,
-        options: [...EFFORT_LEVELS].map((level) => ({
-          type: "item",
-          id: level,
-          name: level,
-        })),
-      },
-      ...(mode
-        ? [
-            {
-              type: "select" as const,
-              id: "mode",
-              name: "Mode",
-              category: "mode",
-              currentValue: mode,
-              options: [{ type: "item", id: mode, name: mode }],
-            },
-          ]
-        : []),
-    ];
-    this.captureSessionState(sessionId, options, mode);
-    // The catalog answer (display label and the model's own thinking choices) is
-    // advisory: paint the picker now and let those details arrive after it opens.
-    void this.refreshModelCapabilities(sessionId);
+  private refreshSessionConfigOptions(sessionId: string): Promise<void> {
+    return refreshSessionConfigOptions(this.sessionConfigHost, sessionId);
   }
 
-  /** The runtime's model profile catalog, or undefined when it cannot answer. */
-  private async loadModelProfiles(
-    sessionId: string,
-  ): Promise<AgentConfigOptionValue[] | undefined> {
-    try {
-      const cli = await this.requireCli();
-      const items = await cli.queryItems(
-        sessionId,
-        "models.profiles.list",
-        {},
-        { repo: this.repoFor(sessionId) },
-      );
-      return items
-        .flatMap((item): AgentConfigOptionValue[] => {
-          if (!item || typeof item !== "object") return [];
-          const profile = item as {
-            id?: unknown;
-            displayName?: unknown;
-            source?: unknown;
-            available?: unknown;
-          };
-          if (typeof profile.id !== "string" || profile.available === false)
-            return [];
-          const configured = profile.source === "configured";
-          return [
-            {
-              value: profile.id,
-              name:
-                typeof profile.displayName === "string" && profile.displayName
-                  ? profile.displayName
-                  : profile.id,
-              group: configured ? "Custom profiles" : "Built-in profiles",
-              description: configured
-                ? "From ~/.gjc/agent/models.yml"
-                : "Bundled with GJC",
-            },
-          ];
-        })
-        .sort((left, right) => {
-          if (left.group !== right.group)
-            return left.group === "Custom profiles" ? -1 : 1;
-          return left.name.localeCompare(right.name);
-        });
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** One row of the session's own config, or undefined when it cannot answer. */
-  private async sessionConfigRow(
+  private sessionConfigRow(
     sessionId: string,
   ): Promise<Record<string, unknown> | undefined> {
-    try {
-      const cli = await this.requireCli();
-      const items = await cli.queryItems(
-        sessionId,
-        "config.list/get",
-        {},
-        { repo: this.repoFor(sessionId) },
-      );
-      return items.find(
-        (item): item is Record<string, unknown> =>
-          Boolean(item) && typeof item === "object" && !Array.isArray(item),
-      );
-    } catch {
-      return undefined;
-    }
+    return sessionConfigRow(this.sessionConfigHost, sessionId);
   }
 
-  /**
-   * Reconciles the session's reported model/thinking/mode after a change.
-   *
-   * The session-scoped SDK config is the only thing that answers what the session
-   * itself runs, so a restored session reports its own model instead of the
-   * app-wide default.
-   */
-  private async refreshSessionSettings(sessionId: string): Promise<void> {
-    try {
-      const row = await this.sessionConfigRow(sessionId);
-      if (!row) return;
-      const preset =
-        typeof row.modelPreset === "string" && row.modelPreset
-          ? row.modelPreset
-          : undefined;
-      const thinking =
-        typeof row.thinking === "string" && row.thinking
-          ? row.thinking
-          : undefined;
-      const mode =
-        typeof row.mode === "string" && row.mode ? row.mode : undefined;
-      // A host that reports the session's service tier here is read too: /fast
-      // inverts this value, and guessing the direction is how a scoped fast tier
-      // gets silently downgraded.
-      const serviceTier =
-        typeof row.serviceTier === "string" && row.serviceTier
-          ? row.serviceTier
-          : undefined;
-      if (!preset && !thinking && !mode && !serviceTier) return;
-      const current = this.sessions.get(sessionId);
-      this.patchSessionRuntime(sessionId, {
-        ...(preset ? { model: preset } : {}),
-        ...(thinking ? { thinking } : {}),
-        ...(mode ? { mode } : {}),
-        ...(serviceTier ? { serviceTier } : {}),
-      });
-      const options = this.sessionConfig.get(sessionId);
-      if (options && (preset || thinking || mode)) {
-        const updated = options.map((option) => {
-          if ((option.category === "model" || option.id === "model") && preset)
-            return { ...option, currentValue: preset };
-          if (
-            (option.category === "thought_level" || option.id === "thinking") &&
-            thinking
-          )
-            return { ...option, currentValue: thinking };
-          if ((option.category === "mode" || option.id === "mode") && mode)
-            return { ...option, currentValue: mode };
-          return option;
-        });
-        this.sessionConfig.set(sessionId, updated);
-        this.emitEvent({ type: "session.config", sessionId, options: updated });
-      }
-      if (preset && (current?.model !== preset || !current.modelDisplay)) {
-        const capabilities = await this.modelCapabilities(sessionId, preset);
-        this.patchSessionRuntime(sessionId, {
-          modelDisplay:
-            capabilities.modelDisplay ??
-            this.modelProfiles
-              .get(sessionId)
-              ?.find((profile) => profile.value === preset)?.name ??
-            preset,
-        });
-      }
-    } catch {
-      // A session that cannot answer a config query keeps the values it already had.
-    }
+  private refreshSessionSettings(sessionId: string): Promise<void> {
+    return refreshSessionSettings(this.sessionConfigHost, sessionId);
   }
 
-  /**
-   * Adds the selected model's catalog details (display label, thinking choices).
-   *
-   * The picker is already open and usable from config/profile reads; this is the
-   * slower `models.list/current` follow-up and must not delay it. The selected
-   * preset is re-read after the query so a switch made meanwhile cannot wear the
-   * previous model's label.
-   */
-  private async refreshModelCapabilities(sessionId: string): Promise<void> {
-    const existing = this.sessionConfig.get(sessionId);
-    if (!existing || existing.length === 0) return;
-    const selectedModel = existing.find(
-      (option) => option.category === "model" || option.id === "model",
-    )?.currentValue;
-    if (typeof selectedModel !== "string") return;
-    const capabilities = await this.modelCapabilities(sessionId, selectedModel);
-    if (this.disposed || !this.sessions.has(sessionId)) return;
-    const current = this.sessionConfig.get(sessionId);
-    const stillSelected = current?.find(
-      (option) => option.category === "model" || option.id === "model",
-    )?.currentValue;
-    if (!current || stillSelected !== selectedModel) return;
-    const modelDisplay =
-      capabilities.modelDisplay ??
-      this.modelProfiles
-        .get(sessionId)
-        ?.find((profile) => profile.value === selectedModel)?.name;
-    if (modelDisplay) this.patchSessionRuntime(sessionId, { modelDisplay });
-    if (!capabilities.thinkingOptions) return;
-    const updated = current.map((option) =>
-      option.category === "thought_level" || option.id === "thinking"
-        ? { ...option, options: capabilities.thinkingOptions! }
-        : option,
-    );
-    this.sessionConfig.set(sessionId, updated);
-    this.emitEvent({ type: "session.config", sessionId, options: updated });
+  private refreshModelCapabilities(sessionId: string): Promise<void> {
+    return refreshModelCapabilities(this.sessionConfigHost, sessionId);
   }
 
-  private async modelCapabilities(
-    sessionId: string,
-    selectedModel: string,
-  ): Promise<{
-    thinkingOptions?: AgentConfigOptionValue[];
-    modelDisplay?: string;
-  }> {
-    try {
-      const cli = await this.requireCli();
-      const items = await cli.queryItems(
-        sessionId,
-        "models.list/current",
-        {},
-        { repo: this.repoFor(sessionId) },
-      );
-      return {
-        thinkingOptions: thinkingOptionsForModelCatalog(items, selectedModel),
-        modelDisplay: profileDefaultModelLabel(items, selectedModel),
-      };
-    } catch {
-      return {};
-    }
-  }
-
-  /**
-   * Context usage for a session, at most one query in flight per session.
-   *
-   * Every transcript write asks for this. Several subagents writing at once can
-   * otherwise spawn a burst of redundant usage lookups, so a request that arrives
-   * while one is running joins it instead of adding another.
-   */
   private refreshContextUsage(
     sessionId: string,
     options?: { force?: boolean },
   ): Promise<void> {
-    const now = Date.now();
-    const observedAt = this.contextUsageObservedAt.get(sessionId) ?? 0;
-    if (
-      !options?.force &&
-      now - observedAt < CONTEXT_USAGE_REFRESH_INTERVAL_MS
-    )
-      return Promise.resolve();
-    const inFlight = this.contextUsageQueries.get(sessionId);
-    if (inFlight) return inFlight;
-    this.contextUsageObservedAt.set(sessionId, now);
-    const query = this.queryContextUsage(sessionId).finally(() => {
-      this.contextUsageQueries.delete(sessionId);
-    });
-    this.contextUsageQueries.set(sessionId, query);
-    return query;
-  }
-
-  private async queryContextUsage(sessionId: string): Promise<void> {
-    try {
-      const items = await this.querySessionItems(sessionId, "context.get");
-      const first = items[0];
-      const usage =
-        first && typeof first === "object" && !Array.isArray(first)
-          ? (first as { usage?: unknown }).usage
-          : undefined;
-      if (!usage || typeof usage !== "object" || Array.isArray(usage)) return;
-      const snapshot = usage as {
-        percent?: unknown;
-        tokens?: unknown;
-        contextWindow?: unknown;
-      };
-      const percent =
-        typeof snapshot.percent === "number"
-          ? snapshot.percent
-          : typeof snapshot.tokens === "number" &&
-              typeof snapshot.contextWindow === "number" &&
-              snapshot.contextWindow > 0
-            ? (snapshot.tokens / snapshot.contextWindow) * 100
-            : undefined;
-      if (percent !== undefined) {
-        this.patchSessionRuntime(sessionId, {
-          usagePercent: Math.min(100, Math.max(0, percent)),
-          usagePending: false,
-        });
-      } else if (snapshot.percent === null || snapshot.tokens === null) {
-        this.patchSessionRuntime(sessionId, {
-          usagePercent: undefined,
-          usagePending: true,
-        });
-      }
-    } catch {
-      // Usage is advisory and must not block session attachment or prompting.
-    }
+    return refreshContextUsage(this.sessionConfigHost, sessionId, options);
   }
 
   private patchSessionRuntime(
@@ -6921,23 +6536,7 @@ export class GjcSdkController {
       >
     >,
   ): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    // A turn re-asserts the same runtime state repeatedly (status already running,
-    // unchanged usage percent). Every emit is an IPC broadcast that re-renders the
-    // renderer's whole session subtree, so a patch that changes nothing is dropped.
-    const changed = Object.entries(patch).some(
-      ([key, value]) => session[key as keyof AgentSession] !== value,
-    );
-    if (!changed) return;
-    if (
-      Object.hasOwn(patch, "status") &&
-      patch.status !== undefined &&
-      session.status !== patch.status
-    )
-      this.advanceRunRevision(sessionId);
-    Object.assign(session, patch);
-    this.emitEvent({ type: "session.updated", session: { ...session } });
+    return patchSessionRuntime(this.sessionConfigHost, sessionId, patch);
   }
 
   private projectMessageChunk(
