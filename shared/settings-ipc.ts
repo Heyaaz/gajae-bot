@@ -1,4 +1,4 @@
-import type { ImageAttachment, SessionWorkLink } from "./agent-contract.js";
+import type { ImageAttachment, SessionWorkLink, WorktreePull } from "./agent-contract.js";
 
 export const SETTINGS_IPC = {
   getPreferences: "agent-control:settings:get-preferences",
@@ -39,6 +39,9 @@ export type NewSessionPrefill = {
   isolation?: "workspace" | "worktree";
   worktreeBranch?: string;
   worktreeBranchExisting?: boolean;
+  worktreePull?: WorktreePull;
+  /** `workspace` is the repository's main checkout, where the user's own uncommitted work lives. */
+  mainCheckout?: true;
   workLink?: SessionWorkLink;
   /** Already issued to the receiving window, so its composer can send them as its own. */
   images?: ImageAttachment[];

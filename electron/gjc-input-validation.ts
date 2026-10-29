@@ -7,6 +7,7 @@ import type {
   MessageInput,
   QuestionSubmission,
   ToolDecision,
+  WorktreePull,
 } from "../shared/agent-contract.js";
 import { parseSessionWorkLink } from "../shared/agent-contract.js";
 
@@ -67,6 +68,7 @@ export function createSessionInput(value: unknown): CreateSessionInput {
     isolation?: unknown;
     worktreeBranch?: unknown;
     worktreeBranchExisting?: unknown;
+    worktreePull?: unknown;
     workLink?: unknown;
   };
   if (candidate.runtime !== "gjc")
@@ -107,6 +109,16 @@ export function createSessionInput(value: unknown): CreateSessionInput {
       candidate.worktreeBranch === undefined)
   )
     throw new Error("Only a named worktree branch can be required to exist");
+  const worktreePull =
+    candidate.worktreePull === undefined ? undefined : parseWorktreePull(candidate.worktreePull);
+  if (
+    candidate.worktreePull !== undefined &&
+    (!worktreePull ||
+      candidate.isolation !== "worktree" ||
+      candidate.worktreeBranch === undefined ||
+      candidate.worktreeBranchExisting !== undefined)
+  )
+    throw new Error("Only a named new worktree branch can be fetched from a pull request head");
   const workLink =
     candidate.workLink === undefined
       ? undefined
@@ -127,8 +139,25 @@ export function createSessionInput(value: unknown): CreateSessionInput {
       ? { worktreeBranch: candidate.worktreeBranch }
       : {}),
     ...(candidate.worktreeBranchExisting ? { worktreeBranchExisting: true } : {}),
+    ...(worktreePull ? { worktreePull } : {}),
     ...(workLink ? { workLink } : {}),
   };
+}
+
+function parseWorktreePull(value: unknown): WorktreePull | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { remote, number } = value as { remote?: unknown; number?: unknown };
+  // The remote name reaches `git fetch` as an argument, so it may not look like an option.
+  if (
+    typeof remote !== "string" ||
+    remote.length > 100 ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(remote) ||
+    typeof number !== "number" ||
+    !Number.isSafeInteger(number) ||
+    number <= 0
+  )
+    return undefined;
+  return { remote, number };
 }
 
 export function imageAttachment(value: unknown): ImageAttachment {

@@ -2069,6 +2069,7 @@ export default function App() {
         isolation: input.isolation ?? "workspace",
         worktreeBranch: input.worktreeBranch,
         ...(input.worktreeBranchExisting ? { worktreeBranchExisting: true } : {}),
+        ...(input.worktreePull ? { worktreePull: input.worktreePull } : {}),
         ...(input.workLink ? { workLink: input.workLink } : {}),
       });
       pendingSessions.current.set(draftId, creation);

@@ -23,27 +23,31 @@ export function issueBranchName(issue: Pick<GithubIssueDetail, "number" | "title
   return slug ? `issue-${issue.number}-${slug}` : `issue-${issue.number}`;
 }
 
+type BranchSource = Pick<NewSessionPrefill, "worktreeBranchExisting" | "worktreePull">;
+
 /**
  * Where a session for `branch` runs. A worktree that already has the branch
  * checked out is used as it is; otherwise a managed worktree is made for it, and
  * the controller reuses a local branch of that name instead of creating another.
- * `existing` forbids starting the branch from HEAD when it is nowhere yet.
+ * `source` says where a branch that is nowhere locally comes from: it must
+ * already exist on a remote, or a fork pull's head is fetched. Without either it
+ * starts from HEAD.
  */
 export function branchPlacement(
   repository: RepositorySnapshot,
   branch: string,
-  existing: boolean,
-): Pick<NewSessionPrefill, "workspace" | "isolation" | "worktreeBranch" | "worktreeBranchExisting"> {
+  source: BranchSource,
+): Pick<NewSessionPrefill, "workspace" | "isolation" | "worktreeBranch" | "mainCheckout"> & BranchSource {
   const checkedOut = repository.worktrees.find(
     (worktree) => worktree.branch === branch && !worktree.prunable,
   );
-  if (checkedOut) return { workspace: checkedOut.path, isolation: "workspace" };
-  return {
-    workspace: repository.root,
-    isolation: "worktree",
-    worktreeBranch: branch,
-    ...(existing ? { worktreeBranchExisting: true } : {}),
-  };
+  if (checkedOut)
+    return {
+      workspace: checkedOut.path,
+      isolation: "workspace",
+      ...(checkedOut.main ? { mainCheckout: true as const } : {}),
+    };
+  return { workspace: repository.root, isolation: "worktree", worktreeBranch: branch, ...source };
 }
 
 function sessionTitle(title: string): string {
@@ -65,7 +69,7 @@ export function issueSessionPrefill(
     issue.body.trim() || t("본문이 없습니다."),
   ].join("\n");
   return {
-    ...branchPlacement(repository, issueBranchName(issue), false),
+    ...branchPlacement(repository, issueBranchName(issue), {}),
     title: sessionTitle(`#${issue.number} ${issue.title}`),
     prompt,
     workLink: { kind: "issue", number: issue.number, url: issue.url },
@@ -74,15 +78,38 @@ export function issueSessionPrefill(
 
 /** A failing CI: a pull request's head, or the default branch with no pull. */
 export type CiTarget =
-  | { kind: "pull"; pull: Pick<GithubPullDetail, "number" | "title" | "url" | "headRefName"> }
+  | {
+      kind: "pull";
+      pull: Pick<GithubPullDetail, "number" | "title" | "url" | "headRefName" | "crossRepository">;
+    }
   | { kind: "branch"; branch: string };
+
+/**
+ * The local branch a CI fix works on and where it comes from. A fork's head
+ * branch is not in this repository, and its name can even match one of ours
+ * (`contributor:main`), so it gets its own `pr-<n>` branch fetched from the pull.
+ */
+function ciBranch(
+  repository: RepositorySnapshot,
+  target: CiTarget,
+): { branch: string; source: BranchSource } {
+  if (target.kind === "branch")
+    return { branch: target.branch, source: { worktreeBranchExisting: true } };
+  const { pull } = target;
+  if (pull.crossRepository && repository.remote)
+    return {
+      branch: `pr-${pull.number}`,
+      source: { worktreePull: { remote: repository.remote.name, number: pull.number } },
+    };
+  return { branch: pull.headRefName, source: { worktreeBranchExisting: true } };
+}
 
 export function ciSessionPrefill(
   repository: RepositorySnapshot,
   target: CiTarget,
   failed: GithubFailedLog,
 ): NewSessionPrefill {
-  const branch = target.kind === "pull" ? target.pull.headRefName : target.branch;
+  const { branch, source } = ciBranch(repository, target);
   const fence = "````";
   const prompt = [
     target.kind === "pull"
@@ -94,7 +121,11 @@ export function ciSessionPrefill(
     "",
     t("브랜치: {branch}", { branch }),
     ...(target.kind === "pull" ? [`PR: ${target.pull.url}`] : []),
-    ...failed.runs.map((run) => t("실패한 실행: {url}", { url: run.url })),
+    ...failed.runs.map((run) =>
+      run.skipped
+        ? t("로그를 읽지 못한 실행: {url} ({reason})", { url: run.url, reason: run.skipped })
+        : t("실패한 실행: {url}", { url: run.url }),
+    ),
     "",
     failed.truncated
       ? t("실패한 단계의 로그입니다. {limit}KB 상한을 넘은 앞부분은 생략했습니다.", {
@@ -110,7 +141,7 @@ export function ciSessionPrefill(
       ? { kind: "pull", number: target.pull.number, url: target.pull.url }
       : { kind: "ci", branch, url: failed.runs[0]?.url ?? repository.remote?.webUrl ?? "" };
   return {
-    ...branchPlacement(repository, branch, true),
+    ...branchPlacement(repository, branch, source),
     title: sessionTitle(t("CI 수정: {branch}", { branch })),
     prompt,
     workLink,

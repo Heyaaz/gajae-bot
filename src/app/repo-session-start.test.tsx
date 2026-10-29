@@ -81,6 +81,7 @@ const PULL: GithubPullDetail = {
   additions: 1,
   deletions: 0,
   changedFiles: 1,
+  crossRepository: false,
   reviews: [],
 };
 
@@ -98,15 +99,15 @@ describe("planning a session from GitHub work", () => {
 
   it("uses a worktree that already has the branch and otherwise asks for a managed one", () => {
     expect(
-      branchPlacement(snapshot([{ path: LINKED, branch: "feat/rail", head: "2", main: false, locked: false, prunable: false }]), "feat/rail", true),
+      branchPlacement(snapshot([{ path: LINKED, branch: "feat/rail", head: "2", main: false, locked: false, prunable: false }]), "feat/rail", { worktreeBranchExisting: true }),
     ).toEqual({ workspace: LINKED, isolation: "workspace" });
-    expect(branchPlacement(snapshot(), "feat/rail", true)).toEqual({
+    expect(branchPlacement(snapshot(), "feat/rail", { worktreeBranchExisting: true })).toEqual({
       workspace: ROOT,
       isolation: "worktree",
       worktreeBranch: "feat/rail",
       worktreeBranchExisting: true,
     });
-    expect(branchPlacement(snapshot(), "issue-3", false)).toEqual({
+    expect(branchPlacement(snapshot(), "issue-3", {})).toEqual({
       workspace: ROOT,
       isolation: "worktree",
       worktreeBranch: "issue-3",
@@ -130,6 +131,46 @@ describe("planning a session from GitHub work", () => {
     // The main working tree has the default branch: the fix runs there, not in a copy.
     expect(prefill).toMatchObject({ workspace: ROOT, isolation: "workspace" });
     expect(prefill.workLink).toEqual({ kind: "ci", branch: "main", url: LOG.runs[0]!.url });
+  });
+
+  it("runs a fork's CI fix on the pull's own head, never on this repository's branch of the same name", () => {
+    // A `contributor:main` pull named the base repository's main, so the session
+    // was placed in the user's own main checkout with code that is not the pull's.
+    const fork = { ...PULL, headRefName: "main", crossRepository: true };
+    const prefill = ciSessionPrefill(snapshot(), { kind: "pull", pull: fork }, LOG);
+    expect(prefill).toMatchObject({
+      workspace: ROOT,
+      isolation: "worktree",
+      worktreeBranch: "pr-9",
+      worktreePull: { remote: "origin", number: 9 },
+    });
+    expect(prefill).not.toHaveProperty("worktreeBranchExisting");
+    expect(prefill.prompt).toContain("pr-9");
+  });
+
+  it("marks a CI fix that would run in the main checkout, which may hold the user's own changes", () => {
+    expect(ciSessionPrefill(snapshot(), { kind: "branch", branch: "main" }, LOG)).toMatchObject({
+      workspace: ROOT,
+      isolation: "workspace",
+      mainCheckout: true,
+    });
+    const linked = snapshot([{ path: LINKED, branch: "feat/rail", head: "2", main: false, locked: false, prunable: false }]);
+    expect(ciSessionPrefill(linked, { kind: "pull", pull: PULL }, LOG)).not.toHaveProperty("mainCheckout");
+  });
+
+  it("tells the agent which run's log is missing and why", () => {
+    const skipped = {
+      id: 42,
+      url: "https://github.com/Heyaaz/gajae-bot/actions/runs/42",
+      skipped: "run 42 is still in progress; logs will be available when it is complete",
+    };
+    const prefill = ciSessionPrefill(
+      snapshot(),
+      { kind: "branch", branch: "main" },
+      { ...LOG, runs: [...LOG.runs, skipped] },
+    );
+    expect(prefill.prompt).toContain(`${skipped.url} (${skipped.skipped})`);
+    expect(prefill.prompt).toContain("FAIL expected 1 got 2");
   });
 });
 
@@ -233,6 +274,26 @@ describe("starting a session from the repository screen", () => {
     );
     expect(readFailedLog).toHaveBeenCalledWith(ROOT, [41]);
     expect(onStartSession).not.toHaveBeenCalled();
+  });
+
+  it("lets a CI fix be tried again after a log read that can succeed later", async () => {
+    const readFailedLog = vi
+      .fn<RepoDesktopBridge["readFailedLog"]>()
+      .mockResolvedValueOnce({
+        state: "error",
+        detail: "run 41 is still in progress; logs will be available when it is complete",
+      })
+      .mockResolvedValue({ state: "ok", value: LOG });
+    const onStartSession = await mount(bridge({ readFailedLog }));
+    await click("PR");
+    await click(PULL.title);
+    await click("CI 실패 고치기");
+    await vi.waitFor(() =>
+      expect(host!.querySelector(".repo-start__reason")?.textContent).toContain("still in progress"),
+    );
+    expect(button("CI 실패 고치기")!.disabled).toBe(false);
+    await click("CI 실패 고치기");
+    await vi.waitFor(() => expect(onStartSession).toHaveBeenCalledOnce());
   });
 
   it("hands a CI fix the failed log and the pull's branch, which must already exist", async () => {

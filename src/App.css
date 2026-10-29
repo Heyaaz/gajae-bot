@@ -2289,6 +2289,12 @@
   color: var(--text-tertiary);
   font-size: 10px;
 }
+.isolation-options__note {
+  margin: 0;
+  color: var(--warning);
+  font-size: 10px;
+  line-height: 1.45;
+}
 .isolation-options input[type="text"],
 .isolation-options input:not([type]) {
   padding: 7px;

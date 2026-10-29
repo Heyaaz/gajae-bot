@@ -2266,6 +2266,76 @@ describe("GjcSdkController CLI seam", () => {
     }
   });
 
+  it("tracks a named branch that exists only on one remote instead of starting it from HEAD", async () => {
+    // An issue branch pushed from another machine: `-b` made a new branch from
+    // HEAD under the same name, which diverged from the pushed one.
+    const parent = await mkdtemp(path.join(tmpdir(), "gajae-remote-issue-branch-"));
+    const origin = path.join(parent, "origin");
+    const dir = path.join(parent, "clone");
+    const { controller, cli } = harness();
+    try {
+      await execFile("git", ["init", "-q", "-b", "main", origin]);
+      await commit(origin, "base");
+      await execFile("git", ["-C", origin, "checkout", "-qb", "issue-7-fix"]);
+      const pushedTip = await commit(origin, "work-from-another-machine");
+      await execFile("git", ["-C", origin, "checkout", "-q", "main"]);
+      await execFile("git", ["clone", "-q", origin, dir]);
+      expect(await branchExists(dir, "issue-7-fix")).toBe(false);
+
+      cli.rawGlobal.mockResolvedValueOnce({ sessionId: "issue" } as never);
+      const created = await controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "issue-7-fix" });
+      expect(await headOf(created.workspace)).toBe(pushedTip);
+      expect(
+        (await execFile("git", ["-C", dir, "rev-parse", "--abbrev-ref", "issue-7-fix@{upstream}"])).stdout.trim(),
+      ).toBe("origin/issue-7-fix");
+
+      cli.rawGlobal.mockResolvedValueOnce({ sessionId: "fresh" } as never);
+      const fresh = await controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "issue-8-new" });
+      expect(await headOf(fresh.workspace)).toBe(await headOf(dir));
+    } finally {
+      controller.dispose();
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("fetches a fork pull's head into the branch it creates, and removes only that branch on failure", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "gajae-pull-head-"));
+    const origin = path.join(parent, "origin");
+    const dir = path.join(parent, "clone");
+    const { controller, cli } = harness();
+    try {
+      await execFile("git", ["init", "-q", "-b", "main", origin]);
+      await commit(origin, "base");
+      await execFile("git", ["clone", "-q", origin, dir]);
+      // GitHub keeps a fork pull's head under refs/pull/<n>/head of the base
+      // repository; no branch of the base repository points at it.
+      await execFile("git", ["-C", origin, "checkout", "-q", "--detach"]);
+      const pullTip = await commit(origin, "fork-change");
+      await execFile("git", ["-C", origin, "update-ref", "refs/pull/9/head", pullTip]);
+      await execFile("git", ["-C", origin, "checkout", "-q", "main"]);
+
+      cli.rawGlobal.mockResolvedValueOnce({ sessionId: "fork" } as never);
+      const worktreePull = { remote: "origin", number: 9 };
+      const created = await controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "pr-9", worktreePull });
+      expect(await headOf(created.workspace)).toBe(pullTip);
+      expect(await headOf(dir)).not.toBe(pullTip);
+
+      await execFile("git", ["-C", dir, "worktree", "remove", "--force", created.workspace]);
+      await execFile("git", ["-C", dir, "branch", "-D", "pr-9"]);
+      cli.rawGlobal.mockRejectedValueOnce(new SdkCliError("operation_failed", "refused", undefined, [], "not-applied"));
+      await expect(controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "pr-9", worktreePull })).rejects.toThrow();
+      expect(await branchExists(dir, "pr-9")).toBe(false);
+
+      await execFile("git", ["-C", dir, "branch", "pr-9", "main"]);
+      cli.rawGlobal.mockRejectedValueOnce(new SdkCliError("operation_failed", "refused", undefined, [], "not-applied"));
+      await expect(controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "pr-9", worktreePull })).rejects.toThrow();
+      expect(await branchExists(dir, "pr-9")).toBe(true);
+    } finally {
+      controller.dispose();
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("checks out the remote branch a CI fix names, and refuses to start one from HEAD", async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "gajae-remote-branch-"));
     const origin = path.join(parent, "origin");

@@ -3,6 +3,7 @@ import type {
   HistorySession,
   ImageAttachment,
   SessionWorkLink,
+  WorktreePull,
 } from "../../shared/agent-contract";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import type { AgentSession } from "../backend/types";
@@ -27,6 +28,7 @@ export interface NewSessionInput {
   isolation?: "workspace" | "worktree";
   worktreeBranch?: string;
   worktreeBranchExisting?: boolean;
+  worktreePull?: WorktreePull;
   workLink?: SessionWorkLink;
   initialPrompt?: string;
   initialImages?: ImageAttachment[];
@@ -92,6 +94,8 @@ export function NewSessionDialog({
     if (!workspace) return;
     const trimmedTitle = title.trim();
     const branch = worktreeBranch.trim() || undefined;
+    const suggestedBranch =
+      isolation === "worktree" && branch === prefill?.worktreeBranch;
     onCreate({
       title:
         !trimmedTitle || trimmedTitle === defaultTitle
@@ -100,12 +104,13 @@ export function NewSessionDialog({
       workspace,
       isolation,
       worktreeBranch: branch,
-      // The requirement belongs to the branch that was suggested; a name the user
-      // typed instead may be a new branch.
-      ...(prefill?.worktreeBranchExisting &&
-      isolation === "worktree" &&
-      branch === prefill.worktreeBranch
+      // The requirement and the fetch belong to the branch that was suggested; a
+      // name the user typed instead may be a new branch.
+      ...(prefill?.worktreeBranchExisting && suggestedBranch
         ? { worktreeBranchExisting: true }
+        : {}),
+      ...(prefill?.worktreePull && suggestedBranch
+        ? { worktreePull: prefill.worktreePull }
         : {}),
       ...(prefill?.workLink ? { workLink: prefill.workLink } : {}),
       initialPrompt: prompt.trim() || undefined,
@@ -164,6 +169,13 @@ export function NewSessionDialog({
               onChange={(e) => setWorktreeBranch(e.target.value)}
             />
           )}
+          {prefill?.mainCheckout &&
+            isolation === "workspace" &&
+            workspace === prefill.workspace && (
+              <p className="isolation-options__note">
+                {t("이 폴더는 저장소의 기본 작업 폴더입니다. 커밋하지 않은 변경이 있으면 세션의 수정과 섞입니다. 따로 두려면 별도 worktree를 고르세요.")}
+              </p>
+            )}
         </fieldset>
         <label>
           <span>{t("프로젝트 위치")}</span>

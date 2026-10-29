@@ -179,6 +179,7 @@ function pull(overrides: Partial<GithubPullSummary> = {}): GithubPullSummary {
 function pullDetail(overrides: Partial<GithubPullDetail> = {}): GithubPullDetail {
   return {
     ...pull(),
+    crossRepository: false,
     body: "PR 본문입니다.",
     createdAt: "2026-10-15T01:00:00.000Z",
     mergeable: "mergeable",

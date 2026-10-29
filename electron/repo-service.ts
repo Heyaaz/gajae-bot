@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import path from "node:path";
 import {
   REPO_FAILED_LOG_LIMIT,
@@ -39,7 +39,19 @@ export interface CommandResult {
   stderr: string;
 }
 
-export type CommandRunner = (file: string, args: readonly string[]) => Promise<CommandResult>;
+export interface CommandOptions {
+  /**
+   * Keep only this many trailing bytes of stdout. The output is read as it
+   * streams, so it may be any size; without it a large output fails the command.
+   */
+  keepTail?: number;
+}
+
+export type CommandRunner = (
+  file: string,
+  args: readonly string[],
+  options?: CommandOptions,
+) => Promise<CommandResult>;
 
 export interface RepoServiceOptions {
   /** Git binary; defaults to the one on PATH. */
@@ -144,9 +156,13 @@ function isTransientGitFailure(error: unknown): boolean {
  * never needs it.
  */
 export function defaultCommandRunner(ghExecutable: string): CommandRunner {
-  return (file, args) =>
+  return (file, args, options) =>
     new Promise<CommandResult>((resolve, reject) => {
       const timeout = file === ghExecutable ? GH_TIMEOUT : GIT_TIMEOUT;
+      if (options?.keepTail !== undefined) {
+        runKeepingTail(file, args, timeout, options.keepTail).then(resolve, reject);
+        return;
+      }
       execFile(file, args, { timeout, maxBuffer: MAX_BUFFER, windowsHide: true }, (error, stdout, stderr) => {
         if (error) {
           reject(commandFailure(file, error, stderr));
@@ -155,6 +171,47 @@ export function defaultCommandRunner(ghExecutable: string): CommandRunner {
         resolve({ stdout, stderr });
       });
     });
+}
+
+function runKeepingTail(
+  file: string,
+  args: readonly string[],
+  timeout: number,
+  keepTail: number,
+): Promise<CommandResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    let tail = Buffer.alloc(0);
+    let stderr = "";
+    let settled = false;
+    const finish = (outcome: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      outcome();
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish(() => reject(commandFailure(file, { message: `${file} timed out` }, stderr)));
+    }, timeout);
+    child.stdout.on("data", (chunk: Buffer) => {
+      tail = Buffer.concat([tail, chunk]);
+      if (tail.length > keepTail) tail = tail.subarray(tail.length - keepTail);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (stderr.length < DETAIL_LIMIT * 4) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error: NodeJS.ErrnoException) =>
+      finish(() => reject(commandFailure(file, error, stderr))),
+    );
+    child.on("close", (code) =>
+      finish(() =>
+        code === 0
+          ? resolve({ stdout: tail.toString("utf8"), stderr })
+          : reject(commandFailure(file, { message: `${file} exited with ${code}` }, stderr)),
+      ),
+    );
+  });
 }
 
 function commandFailure(
@@ -576,6 +633,7 @@ function parsePullDetail(value: unknown): GithubPullDetail {
   const source = asRecord(value);
   return {
     ...parsePull(source),
+    crossRepository: source.isCrossRepository === true,
     body: text(source, "body"),
     createdAt: text(source, "createdAt"),
     mergeable: mergeableState(text(source, "mergeable")),
@@ -600,7 +658,7 @@ const ISSUE_DETAIL_FIELDS = `${ISSUE_FIELDS},body,createdAt,assignees`;
 const PULL_FIELDS =
   "number,title,state,isDraft,url,author,headRefName,baseRefName,reviewDecision,updatedAt,statusCheckRollup";
 const PULL_DETAIL_FIELDS =
-  "number,title,state,isDraft,url,author,headRefName,baseRefName,reviewDecision,updatedAt,createdAt,body,mergeable,additions,deletions,changedFiles,statusCheckRollup,reviews";
+  "number,title,state,isDraft,url,author,headRefName,baseRefName,reviewDecision,updatedAt,createdAt,body,mergeable,additions,deletions,changedFiles,statusCheckRollup,reviews,isCrossRepository";
 
 interface CachedResolution {
   at: number;
@@ -969,7 +1027,8 @@ export class RepoService {
 
   /**
    * The failed steps' log of the given Actions runs, each run cut to an equal share
-   * of `REPO_FAILED_LOG_LIMIT`. GitHub already masks secrets in run logs; the
+   * of `REPO_FAILED_LOG_LIMIT`. A run whose log cannot be read is listed with the
+   * reason, and the others are still read. GitHub already masks secrets in run logs; the
    * credential pattern is applied once more because the text becomes a prompt.
    */
   async readFailedLog(root: string, runIds: readonly number[]): Promise<GithubQuery<GithubFailedLog>> {
@@ -979,21 +1038,32 @@ export class RepoService {
       const runs: GithubFailedLog["runs"] = [];
       const parts: string[] = [];
       let truncated = false;
+      let firstFailure: unknown;
       for (const id of runIds) {
         const url = `https://${GITHUB_HOST}/${repository}/actions/runs/${id}`;
-        const result = await this.run(this.ghExecutable, [
-          "run",
-          "view",
-          String(id),
-          "--repo",
-          repository,
-          "--log-failed",
-        ]);
-        const tail = logTail(result.stdout, share);
+        let stdout: string;
+        try {
+          // One byte over the share lets logTail tell a cut log from a whole one.
+          ({ stdout } = await this.run(
+            this.ghExecutable,
+            ["run", "view", String(id), "--repo", repository, "--log-failed"],
+            { keepTail: share + 1 },
+          ));
+        } catch (error) {
+          // No gh, no login or no network fails every run the same way; that is
+          // the query's answer. Anything else belongs to this run, typically one
+          // still in progress, which gh refuses until it completes.
+          if (classifyGithubFailure(error).state !== "error") throw error;
+          firstFailure ??= error;
+          runs.push({ id, url, skipped: redactDetail(errorText(error)) || "로그를 읽지 못했습니다." });
+          continue;
+        }
+        const tail = logTail(stdout, share);
         truncated ||= tail.truncated;
         runs.push({ id, url });
         parts.push(runIds.length > 1 ? `# ${url}\n${tail.text}` : tail.text);
       }
+      if (parts.length === 0 && firstFailure !== undefined) throw firstFailure;
       return { runs, log: parts.join("\n").replace(CREDENTIAL, "[redacted]"), truncated };
     });
   }

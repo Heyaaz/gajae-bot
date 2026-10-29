@@ -469,6 +469,24 @@ describe("session creation IPC validation", () => {
       expect(() =>
         createSessionInput({ runtime: "gjc", workspace, isolation: "worktree", worktreeBranchExisting: true }),
       ).toThrow("required to exist");
+      const worktreePull = { remote: "origin", number: 9 };
+      expect(createSessionInput({ ...base, worktreeBranch: "pr-9", worktreePull })).toMatchObject({
+        worktreeBranch: "pr-9",
+        worktreePull,
+      });
+      for (const bad of [
+        { remote: "-upload-pack=x", number: 9 },
+        { remote: "origin", number: 0 },
+        { remote: "origin", number: 1.5 },
+        "pull/9/head",
+      ])
+        expect(() => createSessionInput({ ...base, worktreePull: bad })).toThrow("pull");
+      expect(() =>
+        createSessionInput({ ...base, worktreePull, worktreeBranchExisting: true }),
+      ).toThrow("pull");
+      expect(() =>
+        createSessionInput({ ...base, isolation: "workspace", worktreePull }),
+      ).toThrow("pull");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

@@ -149,7 +149,8 @@ export const REPO_FAILED_LOG_LIMIT = 32 * 1024;
  * whether anything before that was dropped to stay within `REPO_FAILED_LOG_LIMIT`.
  */
 export interface GithubFailedLog {
-  runs: { id: number; url: string }[];
+  /** `skipped` says why that run's log is not in `log`, such as a run still in progress. */
+  runs: { id: number; url: string; skipped?: string }[];
   log: string;
   truncated: boolean;
 }
@@ -216,6 +217,8 @@ export interface GithubPullSummary {
 }
 
 export interface GithubPullDetail extends GithubPullSummary {
+  /** The head branch is in a fork, so `headRefName` names nothing in this repository. */
+  crossRepository: boolean;
   body: string;
   createdAt: string;
   mergeable: "mergeable" | "conflicting" | "unknown";

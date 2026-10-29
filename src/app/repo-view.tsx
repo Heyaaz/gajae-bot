@@ -159,13 +159,14 @@ function sessionStartKey(target: SessionStartTarget): string {
 }
 
 /**
- * The start in progress, or the reason the last one could not begin. A refusal from
- * `gh` (not installed, not logged in, offline) keeps the button disabled beside the
- * same sentence the rest of the screen uses for it.
+ * The start in progress, or the reason the last one could not begin. A missing or
+ * logged-out `gh`, or a folder that is not a repository, keeps the button disabled
+ * beside the sentence: clicking again cannot change it. Anything else, such as a
+ * run still in progress or a dropped connection, leaves the button to try again.
  */
 export type SessionStartState =
   | { key: string; status: "preparing" }
-  | { key: string; status: "blocked"; reason: string };
+  | { key: string; status: "blocked"; reason: string; retry: boolean };
 
 export interface SessionStartControl {
   state: SessionStartState | null;
@@ -192,7 +193,11 @@ function SessionStartButton({
       <button
         className="button-secondary"
         type="button"
-        disabled={Boolean(reason) || state?.status === "preparing"}
+        disabled={
+          Boolean(unavailable) ||
+          (state?.status === "blocked" && !state.retry) ||
+          state?.status === "preparing"
+        }
         onClick={() => control.onStart(target)}
       >
         <Play size={13} />
@@ -1168,27 +1173,35 @@ export function RepoView({
     const root = project.root;
     const key = sessionStartKey(target);
     setStartState({ key, status: "preparing" });
-    const prepare = async (): Promise<NewSessionPrefill | { blocked: string }> => {
+    type Blocked = { blocked: string; retry: boolean };
+    // A failed Git read can pass; a folder that is not a repository stays one.
+    const outsideGit = (repository: RepositorySnapshot): Blocked => ({
+      blocked: repository.error ?? t("Git 저장소가 아니어서 worktree를 만들 수 없습니다."),
+      retry: repository.error !== undefined,
+    });
+    const prepare = async (): Promise<NewSessionPrefill | Blocked> => {
       if (target.kind === "issue") {
         const repository = await bridge.readRepository(root);
-        if (!repository.repository)
-          return { blocked: repository.error ?? t("Git 저장소가 아니어서 worktree를 만들 수 없습니다.") };
+        if (!repository.repository) return outsideGit(repository);
         return issueSessionPrefill(repository, target.issue);
       }
       const [repository, failed] = await Promise.all([
         bridge.readRepository(root),
         bridge.readFailedLog(root, target.runs.slice(0, REPO_FAILED_RUNS_LIMIT)),
       ]);
-      if (failed.state !== "ok") return { blocked: githubFailureSentence(failed) };
-      if (!repository.repository)
-        return { blocked: repository.error ?? t("Git 저장소가 아니어서 worktree를 만들 수 없습니다.") };
+      if (failed.state !== "ok")
+        return {
+          blocked: githubFailureSentence(failed),
+          retry: failed.state === "error" || failed.state === "unreachable",
+        };
+      if (!repository.repository) return outsideGit(repository);
       return ciSessionPrefill(repository, target.target, failed.value);
     };
     void prepare().then(
       (result) => {
         if (projectRootRef.current !== root) return;
         if ("blocked" in result) {
-          setStartState({ key, status: "blocked", reason: result.blocked });
+          setStartState({ key, status: "blocked", reason: result.blocked, retry: result.retry });
           return;
         }
         setStartState(null);
@@ -1196,7 +1209,7 @@ export function RepoView({
       },
       (failure: unknown) => {
         if (projectRootRef.current !== root) return;
-        setStartState({ key, status: "blocked", reason: humanErrorMessage(failure) });
+        setStartState({ key, status: "blocked", reason: humanErrorMessage(failure), retry: true });
       },
     );
   }

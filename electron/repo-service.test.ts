@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { REPO_FAILED_LOG_LIMIT, REPO_LIST_LIMIT } from "../shared/repo-ipc.js";
 import {
@@ -80,7 +84,7 @@ const ISSUE_VIEW =
   "gh issue view 12 --repo owner/app --json number,title,state,url,labels,comments,updatedAt,author,body,createdAt,assignees";
 const PULL_LIST = `gh pr list --repo owner/app --state open --limit ${REPO_LIST_LIMIT} --json number,title,state,isDraft,url,author,headRefName,baseRefName,reviewDecision,updatedAt,statusCheckRollup`;
 const PULL_VIEW =
-  "gh pr view 9 --repo owner/app --json number,title,state,isDraft,url,author,headRefName,baseRefName,reviewDecision,updatedAt,createdAt,body,mergeable,additions,deletions,changedFiles,statusCheckRollup,reviews";
+  "gh pr view 9 --repo owner/app --json number,title,state,isDraft,url,author,headRefName,baseRefName,reviewDecision,updatedAt,createdAt,body,mergeable,additions,deletions,changedFiles,statusCheckRollup,reviews,isCrossRepository";
 
 function repositoryRoutes(extra: Record<string, Route | undefined> = {}): Record<string, Route | undefined> {
   return {
@@ -930,6 +934,7 @@ describe("GitHub list and detail mapping", () => {
         additions: 120,
         deletions: 8,
         changedFiles: 5,
+        crossRepository: false,
         reviews: [
           { author: "reviewer", state: "approved", submittedAt: "2026-02-02T00:00:00Z" },
           { author: "commenter", state: "commented" },
@@ -941,6 +946,18 @@ describe("GitHub list and detail mapping", () => {
     // A review that was never submitted carries no timestamp at all.
     expect(result.value.reviews[1]).not.toHaveProperty("submittedAt");
     expect(result.value.reviews[2]).not.toHaveProperty("submittedAt");
+  });
+
+  it("tells a pull from a fork apart, whose head branch is not in this repository", async () => {
+    const { run } = fakeRunner(
+      githubRoutes({
+        [PULL_VIEW]: ok(JSON.stringify({ number: 9, title: "Fix", state: "OPEN", headRefName: "main", isCrossRepository: true })),
+      }),
+    );
+    await expect(new RepoService({ run }).getPull(MAIN, 9)).resolves.toMatchObject({
+      state: "ok",
+      value: { headRefName: "main", crossRepository: true },
+    });
   });
 
   it("accepts the lowercase mergeable GitHub also sends", async () => {
@@ -1134,5 +1151,56 @@ describe("failed CI runs", () => {
     await expect(new RepoService({ run: loggedOut }).readFailedLog(MAIN, [41])).resolves.toMatchObject({
       state: "unauthenticated",
     });
+  });
+
+  // gh's own answer for a run that has not finished (observed with gh against
+  // rust-lang/rust and nodejs/node runs in progress), even when its failed job is done.
+  const IN_PROGRESS = (id: number) =>
+    `run ${id} is still in progress; logs will be available when it is complete`;
+
+  it("reads the other runs when one is still in progress and names the one it skipped", async () => {
+    const { run } = fakeRunner(
+      githubRoutes({ [RUN_LOG(41)]: ok("build\ttest\tFAIL\n"), [RUN_LOG(42)]: failed(IN_PROGRESS(42)) }),
+    );
+    await expect(new RepoService({ run }).readFailedLog(MAIN, [41, 42])).resolves.toEqual({
+      state: "ok",
+      value: {
+        runs: [
+          { id: 41, url: "https://github.com/owner/app/actions/runs/41" },
+          { id: 42, url: "https://github.com/owner/app/actions/runs/42", skipped: IN_PROGRESS(42) },
+        ],
+        log: "# https://github.com/owner/app/actions/runs/41\nbuild\ttest\tFAIL\n",
+        truncated: false,
+      },
+    });
+  });
+
+  it("reports why when no run's log could be read", async () => {
+    const { run } = fakeRunner(githubRoutes({ [RUN_LOG(42)]: failed(IN_PROGRESS(42)) }));
+    await expect(new RepoService({ run }).readFailedLog(MAIN, [42])).resolves.toEqual({
+      state: "error",
+      detail: IN_PROGRESS(42),
+    });
+  });
+
+  it("keeps the end of a failed log larger than a buffered process read allows", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "gajae-failed-log-"));
+    try {
+      execFileSync("git", ["init", "-q", dir]);
+      execFileSync("git", ["-C", dir, "remote", "add", "origin", "https://github.com/owner/app.git"]);
+      const gh = path.join(dir, "gh");
+      writeFileSync(
+        gh,
+        "#!/bin/sh\nyes 'build\tsetup\tearly line' | head -c 6000000\nprintf 'build\\ttest\\tFAIL at the end\\n'\n",
+        { mode: 0o755 },
+      );
+      const result = await new RepoService({ ghExecutable: gh }).readFailedLog(dir, [41]);
+      if (result.state !== "ok") throw new Error(`expected a log, got ${JSON.stringify(result)}`);
+      expect(result.value.truncated).toBe(true);
+      expect(result.value.log.endsWith("build\ttest\tFAIL at the end\n")).toBe(true);
+      expect(Buffer.byteLength(result.value.log)).toBeLessThanOrEqual(REPO_FAILED_LOG_LIMIT);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

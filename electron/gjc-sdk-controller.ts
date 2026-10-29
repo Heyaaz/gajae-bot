@@ -346,6 +346,18 @@ function lastTailTranscriptId(
   return undefined;
 }
 
+async function remotesWithBranch(root: string, branch: string): Promise<number> {
+  const [remotes, refs] = await Promise.all([
+    execFile("git", ["-C", root, "remote"]),
+    execFile("git", ["-C", root, "for-each-ref", "--format=%(refname)", "refs/remotes/"]),
+  ]);
+  const present = new Set(refs.stdout.split("\n").map((line) => line.trim()));
+  return remotes.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((remote) => remote && present.has(`refs/remotes/${remote}/${branch}`)).length;
+}
+
 export class GjcSdkController {
   private workspace: string;
   private configuredExecutable?: string;
@@ -1886,13 +1898,37 @@ export class GjcSdkController {
         () => true,
         () => false,
       );
+      // A named branch someone pushed from another machine is on a remote only.
+      // Starting it with `-b` would make a second, unrelated branch of that name,
+      // so it is checked out, which makes git track the one remote that has it.
+      const onOneRemote =
+        !branchExisted &&
+        input.worktreeBranch !== undefined &&
+        !input.worktreePull &&
+        (await remotesWithBranch(root, branch)) === 1;
+      if (!branchExisted && input.worktreePull) {
+        const { remote, number } = input.worktreePull;
+        await execFile("git", [
+          "-C",
+          root,
+          "fetch",
+          "--no-tags",
+          remote,
+          `pull/${number}/head:refs/heads/${branch}`,
+        ]).catch((error: unknown) => {
+          throw new Error(
+            `PR #${number}의 head를 ${remote}에서 받아 오지 못했습니다.`,
+            { cause: error },
+          );
+        });
+      }
       try {
         await execFile("git", [
           "-C",
           root,
           "worktree",
           "add",
-          ...(branchExisted || input.worktreeBranchExisting
+          ...(branchExisted || onOneRemote || input.worktreeBranchExisting || input.worktreePull
             ? [worktreePath, branch]
             : ["-b", branch, worktreePath]),
         ]);

@@ -845,7 +845,18 @@ export interface CreateSessionInput {
    * one remote. Without it a missing branch is created from HEAD.
    */
   worktreeBranchExisting?: boolean;
+  /**
+   * A pull request from a fork: its head lives only under `pull/<number>/head` of
+   * the base repository, so a missing branch is fetched from there on `remote`
+   * instead of being created from HEAD.
+   */
+  worktreePull?: WorktreePull;
   workLink?: SessionWorkLink;
+}
+
+export interface WorktreePull {
+  remote: string;
+  number: number;
 }
 
 export interface ForkSessionInput {

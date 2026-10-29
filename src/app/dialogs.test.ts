@@ -200,6 +200,52 @@ describe("NewSessionDialog prefill", () => {
     expect(onCreate.mock.calls[0]![0].workLink).toEqual(workLink);
   });
 
+  it("warns that a session in the main checkout shares it with the user's own changes", () => {
+    const text = (tree: unknown) => JSON.stringify(tree);
+    const mainPrefill = { ...prefill, isolation: "workspace" as const, mainCheckout: true as const };
+    let tree = renderNewSessionDialog({ prefill: mainPrefill });
+    expect(text(tree)).toContain("커밋하지 않은 변경");
+
+    hookState.slots = [];
+    tree = renderNewSessionDialog({ prefill: mainPrefill });
+    findElement(tree, (element) => element.type === "input" && element.props?.type === "radio" && element.props?.checked === false)
+      .props.onChange();
+    tree = renderNewSessionDialog({ prefill: mainPrefill });
+    expect(text(tree)).not.toContain("커밋하지 않은 변경");
+
+    hookState.slots = [];
+    expect(text(renderNewSessionDialog({ prefill: { ...prefill, isolation: "workspace" as const } }))).not.toContain(
+      "커밋하지 않은 변경",
+    );
+  });
+
+  it("fetches a fork pull's head only for the branch it was suggested for", () => {
+    const forkPrefill = {
+      ...prefill,
+      isolation: "worktree" as const,
+      worktreeBranch: "pr-9",
+      worktreePull: { remote: "origin", number: 9 },
+    };
+    const onCreate = vi.fn();
+    let tree = renderNewSessionDialog({ prefill: forkPrefill, onCreate });
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate.mock.calls[0]![0]).toMatchObject({
+      worktreeBranch: "pr-9",
+      worktreePull: { remote: "origin", number: 9 },
+    });
+
+    hookState.slots = [];
+    onCreate.mockClear();
+    tree = renderNewSessionDialog({ prefill: forkPrefill, onCreate });
+    findElement(
+      tree,
+      (element) => element.type === "input" && element.props?.placeholder === "안전한 브랜치 (선택)",
+    ).props.onChange({ target: { value: "my-own" } });
+    tree = renderNewSessionDialog({ prefill: forkPrefill, onCreate });
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate.mock.calls[0]![0]).not.toHaveProperty("worktreePull");
+  });
+
   it("hands prefilled screenshots to the new session, and gives them back when dismissed", () => {
     const discardAttachments = vi.fn(async () => undefined);
     vi.stubGlobal("window", { agentControlDesktop: { settings: { discardAttachments } } });

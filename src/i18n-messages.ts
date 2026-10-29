@@ -747,4 +747,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "빠른 입력 단축키": "Quick input shortcut",
   "다른 앱을 쓰는 중에도 작은 입력 창을 열어 프로젝트를 고르고 화면을 캡처해 새 세션으로 넘깁니다.": "Opens a small input window over any app, where you pick a project, capture the screen and hand it to a new session.",
   "단축키": "Shortcut",
+  "로그를 읽지 못한 실행: {url} ({reason})": "Run whose log could not be read: {url} ({reason})",
+  "이 폴더는 저장소의 기본 작업 폴더입니다. 커밋하지 않은 변경이 있으면 세션의 수정과 섞입니다. 따로 두려면 별도 worktree를 고르세요.":
+    "This folder is the repository's main checkout. Any uncommitted changes there will mix with the session's edits. Choose a separate worktree to keep them apart.",
 };
