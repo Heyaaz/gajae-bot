@@ -118,7 +118,7 @@ function snapshot(
 }
 
 function ci(overrides: Partial<RepoCiSummary> = {}): RepoCiSummary {
-  return { state: "passing", total: 2, failing: 0, pending: 0, ...overrides };
+  return { state: "passing", total: 2, failing: 0, pending: 0, failedRuns: [], ...overrides };
 }
 
 function githubStatus(): GithubRepositoryStatus {

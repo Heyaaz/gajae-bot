@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { REPO_LIST_LIMIT } from "../shared/repo-ipc.js";
+import { REPO_FAILED_LOG_LIMIT, REPO_LIST_LIMIT } from "../shared/repo-ipc.js";
 import {
   BoundedProcessGate,
   RepoService,
@@ -651,7 +651,7 @@ describe("readGithub", () => {
         defaultBranch: "main",
         openIssues: 7,
         openPulls: 3,
-        ci: { state: "pending", total: 2, failing: 0, pending: 1 },
+        ci: { state: "pending", total: 2, failing: 0, pending: 1, failedRuns: [] },
         private: true,
       },
     });
@@ -676,7 +676,7 @@ describe("readGithub", () => {
         defaultBranch: "",
         openIssues: 0,
         openPulls: 0,
-        ci: { state: "none", total: 0, failing: 0, pending: 0 },
+        ci: { state: "none", total: 0, failing: 0, pending: 0, failedRuns: [] },
         private: false,
       },
     });
@@ -845,7 +845,7 @@ describe("GitHub list and detail mapping", () => {
           headRefName: "feat/rail",
           baseRefName: "main",
           review: "changes-requested",
-          ci: { state: "failing", total: 2, failing: 1, pending: 0 },
+          ci: { state: "failing", total: 2, failing: 1, pending: 0, failedRuns: [] },
           updatedAt: "2026-02-01T00:00:00Z",
         },
         {
@@ -858,7 +858,7 @@ describe("GitHub list and detail mapping", () => {
           headRefName: "chore/cleanup",
           baseRefName: "main",
           review: "none",
-          ci: { state: "none", total: 0, failing: 0, pending: 0 },
+          ci: { state: "none", total: 0, failing: 0, pending: 0, failedRuns: [] },
           updatedAt: "2026-02-02T00:00:00Z",
         },
         {
@@ -871,7 +871,7 @@ describe("GitHub list and detail mapping", () => {
           headRefName: "feat/next",
           baseRefName: "main",
           review: "approved",
-          ci: { state: "pending", total: 1, failing: 0, pending: 1 },
+          ci: { state: "pending", total: 1, failing: 0, pending: 1, failedRuns: [] },
           updatedAt: "2026-02-03T00:00:00Z",
         },
       ],
@@ -922,7 +922,7 @@ describe("GitHub list and detail mapping", () => {
         headRefName: "feat/rail",
         baseRefName: "main",
         review: "approved",
-        ci: { state: "passing", total: 1, failing: 0, pending: 0 },
+        ci: { state: "passing", total: 1, failing: 0, pending: 0, failedRuns: [] },
         updatedAt: "2026-02-01T00:00:00Z",
         body: "why this rail",
         createdAt: "2026-01-30T00:00:00Z",
@@ -958,7 +958,7 @@ describe("GitHub list and detail mapping", () => {
 
 describe("check summaries", () => {
   it("counts failing, pending and passing check runs", () => {
-    expect(summarizeCheckRuns([])).toEqual({ state: "none", total: 0, failing: 0, pending: 0 });
+    expect(summarizeCheckRuns([])).toEqual({ state: "none", total: 0, failing: 0, pending: 0, failedRuns: [] });
     expect(
       summarizeCheckRuns([
         { status: "COMPLETED", conclusion: "SUCCESS" },
@@ -969,7 +969,7 @@ describe("check summaries", () => {
         // A status this build has never seen is still running, not passing.
         { status: "WAITING_FOR_SOMETHING_NEW", conclusion: null },
       ]),
-    ).toEqual({ state: "failing", total: 6, failing: 1, pending: 3 });
+    ).toEqual({ state: "failing", total: 6, failing: 1, pending: 3, failedRuns: [] });
   });
 
   it("sums a status check rollup of check runs and status contexts", () => {
@@ -979,12 +979,13 @@ describe("check summaries", () => {
         { __typename: "StatusContext", state: "PENDING" },
         { __typename: "StatusContext", state: "ERROR" },
       ]),
-    ).toEqual({ state: "failing", total: 3, failing: 1, pending: 1 });
+    ).toEqual({ state: "failing", total: 3, failing: 1, pending: 1, failedRuns: [] });
     expect(summarizeRollup([{ __typename: "StatusContext", state: "SUCCESS" }])).toEqual({
       state: "passing",
       total: 1,
       failing: 0,
       pending: 0,
+      failedRuns: [],
     });
   });
 });
@@ -1064,6 +1065,74 @@ describe("the shipped runner", () => {
     expect(classifyGithubFailure(error)).toEqual({
       state: "no-cli",
       detail: "GitHub CLI(gh)를 찾을 수 없습니다.",
+    });
+  });
+});
+
+describe("failed CI runs", () => {
+  const job = (id: number, jobId: number) =>
+    `https://github.com/owner/app/actions/runs/${id}/job/${jobId}`;
+
+  it("collects the Actions runs behind failing checks, once each", () => {
+    expect(
+      summarizeRollup([
+        { __typename: "CheckRun", conclusion: "FAILURE", detailsUrl: job(41, 1) },
+        { __typename: "CheckRun", conclusion: "FAILURE", detailsUrl: job(41, 2) },
+        { __typename: "CheckRun", conclusion: "SUCCESS", detailsUrl: job(42, 3) },
+        { __typename: "CheckRun", conclusion: "TIMED_OUT", detailsUrl: job(43, 4) },
+        { __typename: "CheckRun", conclusion: "FAILURE", detailsUrl: "https://vercel.com/owner/app/1" },
+        { __typename: "StatusContext", state: "ERROR", targetUrl: "https://ci.example.com/build/7" },
+      ]).failedRuns,
+    ).toEqual([41, 43]);
+    expect(
+      summarizeCheckRuns([
+        { status: "completed", conclusion: "failure", details_url: job(51, 9), html_url: job(51, 9) },
+      ]).failedRuns,
+    ).toEqual([51]);
+  });
+
+  const RUN_LOG = (id: number) => `gh run view ${id} --repo owner/app --log-failed`;
+
+  it("keeps the end of each run's failed log within the byte limit", async () => {
+    const early = "build\tsetup\tearly line\n".repeat(4000);
+    const late = `build\ttest\tFAIL expected 1 got 2 ${FAKE_TOKEN}\n`;
+    const { run } = fakeRunner(
+      githubRoutes({ [RUN_LOG(41)]: ok(early + late), [RUN_LOG(43)]: ok("lint\tvet\tshort\n") }),
+    );
+    const result = await new RepoService({ run }).readFailedLog(MAIN, [41, 43]);
+    if (result.state !== "ok") throw new Error(`expected a log, got ${result.state}`);
+    expect(result.value.runs).toEqual([
+      { id: 41, url: "https://github.com/owner/app/actions/runs/41" },
+      { id: 43, url: "https://github.com/owner/app/actions/runs/43" },
+    ]);
+    expect(result.value.truncated).toBe(true);
+    expect(Buffer.byteLength(result.value.log)).toBeLessThanOrEqual(REPO_FAILED_LOG_LIMIT + 200);
+    expect(result.value.log).toContain("FAIL expected 1 got 2 [redacted]");
+    expect(result.value.log).not.toContain(FAKE_TOKEN);
+    expect(result.value.log).toContain("# https://github.com/owner/app/actions/runs/43\nlint\tvet\tshort");
+    for (const line of result.value.log.split("\n").filter((entry) => entry.startsWith("build")))
+      expect(line).toMatch(/^build\t(setup\tearly line|test\tFAIL)/u);
+  });
+
+  it("returns a short log whole and reports gh's own failure as a state", async () => {
+    const { run: whole } = fakeRunner(githubRoutes({ [RUN_LOG(41)]: ok("x\ty\tboom\n") }));
+    await expect(new RepoService({ run: whole }).readFailedLog(MAIN, [41])).resolves.toEqual({
+      state: "ok",
+      value: {
+        runs: [{ id: 41, url: "https://github.com/owner/app/actions/runs/41" }],
+        log: "x\ty\tboom\n",
+        truncated: false,
+      },
+    });
+    const { run: absent } = fakeRunner(githubRoutes({ [RUN_LOG(41)]: missing("gh") }));
+    await expect(new RepoService({ run: absent }).readFailedLog(MAIN, [41])).resolves.toMatchObject({
+      state: "no-cli",
+    });
+    const { run: loggedOut } = fakeRunner(
+      githubRoutes({ [RUN_LOG(41)]: failed("To get started with GitHub CLI, please run:  gh auth login") }),
+    );
+    await expect(new RepoService({ run: loggedOut }).readFailedLog(MAIN, [41])).resolves.toMatchObject({
+      state: "unauthenticated",
     });
   });
 });

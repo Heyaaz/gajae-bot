@@ -10,6 +10,7 @@ import {
   repoNumber,
   repoPath,
   repoPaths,
+  repoRunIds,
 } from "./repo-ipc-handlers.js";
 
 const handled = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
@@ -92,6 +93,12 @@ describe("repository IPC validation", () => {
     );
   });
 
+  it("accepts one to three Actions run ids, which are far past an issue number", () => {
+    expect(repoRunIds([40531441702, 40531441702, 7])).toEqual([40531441702, 7]);
+    for (const value of [[], [1, 2, 3, 4], [0], [1.5], ["7"], "7", null])
+      expect(() => repoRunIds(value)).toThrow("Run ids must be");
+  });
+
   it("opens https links only", () => {
     expect(externalRepoUrl("https://github.com/Heyaaz/gajae-bot")).toBe(
       "https://github.com/Heyaaz/gajae-bot",
@@ -150,6 +157,10 @@ describe("repository IPC surface", () => {
         calls.push(`pull:${root}:${number}`);
         return { state: "no-remote" as const };
       },
+      readFailedLog: async (root: string, runIds: number[]) => {
+        calls.push(`failed-log:${root}:${runIds.join(",")}`);
+        return { state: "no-remote" as const };
+      },
     };
     const security = {
       guarded: (handler: (...args: unknown[]) => unknown) => handler,
@@ -159,7 +170,7 @@ describe("repository IPC surface", () => {
       security as unknown as Parameters<typeof registerRepoIpcHandlers>[1],
     );
 
-    expect(handled.size).toBe(9);
+    expect(handled.size).toBe(10);
     // The guarded wrapper is called with the IPC event first, which the handler
     // itself never sees.
     await handled.get("agent-control:repo:resolve-projects")!(null, ["/tmp/a"]);
@@ -169,6 +180,7 @@ describe("repository IPC surface", () => {
     await handled.get("agent-control:repo:get-issue")!(null, "/tmp/a", 3);
     await handled.get("agent-control:repo:list-pulls")!(null, "/tmp/a");
     await handled.get("agent-control:repo:get-pull")!(null, "/tmp/a", 4);
+    await handled.get("agent-control:repo:read-failed-log")!(null, "/tmp/a", [41]);
     expect(calls).toEqual([
       "resolve:/tmp/a",
       "repository:/tmp/a",
@@ -177,6 +189,7 @@ describe("repository IPC surface", () => {
       "issue:/tmp/a:3",
       "pulls:/tmp/a",
       "pull:/tmp/a:4",
+      "failed-log:/tmp/a:41",
     ]);
 
     dispose();

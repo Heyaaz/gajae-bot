@@ -1,7 +1,7 @@
 import { ipcMain, shell } from "electron";
 import { statSync } from "node:fs";
 import path from "node:path";
-import { REPO_IPC } from "../shared/repo-ipc.js";
+import { REPO_FAILED_RUNS_LIMIT, REPO_IPC } from "../shared/repo-ipc.js";
 import type { RepoService } from "./repo-service.js";
 import type { IpcSecurity } from "./ipc-security.js";
 
@@ -56,6 +56,18 @@ export function repoNumber(value: unknown, label: string): number {
   )
     throw new Error(`${label} must be a positive issue number`);
   return value;
+}
+
+/** Actions run ids are database ids, far past the issue-number bound above. */
+export function repoRunIds(value: unknown): number[] {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > REPO_FAILED_RUNS_LIMIT ||
+    !value.every((entry) => typeof entry === "number" && Number.isSafeInteger(entry) && entry > 0)
+  )
+    throw new Error(`Run ids must be 1 to ${REPO_FAILED_RUNS_LIMIT} positive integers`);
+  return [...new Set(value as number[])];
 }
 
 /**
@@ -131,6 +143,9 @@ export function registerRepoIpcHandlers(
       absoluteRepoPath(root, "Project root"),
       repoNumber(number, "Pull request number"),
     ),
+  );
+  handle(REPO_IPC.readFailedLog, (root: unknown, runIds: unknown) =>
+    service.readFailedLog(absoluteRepoPath(root, "Project root"), repoRunIds(runIds)),
   );
   handle(REPO_IPC.openExternal, async (url: unknown) => {
     await shell.openExternal(externalRepoUrl(url));

@@ -1,5 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
+import { parseSessionWorkLink, type SessionWorkLink } from '../shared/agent-contract.js'
 
 export class SessionMetadataStore {
   private readonly filePath: string
@@ -9,6 +10,7 @@ export class SessionMetadataStore {
   private ownership: Record<string, 'gajae' | 'external' | 'available'>
   private unread: Record<string, boolean>
   private worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }>
+  private workLinks: Record<string, SessionWorkLink>
 
   constructor(userDataDirectory: string) {
     this.filePath = path.join(userDataDirectory, 'agent-control-sessions.json')
@@ -19,6 +21,7 @@ export class SessionMetadataStore {
     this.ownership = stored.ownership
     this.unread = stored.unread
     this.worktrees = stored.worktrees
+    this.workLinks = stored.workLinks
   }
 
   getAlias(sessionId: string): string | undefined {
@@ -52,6 +55,8 @@ export class SessionMetadataStore {
   setUnread(sessionId: string, value: boolean): void { this.unread[sessionId] = value; this.write() }
   getWorktree(sessionId: string) { return this.worktrees[sessionId] }
   setWorktree(sessionId: string, value: { sourceWorkspace: string; path: string; branch: string; managed: true }): void { this.worktrees[sessionId] = value; this.write() }
+  getWorkLink(sessionId: string): SessionWorkLink | undefined { return this.workLinks[sessionId] }
+  setWorkLink(sessionId: string, value: SessionWorkLink): void { this.workLinks[sessionId] = value; this.write() }
 
   hideSession(sessionId: string): void {
     this.hidden.add(sessionId)
@@ -60,6 +65,7 @@ export class SessionMetadataStore {
     delete this.ownership[sessionId]
     delete this.unread[sessionId]
     delete this.worktrees[sessionId]
+    delete this.workLinks[sessionId]
     this.write()
   }
 
@@ -90,6 +96,7 @@ export class SessionMetadataStore {
         delete this.ownership[sessionId]
         delete this.unread[sessionId]
         delete this.worktrees[sessionId]
+        delete this.workLinks[sessionId]
       }
     }
     this.write()
@@ -100,20 +107,22 @@ export class SessionMetadataStore {
       && !(sessionId in this.workspaces)
       && !(sessionId in this.ownership)
       && !(sessionId in this.unread)
-      && !(sessionId in this.worktrees)) return
+      && !(sessionId in this.worktrees)
+      && !(sessionId in this.workLinks)) return
     delete this.aliases[sessionId]
     delete this.workspaces[sessionId]
     delete this.ownership[sessionId]
     delete this.unread[sessionId]
     delete this.worktrees[sessionId]
+    delete this.workLinks[sessionId]
     this.write()
   }
 
-  private read(): { aliases: Record<string, string>; workspaces: Record<string, string>; hidden: string[]; ownership: Record<string, 'gajae' | 'external' | 'available'>; unread: Record<string, boolean>; worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }> } {
+  private read(): { aliases: Record<string, string>; workspaces: Record<string, string>; hidden: string[]; ownership: Record<string, 'gajae' | 'external' | 'available'>; unread: Record<string, boolean>; worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }>; workLinks: Record<string, SessionWorkLink> } {
     try {
       const value = JSON.parse(readFileSync(this.filePath, 'utf8')) as unknown
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {} }
-      const candidate = value as { aliases?: unknown; workspaces?: unknown; hidden?: unknown; ownership?: unknown; unread?: unknown; worktrees?: unknown }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {}, workLinks: {} }
+      const candidate = value as { aliases?: unknown; workspaces?: unknown; hidden?: unknown; ownership?: unknown; unread?: unknown; worktrees?: unknown; workLinks?: unknown }
       const rawAliases = candidate.aliases && typeof candidate.aliases === 'object' && !Array.isArray(candidate.aliases)
         ? candidate.aliases as Record<string, unknown>
         : value as Record<string, unknown>
@@ -149,16 +158,22 @@ export class SessionMetadataStore {
               && Boolean(value.branch)
           }))
         : {}
-      return { aliases, workspaces, hidden, ownership, unread, worktrees }
+      const workLinks = candidate.workLinks && typeof candidate.workLinks === 'object' && !Array.isArray(candidate.workLinks)
+        ? Object.fromEntries(Object.entries(candidate.workLinks as Record<string, unknown>).flatMap(([sessionId, raw]) => {
+            const link = parseSessionWorkLink(raw)
+            return link ? [[sessionId, link]] : []
+          }))
+        : {}
+      return { aliases, workspaces, hidden, ownership, unread, worktrees, workLinks }
     } catch {
-      return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {} }
+      return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {}, workLinks: {} }
     }
   }
 
   private write(): void {
     mkdirSync(path.dirname(this.filePath), { recursive: true })
     const temporaryPath = `${this.filePath}.tmp`
-    writeFileSync(temporaryPath, `${JSON.stringify({ aliases: this.aliases, workspaces: this.workspaces, hidden: [...this.hidden], ownership: this.ownership, unread: this.unread, worktrees: this.worktrees }, null, 2)}\n`, { mode: 0o600 })
+    writeFileSync(temporaryPath, `${JSON.stringify({ aliases: this.aliases, workspaces: this.workspaces, hidden: [...this.hidden], ownership: this.ownership, unread: this.unread, worktrees: this.worktrees, workLinks: this.workLinks }, null, 2)}\n`, { mode: 0o600 })
     renameSync(temporaryPath, this.filePath)
   }
 }

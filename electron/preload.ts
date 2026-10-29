@@ -497,6 +497,8 @@ const repo: RepoDesktopBridge = Object.freeze({
   listPulls: (root: string) => ipcRenderer.invoke(REPO_IPC.listPulls, root),
   getPull: (root: string, number: number) =>
     ipcRenderer.invoke(REPO_IPC.getPull, root, number),
+  readFailedLog: (root: string, runIds: number[]) =>
+    ipcRenderer.invoke(REPO_IPC.readFailedLog, root, runIds),
   openExternal: (url: string) => ipcRenderer.invoke(REPO_IPC.openExternal, url),
   revealFolder: (path: string) =>
     ipcRenderer.invoke(REPO_IPC.revealFolder, path),

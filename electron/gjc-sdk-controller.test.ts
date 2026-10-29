@@ -26,6 +26,7 @@ import {
   todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
 import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
+import { SessionMetadataStore } from "./session-metadata-store.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 import {
   DEFAULT_MODEL_PRESET,
@@ -2222,6 +2223,75 @@ describe("GjcSdkController CLI seam", () => {
       await execFile("git", ["-C", dir, "branch", "-D", "gajae/test"]).catch(() => undefined);
       if (worktreePath) await rm(path.dirname(worktreePath), { recursive: true, force: true });
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  async function commit(dir: string, file: string): Promise<string> {
+    await writeFile(path.join(dir, file), file);
+    await execFile("git", ["-C", dir, "add", file]);
+    await execFile("git", ["-C", dir, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", file]);
+    return (await execFile("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+  }
+  const headOf = async (dir: string) => (await execFile("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim();
+  const branchExists = (dir: string, branch: string) =>
+    execFile("git", ["-C", dir, "rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
+
+  it("checks out an existing branch instead of creating one, records the work link, and never deletes that branch", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "gajae-existing-branch-"));
+    const dir = path.join(parent, "repo");
+    const metadata = new SessionMetadataStore(path.join(parent, "user-data"));
+    const { controller, cli } = harness({ sessionMetadata: metadata });
+    try {
+      await execFile("git", ["init", "-q", "-b", "main", dir]);
+      const branchTip = await commit(dir, "first");
+      await execFile("git", ["-C", dir, "branch", "issue-7-fix"]);
+      await commit(dir, "second");
+      const workLink = { kind: "issue" as const, number: 7, url: "https://github.com/owner/app/issues/7" };
+      cli.rawGlobal.mockResolvedValueOnce({ sessionId: "wt" } as never);
+      const created = await controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "issue-7-fix", workLink });
+      expect(created.worktree?.branch).toBe("issue-7-fix");
+      expect(await headOf(created.workspace)).toBe(branchTip);
+      expect(created.workLink).toEqual(workLink);
+      expect(metadata.getWorkLink("wt")).toEqual(workLink);
+      expect(new SessionMetadataStore(path.join(parent, "user-data")).getWorkLink("wt")).toEqual(workLink);
+
+      await execFile("git", ["-C", dir, "worktree", "remove", "--force", created.workspace]);
+      cli.rawGlobal.mockRejectedValueOnce(new SdkCliError("operation_failed", "refused", undefined, [], "not-applied"));
+      await expect(controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "issue-7-fix" })).rejects.toThrow();
+      expect((await execFile("git", ["-C", dir, "worktree", "list", "--porcelain"])).stdout).not.toContain("issue-7-fix");
+      expect(await branchExists(dir, "issue-7-fix")).toBe(true);
+    } finally {
+      controller.dispose();
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("checks out the remote branch a CI fix names, and refuses to start one from HEAD", async () => {
+    const parent = await mkdtemp(path.join(tmpdir(), "gajae-remote-branch-"));
+    const origin = path.join(parent, "origin");
+    const dir = path.join(parent, "clone");
+    const { controller, cli } = harness();
+    try {
+      await execFile("git", ["init", "-q", "-b", "main", origin]);
+      await commit(origin, "base");
+      await execFile("git", ["-C", origin, "checkout", "-qb", "feat/ci"]);
+      const remoteTip = await commit(origin, "ci-change");
+      await execFile("git", ["-C", origin, "checkout", "-q", "main"]);
+      await execFile("git", ["clone", "-q", origin, dir]);
+      expect(await branchExists(dir, "feat/ci")).toBe(false);
+
+      cli.rawGlobal.mockResolvedValueOnce({ sessionId: "ci" } as never);
+      const created = await controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "feat/ci", worktreeBranchExisting: true });
+      expect(await headOf(created.workspace)).toBe(remoteTip);
+      expect(await branchExists(dir, "feat/ci")).toBe(true);
+
+      cli.rawGlobal.mockClear();
+      await expect(controller.createSession({ runtime: "gjc", workspace: dir, isolation: "worktree", worktreeBranch: "feat/nowhere", worktreeBranchExisting: true })).rejects.toThrow("feat/nowhere");
+      expect(await branchExists(dir, "feat/nowhere")).toBe(false);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+      await rm(parent, { recursive: true, force: true });
     }
   });
 });

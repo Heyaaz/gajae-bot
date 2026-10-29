@@ -202,6 +202,41 @@ export interface EffectiveRuntimeState {
   refreshedAt: string;
 }
 
+/** The GitHub work a session was started from on the repository screen. */
+export type SessionWorkLink =
+  | { kind: "issue"; number: number; url: string }
+  | { kind: "pull"; number: number; url: string }
+  | { kind: "ci"; branch: string; url: string };
+
+const WORK_LINK_BRANCH = /^[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9])?$/u;
+
+/** A work link read from IPC or from disk, or undefined when it is not one. */
+export function parseSessionWorkLink(value: unknown): SessionWorkLink | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const candidate = value as Record<string, unknown>;
+  const url = candidate.url;
+  if (typeof url !== "string" || url.length > 2048) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") return undefined;
+  } catch {
+    return undefined;
+  }
+  if (candidate.kind === "issue" || candidate.kind === "pull") {
+    const number = candidate.number;
+    if (typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0)
+      return undefined;
+    return { kind: candidate.kind, number, url };
+  }
+  if (candidate.kind === "ci") {
+    const branch = candidate.branch;
+    if (typeof branch !== "string" || branch.length > 256 || !WORK_LINK_BRANCH.test(branch))
+      return undefined;
+    return { kind: "ci", branch, url };
+  }
+  return undefined;
+}
+
 export interface AgentSession {
   id: string;
   title: string;
@@ -244,6 +279,7 @@ export interface AgentSession {
   ownership: SessionOwnership;
   attachment: SessionAttachment;
   worktree?: ManagedWorktree;
+  workLink?: SessionWorkLink;
   runtimeState?: EffectiveRuntimeState;
 }
 
@@ -770,6 +806,12 @@ export interface CreateSessionInput {
   runtime: RuntimeKind;
   isolation: "workspace" | "worktree";
   worktreeBranch?: string;
+  /**
+   * The worktree checks out a branch that already exists, locally or on exactly
+   * one remote. Without it a missing branch is created from HEAD.
+   */
+  worktreeBranchExisting?: boolean;
+  workLink?: SessionWorkLink;
 }
 
 export interface ForkSessionInput {

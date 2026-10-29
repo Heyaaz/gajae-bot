@@ -7137,6 +7137,45 @@ button.diff-line-number:hover {
   border-color: var(--border-strong);
 }
 
+.repo-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+}
+.repo-start__reason {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
+}
+.repo-links {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.repo-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+.repo-link__target {
+  padding: 0;
+  color: var(--accent-bright);
+  font-size: 11px;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.repo-link__target:disabled {
+  color: var(--text-secondary);
+  cursor: default;
+}
+
 .repo-branch {
   display: flex;
   align-items: center;

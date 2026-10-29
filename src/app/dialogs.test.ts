@@ -174,6 +174,32 @@ describe("NewSessionDialog prefill", () => {
     expect(onCreate.mock.calls[0]![0].initialPrompt).toBeUndefined();
   });
 
+  it("carries the work link, and requires the suggested branch to exist only while it is unchanged", () => {
+    const workLink = { kind: "pull" as const, number: 9, url: "https://github.com/owner/app/pull/9" };
+    const ciPrefill = { ...prefill, worktreeBranch: "feat/rail", worktreeBranchExisting: true, workLink };
+    const onCreate = vi.fn();
+    let tree = renderNewSessionDialog({ prefill: ciPrefill, onCreate });
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate.mock.calls[0]![0]).toMatchObject({
+      worktreeBranch: "feat/rail",
+      worktreeBranchExisting: true,
+      workLink,
+    });
+
+    hookState.slots = [];
+    onCreate.mockClear();
+    tree = renderNewSessionDialog({ prefill: ciPrefill, onCreate });
+    findElement(
+      tree,
+      (element) => element.type === "input" && element.props?.placeholder === "안전한 브랜치 (선택)",
+    ).props.onChange({ target: { value: "feat/my-own" } });
+    tree = renderNewSessionDialog({ prefill: ciPrefill, onCreate });
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate.mock.calls[0]![0].worktreeBranch).toBe("feat/my-own");
+    expect(onCreate.mock.calls[0]![0]).not.toHaveProperty("worktreeBranchExisting");
+    expect(onCreate.mock.calls[0]![0].workLink).toEqual(workLink);
+  });
+
   it("keeps today's defaults without a prefill", () => {
     const onCreate = vi.fn();
     const tree = renderNewSessionDialog({ onCreate });

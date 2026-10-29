@@ -2066,6 +2066,8 @@ export default function App() {
         workspace: input.workspace,
         isolation: input.isolation ?? "workspace",
         worktreeBranch: input.worktreeBranch,
+        ...(input.worktreeBranchExisting ? { worktreeBranchExisting: true } : {}),
+        ...(input.workLink ? { workLink: input.workLink } : {}),
       });
       pendingSessions.current.set(draftId, creation);
       void creation
@@ -3164,6 +3166,7 @@ export default function App() {
           backend={backend}
           bridge={repoBridge}
           onOpenSession={selectSession}
+          onStartSession={openNewSessionDialog}
           onClose={openConversation}
           onError={setAppError}
           onSubmitReview={remoteViewOnly ? undefined : submitReview}

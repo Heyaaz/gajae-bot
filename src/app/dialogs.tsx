@@ -1,5 +1,8 @@
 import type { GlobalSearchResult } from "../../shared/productivity-ipc";
-import type { HistorySession } from "../../shared/agent-contract";
+import type {
+  HistorySession,
+  SessionWorkLink,
+} from "../../shared/agent-contract";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import type { AgentSession } from "../backend/types";
 import {
@@ -22,6 +25,8 @@ export interface NewSessionInput {
   workspace: string;
   isolation?: "workspace" | "worktree";
   worktreeBranch?: string;
+  worktreeBranchExisting?: boolean;
+  workLink?: SessionWorkLink;
   initialPrompt?: string;
 }
 
@@ -74,6 +79,7 @@ export function NewSessionDialog({
     event.preventDefault();
     if (!workspace) return;
     const trimmedTitle = title.trim();
+    const branch = worktreeBranch.trim() || undefined;
     onCreate({
       title:
         !trimmedTitle || trimmedTitle === defaultTitle
@@ -81,7 +87,15 @@ export function NewSessionDialog({
           : trimmedTitle,
       workspace,
       isolation,
-      worktreeBranch: worktreeBranch.trim() || undefined,
+      worktreeBranch: branch,
+      // The requirement belongs to the branch that was suggested; a name the user
+      // typed instead may be a new branch.
+      ...(prefill?.worktreeBranchExisting &&
+      isolation === "worktree" &&
+      branch === prefill.worktreeBranch
+        ? { worktreeBranchExisting: true }
+        : {}),
+      ...(prefill?.workLink ? { workLink: prefill.workLink } : {}),
       initialPrompt: prompt.trim() || undefined,
     });
   }

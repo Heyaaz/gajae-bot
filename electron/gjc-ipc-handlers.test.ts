@@ -12,6 +12,7 @@ import {
   registerGjcIpcHandlers,
   withResolvedMessageInput,
 } from "./gjc-ipc-handlers.js";
+import { createSessionInput } from "./gjc-input-validation.js";
 
 const handled = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
 
@@ -444,5 +445,31 @@ describe("explicit compaction action", () => {
     await handled.get(GJC_IPC.deleteSession)!(event, "session-a");
     expect(confirm).toHaveBeenCalledExactlyOnceWith(event, { message: "세션을 삭제할까요?" });
     expect(remove).toHaveBeenCalledExactlyOnceWith("session-a");
+  });
+});
+
+describe("session creation IPC validation", () => {
+  it("passes a work link and an existing-branch requirement through, and refuses malformed ones", async () => {
+    const workspace = await mkdtemp(path.join(tmpdir(), "gajae-create-input-"));
+    try {
+      const base = { runtime: "gjc", workspace, isolation: "worktree", worktreeBranch: "feat/rail" };
+      const workLink = { kind: "pull", number: 9, url: "https://github.com/owner/app/pull/9" };
+      expect(createSessionInput({ ...base, worktreeBranchExisting: true, workLink })).toMatchObject({
+        worktreeBranchExisting: true,
+        workLink,
+      });
+      expect(createSessionInput(base)).not.toHaveProperty("workLink");
+      expect(() =>
+        createSessionInput({ ...base, workLink: { ...workLink, url: "https://evil.example/pull/9" } }),
+      ).toThrow("work link");
+      expect(() =>
+        createSessionInput({ ...base, isolation: "workspace", worktreeBranchExisting: true }),
+      ).toThrow("required to exist");
+      expect(() =>
+        createSessionInput({ runtime: "gjc", workspace, isolation: "worktree", worktreeBranchExisting: true }),
+      ).toThrow("required to exist");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 });

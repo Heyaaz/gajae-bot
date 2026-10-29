@@ -94,7 +94,7 @@ describe("session read performance", () => {
       forgetHiddenOutside: vi.fn(), listWorkspaces: () => ["/repo"],
       isHidden: (id: string) => id === "hidden",
       getOwnership: () => undefined, getUnread: () => false,
-      getWorktree: () => undefined, getAlias: () => undefined,
+      getWorktree: () => undefined, getWorkLink: () => undefined, getAlias: () => undefined,
     };
     state.locateSharedTranscriptFile = vi.fn(async () => undefined);
     state.discoveredRunState = vi.fn(async () => "idle");

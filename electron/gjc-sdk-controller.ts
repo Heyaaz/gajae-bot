@@ -1139,6 +1139,7 @@ export class GjcSdkController {
           currentSession?.unread ??
           false,
         worktree: this.sessionMetadata?.getWorktree(info.sessionId),
+        workLink: this.sessionMetadata?.getWorkLink(info.sessionId),
         parentId: parentId ?? currentSession?.parentId,
       };
       session.title =
@@ -1848,6 +1849,7 @@ export class GjcSdkController {
     let worktree:
       | { sourceWorkspace: string; path: string; branch: string; managed: true }
       | undefined;
+    let branchExisted = false;
     if (input.isolation === "worktree") {
       const root = (
         await execFile("git", [
@@ -1865,15 +1867,39 @@ export class GjcSdkController {
         `${path.basename(root)}.gajae-worktrees`,
         suffix,
       );
-      await execFile("git", [
+      // An existing branch is checked out rather than recreated: `-b` refuses it,
+      // and the failure cleanup below must never delete a branch it did not make.
+      branchExisted = await execFile("git", [
         "-C",
         root,
-        "worktree",
-        "add",
-        "-b",
-        branch,
-        worktreePath,
-      ]);
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        `refs/heads/${branch}`,
+      ]).then(
+        () => true,
+        () => false,
+      );
+      try {
+        await execFile("git", [
+          "-C",
+          root,
+          "worktree",
+          "add",
+          ...(branchExisted || input.worktreeBranchExisting
+            ? [worktreePath, branch]
+            : ["-b", branch, worktreePath]),
+        ]);
+      } catch (error) {
+        // Without a local branch, git checks out the one remote branch of that
+        // name. A branch that exists nowhere must not become a new one from HEAD.
+        if (input.worktreeBranchExisting && !branchExisted)
+          throw new Error(
+            `브랜치 ${branch}을(를) 로컬이나 원격에서 찾지 못했습니다. git fetch로 받아 온 뒤 다시 시도하세요.`,
+            { cause: error },
+          );
+        throw error;
+      }
       sessionWorkspace = worktreePath;
       worktree = {
         sourceWorkspace: root,
@@ -1940,13 +1966,14 @@ export class GjcSdkController {
               "remove",
               worktree.path,
             ]);
-            await execFile("git", [
-              "-C",
-              worktree.sourceWorkspace,
-              "branch",
-              "-D",
-              worktree.branch,
-            ]);
+            if (!branchExisted)
+              await execFile("git", [
+                "-C",
+                worktree.sourceWorkspace,
+                "branch",
+                "-D",
+                worktree.branch,
+              ]);
           }
         } catch {
           /* Preserve a dirty or otherwise uncertain worktree for manual recovery. */
@@ -1980,6 +2007,7 @@ export class GjcSdkController {
       ownership: "gajae",
       attachment: "recovering",
       ...(worktree ? { worktree } : {}),
+      ...(input.workLink ? { workLink: input.workLink } : {}),
     };
     this.sessions.set(session.id, session);
     this.windowHostedSessions.add(session.id);
@@ -1991,6 +2019,7 @@ export class GjcSdkController {
     this.sessionMetadata?.setWorkspace(session.id, sessionWorkspace);
     this.sessionMetadata?.setOwnership(session.id, "gajae");
     if (worktree) this.sessionMetadata?.setWorktree(session.id, worktree);
+    if (input.workLink) this.sessionMetadata?.setWorkLink(session.id, input.workLink);
     try {
       await this.applyPermissionMode(session.id);
     } catch (error) {

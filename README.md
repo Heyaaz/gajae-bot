@@ -280,7 +280,7 @@ single repository to open. The repository screen fills the center area:
 
 | Tab | What it reads |
 | --- | --- |
-| 개요 | current branch, worktree and branch counts, changed-file counts per worktree, connected sessions, GitHub issue/PR counts and default-branch CI |
+| 개요 | current branch, worktree and branch counts, changed-file counts per worktree, connected sessions, GitHub issue/PR counts and default-branch CI, sessions started from an issue or CI |
 | 이슈 | open issues, then one issue's body and labels |
 | PR | open pull requests with review state and CI, then one pull's branches, diff size and reviews |
 | 브랜치·워크트리 | local branches, which worktree has each checked out, and each worktree's changed-file count |
@@ -306,6 +306,20 @@ single repository to open. The repository screen fills the center area:
   `변경 파일` button. Nothing on the repository screen writes on its own.
 - `DONE` is the session's own state. It does not mean the pull request merged or the
   issue closed; those live on the PR and 이슈 tabs.
+- `이 이슈로 세션 시작` on an issue and `CI 실패 고치기` on a pull request (or on the
+  overview, for the default branch) open the new-session dialog filled in; the
+  session is created only when the dialog is confirmed, and the first request is
+  placed in its message box, not sent. The issue's request carries its title, body,
+  labels and URL on branch `issue-<number>-<slug>`. The CI request carries the
+  failed steps' log from `gh run view --log-failed` for up to three Actions runs,
+  cut to the last 32 KB. A worktree that already has the branch checked out is
+  used as it is; otherwise a managed worktree checks out the existing local branch
+  rather than creating a second one. A CI fix never starts its branch from `HEAD`:
+  the branch must exist locally or on one remote, or creation stops and asks for a
+  `git fetch`.
+- The session remembers the issue, pull request or CI run it was started from, and
+  the overview lists those sessions. A `gh` failure while reading the CI log leaves
+  the button disabled beside the same sentence used everywhere else on the screen.
 
 GitHub reads go through the [`gh` CLI](https://cli.github.com), which supplies its
 own credential from the keychain. The app never reads, stores or prints a token, and

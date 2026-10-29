@@ -1,3 +1,5 @@
+import type { SessionWorkLink } from "./agent-contract.js";
+
 export const SETTINGS_IPC = {
   getPreferences: "agent-control:settings:get-preferences",
   chooseWorkspace: "agent-control:settings:choose-workspace",
@@ -35,6 +37,8 @@ export type NewSessionPrefill = {
   prompt?: string;
   isolation?: "workspace" | "worktree";
   worktreeBranch?: string;
+  worktreeBranchExisting?: boolean;
+  workLink?: SessionWorkLink;
 };
 
 /** Why a gajae:// link was refused. `session` also covers an id the window does not know. */

@@ -8,6 +8,7 @@ import type {
   QuestionSubmission,
   ToolDecision,
 } from "../shared/agent-contract.js";
+import { parseSessionWorkLink } from "../shared/agent-contract.js";
 
 /**
  * Input validation shared by the Electron IPC surface and the remote access
@@ -65,6 +66,8 @@ export function createSessionInput(value: unknown): CreateSessionInput {
     workspace?: unknown;
     isolation?: unknown;
     worktreeBranch?: unknown;
+    worktreeBranchExisting?: unknown;
+    workLink?: unknown;
   };
   if (candidate.runtime !== "gjc")
     throw new Error("Only the GJC runtime is available through this bridge");
@@ -97,6 +100,19 @@ export function createSessionInput(value: unknown): CreateSessionInput {
   ) {
     throw new Error("Session worktree branch is invalid");
   }
+  if (
+    candidate.worktreeBranchExisting !== undefined &&
+    (candidate.worktreeBranchExisting !== true ||
+      candidate.isolation !== "worktree" ||
+      candidate.worktreeBranch === undefined)
+  )
+    throw new Error("Only a named worktree branch can be required to exist");
+  const workLink =
+    candidate.workLink === undefined
+      ? undefined
+      : parseSessionWorkLink(candidate.workLink);
+  if (candidate.workLink !== undefined && !workLink)
+    throw new Error("Session work link is invalid");
   try {
     if (!statSync(candidate.workspace).isDirectory()) throw new Error();
   } catch {
@@ -110,6 +126,8 @@ export function createSessionInput(value: unknown): CreateSessionInput {
     ...(candidate.worktreeBranch !== undefined
       ? { worktreeBranch: candidate.worktreeBranch }
       : {}),
+    ...(candidate.worktreeBranchExisting ? { worktreeBranchExisting: true } : {}),
+    ...(workLink ? { workLink } : {}),
   };
 }
 

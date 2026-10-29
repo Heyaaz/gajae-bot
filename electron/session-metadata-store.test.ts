@@ -96,3 +96,32 @@ describe("SessionMetadataStore hidden ids", () => {
     }
   });
 });
+
+describe("SessionMetadataStore work links", () => {
+  it("keeps valid links across a reopen, drops invalid ones, and forgets a hidden session's", () => {
+    const issue = { kind: "issue", number: 166, url: "https://github.com/Heyaaz/gajae-bot/issues/166" };
+    const { directory, open } = store({
+      workLinks: {
+        kept: issue,
+        "wrong-host": { kind: "pull", number: 3, url: "https://example.com/pull/3" },
+        "bad-branch": { kind: "ci", branch: "../main", url: "https://github.com/o/r/actions/runs/1" },
+        "no-number": { kind: "issue", url: issue.url },
+      },
+    });
+    try {
+      const metadata = open();
+      expect(metadata.getWorkLink("kept")).toEqual(issue);
+      for (const id of ["wrong-host", "bad-branch", "no-number"])
+        expect(metadata.getWorkLink(id)).toBeUndefined();
+
+      const ci = { kind: "ci" as const, branch: "main", url: "https://github.com/o/r/actions/runs/1" };
+      metadata.setWorkLink("ci", ci);
+      metadata.hideSession("kept");
+      const reopened = open();
+      expect(reopened.getWorkLink("ci")).toEqual(ci);
+      expect(reopened.getWorkLink("kept")).toBeUndefined();
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});

@@ -412,6 +412,7 @@ export class MockAgentBackend implements AgentBackend {
             },
           }
         : {}),
+      ...(input.workLink ? { workLink: input.workLink } : {}),
       runtimeState: {
         permissionHandling: "prompt",
         mcpServers: [],

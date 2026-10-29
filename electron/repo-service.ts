@@ -1,7 +1,11 @@
 import { execFile } from "node:child_process";
 import path from "node:path";
-import { REPO_LIST_LIMIT } from "../shared/repo-ipc.js";
+import {
+  REPO_FAILED_LOG_LIMIT,
+  REPO_LIST_LIMIT,
+} from "../shared/repo-ipc.js";
 import type {
+  GithubFailedLog,
   GithubIssueDetail,
   GithubIssueSummary,
   GithubLabel,
@@ -322,17 +326,50 @@ function entryOutcome(entry: unknown): "failing" | "pending" | "passing" {
   return "passing";
 }
 
+const ACTIONS_RUN = /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/(\d+)(?:[/?#]|$)/u;
+
+/**
+ * The Actions run a check belongs to. The rollup names its page `detailsUrl`, the
+ * REST check run `details_url`, and a status context `targetUrl`.
+ */
+function actionsRunId(entry: unknown): number | undefined {
+  const source = asRecord(entry);
+  for (const key of ["detailsUrl", "details_url", "targetUrl", "target_url"]) {
+    const match = ACTIONS_RUN.exec(text(source, key));
+    const id = match ? Number(match[1]) : NaN;
+    if (Number.isSafeInteger(id) && id > 0) return id;
+  }
+  return undefined;
+}
+
 function summarize(entries: readonly unknown[]): RepoCiSummary {
   let failing = 0;
   let pending = 0;
+  const failedRuns: number[] = [];
   for (const entry of entries) {
     const outcome = entryOutcome(entry);
-    if (outcome === "failing") failing += 1;
-    else if (outcome === "pending") pending += 1;
+    if (outcome === "failing") {
+      failing += 1;
+      const run = actionsRunId(entry);
+      if (run !== undefined && !failedRuns.includes(run)) failedRuns.push(run);
+    } else if (outcome === "pending") pending += 1;
   }
   const total = entries.length;
   const state = total === 0 ? "none" : failing > 0 ? "failing" : pending > 0 ? "pending" : "passing";
-  return { state, total, failing, pending };
+  return { state, total, failing, pending, failedRuns };
+}
+
+/**
+ * The end of a log within `limit` bytes, starting at a whole line.
+ *
+ * A failed step prints its error last, so the end is the part worth keeping.
+ */
+export function logTail(log: string, limit: number): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(log, "utf8");
+  if (bytes.length <= limit) return { text: log, truncated: false };
+  const tail = bytes.subarray(bytes.length - limit).toString("utf8");
+  const lineStart = tail.indexOf("\n");
+  return { text: lineStart >= 0 ? tail.slice(lineStart + 1) : tail, truncated: true };
 }
 
 /** The default branch's `check_runs` array. */
@@ -928,6 +965,37 @@ export class RepoService {
         ]),
       ),
     );
+  }
+
+  /**
+   * The failed steps' log of the given Actions runs, each run cut to an equal share
+   * of `REPO_FAILED_LOG_LIMIT`. GitHub already masks secrets in run logs; the
+   * credential pattern is applied once more because the text becomes a prompt.
+   */
+  async readFailedLog(root: string, runIds: readonly number[]): Promise<GithubQuery<GithubFailedLog>> {
+    return this.githubQuery(root, async (owner, name) => {
+      const repository = `${owner}/${name}`;
+      const share = Math.floor(REPO_FAILED_LOG_LIMIT / Math.max(1, runIds.length));
+      const runs: GithubFailedLog["runs"] = [];
+      const parts: string[] = [];
+      let truncated = false;
+      for (const id of runIds) {
+        const url = `https://${GITHUB_HOST}/${repository}/actions/runs/${id}`;
+        const result = await this.run(this.ghExecutable, [
+          "run",
+          "view",
+          String(id),
+          "--repo",
+          repository,
+          "--log-failed",
+        ]);
+        const tail = logTail(result.stdout, share);
+        truncated ||= tail.truncated;
+        runs.push({ id, url });
+        parts.push(runIds.length > 1 ? `# ${url}\n${tail.text}` : tail.text);
+      }
+      return { runs, log: parts.join("\n").replace(CREDENTIAL, "[redacted]"), truncated };
+    });
   }
 
   private async git(args: readonly string[], cwd: string): Promise<CommandResult> {

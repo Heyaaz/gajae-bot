@@ -15,14 +15,29 @@ import type {
   RepositorySnapshot,
   RepoWorktree,
 } from "../../shared/repo-ipc";
+import { REPO_FAILED_RUNS_LIMIT } from "../../shared/repo-ipc";
+import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession } from "../backend/types";
-import { ArrowLeft, ExternalLink, FolderOpen, GitCompare } from "lucide-react";
+import {
+  ArrowLeft,
+  ExternalLink,
+  FolderOpen,
+  GitCompare,
+  Play,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { humanErrorMessage, sessionTitleText } from "./format";
 import { DiffPanel } from "./inspector";
 import { sessionsInPath } from "./project-model";
+import {
+  ciSessionPrefill,
+  issueSessionPrefill,
+  sessionsLinkedTo,
+  workLinkLabel,
+  type CiTarget,
+} from "./repo-session-start";
 import { t } from "../i18n";
 
 
@@ -120,13 +135,143 @@ export function ciLabel(ci: RepoCiSummary): string {
  * repository this account cannot see and a refused API call read the same way in
  * the sentence alone, and only one of them is worth retrying.
  */
-function GithubFailureNotice({ failure }: { failure: GithubFailure }): ReactNode {
+function githubFailureSentence(failure: GithubFailure): string {
   const detail = "detail" in failure ? failure.detail : "";
+  return detail
+    ? `${githubFailureText(failure.state)} (${detail})`
+    : githubFailureText(failure.state);
+}
+
+function GithubFailureNotice({ failure }: { failure: GithubFailure }): ReactNode {
+  return <p className="repo-error">{githubFailureSentence(failure)}</p>;
+}
+
+/** What a start button can begin: a session for an issue, or one for a failing CI. */
+export type SessionStartTarget =
+  | { kind: "issue"; issue: GithubIssueDetail }
+  | { kind: "ci"; target: CiTarget; runs: number[] };
+
+function sessionStartKey(target: SessionStartTarget): string {
+  if (target.kind === "issue") return `issue:${target.issue.number}`;
+  return target.target.kind === "pull"
+    ? `pull:${target.target.pull.number}`
+    : `branch:${target.target.branch}`;
+}
+
+/**
+ * The start in progress, or the reason the last one could not begin. A refusal from
+ * `gh` (not installed, not logged in, offline) keeps the button disabled beside the
+ * same sentence the rest of the screen uses for it.
+ */
+export type SessionStartState =
+  | { key: string; status: "preparing" }
+  | { key: string; status: "blocked"; reason: string };
+
+export interface SessionStartControl {
+  state: SessionStartState | null;
+  onStart: (target: SessionStartTarget) => void;
+}
+
+function SessionStartButton({
+  target,
+  label,
+  control,
+  unavailable,
+}: {
+  target: SessionStartTarget;
+  label: string;
+  control: SessionStartControl;
+  /** Known before any click: why this start cannot work at all. */
+  unavailable?: string;
+}) {
+  const key = sessionStartKey(target);
+  const state = control.state?.key === key ? control.state : null;
+  const reason = unavailable ?? (state?.status === "blocked" ? state.reason : "");
   return (
-    <p className="repo-error">
-      {githubFailureText(failure.state)}
-      {detail && ` (${detail})`}
-    </p>
+    <div className="repo-start">
+      <button
+        className="button-secondary"
+        type="button"
+        disabled={Boolean(reason) || state?.status === "preparing"}
+        onClick={() => control.onStart(target)}
+      >
+        <Play size={13} />
+        {state?.status === "preparing" ? t("준비 중…") : label}
+      </button>
+      {reason && <p className="repo-start__reason">{reason}</p>}
+    </div>
+  );
+}
+
+function ciStartUnavailable(ci: RepoCiSummary): string | undefined {
+  return ci.failedRuns.length === 0
+    ? t("실패한 check가 GitHub Actions 실행이 아니어서 로그를 읽을 수 없습니다.")
+    : undefined;
+}
+
+/** Sessions already started from this issue or pull; opening one beats starting another. */
+function LinkedSessions({
+  sessions,
+  onOpenSession,
+}: {
+  sessions: readonly AgentSession[];
+  onOpenSession: (sessionId: string) => void;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="repo-detail__meta">
+      <span>{t("시작한 세션")}</span>
+      <span className="repo-chips">
+        {sessions.map((session) => (
+          <button
+            className="repo-chip"
+            type="button"
+            key={session.id}
+            onClick={() => onOpenSession(session.id)}
+          >
+            {sessionTitleText(session.title)}
+          </button>
+        ))}
+      </span>
+    </div>
+  );
+}
+
+/** The overview's list of sessions started from GitHub work, with what each came from. */
+function WorkLinkRows({
+  sessions,
+  onOpenSession,
+  onOpenUrl,
+}: {
+  sessions: readonly AgentSession[];
+  onOpenSession: (sessionId: string) => void;
+  onOpenUrl?: (url: string) => void;
+}) {
+  const linked = sessions.filter((session) => session.workLink);
+  if (linked.length === 0)
+    return <p className="repo-empty">{t("이슈나 CI에서 시작한 세션이 없습니다.")}</p>;
+  return (
+    <ul className="repo-links">
+      {linked.map((session) => (
+        <li className="repo-link" key={session.id}>
+          <button
+            className="repo-link__target"
+            type="button"
+            disabled={!onOpenUrl}
+            onClick={() => onOpenUrl?.(session.workLink!.url)}
+          >
+            {workLinkLabel(session.workLink!)}
+          </button>
+          <button
+            className="repo-chip"
+            type="button"
+            onClick={() => onOpenSession(session.id)}
+          >
+            {sessionTitleText(session.title)}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 
@@ -226,6 +371,9 @@ export interface RepoOverviewPanelProps {
   sessions: AgentSession[];
   onOpenSession: (sessionId: string) => void;
   onOpenDiff: (session: AgentSession) => void;
+  onOpenUrl?: (url: string) => void;
+  /** Absent where sessions cannot be created from here. */
+  start?: SessionStartControl;
 }
 
 export function RepoOverviewPanel({
@@ -234,6 +382,8 @@ export function RepoOverviewPanel({
   sessions,
   onOpenSession,
   onOpenDiff,
+  onOpenUrl,
+  start,
 }: RepoOverviewPanelProps) {
   return (
     <>
@@ -285,10 +435,32 @@ export function RepoOverviewPanel({
               </span>
               {github.value.private && <span>{t("비공개 저장소")}</span>}
             </p>
+            {start && github.value.ci.state === "failing" && github.value.defaultBranch && (
+              <SessionStartButton
+                target={{
+                  kind: "ci",
+                  target: { kind: "branch", branch: github.value.defaultBranch },
+                  runs: github.value.ci.failedRuns,
+                }}
+                label={t("CI 실패 고치기")}
+                control={start}
+                unavailable={ciStartUnavailable(github.value.ci)}
+              />
+            )}
           </>
         ) : (
           <GithubFailureNotice failure={github} />
         )}
+      </section>
+      <section className="repo-card">
+        <header className="repo-card__header">
+          <h3>{t("이슈·CI에서 시작한 세션")}</h3>
+        </header>
+        <WorkLinkRows
+          sessions={sessions}
+          onOpenSession={onOpenSession}
+          onOpenUrl={onOpenUrl}
+        />
       </section>
     </>
   );
@@ -439,6 +611,9 @@ export interface RepoIssuesPanelProps {
   onSelect: (number: number) => void;
   onBack: () => void;
   onOpenUrl: (url: string) => void;
+  sessions?: AgentSession[];
+  onOpenSession?: (sessionId: string) => void;
+  start?: SessionStartControl;
 }
 
 export function RepoIssuesPanel({
@@ -447,10 +622,20 @@ export function RepoIssuesPanel({
   onSelect,
   onBack,
   onOpenUrl,
+  sessions = [],
+  onOpenSession = () => undefined,
+  start,
 }: RepoIssuesPanelProps) {
   if (detail)
     return (
-      <IssueDetailView load={detail} onBack={onBack} onOpenUrl={onOpenUrl} />
+      <IssueDetailView
+        load={detail}
+        onBack={onBack}
+        onOpenUrl={onOpenUrl}
+        sessions={sessions}
+        onOpenSession={onOpenSession}
+        start={start}
+      />
     );
   if (query.state !== "ok")
     return <GithubFailureNotice failure={query} />;
@@ -492,6 +677,9 @@ export interface RepoPullsPanelProps {
   onSelect: (number: number) => void;
   onBack: () => void;
   onOpenUrl: (url: string) => void;
+  sessions?: AgentSession[];
+  onOpenSession?: (sessionId: string) => void;
+  start?: SessionStartControl;
 }
 
 export function RepoPullsPanel({
@@ -500,9 +688,21 @@ export function RepoPullsPanel({
   onSelect,
   onBack,
   onOpenUrl,
+  sessions = [],
+  onOpenSession = () => undefined,
+  start,
 }: RepoPullsPanelProps) {
   if (detail)
-    return <PullDetailView load={detail} onBack={onBack} onOpenUrl={onOpenUrl} />;
+    return (
+      <PullDetailView
+        load={detail}
+        onBack={onBack}
+        onOpenUrl={onOpenUrl}
+        sessions={sessions}
+        onOpenSession={onOpenSession}
+        start={start}
+      />
+    );
   if (query.state !== "ok")
     return <GithubFailureNotice failure={query} />;
   if (query.value.length === 0)
@@ -545,15 +745,22 @@ function DetailHeader({ onBack }: { onBack: () => void }) {
   );
 }
 
+interface DetailLinks {
+  sessions: AgentSession[];
+  onOpenSession: (sessionId: string) => void;
+  start?: SessionStartControl;
+}
+
 function IssueDetailView({
   load,
   onBack,
   onOpenUrl,
+  ...links
 }: {
   load: RepoLoad<GithubQuery<GithubIssueDetail>>;
   onBack: () => void;
   onOpenUrl: (url: string) => void;
-}) {
+} & DetailLinks) {
   return (
     <article className="repo-detail">
       <DetailHeader onBack={onBack} />
@@ -563,7 +770,7 @@ function IssueDetailView({
       {load.status === "failed" && <p className="repo-error">{load.error}</p>}
       {load.status === "ready" &&
         (load.value.state === "ok" ? (
-          <IssueDetailBody issue={load.value.value} onOpenUrl={onOpenUrl} />
+          <IssueDetailBody issue={load.value.value} onOpenUrl={onOpenUrl} {...links} />
         ) : (
           <GithubFailureNotice failure={load.value} />
         ))}
@@ -574,10 +781,13 @@ function IssueDetailView({
 function IssueDetailBody({
   issue,
   onOpenUrl,
+  sessions,
+  onOpenSession,
+  start,
 }: {
   issue: GithubIssueDetail;
   onOpenUrl: (url: string) => void;
-}) {
+} & DetailLinks) {
   return (
     <>
       <h3 className="repo-detail__title">
@@ -608,6 +818,17 @@ function IssueDetailBody({
           {t("담당자")} {issue.assignees.join(", ")}
         </p>
       )}
+      {start && (
+        <SessionStartButton
+          target={{ kind: "issue", issue }}
+          label={t("이 이슈로 세션 시작")}
+          control={start}
+        />
+      )}
+      <LinkedSessions
+        sessions={sessionsLinkedTo(sessions, "issue", issue.number)}
+        onOpenSession={onOpenSession}
+      />
       <pre className="repo-detail__body">{issue.body || t("본문이 없습니다.")}</pre>
     </>
   );
@@ -617,11 +838,12 @@ function PullDetailView({
   load,
   onBack,
   onOpenUrl,
+  ...links
 }: {
   load: RepoLoad<GithubQuery<GithubPullDetail>>;
   onBack: () => void;
   onOpenUrl: (url: string) => void;
-}) {
+} & DetailLinks) {
   return (
     <article className="repo-detail">
       <DetailHeader onBack={onBack} />
@@ -631,7 +853,7 @@ function PullDetailView({
       {load.status === "failed" && <p className="repo-error">{load.error}</p>}
       {load.status === "ready" &&
         (load.value.state === "ok" ? (
-          <PullDetailBody pull={load.value.value} onOpenUrl={onOpenUrl} />
+          <PullDetailBody pull={load.value.value} onOpenUrl={onOpenUrl} {...links} />
         ) : (
           <p className="repo-error">{githubFailureText(load.value.state)}</p>
         ))}
@@ -642,10 +864,13 @@ function PullDetailView({
 function PullDetailBody({
   pull,
   onOpenUrl,
+  sessions,
+  onOpenSession,
+  start,
 }: {
   pull: GithubPullDetail;
   onOpenUrl: (url: string) => void;
-}) {
+} & DetailLinks) {
   return (
     <>
       <h3 className="repo-detail__title">
@@ -671,6 +896,22 @@ function PullDetailBody({
       <p className="repo-detail__branches">
         <code>{pull.headRefName}</code> → <code>{pull.baseRefName}</code>
       </p>
+      {start && pull.ci.state === "failing" && (
+        <SessionStartButton
+          target={{
+            kind: "ci",
+            target: { kind: "pull", pull },
+            runs: pull.ci.failedRuns,
+          }}
+          label={t("CI 실패 고치기")}
+          control={start}
+          unavailable={ciStartUnavailable(pull.ci)}
+        />
+      )}
+      <LinkedSessions
+        sessions={sessionsLinkedTo(sessions, "pull", pull.number)}
+        onOpenSession={onOpenSession}
+      />
       <p className="repo-detail__stats">
         <span className="repo-detail__additions">
           +{formatRepoCount(pull.additions)}
@@ -709,6 +950,11 @@ export interface RepoViewProps {
   /** Null in a renderer with no desktop bridge (browser/remote client). */
   bridge: RepoDesktopBridge | null;
   onOpenSession: (sessionId: string) => void;
+  /**
+   * Opens the new-session dialog with these values; the session is created only
+   * when the user confirms there. Absent, the screen offers no way to start one.
+   */
+  onStartSession?: (prefill: NewSessionPrefill) => void;
   onClose: () => void;
   onError: (message: string) => void;
   /** Sends a diff review through the session's composer rules. */
@@ -747,6 +993,7 @@ export function RepoView({
   backend,
   bridge,
   onOpenSession,
+  onStartSession,
   onClose,
   onError,
   onSubmitReview,
@@ -774,11 +1021,14 @@ export function RepoView({
   >(null);
   const [changes, setChanges] = useState<ChangesView | null>(null);
   const changesRequestId = useRef(0);
+  const [startState, setStartState] = useState<SessionStartState | null>(null);
+  const projectRootRef = useRef(project.root);
 
   // The rail can switch projects under this screen. Nothing read for the previous
   // root may stand in for the new one while it loads, so every read starts over --
   // including the tabs the user is not looking at.
   useEffect(() => {
+    projectRootRef.current = project.root;
     setRepository({ status: "loading" });
     setGithub({ status: "loading" });
     setIssues({ status: "loading" });
@@ -788,6 +1038,7 @@ export function RepoView({
     setPullNumber(null);
     setPullDetail(null);
     setChanges(null);
+    setStartState(null);
   }, [project.root]);
 
   // One read per tab, keyed by the project the tab is reading. A tab the user comes
@@ -908,8 +1159,54 @@ export function RepoView({
     );
   }
 
+  /**
+   * Reads what the dialog needs -- the worktrees as they are now, and for a CI the
+   * failed log -- then hands the values to the dialog. Nothing is created here.
+   */
+  function startSession(target: SessionStartTarget): void {
+    if (!bridge || !onStartSession) return;
+    const root = project.root;
+    const key = sessionStartKey(target);
+    setStartState({ key, status: "preparing" });
+    const prepare = async (): Promise<NewSessionPrefill | { blocked: string }> => {
+      if (target.kind === "issue") {
+        const repository = await bridge.readRepository(root);
+        if (!repository.repository)
+          return { blocked: repository.error ?? t("Git 저장소가 아니어서 worktree를 만들 수 없습니다.") };
+        return issueSessionPrefill(repository, target.issue);
+      }
+      const [repository, failed] = await Promise.all([
+        bridge.readRepository(root),
+        bridge.readFailedLog(root, target.runs.slice(0, REPO_FAILED_RUNS_LIMIT)),
+      ]);
+      if (failed.state !== "ok") return { blocked: githubFailureSentence(failed) };
+      if (!repository.repository)
+        return { blocked: repository.error ?? t("Git 저장소가 아니어서 worktree를 만들 수 없습니다.") };
+      return ciSessionPrefill(repository, target.target, failed.value);
+    };
+    void prepare().then(
+      (result) => {
+        if (projectRootRef.current !== root) return;
+        if ("blocked" in result) {
+          setStartState({ key, status: "blocked", reason: result.blocked });
+          return;
+        }
+        setStartState(null);
+        onStartSession(result);
+      },
+      (failure: unknown) => {
+        if (projectRootRef.current !== root) return;
+        setStartState({ key, status: "blocked", reason: humanErrorMessage(failure) });
+      },
+    );
+  }
+
+  const start: SessionStartControl | undefined =
+    bridge && onStartSession ? { state: startState, onStart: startSession } : undefined;
+
   function selectTab(next: RepoViewTab): void {
     setTab(next);
+    setStartState(null);
     // A detail and a diff belong to the tab they were opened from; carrying either
     // into another tab would show something the user did not ask for here.
     setIssueNumber(null);
@@ -959,6 +1256,7 @@ export function RepoView({
                 sessions={sessions}
                 onOpenSession={onOpenSession}
                 onOpenDiff={openChanges}
+                onOpenUrl={openUrl}
               />
             </>
           );
@@ -971,6 +1269,8 @@ export function RepoView({
             sessions={sessions}
             onOpenSession={onOpenSession}
             onOpenDiff={openChanges}
+            onOpenUrl={openUrl}
+            start={start}
           />
         );
       }
@@ -987,8 +1287,12 @@ export function RepoView({
             onBack={() => {
               setIssueNumber(null);
               setIssueDetail(null);
+              setStartState(null);
             }}
             onOpenUrl={openUrl}
+            sessions={sessions}
+            onOpenSession={onOpenSession}
+            start={start}
           />
         );
       case "pulls":
@@ -1004,8 +1308,12 @@ export function RepoView({
             onBack={() => {
               setPullNumber(null);
               setPullDetail(null);
+              setStartState(null);
             }}
             onOpenUrl={openUrl}
+            sessions={sessions}
+            onOpenSession={onOpenSession}
+            start={start}
           />
         );
       case "branches":

@@ -22,6 +22,8 @@ export const REPO_IPC = {
   getIssue: "agent-control:repo:get-issue",
   listPulls: "agent-control:repo:list-pulls",
   getPull: "agent-control:repo:get-pull",
+  /** `gh run view --log-failed` for the Actions runs behind failing checks. */
+  readFailedLog: "agent-control:repo:read-failed-log",
   /** Opens a validated https URL in the OS browser. */
   openExternal: "agent-control:repo:open-external",
   /** Reveals a project or worktree directory in the OS file manager. */
@@ -132,6 +134,24 @@ export interface RepoCiSummary {
   total: number;
   failing: number;
   pending: number;
+  /** GitHub Actions run ids behind the failing checks; a check from another CI has none. */
+  failedRuns: number[];
+}
+
+/** Runs one failed-log read covers, and the bytes of log it keeps in all. */
+export const REPO_FAILED_RUNS_LIMIT = 3;
+export const REPO_FAILED_LOG_LIMIT = 32 * 1024;
+
+/**
+ * The failed steps' output of some Actions runs.
+ *
+ * Each run keeps the end of its log, where the failure is, and `truncated` says
+ * whether anything before that was dropped to stay within `REPO_FAILED_LOG_LIMIT`.
+ */
+export interface GithubFailedLog {
+  runs: { id: number; url: string }[];
+  log: string;
+  truncated: boolean;
 }
 
 export interface GithubRepositoryStatus {
@@ -222,6 +242,10 @@ export interface RepoDesktopBridge {
     root: string,
     number: number,
   ): Promise<GithubQuery<GithubPullDetail>>;
+  readFailedLog(
+    root: string,
+    runIds: number[],
+  ): Promise<GithubQuery<GithubFailedLog>>;
   openExternal(url: string): Promise<void>;
   revealFolder(path: string): Promise<void>;
 }
