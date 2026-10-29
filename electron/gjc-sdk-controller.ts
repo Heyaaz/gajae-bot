@@ -62,7 +62,6 @@ import {
   brokerExec,
   envelopeResult,
   freshOperationRef,
-  isLifecycleUncertain,
   isSessionMissing,
   isSessionUnreachable,
   type SdkSessionRow,
@@ -87,9 +86,6 @@ import {
   GJC_ACCENT,
   GjcControllerOptions,
   HISTORY_SUMMARY_HEAD_BYTES,
-  LIFECYCLE_RECOVERY_ATTEMPTS,
-  LIFECYCLE_RECOVERY_CLOCK_SLACK_MS,
-  LIFECYCLE_RECOVERY_INTERVAL_MS,
   LIVE_MESSAGE_PREFIXES,
   LIVE_THOUGHT_PREFIX,
   LIVE_TOOL_STATUSES,
@@ -136,7 +132,6 @@ import {
   customMessageTitle,
   durableTurnEnded,
   durableTwinOf,
-  execFile,
   hasLivePrefix,
   historySessionSummary,
   sessionCwdFromLines,
@@ -144,13 +139,9 @@ import {
   inferToolName,
   isLiveOnlyRow,
   lastReportedModel,
-  lifecycleInputRefused,
-  lifecycleLegacyHistoryAmbiguous,
   lifecycleUncertainError,
-  liveSessionDeleteError,
   markUpdated,
   messageTextWithFiles,
-  missingLifecycleSessionError,
   missingSessionError,
   normalizeQueuedRequestText,
   nowLabel,
@@ -180,7 +171,6 @@ import {
   toolStatus,
   transcriptHeadLines,
   uncertainAfterSendError,
-  uncertainLifecycleOutcomeError,
 } from "./gjc-sdk-foundation.js";
 
 import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
@@ -189,6 +179,16 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  createSession,
+  deleteSession,
+  forkSession,
+  hideSession,
+  type LifecycleHost,
+  recoverForkedSession,
+  removeLocalSession,
+  renameSession,
+} from "./gjc-sdk-lifecycle.js";
 import {
   brokerIndexRevision,
   brokerSessions,
@@ -283,7 +283,6 @@ import {
   commitChanges,
   getGitStatus,
   pushChanges,
-  remotesWithBranch,
   stageFiles,
   unstageFiles,
   type GitScope,
@@ -1037,6 +1036,239 @@ export class GjcSdkController {
     },
   }))(this);
 
+  private readonly lifecycleHost: LifecycleHost = ((controller: GjcSdkController): LifecycleHost => ({
+    requireCli: () => controller.requireCli(),
+    get nextLocalId() {
+      return controller.nextLocalId;
+    },
+    set nextLocalId(value) {
+      controller.nextLocalId = value;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    brokerSessions: (options) => controller.brokerSessions(options),
+    get modelPreset() {
+      return controller.modelPreset;
+    },
+    get sessionCwds() {
+      return controller.sessionCwds;
+    },
+    get transcripts() {
+      return controller.transcripts;
+    },
+    get toolRowIndices() {
+      return controller.toolRowIndices;
+    },
+    get messageKeys() {
+      return controller.messageKeys;
+    },
+    get startupSessionRows() {
+      return controller.startupSessionRows;
+    },
+    set startupSessionRows(value) {
+      controller.startupSessionRows = value;
+    },
+    invalidateBrokerIndexCache: () => controller.invalidateBrokerIndexCache(),
+    get windowHostedSessions() {
+      return controller.windowHostedSessions;
+    },
+    get sessionMetadata() {
+      return controller.sessionMetadata;
+    },
+    applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+    get attachedSessions() {
+      return controller.attachedSessions;
+    },
+    startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
+    refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
+    refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
+    refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
+    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
+    watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
+    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
+    get forkRecoveryIntervalMs() {
+      return controller.forkRecoveryIntervalMs;
+    },
+    get deletionPromises() {
+      return controller.deletionPromises;
+    },
+    get deletingSessions() {
+      return controller.deletingSessions;
+    },
+    get workspace() {
+      return controller.workspace;
+    },
+    stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
+    removeSessionArtifacts: (sessionId) => controller.removeSessionArtifacts(sessionId),
+    removeLocalSession: (sessionId, hide) => controller.removeLocalSession(sessionId, hide),
+    get transcriptAttachments() {
+      return controller.transcriptAttachments;
+    },
+    get dirtyTranscriptRows() {
+      return controller.dirtyTranscriptRows;
+    },
+    get desktopTranscriptBaselines() {
+      return controller.desktopTranscriptBaselines;
+    },
+    get activeAssistantMessages() {
+      return controller.activeAssistantMessages;
+    },
+    get activeThoughts() {
+      return controller.activeThoughts;
+    },
+    get activePromptSessions() {
+      return controller.activePromptSessions;
+    },
+    get activePromptAdmissions() {
+      return controller.activePromptAdmissions;
+    },
+    get cancellationWatermarks() {
+      return controller.cancellationWatermarks;
+    },
+    get liveRunningSessions() {
+      return controller.liveRunningSessions;
+    },
+    get liveRunningDigests() {
+      return controller.liveRunningDigests;
+    },
+    get liveEvidenceAt() {
+      return controller.liveEvidenceAt;
+    },
+    get transcriptRunningSessions() {
+      return controller.transcriptRunningSessions;
+    },
+    get workingPhaseSessions() {
+      return controller.workingPhaseSessions;
+    },
+    get runtimeIdleSessions() {
+      return controller.runtimeIdleSessions;
+    },
+    get pendingAsyncWorkSessions() {
+      return controller.pendingAsyncWorkSessions;
+    },
+    get completionDeferredSessions() {
+      return controller.completionDeferredSessions;
+    },
+    get asyncJobReconciliations() {
+      return controller.asyncJobReconciliations;
+    },
+    get runRevisions() {
+      return controller.runRevisions;
+    },
+    get discoveredRunStates() {
+      return controller.discoveredRunStates;
+    },
+    get idleTranscriptBaselines() {
+      return controller.idleTranscriptBaselines;
+    },
+    get compactingSessions() {
+      return controller.compactingSessions;
+    },
+    get compactionRecordBaseline() {
+      return controller.compactionRecordBaseline;
+    },
+    get compactionRecordWatermark() {
+      return controller.compactionRecordWatermark;
+    },
+    get compactionStartedAt() {
+      return controller.compactionStartedAt;
+    },
+    get suppressedUserMessageKeys() {
+      return controller.suppressedUserMessageKeys;
+    },
+    get echoedPromptTexts() {
+      return controller.echoedPromptTexts;
+    },
+    get locallyAbortedSessions() {
+      return controller.locallyAbortedSessions;
+    },
+    get sessionCommands() {
+      return controller.sessionCommands;
+    },
+    get publishedCommandKeys() {
+      return controller.publishedCommandKeys;
+    },
+    get commandRefreshes() {
+      return controller.commandRefreshes;
+    },
+    get sessionContextRefreshes() {
+      return controller.sessionContextRefreshes;
+    },
+    get sessionContextRefreshedAt() {
+      return controller.sessionContextRefreshedAt;
+    },
+    clearCommandRefreshRetry: (sessionId) => controller.clearCommandRefreshRetry(sessionId),
+    clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
+    clearProgress: (sessionId) => controller.clearProgress(sessionId),
+    get sessionAdvertisedCommands() {
+      return controller.sessionAdvertisedCommands;
+    },
+    get sessionDiscoveredCommands() {
+      return controller.sessionDiscoveredCommands;
+    },
+    get sessionPlans() {
+      return controller.sessionPlans;
+    },
+    get sessionQuestions() {
+      return controller.sessionQuestions;
+    },
+    get sessionTodoSnapshots() {
+      return controller.sessionTodoSnapshots;
+    },
+    get todoReads() {
+      return controller.todoReads;
+    },
+    get sessionSdkOperations() {
+      return controller.sessionSdkOperations;
+    },
+    get sessionConfig() {
+      return controller.sessionConfig;
+    },
+    get terminalOnlySessions() {
+      return controller.terminalOnlySessions;
+    },
+    get routeProbes() {
+      return controller.routeProbes;
+    },
+    get modelProfiles() {
+      return controller.modelProfiles;
+    },
+    get explicitSessionThinking() {
+      return controller.explicitSessionThinking;
+    },
+    get sharedSessionWatchers() {
+      return controller.sharedSessionWatchers;
+    },
+    get runStateWatchers() {
+      return controller.runStateWatchers;
+    },
+    get runStateTimers() {
+      return controller.runStateTimers;
+    },
+    get sharedSessionRefreshTimers() {
+      return controller.sharedSessionRefreshTimers;
+    },
+    cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
+    get lastLiveFingerprint() {
+      return controller.lastLiveFingerprint;
+    },
+    set lastLiveFingerprint(value) {
+      controller.lastLiveFingerprint = value;
+    },
+    get lastDiscovered() {
+      return controller.lastDiscovered;
+    },
+    set lastDiscovered(value) {
+      controller.lastDiscovered = value;
+    },
+    sdkOperations: (sessionId, options) => controller.sdkOperations(sessionId, options),
+    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
+  }))(this);
+
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
     this.configuredExecutable = options.executable;
@@ -1305,246 +1537,12 @@ export class GjcSdkController {
     return noteBrokerIndex(this.discoveryHost, rows, before, after);
   }
 
-  async createSession(input: CreateSessionInput): Promise<AgentSession> {
-    if (input.runtime !== "gjc")
-      throw new Error("The GJC controller only creates GJC sessions");
-    const cli = await this.requireCli();
-    let sessionWorkspace = canonicalWorkspace(input.workspace);
-    let worktree:
-      | { sourceWorkspace: string; path: string; branch: string; managed: true }
-      | undefined;
-    let branchExisted = false;
-    if (input.isolation === "worktree") {
-      const root = (
-        await execFile("git", [
-          "-C",
-          sessionWorkspace,
-          "rev-parse",
-          "--show-toplevel",
-        ])
-      ).stdout.trim();
-      if (!root) throw new Error("Workspace is not a git repository");
-      const suffix = `${Date.now().toString(36)}-${this.nextLocalId++}`;
-      const branch = input.worktreeBranch?.trim() || `gajae/${suffix}`;
-      const worktreePath = path.join(
-        path.dirname(root),
-        `${path.basename(root)}.gajae-worktrees`,
-        suffix,
-      );
-      // An existing branch is checked out rather than recreated: `-b` refuses it,
-      // and the failure cleanup below must never delete a branch it did not make.
-      branchExisted = await execFile("git", [
-        "-C",
-        root,
-        "rev-parse",
-        "--verify",
-        "--quiet",
-        `refs/heads/${branch}`,
-      ]).then(
-        () => true,
-        () => false,
-      );
-      // A named branch someone pushed from another machine is on a remote only.
-      // Starting it with `-b` would make a second, unrelated branch of that name,
-      // so it is checked out, which makes git track the one remote that has it.
-      const onOneRemote =
-        !branchExisted &&
-        input.worktreeBranch !== undefined &&
-        !input.worktreePull &&
-        (await remotesWithBranch(root, branch)) === 1;
-      if (!branchExisted && input.worktreePull) {
-        const { remote, number } = input.worktreePull;
-        await execFile("git", [
-          "-C",
-          root,
-          "fetch",
-          "--no-tags",
-          remote,
-          `pull/${number}/head:refs/heads/${branch}`,
-        ]).catch((error: unknown) => {
-          throw new Error(
-            `PR #${number}의 head를 ${remote}에서 받아 오지 못했습니다.`,
-            { cause: error },
-          );
-        });
-      }
-      try {
-        await execFile("git", [
-          "-C",
-          root,
-          "worktree",
-          "add",
-          ...(branchExisted || onOneRemote || input.worktreeBranchExisting || input.worktreePull
-            ? [worktreePath, branch]
-            : ["-b", branch, worktreePath]),
-        ]);
-      } catch (error) {
-        // Without a local branch, git checks out the one remote branch of that
-        // name. A branch that exists nowhere must not become a new one from HEAD.
-        if (input.worktreeBranchExisting && !branchExisted)
-          throw new Error(
-            `브랜치 ${branch}을(를) 로컬이나 원격에서 찾지 못했습니다. git fetch로 받아 온 뒤 다시 시도하세요.`,
-            { cause: error },
-          );
-        throw error;
-      }
-      sessionWorkspace = worktreePath;
-      worktree = {
-        sourceWorkspace: root,
-        path: worktreePath,
-        branch,
-        managed: true,
-      };
-    }
-    const knownSessionIds = new Set([
-      ...this.sessions.keys(),
-      ...(await this.brokerSessions())?.map((session) => session.sessionId) ??
-        [],
-    ]);
-    let response: { sessionId: string } | undefined;
-    const createRequestId = `gajae-session-create-${randomUUID()}`;
-    const createStartedAt = Date.now();
-    try {
-      const created = await cli.rawGlobal(
-        "session.create",
-        {
-          cwd: sessionWorkspace,
-          modelPreset: input.modelPreset ?? this.modelPreset,
-        },
-        { repo: sessionWorkspace, idempotencyKey: createRequestId },
-      );
-      const sessionId =
-        typeof created?.sessionId === "string" ? created.sessionId : undefined;
-      if (sessionId) response = { sessionId };
-    } catch (error) {
-      // A create whose receipt could not be verified may still have produced a live
-      // session. Verified against gjc/0.15.6: `session.create` answers
-      // `terminal_uncertain` while `list` shows the new session live with a pid, so
-      // the index is what settles it. Adopting it is not optimism -- it is reading
-      // the authoritative account instead of the unverifiable receipt.
-      if (isLifecycleUncertain(error)) {
-        const retainedId = await this.recoverLifecycleSession(
-          sessionWorkspace,
-          knownSessionIds,
-          createStartedAt,
-        );
-        if (retainedId) {
-          this.sessionCwds.set(retainedId, sessionWorkspace);
-          this.transcripts.set(retainedId, []);
-          this.toolRowIndices.delete(retainedId);
-          this.messageKeys.set(retainedId, new Map());
-          response = { sessionId: retainedId };
-        }
-      }
-      if (!response && worktree && error instanceof SdkCliError && error.outcomeCertainty === "not-applied") {
-        try {
-          const status = (
-            await execFile("git", [
-              "-C",
-              worktree.path,
-              "status",
-              "--porcelain",
-            ])
-          ).stdout.trim();
-          if (!status) {
-            await execFile("git", [
-              "-C",
-              worktree.sourceWorkspace,
-              "worktree",
-              "remove",
-              worktree.path,
-            ]);
-            if (!branchExisted)
-              await execFile("git", [
-                "-C",
-                worktree.sourceWorkspace,
-                "branch",
-                "-D",
-                worktree.branch,
-              ]);
-          }
-        } catch {
-          /* Preserve a dirty or otherwise uncertain worktree for manual recovery. */
-        }
-      }
-      if (!response && isLifecycleUncertain(error)) {
-        throw new Error(
-          "GJC가 세션을 생성했지만 lifecycle 영수증을 검증하지 못했습니다. 보존된 세션 자동 복구에도 실패했습니다. GJC lifecycle ledger reconciliation이 필요합니다.",
-        );
-      }
-      if (!response) throw error;
-    }
-    if (!response) throw new Error("GJC did not report a new session id");
-    // The startup scan predates this mutation and would hide the new session on
-    // the first list call, even though create already announced it to the UI.
-    this.startupSessionRows = undefined;
-    this.invalidateBrokerIndexCache();
-    const createdSessionId = response.sessionId;
-    const session: AgentSession = {
-      id: createdSessionId,
-      title: input.title?.trim() || "New Gajae session",
-      subtitle: path.basename(sessionWorkspace) || sessionWorkspace,
-      workspace: sessionWorkspace,
-      runtime: "gjc",
-      status: "idle",
-      updatedAt: "now",
-      updatedAtMs: Date.now(),
-      pinned: false,
-      unread: false,
-      accent: GJC_ACCENT,
-      ownership: "gajae",
-      attachment: "recovering",
-      ...(worktree ? { worktree } : {}),
-      ...(input.workLink ? { workLink: input.workLink } : {}),
-    };
-    this.sessions.set(session.id, session);
-    this.windowHostedSessions.add(session.id);
-    this.sessionCwds.set(session.id, sessionWorkspace);
-    this.transcripts.set(session.id, []);
-    this.toolRowIndices.delete(session.id);
-    this.messageKeys.set(session.id, new Map());
-    this.sessionMetadata?.setAlias(session.id, session.title);
-    this.sessionMetadata?.setWorkspace(session.id, sessionWorkspace);
-    this.sessionMetadata?.setOwnership(session.id, "gajae");
-    if (worktree) this.sessionMetadata?.setWorktree(session.id, worktree);
-    if (input.workLink) this.sessionMetadata?.setWorkLink(session.id, input.workLink);
-    try {
-      await this.applyPermissionMode(session.id);
-    } catch (error) {
-      // A session whose safety mode was not confirmed must remain readable but is
-      // never advertised as sendable. Preserve its worktree and metadata so the
-      // user can retry resume after fixing the broker/runtime failure.
-      session.status = "failed";
-      session.attachment = "recovering";
-      this.emitEvent({ type: "session.created", session: { ...session } });
-      throw error;
-    }
-    session.attachment = "attached";
-    this.attachedSessions.add(session.id);
-    this.startTailFollower(session.id);
-    void this.refreshSdkCommands(session.id);
-    await this.refreshSessionConfigOptions(session.id);
-    void this.refreshContextUsage(session.id);
-    // The new session's file is the live account for everything it does next.
-    const createdFile = await this.locateSharedTranscriptFile(session.id);
-    if (createdFile) this.watchSharedTranscript(session.id, createdFile);
-    this.emitEvent({ type: "session.created", session: { ...session } });
-    return { ...session };
+  createSession(input: CreateSessionInput): Promise<AgentSession> {
+    return createSession(this.lifecycleHost, input);
   }
 
-  /** Renames through the live SDK, then mirrors the title into app metadata. */
-  async renameSession(sessionId: string, title: string): Promise<void> {
-    const value = title.trim();
-    if (!value) throw new Error("Session title cannot be empty");
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`Unknown GJC session: ${sessionId}`);
-    const operations = await this.sdkOperations(sessionId);
-    if (operations.has("session.rename"))
-      await this.controlSession(sessionId, "session.rename", { name: value });
-    this.sessionMetadata?.setAlias(sessionId, value);
-    session.title = value;
-    markUpdated(session);
-    this.emitEvent({ type: "session.updated", session: { ...session } });
+  renameSession(sessionId: string, title: string): Promise<void> {
+    return renameSession(this.lifecycleHost, sessionId, title);
   }
 
   private readonly transcriptAttachments = new Map<string, Promise<void>>();
@@ -3726,168 +3724,12 @@ export class GjcSdkController {
     return { ...this.connectionState };
   }
 
-  /**
-   * Stops this window listing a session without touching anything GJC owns.
-   *
-   * gjc/0.18.12's public `session.delete` cannot remove saved history: it answers
-   * `operation_failed` with `outcomeCertainty: unknown` and leaves the broker row
-   * at `deleted: false` and the transcript on disk (reproduced on a throwaway
-   * session with the exact input this app sends). A delete that cannot be proven is
-   * refused, so this is the only removal this build can actually complete. The
-   * session id is added to the hidden set discovery filters on, which means it
-   * stays out of the rail instead of reappearing on the next scan.
-   */
   hideSession(sessionId: string): void {
-    this.removeLocalSession(sessionId, true);
+    return hideSession(this.lifecycleHost, sessionId);
   }
 
   deleteSession(sessionId: string): Promise<void> {
-    const previous = this.deletionPromises.get(sessionId);
-    if (previous) return previous;
-    const operation = this.performDeleteSession(sessionId);
-    this.deletionPromises.set(sessionId, operation);
-    void operation
-      .finally(() => {
-        if (this.deletionPromises.get(sessionId) === operation)
-          this.deletionPromises.delete(sessionId);
-      })
-      .catch(() => undefined);
-    return operation;
-  }
-
-  private async performDeleteSession(sessionId: string): Promise<void> {
-    const session = this.sessions.get(sessionId);
-    this.deletingSessions.add(sessionId);
-    try {
-      // A session this window re-hosted is ours to close; a terminal's host is
-      // not. GJC refuses `session.delete` while a host is live, so close only the
-      // host this app attached, then delete the saved transcript.
-      if (
-        this.windowHostedSessions.has(sessionId) &&
-        (await this.sessionBrokerRow(sessionId))?.live === true
-      ) {
-        await this.brokerLifecycle("session.close", {
-          sessionId,
-          cwd: this.sessionCwds.get(sessionId) ?? this.workspace,
-        });
-        this.attachedSessions.delete(sessionId);
-        this.stopTailFollower(sessionId);
-      }
-      const outcome = await this.brokerLifecycleDelete(sessionId);
-      if (outcome === "recovering") {
-        if (session) {
-          session.attachment = "recovering";
-          this.attachedSessions.delete(sessionId);
-          this.stopTailFollower(sessionId);
-          this.emitEvent({ type: "session.updated", session: { ...session } });
-        }
-        // Who created the session does not decide this: on gjc/0.18.12 a saved
-        // session that contains tool execution answers `session.delete` with an
-        // unknown outcome while the broker row stays `deleted: false` (upstream
-        // #6828), so an app-created session is refused exactly like a CLI's. The
-        // old wording sent every caller to a CLI picker and read as "a CLI holds
-        // this", which is not the reason here -- the receipt was never conclusive.
-        throw new Error("세션 삭제를 확정하지 못했습니다. 로컬 기록과 워크트리는 보존했고, 이 세션은 복구 필요 · 읽기 전용이 되었습니다. GJC가 삭제 결과를 확정하지 못한 경우로, 도구를 실행한 이력이 있는 세션은 gjc/0.18.12에서 삭제가 미확정으로 끝나는 알려진 제한이 있습니다. 삭제를 다시 확인하려면 다시 시도하고, 계속 쓰려면 세션을 이어서 진행하세요. 앱은 삭제를 위해 CLI를 종료하거나 자동으로 재시도하지 않습니다.");
-      }
-      await this.removeSessionArtifacts(sessionId);
-      this.removeLocalSession(sessionId, false);
-    } catch (error) {
-      if (lifecycleInputRefused(error) || lifecycleLegacyHistoryAmbiguous(error)) {
-        // Neither admission refusal settles earlier effects. Preserve every
-        // artifact and require reconciliation before another attempt.
-        if (session) {
-          session.attachment = "recovering";
-          this.attachedSessions.delete(sessionId);
-          this.stopTailFollower(sessionId);
-          this.emitEvent({ type: "session.updated", session: { ...session } });
-        }
-        if (lifecycleLegacyHistoryAmbiguous(error)) {
-          throw new Error("이전 GJC 수명주기 기록의 영향 범위를 확인할 수 없어 삭제 요청이 실행되지 않았습니다 (lifecycle_legacy_history_ambiguous). 이전 작업의 결과는 여전히 미확정입니다. 원본 작업·요청 키·대상과 ledger를 보존하고 확인해야 합니다. ledger 수정, 강제 삭제, 새 키로 재시도하지 마세요.");
-        }
-        throw new Error("GJC가 세션 삭제 요청의 입력을 거부했습니다 (lifecycle_input_refused). 요청 정보를 수정하고 기존 세션 상태를 확인해야 합니다. 자동으로 재시도하지 않습니다.");
-      }
-      if (missingSessionError(error) || missingLifecycleSessionError(error)) {
-        await this.removeSessionArtifacts(sessionId);
-        this.removeLocalSession(sessionId, false);
-        return;
-      }
-      if (liveSessionDeleteError(error)) {
-        throw new Error(
-          "현재 SDK는 사용 중인 세션의 기록 삭제를 지원하지 않습니다. 해당 CLI의 세션 선택 화면에서 삭제하세요. 앱은 기록 삭제를 위해 CLI를 종료하지 않습니다.",
-        );
-      }
-      if (lifecycleUncertainError(error) || uncertainLifecycleOutcomeError(error)) {
-        if (session) {
-          session.attachment = "recovering";
-          this.attachedSessions.delete(sessionId);
-          this.stopTailFollower(sessionId);
-          this.emitEvent({ type: "session.updated", session: { ...session } });
-        }
-        // Same evidence rule as the branch above: the receipt did not establish an
-        // outcome and the broker row was never proven gone, so nothing local is
-        // discarded and the session stops accepting sends until it is reattached.
-        throw new Error("세션 삭제를 확정하지 못했습니다. 로컬 기록과 워크트리는 보존했고, 이 세션은 복구 필요 · 읽기 전용이 되었습니다. 같은 이유로 반복 시도해도 결과가 같을 수 있습니다. 계속 쓰려면 세션을 이어서 진행하세요.");
-      }
-      throw error;
-    } finally {
-      this.deletingSessions.delete(sessionId);
-    }
-  }
-
-  private async brokerLifecycleDelete(
-    sessionId: string,
-  ): Promise<"deleted" | "recovering"> {
-    // The shared transcript scan walks this host's session directory and shares no
-    // state with the broker, so it runs alongside the lifecycle round trips instead
-    // of behind them; the delete still receives the path this lookup resolves on its
-    // own.
-    const locatedSessionPath = this.locateSharedTranscriptFile(sessionId);
-    const row = await this.sessionBrokerRow(sessionId);
-    // An unreadable index is not an absent session: with no row there is no evidence
-    // that a live endpoint is gone, so the session stays for reconciliation.
-    if (row === undefined) return "recovering";
-    // Let the SDK authorize this exact saved-session deletion. A live or
-    // generation-zero row is neither permission to stop its process nor proof
-    // that a future owner-authorized history deletion must be refused locally.
-    const cwd = row?.repo ?? this.sessionCwds.get(sessionId) ?? this.workspace;
-    const sessionPath = await locatedSessionPath;
-    try {
-      await this.brokerLifecycle("session.delete", {
-        sessionId,
-        cwd,
-        ...(row?.stateRoot ? { stateRoot: row.stateRoot } : {}),
-        ...(sessionPath ? { sessionPath } : {}),
-      });
-      return "deleted";
-    } catch (error) {
-      if (missingLifecycleSessionError(error) || missingSessionError(error))
-        return "deleted";
-      // A live-session refusal is a definite refusal, not an unknown outcome;
-      // the caller must not mark the row recovering when nothing was attempted.
-      if (liveSessionDeleteError(error)) throw error;
-      if (
-        lifecycleUncertainError(error) ||
-        uncertainLifecycleOutcomeError(error)
-      ) {
-        // The receipt is not proof of either success or failure. Only an absent or
-        // tombstoned broker row proves deletion; every other outcome preserves the
-        // transcript, artifacts, metadata, and worktree for reconciliation.
-        const afterDelete = await this.sessionBrokerRow(sessionId);
-        if (afterDelete === null || afterDelete?.deleted === true) return "deleted";
-        if (lifecycleInputRefused(error) || lifecycleLegacyHistoryAmbiguous(error)) throw error;
-        return "recovering";
-      }
-      throw error;
-    }
-  }
-
-  /** `null` means proven absent; `undefined` means the broker index was unavailable. */
-  private async sessionBrokerRow(
-    sessionId: string,
-  ): Promise<SdkSessionRow | null | undefined> {
-    const listed = await this.brokerSessions();
-    if (!listed) return undefined;
-    return listed.find((session) => session.sessionId === sessionId) ?? null;
+    return deleteSession(this.lifecycleHost, sessionId);
   }
 
   private removeSessionArtifacts(sessionId: string): Promise<void> {
@@ -3900,99 +3742,8 @@ export class GjcSdkController {
     return locateSharedTranscriptFile(this.filesHost, sessionId);
   }
 
-  private async brokerLifecycle(
-    operation: "session.delete" | "session.close",
-    input: Record<string, unknown>,
-  ): Promise<void> {
-    const sessionId =
-      typeof input.sessionId === "string" ? input.sessionId : undefined;
-    const repo =
-      (sessionId ? this.sessionCwds.get(sessionId) : undefined) ??
-      this.workspace;
-    const cli = await this.requireCli();
-    await cli.rawGlobal(operation, input, {
-      repo,
-      idempotencyKey: `gajae-${operation.replace(".", "-")}-${randomUUID()}`,
-    });
-  }
-
   private removeLocalSession(sessionId: string, hide: boolean): void {
-    this.stopTailFollower(sessionId);
-    this.windowHostedSessions.delete(sessionId);
-    this.sessions.delete(sessionId);
-    this.sessionCwds.delete(sessionId);
-    this.attachedSessions.delete(sessionId);
-    this.transcriptAttachments.delete(sessionId);
-    this.transcripts.delete(sessionId);
-    this.toolRowIndices.delete(sessionId);
-    this.dirtyTranscriptRows.delete(sessionId);
-    this.desktopTranscriptBaselines.delete(sessionId);
-    this.messageKeys.delete(sessionId);
-    this.activeAssistantMessages.delete(sessionId);
-    this.activeThoughts.delete(sessionId);
-    this.activePromptSessions.delete(sessionId);
-    this.activePromptAdmissions.delete(sessionId);
-    this.cancellationWatermarks.delete(sessionId);
-    this.liveRunningSessions.delete(sessionId);
-    this.liveRunningDigests.delete(sessionId);
-    this.liveEvidenceAt.delete(sessionId);
-    this.transcriptRunningSessions.delete(sessionId);
-    this.workingPhaseSessions.delete(sessionId);
-    this.runtimeIdleSessions.delete(sessionId);
-    this.pendingAsyncWorkSessions.delete(sessionId);
-    this.completionDeferredSessions.delete(sessionId);
-    this.asyncJobReconciliations.delete(sessionId);
-    this.runRevisions.delete(sessionId);
-    this.discoveredRunStates.delete(sessionId);
-    this.idleTranscriptBaselines.delete(sessionId);
-    this.compactingSessions.delete(sessionId);
-    this.compactionRecordBaseline.delete(sessionId);
-    this.compactionRecordWatermark.delete(sessionId);
-    this.compactionStartedAt.delete(sessionId);
-    this.suppressedUserMessageKeys.delete(sessionId);
-    this.echoedPromptTexts.delete(sessionId);
-    this.locallyAbortedSessions.delete(sessionId);
-    this.sessionCommands.delete(sessionId);
-    this.publishedCommandKeys.delete(sessionId);
-    this.commandRefreshes.delete(sessionId);
-    this.sessionContextRefreshes.delete(sessionId);
-    this.sessionContextRefreshedAt.delete(sessionId);
-    this.clearCommandRefreshRetry(sessionId);
-    this.clearTodoPoll(sessionId);
-    this.clearProgress(sessionId);
-    this.sessionAdvertisedCommands.delete(sessionId);
-    this.sessionDiscoveredCommands.delete(sessionId);
-    this.sessionPlans.delete(sessionId);
-    this.sessionQuestions.delete(sessionId);
-    this.sessionTodoSnapshots.delete(sessionId);
-    this.todoReads.delete(sessionId);
-    this.sessionSdkOperations.delete(sessionId);
-    this.sessionConfig.delete(sessionId);
-    this.terminalOnlySessions.delete(sessionId);
-    this.routeProbes.delete(sessionId);
-    this.modelProfiles.delete(sessionId);
-    this.explicitSessionThinking.delete(sessionId);
-    this.sharedSessionWatchers.get(sessionId)?.close();
-    this.sharedSessionWatchers.delete(sessionId);
-    this.runStateWatchers.get(sessionId)?.close();
-    this.runStateWatchers.delete(sessionId);
-    const runStateTimer = this.runStateTimers.get(sessionId);
-    if (runStateTimer) clearTimeout(runStateTimer);
-    this.runStateTimers.delete(sessionId);
-    const refreshTimer = this.sharedSessionRefreshTimers.get(sessionId);
-    if (refreshTimer) clearTimeout(refreshTimer);
-    this.sharedSessionRefreshTimers.delete(sessionId);
-    this.cancelPermissionsForSession(sessionId);
-    if (hide) this.sessionMetadata?.hideSession?.(sessionId);
-    else this.sessionMetadata?.deleteAlias?.(sessionId);
-    // Removing a row changes what the next scan should produce even though the
-    // broker's live set is untouched, so the reuse fingerprint is invalidated.
-    this.lastLiveFingerprint = undefined;
-    this.invalidateBrokerIndexCache();
-    this.lastDiscovered = this.lastDiscovered.filter(
-      (session) => session.id !== sessionId,
-    );
-    this.emitEvent({ type: "session.deleted", sessionId });
+    return removeLocalSession(this.lifecycleHost, sessionId, hide);
   }
 
   dispose(): void {
@@ -5939,169 +5690,19 @@ export class GjcSdkController {
     this.emitEvent({ type: "session.updated", session: { ...session } });
   }
 
-  async forkSession(input: {
+  forkSession(input: {
     sourceSessionId: string;
     title?: string;
   }): Promise<AgentSession> {
-    const source = this.sessions.get(input.sourceSessionId);
-    if (!source)
-      throw new Error(`Unknown GJC session: ${input.sourceSessionId}`);
-    const cwd = this.sessionCwds.get(source.id);
-    if (!cwd || path.resolve(cwd) !== path.resolve(source.workspace))
-      throw new Error("Fork requires the canonical source workspace");
-    await this.ensureAttached(source.id, false);
-    // The fork itself is what creates the session; the lifecycle receipt is only
-    // the evidence that it was recorded. A receipt that cannot be verified was
-    // reported as a failed fork even though the broker had already created the
-    // session -- which is why discovery listed it moments later. The broker index
-    // is the authority on whether that happened, so it is consulted instead of
-    // surfacing an error for a fork that succeeded.
-    const knownSessionIds = new Set([
-      ...this.sessions.keys(),
-      ...((await this.brokerSessions()) ?? []).map((listed) => listed.sessionId),
-    ]);
-    const cli = await this.requireCli();
-    let forkedId: string | undefined;
-    const forkRequestId = `gajae-session-fork-${randomUUID()}`;
-    const forkStartedAt = Date.now();
-    try {
-      const forked = await cli.rawGlobal(
-        "session.fork",
-        {
-          cwd,
-          sourceSessionId: source.id,
-          modelPreset: this.modelPreset,
-        },
-        { repo: cwd, idempotencyKey: forkRequestId },
-      );
-      if (typeof forked?.sessionId === "string") forkedId = forked.sessionId;
-    } catch (error) {
-      if (!isLifecycleUncertain(error)) throw error;
-    }
-    // The fork changes the broker index. A discovery cache taken before it
-    // would omit the new session until the index file's revision moved.
-    this.invalidateBrokerIndexCache();
-    if (!forkedId)
-      forkedId = await this.recoverForkedSession(
-        cwd,
-        knownSessionIds,
-        forkStartedAt,
-      );
-    if (!forkedId)
-      throw new Error(
-        "GJC가 세션을 포크했지만 lifecycle 영수증을 검증하지 못했습니다. 보존된 포크 자동 복구에도 실패했습니다. GJC lifecycle ledger reconciliation이 필요합니다.",
-      );
-    const inheritedWorktree =
-      source.worktree?.managed === true &&
-      path.resolve(source.worktree.path) === path.resolve(cwd)
-        ? source.worktree
-        : undefined;
-    const session: AgentSession = {
-      id: forkedId,
-      title: input.title?.trim() || `${source.title} (fork)`,
-      subtitle: path.basename(cwd) || cwd,
-      workspace: cwd,
-      runtime: "gjc",
-      status: "idle",
-      updatedAt: "now",
-      updatedAtMs: Date.now(),
-      // The fork this window asked for already knows the source; the envelope read
-      // only has to cover sessions this window did not create.
-      parentId: input.sourceSessionId,
-      pinned: false,
-      unread: false,
-      accent: GJC_ACCENT,
-      ownership: "gajae",
-      attachment: "recovering",
-      ...(inheritedWorktree ? { worktree: inheritedWorktree } : {}),
-    };
-    this.sessions.set(session.id, session);
-    this.windowHostedSessions.add(session.id);
-    this.sessionCwds.set(session.id, cwd);
-    this.sessionMetadata?.setAlias(session.id, session.title);
-    this.sessionMetadata?.setWorkspace(session.id, cwd);
-    this.sessionMetadata?.setOwnership(session.id, "gajae");
-    if (inheritedWorktree)
-      this.sessionMetadata?.setWorktree(session.id, inheritedWorktree);
-    try {
-      await this.applyPermissionMode(session.id);
-    } catch (error) {
-      session.status = "failed";
-      this.emitEvent({ type: "session.created", session: { ...session } });
-      throw error;
-    }
-    session.attachment = "attached";
-    this.attachedSessions.add(session.id);
-    this.startTailFollower(session.id);
-    await this.refreshSessionConfigOptions(session.id);
-    const forkedFile = await this.locateSharedTranscriptFile(session.id);
-    if (forkedFile) this.watchSharedTranscript(session.id, forkedFile);
-    this.emitEvent({ type: "session.created", session: { ...session } });
-    return { ...session };
+    return forkSession(this.lifecycleHost, input);
   }
 
-  /**
-   * The id of the session a fork created, recovered from the broker index when the
-   * fork's own lifecycle receipt could not be verified. Undefined when no new
-   * session for this workspace appears, which means the fork really did not happen.
-   */
-  private async recoverForkedSession(
+  private recoverForkedSession(
     cwd: string,
     knownSessionIds: ReadonlySet<string>,
     startedAt: number,
   ): Promise<string | undefined> {
-    const workspace = canonicalWorkspace(cwd);
-    const retained = await this.recoverLifecycleSession(
-      workspace,
-      knownSessionIds,
-      startedAt,
-      LIFECYCLE_RECOVERY_ATTEMPTS,
-      this.forkRecoveryIntervalMs,
-    );
-    if (retained) {
-      this.sessionCwds.set(retained, workspace);
-      this.transcripts.set(retained, []);
-      this.toolRowIndices.delete(retained);
-      this.messageKeys.set(retained, new Map());
-    }
-    return retained;
-  }
-
-  /**
-   * Finds the session a create or fork retained after an unverifiable receipt.
-   *
-   * GJC's public list/inspect projection strips `lifecycleRequestId` -- the ledger
-   * marker is internal -- so matching the caller's idempotency key never succeeds.
-   * What the index does establish is that a session is new to this workspace and
-   * that its endpoint appeared after the request began. Two such sessions mean a
-   * concurrent creator, which is ambiguous; the caller must not guess between them.
-   */
-  private async recoverLifecycleSession(
-    workspaceDirectory: string,
-    knownSessionIds: ReadonlySet<string>,
-    startedAt: number,
-    attempts = LIFECYCLE_RECOVERY_ATTEMPTS,
-    intervalMs = LIFECYCLE_RECOVERY_INTERVAL_MS,
-  ): Promise<string | undefined> {
-    const workspace = canonicalWorkspace(workspaceDirectory);
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      const candidates = ((await this.brokerSessions()) ?? []).filter(
-        (listed) =>
-          !knownSessionIds.has(listed.sessionId) &&
-          listed.live &&
-          !listed.deleted &&
-          (listed.endpointGeneration ?? 0) > 0 &&
-          listed.repo !== undefined &&
-          canonicalWorkspace(listed.repo) === workspace &&
-          Math.max(listed.endpointMtimeMs ?? 0, listed.activityAt ?? 0) >=
-            startedAt - LIFECYCLE_RECOVERY_CLOCK_SLACK_MS,
-      );
-      if (candidates.length > 1) return undefined;
-      if (candidates.length === 1) return candidates[0]!.sessionId;
-      if (attempt < attempts - 1)
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    return undefined;
+    return recoverForkedSession(this.lifecycleHost, cwd, knownSessionIds, startedAt);
   }
 
   private gitScope(): GitScope {
