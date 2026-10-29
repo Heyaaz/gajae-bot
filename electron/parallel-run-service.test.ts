@@ -253,7 +253,8 @@ async function commitFile(dir: string, file: string): Promise<void> {
   await git(dir, "-c", "user.email=test@example.com", "-c", "user.name=Test", "commit", "-qm", file);
 }
 
-describe("ParallelRunService against a real repository", () => {
+// Each case runs a few dozen real git commands, which outlast the default 5s when the machine is busy.
+describe("ParallelRunService against a real repository", { timeout: 30_000 }, () => {
   it("creates isolated worktrees, keeps the adopted branch, and removes the others only as confirmed", async () => {
     const parent = await mkdtemp(path.join(tmpdir(), "gajae-parallel-"));
     const origin = path.join(parent, "origin.git");
