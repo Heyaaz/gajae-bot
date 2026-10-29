@@ -3706,6 +3706,152 @@
   color: var(--text-primary);
   background: var(--bg-hover);
 }
+.goal-progress-copy .goal-progress-stories {
+  color: var(--text-secondary);
+}
+.goal-progress-current {
+  overflow: hidden;
+  min-width: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goal-story-list {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 2px;
+  max-height: 180px;
+  margin: 2px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+.goal-story {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 4px;
+  font-size: 10px;
+}
+.goal-story-status {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goal-story--active .goal-story-status {
+  color: var(--accent-bright);
+}
+.goal-story--complete .goal-story-status {
+  color: var(--success, #67d6a5);
+}
+.goal-story--failed .goal-story-status,
+.goal-story--blocked .goal-story-status,
+.goal-story--review_blocked .goal-story-status {
+  color: var(--danger, #d4543c);
+}
+.goal-story-title {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.goal-story--superseded .goal-story-title {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+.goal-story-receipt {
+  color: var(--success, #67d6a5);
+  font-size: 9px;
+}
+.goal-story--omitted {
+  display: block;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+.workflow-status {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.workflow-status-card {
+  display: grid;
+  gap: 3px;
+  padding: 5px 9px;
+  background: color-mix(in srgb, var(--overlay) 3%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.workflow-status-head {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 7px;
+  margin: 0;
+  font-size: 10px;
+}
+.workflow-status-skill {
+  color: var(--text-primary);
+  font-size: 10px;
+  font-weight: 600;
+}
+.workflow-status-phase {
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+.workflow-status-verdict {
+  margin-left: auto;
+  padding: 0 5px;
+  color: var(--text-primary);
+  font-size: 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.workflow-status-summary,
+.workflow-status-more {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.workflow-status-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.workflow-chip {
+  display: inline-flex;
+  gap: 4px;
+  padding: 1px 5px;
+  color: var(--text-secondary);
+  font-size: 9px;
+  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+  border-radius: 4px;
+}
+.workflow-chip b {
+  color: var(--text-primary);
+  font-size: 9px;
+  font-weight: 600;
+}
+.workflow-chip--warning {
+  background: rgba(227, 179, 106, 0.14);
+}
+.workflow-chip--blocked,
+.workflow-chip--error {
+  background: rgba(212, 84, 60, 0.16);
+}
+.workflow-chip--success {
+  background: rgba(103, 214, 165, 0.12);
+}
 .composer {
   position: relative;
   overflow: visible;

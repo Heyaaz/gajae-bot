@@ -45,6 +45,7 @@ import type {
   GoalSnapshot,
   HistorySession,
   QueuedMessage,
+  SessionProgress,
   SubagentSnapshot,
   SystemNoticeActivity,
   TranscriptPage,
@@ -66,6 +67,7 @@ import {
   questionFromGateRecord,
   workflowGateRecord,
 } from "../shared/workflow-question.js";
+import { parseSessionProgress } from "../shared/session-progress.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { ImageDataUrlCache } from "./image-data-cache.js";
 import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
@@ -239,6 +241,13 @@ export const TODO_EVENT_POLL_MAX_MS = 120_000;
 /** Command palette refresh after a failed read, doubled until the cap. */
 export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
 export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
+/**
+ * `session.progress` reads. A tool end, a gate or a turn end asks for one, and
+ * those are coalesced to at most one read per interval. Without such an event
+ * the goal poll re-reads a snapshot only after it has been stale this long.
+ */
+export const PROGRESS_REFRESH_MIN_MS = 4_000;
+export const PROGRESS_STALE_MS = 30_000;
 /**
  * How long a loaded command/todo context is reused before it is read again.
  *
@@ -559,6 +568,16 @@ export class GjcSdkController {
   private readonly questionAnswers = new Map<string, Promise<void>>();
   /** The runtime's todo store as this window last observed it, per session. */
   private readonly sessionTodoSnapshots = new Map<string, TodoSnapshotState>();
+  /** Last `session.progress` read; a failed read keeps the previous snapshot. */
+  private readonly sessionProgress = new Map<
+    string,
+    { progress: SessionProgress | undefined; readAt: number }
+  >();
+  private readonly progressReads = new Map<string, Promise<void>>();
+  private readonly progressTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>
+  >();
   /**
    * The in-flight todo read per session.
    *
@@ -4909,9 +4928,10 @@ export class GjcSdkController {
     // A live tail already re-reads the store when a todo tool finishes, so this
     // poll must not call `todo.list` on the goal cadence. Without that channel the
     // fallback below is a long backoff, not another 4s/10s query.
-    const [goalRows, todoRows] = await Promise.all([
+    const [goalRows, todoRows, progress] = await Promise.all([
       this.querySessionItems(sessionId, "goal.list/get"),
       this.todoRowsForGoal(sessionId),
+      this.progressForGoal(sessionId),
     ]);
     const state =
       goalRows[0] &&
@@ -4957,7 +4977,88 @@ export class GjcSdkController {
         : {}),
       completed: tasks.filter((task) => task.status === "completed").length,
       total: tasks.length,
+      ...(progress ? { progress } : {}),
     };
+  }
+
+  /**
+   * The progress snapshot the goal row shows.
+   *
+   * Only the capability set already cached from the palette read decides
+   * whether the session has `session.progress`: a CLI-primary session does not,
+   * and the goal poll must not add a `runtime.capabilities` read to find out.
+   */
+  private async progressForGoal(
+    sessionId: string,
+  ): Promise<SessionProgress | undefined> {
+    if (!this.sessionSdkOperations.get(sessionId)?.has("session.progress"))
+      return undefined;
+    const cached = this.sessionProgress.get(sessionId);
+    if (!cached) {
+      await this.readProgress(sessionId);
+      return this.sessionProgress.get(sessionId)?.progress;
+    }
+    if (Date.now() - cached.readAt >= PROGRESS_STALE_MS)
+      this.requestProgressRefresh(sessionId);
+    return cached.progress;
+  }
+
+  /** Coalesces refresh requests into at most one read per interval. */
+  private requestProgressRefresh(sessionId: string): void {
+    if (
+      this.disposed ||
+      this.progressTimers.has(sessionId) ||
+      !this.sessionSdkOperations.get(sessionId)?.has("session.progress")
+    )
+      return;
+    const readAt = this.sessionProgress.get(sessionId)?.readAt ?? 0;
+    const delay = Math.max(0, readAt + PROGRESS_REFRESH_MIN_MS - Date.now());
+    const timer = setTimeout(() => {
+      this.progressTimers.delete(sessionId);
+      void this.readProgress(sessionId);
+    }, delay);
+    this.progressTimers.set(sessionId, timer);
+  }
+
+  private readProgress(sessionId: string): Promise<void> {
+    const inflight = this.progressReads.get(sessionId);
+    if (inflight) return inflight;
+    const read = (async () => {
+      let progress: SessionProgress | undefined;
+      let failed = false;
+      try {
+        const items = await this.querySessionItems(
+          sessionId,
+          "session.progress",
+          {},
+          { strict: true },
+        );
+        progress = items
+          .map(parseSessionProgress)
+          .find((item): item is SessionProgress => item !== undefined);
+      } catch {
+        failed = true;
+      }
+      if (this.disposed || !this.sessions.has(sessionId)) return;
+      const previous = this.sessionProgress.get(sessionId);
+      this.sessionProgress.set(sessionId, {
+        progress: failed ? previous?.progress : progress,
+        readAt: Date.now(),
+      });
+    })().finally(() => {
+      if (this.progressReads.get(sessionId) === read)
+        this.progressReads.delete(sessionId);
+    });
+    this.progressReads.set(sessionId, read);
+    return read;
+  }
+
+  private clearProgress(sessionId: string): void {
+    const timer = this.progressTimers.get(sessionId);
+    if (timer) clearTimeout(timer);
+    this.progressTimers.delete(sessionId);
+    this.sessionProgress.delete(sessionId);
+    this.progressReads.delete(sessionId);
   }
 
   async operateGoal(
@@ -5424,6 +5525,7 @@ export class GjcSdkController {
     this.sessionContextRefreshedAt.delete(sessionId);
     this.clearCommandRefreshRetry(sessionId);
     this.clearTodoPoll(sessionId);
+    this.clearProgress(sessionId);
     this.sessionAdvertisedCommands.delete(sessionId);
     this.sessionDiscoveredCommands.delete(sessionId);
     this.sessionPlans.delete(sessionId);
@@ -5485,6 +5587,10 @@ export class GjcSdkController {
     for (const timer of this.todoPollTimers.values()) clearTimeout(timer);
     this.todoPollTimers.clear();
     this.todoPollAttempts.clear();
+    for (const timer of this.progressTimers.values()) clearTimeout(timer);
+    this.progressTimers.clear();
+    this.sessionProgress.clear();
+    this.progressReads.clear();
     this.publishedCommandKeys.clear();
     this.transcriptAttachments.clear();
     this.permissionModeApplied.clear();
@@ -6678,6 +6784,7 @@ export class GjcSdkController {
     }
     if (kind === "workflow_gate") {
       this.projectWorkflowGate(sessionId, payload);
+      this.requestProgressRefresh(sessionId);
       return;
     }
     const event = payload.event;
@@ -6688,6 +6795,7 @@ export class GjcSdkController {
     const existing = this.transcripts.get(sessionId)?.find((item) => item.kind === "tool" && item.id === value.toolCallId);
     if (existing?.kind === "tool" && !LIVE_TOOL_STATUSES.has(existing.status)) return;
     const ended = kind === "tool_execution_end";
+    if (ended) this.requestProgressRefresh(sessionId);
     const result = ended ? value.result : value.partialResult;
     const record = result && typeof result === "object" && !Array.isArray(result)
       ? result as Record<string, unknown> : undefined;
@@ -6889,8 +6997,10 @@ export class GjcSdkController {
       if (
         isNewTailEvent &&
         (item.kind === "turn_end" || item.kind === "agent_end")
-      )
+      ) {
         void this.reconcileTailTerminalState(sessionId);
+        this.requestProgressRefresh(sessionId);
+      }
       if (item.kind === "session_closed" || item.kind === "session_terminated")
         this.stopTailFollower(sessionId);
     }

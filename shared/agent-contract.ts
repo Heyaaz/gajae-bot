@@ -790,6 +790,64 @@ export interface GoalSnapshot {
   objective?: string;
   completed: number;
   total: number;
+  /** Present only when the session advertises `session.progress` and a read succeeded. */
+  progress?: SessionProgress;
+}
+
+/**
+ * The parts of gjc's `session.progress` snapshot (`gjc.project_progress.v1`)
+ * this window shows: the ultragoal story ledger and the active workflow HUDs.
+ */
+export interface SessionProgress {
+  ultragoal: UltragoalProgress | null;
+  workflows: WorkflowStatus[];
+  /** Active workflows the runtime left out of its bounded list. */
+  omittedWorkflows: number;
+}
+
+export interface UltragoalProgress {
+  objective: string;
+  counts: {
+    total: number;
+    complete: number;
+    active: number;
+    pending: number;
+    blocked: number;
+    superseded: number;
+  };
+  stories: UltragoalStory[];
+  omittedStories: number;
+  /** The active story, else the next pending one (`activeWork.story`). */
+  current: { id: string; title: string } | null;
+}
+
+export interface UltragoalStory {
+  id: string;
+  title: string;
+  /**
+   * Kept as the runtime wrote it. gjc 0.19.0 sends pending, active, complete,
+   * failed, blocked, review_blocked or superseded; a newer value is shown raw.
+   */
+  status: string;
+  verificationReceipt: boolean;
+}
+
+export type WorkflowChipSeverity = "info" | "warning" | "blocked" | "error" | "success";
+
+export interface WorkflowChip {
+  label: string;
+  value: string | null;
+  severity: WorkflowChipSeverity | null;
+}
+
+/** One active workflow HUD (`activeWork.workflows`), such as ralplan or autoresearch. */
+export interface WorkflowStatus {
+  skill: string;
+  phase: string;
+  summary: string | null;
+  chips: WorkflowChip[];
+  /** This workflow's entry in `verification.reviewVerdicts`. */
+  verdict: string | null;
 }
 
 export interface SubagentSnapshot {

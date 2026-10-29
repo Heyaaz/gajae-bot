@@ -298,3 +298,20 @@ export function parseDiffFiles(diff: string): DiffFileSection[] {
     return { path, lines: parseDiffLines(section.raw.join("\n")) };
   });
 }
+
+const STORY_STATUS_LABELS: Record<string, () => string> = {
+  pending: () => t("시작 전"),
+  active: () => t("진행 중"),
+  complete: () => t("완료"),
+  failed: () => t("실패"),
+  blocked: () => t("막힘"),
+  review_blocked: () => t("리뷰 막힘"),
+  superseded: () => t("대체됨"),
+};
+
+/** A status gjc 0.19.0 does not send is shown as the runtime wrote it. */
+export function storyStatusLabel(status: string): string {
+  return Object.hasOwn(STORY_STATUS_LABELS, status)
+    ? STORY_STATUS_LABELS[status]!()
+    : status;
+}

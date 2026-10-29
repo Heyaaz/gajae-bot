@@ -14,6 +14,22 @@ describe("goalPollDelay", () => {
     expect(goalPollDelay(goal(false), "idle")).toBe(GOAL_POLL_DISABLED_MS);
   });
 
+  it("keeps the active cadence while a workflow runs without a goal", () => {
+    const workflowOnly = {
+      ...goal(false),
+      progress: {
+        ultragoal: null,
+        workflows: [{ skill: "ralplan", phase: "planner", summary: null, chips: [], verdict: null }],
+        omittedWorkflows: 0,
+      },
+    };
+    expect(goalPollDelay(workflowOnly, "running")).toBe(GOAL_POLL_RUNNING_MS);
+    expect(goalPollDelay(workflowOnly, "idle")).toBe(GOAL_POLL_IDLE_MS);
+    expect(
+      goalPollDelay({ ...workflowOnly, progress: { ...workflowOnly.progress, workflows: [] } }, "running"),
+    ).toBe(GOAL_POLL_DISABLED_MS);
+  });
+
   it("uses the running cadence only while a goal is active in a running turn", () => {
     expect(goalPollDelay(goal(true), "running")).toBe(GOAL_POLL_RUNNING_MS);
     expect(goalPollDelay(goal(true), "idle")).toBe(GOAL_POLL_IDLE_MS);

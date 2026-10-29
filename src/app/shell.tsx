@@ -76,6 +76,7 @@ import {
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { goalPollDelay } from "./goal-poll";
+import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
   DeferredInboxView,
@@ -3254,6 +3255,7 @@ export default function App() {
                   }}
                   onFocusChange={setFocusedApprovalId}
                 />
+                <WorkflowStatusCards progress={goal.progress} />
                 <GoalProgressRow
                   goal={goal}
                   busy={goalBusySessionId === selectedSession.id}

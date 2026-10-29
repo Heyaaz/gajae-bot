@@ -1,8 +1,15 @@
-import { createElement } from "react";
+/**
+ * @vitest-environment happy-dom
+ */
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import type { GoalSnapshot } from "../../shared/agent-contract";
 import type { AgentSession, TranscriptItem } from "../backend/types";
-import { Inspector, shouldClearCommitMessage } from "./inspector";
+import { GoalProgressRow, Inspector, shouldClearCommitMessage } from "./inspector";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function session(): AgentSession {
   return {
@@ -101,5 +108,113 @@ describe("Inspector", () => {
     expect(shouldClearCommitMessage(true, submittedRevision, submittedRevision + 1)).toBe(
       false,
     );
+  });
+});
+
+describe("GoalProgressRow", () => {
+  const ultragoalGoal = (overrides: Partial<GoalSnapshot> = {}): GoalSnapshot => ({
+    enabled: true,
+    mode: "active",
+    objective: "Ship workflow cards",
+    completed: 1,
+    total: 2,
+    progress: {
+      ultragoal: {
+        objective: "Ship workflow cards",
+        counts: { total: 3, complete: 1, active: 1, pending: 0, blocked: 0, superseded: 1 },
+        stories: [
+          { id: "S1", title: "Parse the snapshot", status: "complete", verificationReceipt: true },
+          { id: "S2", title: "Render the cards", status: "active", verificationReceipt: false },
+          { id: "S3", title: "Old plan", status: "parked", verificationReceipt: false },
+        ],
+        omittedStories: 2,
+        current: { id: "S2", title: "Render the cards" },
+      },
+      workflows: [],
+      omittedWorkflows: 0,
+    },
+    ...overrides,
+  });
+
+  async function mount(goal: GoalSnapshot, onOperate = vi.fn()) {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => {
+      root.render(createElement(GoalProgressRow, { goal, busy: false, onOperate }));
+    });
+    return {
+      host,
+      onOperate,
+      cleanup: () => {
+        act(() => root.unmount());
+        host.remove();
+      },
+    };
+  }
+
+  it("shows the ultragoal counts and current story, and expands the story ledger", async () => {
+    const { host, cleanup } = await mount(ultragoalGoal());
+    try {
+      expect(host.querySelector(".goal-progress-copy strong")?.textContent).toBe("Ship workflow cards");
+      expect(host.querySelector(".goal-progress-stories")?.textContent).toBe("스토리 1/3");
+      expect(host.querySelector(".goal-progress-current")?.textContent).toBe("Render the cards");
+      expect(host.querySelector(".goal-story-list")).toBeNull();
+      const toggle = [...host.querySelectorAll("button")].find(
+        (button) => button.getAttribute("aria-expanded") !== null,
+      )!;
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      await act(async () => toggle.click());
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      const rows = [...host.querySelectorAll(".goal-story-list li")];
+      expect(rows.map((row) => row.querySelector(".goal-story-status")?.textContent)).toEqual([
+        "완료",
+        "진행 중",
+        "parked",
+        undefined,
+      ]);
+      expect(rows[0]!.querySelector(".goal-story-receipt")?.textContent).toBe("검증 기록");
+      expect(rows[1]!.querySelector(".goal-story-receipt")).toBeNull();
+      expect(rows[3]!.textContent).toBe("스토리 2개 더 있음");
+      expect(toggle.getAttribute("aria-controls")).toBe(
+        host.querySelector(".goal-story-list")?.id,
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("keeps pause and resume beside the story toggle", async () => {
+    const active = await mount(ultragoalGoal());
+    try {
+      const pause = [...active.host.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "일시정지",
+      )!;
+      await act(async () => pause.click());
+      expect(active.onOperate).toHaveBeenCalledWith("pause");
+    } finally {
+      active.cleanup();
+    }
+    const paused = await mount(ultragoalGoal({ mode: "paused" }));
+    try {
+      const resume = [...paused.host.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "재개",
+      )!;
+      await act(async () => resume.click());
+      expect(paused.onOperate).toHaveBeenCalledWith("resume");
+    } finally {
+      paused.cleanup();
+    }
+  });
+
+  it("renders the plain goal row when no progress snapshot is available", async () => {
+    const { host, cleanup } = await mount(ultragoalGoal({ progress: undefined }));
+    try {
+      expect(host.querySelector(".goal-progress-copy small")?.textContent).toBe("1/2");
+      expect(host.querySelector(".goal-progress-stories")).toBeNull();
+      expect(host.querySelector("[aria-expanded]")).toBeNull();
+    } finally {
+      cleanup();
+    }
   });
 });
