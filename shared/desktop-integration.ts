@@ -16,10 +16,16 @@ export interface DesktopIntegrationPreferences {
    * goal or automation would otherwise stop halfway with nobody watching.
    */
   preventSleep: boolean;
+  /** Working and needs-input counts in the menu bar, with a menu of those sessions. */
+  menuBarStatus: boolean;
+  /** Sessions waiting on the user, failed ones and unread finished ones on the Dock icon. */
+  dockBadge: boolean;
 }
 
 export const DEFAULT_DESKTOP_INTEGRATION: DesktopIntegrationPreferences = {
   preventSleep: true,
+  menuBarStatus: true,
+  dockBadge: true,
 };
 
 /**
@@ -35,11 +41,14 @@ export function parseDesktopIntegration(
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
+  const flag = (key: keyof DesktopIntegrationPreferences): boolean => {
+    const value = candidate[key];
+    return typeof value === "boolean" ? value : DEFAULT_DESKTOP_INTEGRATION[key];
+  };
   return {
-    preventSleep:
-      typeof candidate.preventSleep === "boolean"
-        ? candidate.preventSleep
-        : DEFAULT_DESKTOP_INTEGRATION.preventSleep,
+    preventSleep: flag("preventSleep"),
+    menuBarStatus: flag("menuBarStatus"),
+    dockBadge: flag("dockBadge"),
   };
 }
 

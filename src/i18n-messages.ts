@@ -663,4 +663,8 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "스토리 접기": "Hide stories",
   "검증 기록": "Verified",
   "스토리 {0}개 더 있음": "{0} more stories",
+  "메뉴바 상태 표시": "Menu bar status",
+  "실행 중인 세션과 확인이 필요한 세션 수를 메뉴바에 표시합니다. 눌러서 세션으로 바로 이동할 수 있습니다.": "Shows how many sessions are working or need you in the menu bar. Click it to jump to a session.",
+  "Dock 배지": "Dock badge",
+  "승인·질문 대기, 실패, 안 읽은 완료 세션 수를 Dock 아이콘에 표시합니다.": "Shows the number of sessions waiting for approval or an answer, failed, or finished and unread on the Dock icon.",
 };

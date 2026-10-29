@@ -50,7 +50,12 @@ import { RepoService } from "./repo-service.js";
 import { registerRepoIpcHandlers } from "./repo-ipc-handlers.js";
 import { registerTerminalIpcHandlers } from "./terminal-ipc-handlers.js";
 import { attachTerminalSmoke } from "./terminal-smoke.js";
-import { DesktopIntegration } from "./desktop-integration.js";
+import {
+  DesktopIntegration,
+  type DesktopIntegrationState,
+} from "./desktop-integration.js";
+import { desktopStatusRenderer } from "./desktop-status.js";
+import { electronStatusSurface } from "./desktop-status-surface.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode, terminalSmokeMode } =
@@ -72,6 +77,11 @@ app.setPath(
 const appIconPath = app.isPackaged
   ? path.join(process.resourcesPath, "electron.icns")
   : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
+// nativeImage cannot decode the packaged .icns, so the menu bar image is derived
+// from a PNG copy the packager places beside it.
+const menuBarIconPath = app.isPackaged
+  ? path.join(process.resourcesPath, "gajae-icon-ui.png")
+  : path.join(app.getAppPath(), "src/assets/gajae-icon-ui.png");
 const userDataDirectory = app.getPath("userData");
 // Search index, session metadata, artifacts, and automations all live under this
 // directory, and Electron only creates it lazily. A first launch on a clean
@@ -111,11 +121,15 @@ let lastNotification: { body: string; at: number } | undefined;
 // notification for a turn the user is already watching, which window focus
 // alone cannot tell: a focused window may be showing a different session.
 const viewedSessions = new Map<number, string>();
-// Power management (and the menu bar and Dock) follow the same events the windows
+// The menu bar item and the Dock badge need a ready app; events before that are
+// folded into the first render.
+let renderDesktopStatus: ((state: DesktopIntegrationState) => void) | undefined;
+// Power management, the menu bar and the Dock follow the same events the windows
 // do, so they agree with the rail about which sessions are working.
 const desktopIntegration = new DesktopIntegration({
   power: powerSaveBlocker,
   preferences: preferences.desktopIntegration,
+  onChange: (state) => renderDesktopStatus?.(state),
 });
 
 function broadcastAgentEvent(event: AgentEvent): void {
@@ -176,6 +190,27 @@ function sendSessionShortcut(shortcut: SessionShortcut): void {
     BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
   if (!window || window.isDestroyed()) return;
   window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut);
+}
+
+function revealWindow(): BrowserWindow {
+  const existing = BrowserWindow.getAllWindows()[0];
+  const window =
+    existing && !existing.isDestroyed() ? existing : createWindow();
+  if (window.isMinimized()) window.restore();
+  window.show();
+  window.focus();
+  return window;
+}
+
+function openSessionFromMenuBar(sessionId: string): void {
+  const window = revealWindow();
+  const shortcut: SessionShortcut = { type: "open", sessionId };
+  // A window the click had to create has no listener yet.
+  if (window.webContents.isLoading())
+    window.webContents.once("did-finish-load", () =>
+      window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut),
+    );
+  else window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut);
 }
 
 function installApplicationMenu(): void {
@@ -1136,6 +1171,14 @@ app.whenReady().then(() => {
     );
   if (process.platform === "darwin")
     app.dock?.setIcon(nativeImage.createFromPath(appIconPath));
+  renderDesktopStatus = desktopStatusRenderer(
+    electronStatusSurface({
+      iconPath: menuBarIconPath,
+      openSession: openSessionFromMenuBar,
+      openApp: () => void revealWindow(),
+    }),
+  );
+  renderDesktopStatus(desktopIntegration.state());
   createWindow();
 
   app.on("activate", () => {

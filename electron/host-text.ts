@@ -1,7 +1,7 @@
 import type { UiLanguage } from "../shared/agent-contract.js";
 
 /**
- * The handful of host-authored confirmations that reach a native dialog.
+ * The handful of host-authored strings that reach a native dialog or the menu bar.
  *
  * Renderer copy is translated by the renderer dictionary; these strings are
  * already in the main process before a window can translate them, so the host
@@ -15,6 +15,11 @@ const ENGLISH: Readonly<Record<string, string>> = {
     "Compact this session? The conversation history will be rewritten.",
   "이 목표를 완료로 표시할까요?": "Mark this goal complete?",
   "이 목표를 삭제할까요?": "Delete this goal?",
+  "확인 필요": "Needs input",
+  "실행 중": "Working",
+  "실패": "failed",
+  "진행 중인 세션 없음": "No active sessions",
+  "Gajae 열기": "Open Gajae",
 };
 
 let language: UiLanguage = "ko";

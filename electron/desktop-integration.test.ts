@@ -95,7 +95,10 @@ describe("DesktopIntegration power", () => {
     integration.seed([session("a", { status: "running" })]);
     expect(integration.preventingSleep()).toBe(true);
 
-    integration.setPreferences({ preventSleep: false });
+    integration.setPreferences({
+      ...DEFAULT_DESKTOP_INTEGRATION,
+      preventSleep: false,
+    });
     expect(power.active.size).toBe(0);
     integration.observe({
       type: "session.updated",
@@ -158,8 +161,12 @@ describe("desktop integration preferences", () => {
       DEFAULT_DESKTOP_INTEGRATION,
     );
     expect(parseDesktopIntegration({ preventSleep: false })).toEqual({
+      ...DEFAULT_DESKTOP_INTEGRATION,
       preventSleep: false,
     });
+    expect(
+      parseDesktopIntegration({ menuBarStatus: false, dockBadge: 0 }),
+    ).toEqual({ ...DEFAULT_DESKTOP_INTEGRATION, menuBarStatus: false });
   });
 });
 

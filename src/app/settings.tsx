@@ -706,26 +706,44 @@ export function SettingsDialog({
           {tab === "desktop" && (
             <div className="settings-stack">
               <div className="settings-panel">
-                <div className="settings-toggle-row">
-                  <span>
-                    <strong>{t("실행 중 잠자기 방지")}</strong>
-                    <small>
-                      {t("세션이 작업 중일 때만 Mac이 잠들지 않게 합니다. 모든 작업이 끝나면 해제합니다.")}
-                    </small>
-                  </span>
-                  <input
-                    type="checkbox"
-                    aria-label={t("실행 중 잠자기 방지")}
-                    checked={preferences.desktopIntegration.preventSleep}
-                    disabled={!settingsBridge}
-                    onChange={(event) =>
-                      void persistDesktopIntegration({
-                        ...preferencesRef.current.desktopIntegration,
-                        preventSleep: event.target.checked,
-                      })
-                    }
-                  />
-                </div>
+                {(
+                  [
+                    {
+                      key: "preventSleep",
+                      label: t("실행 중 잠자기 방지"),
+                      detail: t("세션이 작업 중일 때만 Mac이 잠들지 않게 합니다. 모든 작업이 끝나면 해제합니다."),
+                    },
+                    {
+                      key: "menuBarStatus",
+                      label: t("메뉴바 상태 표시"),
+                      detail: t("실행 중인 세션과 확인이 필요한 세션 수를 메뉴바에 표시합니다. 눌러서 세션으로 바로 이동할 수 있습니다."),
+                    },
+                    {
+                      key: "dockBadge",
+                      label: t("Dock 배지"),
+                      detail: t("승인·질문 대기, 실패, 안 읽은 완료 세션 수를 Dock 아이콘에 표시합니다."),
+                    },
+                  ] as const
+                ).map((row) => (
+                  <div className="settings-toggle-row" key={row.key}>
+                    <span>
+                      <strong>{row.label}</strong>
+                      <small>{row.detail}</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      aria-label={row.label}
+                      checked={preferences.desktopIntegration[row.key]}
+                      disabled={!settingsBridge}
+                      onChange={(event) =>
+                        void persistDesktopIntegration({
+                          ...preferencesRef.current.desktopIntegration,
+                          [row.key]: event.target.checked,
+                        })
+                      }
+                    />
+                  </div>
+                ))}
               </div>
             </div>
           )}

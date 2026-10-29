@@ -81,6 +81,8 @@ const [outputDirectory] = await packager({
   appBundleId: 'com.gajae.desktop',
   appVersion: packageJson.version,
   icon: path.join(root, 'src/assets/gajae-icon'),
+  // The menu bar image is derived from this at runtime; see menuBarIconPath.
+  extraResource: [path.join(root, 'src/assets/gajae-icon-ui.png')],
   ...(release
     ? {
         osxSign: {

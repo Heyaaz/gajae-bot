@@ -1,5 +1,9 @@
+/**
+ * @vitest-environment happy-dom
+ */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createElement } from "react";
+import { act, createElement } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../shared/agent-contract";
 import { DEFAULT_DESKTOP_INTEGRATION } from "../../shared/desktop-integration";
@@ -12,6 +16,9 @@ import {
   SettingsDialog,
   settingsErrorMessage,
 } from "./settings";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
+  true;
 
 afterEach(() => {
   setLanguageMode("ko");
@@ -192,5 +199,71 @@ describe("settings errors", () => {
       "disk unavailable",
     );
     expect(settingsErrorMessage("IPC rejected")).toBe("IPC rejected");
+  });
+});
+
+describe("settings desktop tab", () => {
+  it("saves each desktop toggle on its own without touching the others", async () => {
+    const setDesktopIntegration = vi.fn(
+      async (value: AgentControlPreferences["desktopIntegration"]) => value,
+    );
+    const bridge = window as unknown as { agentControlDesktop?: unknown };
+    bridge.agentControlDesktop = {
+      settings: {
+        getPreferences: async () => loaded,
+        setDesktopIntegration,
+      },
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => {
+        root.render(
+          createElement(SettingsDialog, {
+            connection: {
+              state: "connected",
+              backend: "gjc",
+              label: "GJC",
+              detail: "",
+              workspace: "/tmp",
+            },
+            thoughtsExpanded: false,
+            onClose: () => undefined,
+            onSaved: () => undefined,
+            updateStatus: null,
+            updateBusy: null,
+            updateError: "",
+            onCheckUpdate: () => undefined,
+            onInstallUpdate: () => undefined,
+          }),
+        );
+      });
+      const desktopTab = [...host.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "데스크톱",
+      );
+      await act(async () => desktopTab?.click());
+      const toggle = (label: string) =>
+        host.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
+      expect(toggle("메뉴바 상태 표시")?.checked).toBe(true);
+      expect(toggle("Dock 배지")?.checked).toBe(true);
+
+      await act(async () => toggle("메뉴바 상태 표시")?.click());
+      expect(setDesktopIntegration).toHaveBeenLastCalledWith({
+        ...DEFAULT_DESKTOP_INTEGRATION,
+        menuBarStatus: false,
+      });
+      await act(async () => toggle("Dock 배지")?.click());
+      expect(setDesktopIntegration).toHaveBeenLastCalledWith({
+        ...DEFAULT_DESKTOP_INTEGRATION,
+        menuBarStatus: false,
+        dockBadge: false,
+      });
+      expect(toggle("메뉴바 상태 표시")?.checked).toBe(false);
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+      delete bridge.agentControlDesktop;
+    }
   });
 });
