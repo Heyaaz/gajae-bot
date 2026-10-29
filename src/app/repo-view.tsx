@@ -29,6 +29,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { humanErrorMessage, sessionTitleText } from "./format";
+import { elapsedLabel } from "./inbox-model";
 import { DiffPanel } from "./inspector";
 import { sessionsInPath } from "./project-model";
 import {
@@ -38,7 +39,7 @@ import {
   workLinkLabel,
   type CiTarget,
 } from "./repo-session-start";
-import { t } from "../i18n";
+import { getLanguage, t } from "../i18n";
 
 
 /**
@@ -667,7 +668,7 @@ export function RepoIssuesPanel({
                 </RepoBadge>
               ))}
               <span>{issue.author}</span>
-              <small>{issue.updatedAt}</small>
+              <small title={exactRepoTime(issue.updatedAt)}>{relativeRepoTime(issue.updatedAt)}</small>
             </span>
           </button>
         </li>
@@ -730,7 +731,7 @@ export function RepoPullsPanel({
               </RepoBadge>
               <RepoBadge tone={pull.ci.state}>{ciLabel(pull.ci)}</RepoBadge>
               <span>{pull.author}</span>
-              <small>{pull.updatedAt}</small>
+              <small title={exactRepoTime(pull.updatedAt)}>{relativeRepoTime(pull.updatedAt)}</small>
             </span>
           </button>
         </li>
@@ -806,7 +807,7 @@ function IssueDetailBody({
           </RepoBadge>
         ))}
         <span>{issue.author}</span>
-        <span>{issue.updatedAt}</span>
+        <span title={exactRepoTime(issue.updatedAt)}>{relativeRepoTime(issue.updatedAt)}</span>
         {issue.comments > 0 && (
           <span>{t("댓글")} {formatRepoCount(issue.comments)}</span>
         )}
@@ -889,7 +890,7 @@ function PullDetailBody({
         </RepoBadge>
         <RepoBadge tone={pull.ci.state}>{ciLabel(pull.ci)}</RepoBadge>
         <span>{pull.author}</span>
-        <span>{pull.updatedAt}</span>
+        <span title={exactRepoTime(pull.updatedAt)}>{relativeRepoTime(pull.updatedAt)}</span>
         <button
           className="button-secondary"
           type="button"
@@ -1404,4 +1405,20 @@ export function RepoView({
       </div>
     </main>
   );
+}
+
+// GitHub sends ISO timestamps. The row shows the same short age the Inbox uses, and
+// the exact time stays on hover. Anything that does not parse is shown as given.
+function relativeRepoTime(value: string): string {
+  const at = Date.parse(value);
+  return Number.isFinite(at) ? elapsedLabel(at, Date.now()) : value;
+}
+
+function exactRepoTime(value: string): string | undefined {
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return undefined;
+  return new Intl.DateTimeFormat(getLanguage(), {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(at);
 }

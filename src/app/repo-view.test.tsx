@@ -427,6 +427,17 @@ describe("RepoIssuesPanel lists", () => {
     expect(markup).toContain("2h");
     expect(markup).toContain(issueStateLabel("open"));
   });
+
+  it("shows GitHub's ISO time as an age, with the exact time on hover", () => {
+    const updatedAt = new Date(Date.now() - 3 * 3_600_000 - 60_000).toISOString();
+    const markup = render(
+      RepoIssuesPanel,
+      issuesProps({ query: { state: "ok", value: [issue({ updatedAt })] } }),
+    );
+    expect(markup).toContain(">3h<");
+    expect(markup).not.toContain(updatedAt);
+    expect(markup).toMatch(/<small title="[^"]*\d[^"]*">3h<\/small>/);
+  });
 });
 
 describe("RepoPullsPanel rows", () => {
