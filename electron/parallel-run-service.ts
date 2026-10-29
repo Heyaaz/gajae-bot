@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { promisify } from "node:util";
 import type {
   AgentEvent,
@@ -10,6 +11,8 @@ import type {
 import {
   applyParallelEvent,
   attemptSessionId,
+  PARALLEL_ATTEMPT_MAX,
+  PARALLEL_ATTEMPT_MIN,
   parallelAttemptBranch,
   type ParallelCleanupItem,
   type ParallelCleanupPlan,
@@ -76,6 +79,8 @@ export class ParallelRunService {
   private readonly finished = new Set<string>();
   /** Sessions whose last reported state is working or waiting on the user. */
   private readonly busy = new Set<string>();
+  /** Groups whose cleanup is running: no pick may change while Git is deleting. */
+  private readonly cleaning = new Set<string>();
   private readonly pending = new Set<Promise<unknown>>();
   private readonly git: GitRunner;
 
@@ -109,6 +114,13 @@ export class ParallelRunService {
   }
 
   async start(input: ParallelStartInput): Promise<ParallelGroup> {
+    if (
+      input.presets.length < PARALLEL_ATTEMPT_MIN ||
+      input.presets.length > PARALLEL_ATTEMPT_MAX
+    )
+      throw new Error(
+        `병렬 실행은 시도를 ${PARALLEL_ATTEMPT_MIN}-${PARALLEL_ATTEMPT_MAX}개로 나눠야 합니다.`,
+      );
     const root = await this.repositoryRoot(input.workspace);
     const id = this.options.newId?.() ?? randomUUID();
     const base = input.branch ?? `gajae/best-of-${id.slice(0, 8)}`;
@@ -129,6 +141,14 @@ export class ParallelRunService {
         throw new Error(
           `브랜치 ${attempt.branch}이(가) 이미 있습니다. 다른 브랜치 이름을 쓰세요.`,
         );
+    // The Git check above cannot see a branch another start is about to create, and
+    // two groups on one branch would let one cleanup delete the other's work. This
+    // check and the save below run without an await between them.
+    for (const attempt of attempts)
+      if (this.branchHeld(attempt.branch))
+        throw new Error(
+          `브랜치 ${attempt.branch}은(는) 진행 중인 다른 병렬 실행이 쓰고 있습니다. 다른 브랜치 이름을 쓰세요.`,
+        );
     const group: ParallelGroup = {
       id,
       title: input.title,
@@ -144,11 +164,33 @@ export class ParallelRunService {
   }
 
   adopt(groupId: string, attemptId: string): ParallelGroup {
+    this.rejectWhileCleaning(groupId);
     return this.apply(groupId, { type: "adopt", attemptId });
   }
 
   discard(groupId: string): ParallelGroup {
+    this.rejectWhileCleaning(groupId);
     return this.apply(groupId, { type: "discard" });
+  }
+
+  /**
+   * After a restart the events that would have finished an attempt are gone. The
+   * sessions' current state stands in for them: an attempt whose session is not
+   * working has finished its turn.
+   */
+  restore(sessions: readonly AgentSession[]): void {
+    for (const session of sessions) {
+      if (!this.isAttemptSession(session.id)) continue;
+      const working =
+        session.status === "running" ||
+        session.status === "starting" ||
+        session.phase === "compacting";
+      if (working || session.status === "waiting") this.busy.add(session.id);
+      if (working) this.working.add(session.id);
+      else if (session.status === "idle" || session.status === "failed")
+        this.finished.add(session.id);
+    }
+    this.settle();
   }
 
   /**
@@ -177,12 +219,15 @@ export class ParallelRunService {
           `시도 #${attempt.id}이(가) 아직 실행 중입니다. 멈춘 뒤에 정리하세요.`,
         );
       const worktreePath = worktrees.get(attempt.branch);
+      const worktreeMissing = worktreePath !== undefined && !existsSync(worktreePath);
       const branchExists = await this.branchExists(root, attempt.branch);
       items.push({
         attemptId: attempt.id,
         branch: attempt.branch,
         ...(worktreePath ? { worktreePath } : {}),
-        uncommittedFiles: worktreePath ? await this.uncommittedFiles(worktreePath) : 0,
+        ...(worktreeMissing ? { worktreeMissing: true } : {}),
+        uncommittedFiles:
+          worktreePath && !worktreeMissing ? await this.uncommittedFiles(worktreePath) : 0,
         branchExists,
         unpushedCommits: branchExists ? await this.unpushedCommits(root, attempt.branch) : 0,
         ...(sessionId ? { sessionId } : {}),
@@ -204,23 +249,62 @@ export class ParallelRunService {
     groupId: string,
     confirmed: ParallelCleanupPlan,
   ): Promise<ParallelGroup> {
-    const plan = await this.cleanupPlan(groupId);
-    if (JSON.stringify(plan) !== JSON.stringify(confirmed))
-      throw new Error("확인한 뒤 정리 대상이 바뀌었습니다. 다시 시도하세요.");
-    const root = await this.repositoryRoot(this.require(groupId).workspace);
-    for (const item of plan.items) {
-      if (item.worktreePath)
-        await this.git(root, [
-          "worktree",
-          "remove",
-          ...(item.uncommittedFiles > 0 ? ["--force"] : []),
-          item.worktreePath,
-        ]);
-      if (item.branchExists) await this.git(root, ["branch", "-D", item.branch]);
-      if (item.sessionId) this.options.host.hideSession(item.sessionId);
-      this.apply(groupId, { type: "attempt.removed", attemptId: item.attemptId });
+    if (this.cleaning.has(groupId))
+      throw new Error("이 그룹은 이미 정리하는 중입니다.");
+    this.cleaning.add(groupId);
+    try {
+      const plan = await this.cleanupPlan(groupId);
+      if (JSON.stringify(plan) !== JSON.stringify(confirmed))
+        throw new Error("확인한 뒤 정리 대상이 바뀌었습니다. 다시 시도하세요.");
+      const root = await this.repositoryRoot(this.require(groupId).workspace);
+      for (const item of plan.items) {
+        this.assertRemovable(groupId, item);
+        if (item.worktreePath && item.worktreeMissing)
+          await this.git(root, ["worktree", "prune"]);
+        else if (item.worktreePath)
+          await this.git(root, [
+            "worktree",
+            "remove",
+            ...(item.uncommittedFiles > 0 ? ["--force"] : []),
+            item.worktreePath,
+          ]);
+        if (item.branchExists) await this.git(root, ["branch", "-D", item.branch]);
+        if (item.sessionId) this.options.host.hideSession(item.sessionId);
+        this.apply(groupId, { type: "attempt.removed", attemptId: item.attemptId });
+      }
+      return this.require(groupId);
+    } finally {
+      this.cleaning.delete(groupId);
     }
-    return this.require(groupId);
+  }
+
+  /** The state this item was planned under, read again right before Git deletes it. */
+  private assertRemovable(groupId: string, item: ParallelCleanupItem): void {
+    const group = this.require(groupId);
+    if (group.state.kind !== "adopted" && group.state.kind !== "discarded")
+      throw new Error("그룹이 더 이상 정리할 수 있는 상태가 아닙니다.");
+    const attempt = group.attempts.find((entry) => entry.id === item.attemptId);
+    if (!attempt || attempt.branch !== item.branch)
+      throw new Error(`시도 #${item.attemptId}의 기록이 바뀌었습니다.`);
+    if (group.state.kind === "adopted" && group.state.attemptId === attempt.id)
+      throw new Error("채택한 시도의 브랜치는 정리 대상이 될 수 없습니다.");
+    if (item.sessionId && this.busy.has(item.sessionId))
+      throw new Error(
+        `시도 #${item.attemptId}이(가) 아직 실행 중입니다. 멈춘 뒤에 정리하세요.`,
+      );
+  }
+
+  private rejectWhileCleaning(groupId: string): void {
+    if (this.cleaning.has(groupId))
+      throw new Error("시도를 정리하는 중에는 채택이나 모두 버리기를 할 수 없습니다.");
+  }
+
+  /** Whether some group still holds this branch for an attempt it has not cleaned up. */
+  private branchHeld(branch: string): boolean {
+    for (const group of this.groups.values())
+      for (const attempt of group.attempts)
+        if (attempt.branch === branch && attempt.state.kind !== "removed") return true;
+    return false;
   }
 
   /** Session events from the controller: the only evidence that an attempt finished. */
@@ -255,20 +339,38 @@ export class ParallelRunService {
           modelPreset: attempt.preset,
         });
       } catch (error) {
-        this.apply(group.id, {
-          type: "attempt.failed",
-          attemptId: attempt.id,
-          reason: messageOf(error),
-        });
+        this.failAttempt(group.id, attempt.id, messageOf(error));
         continue;
       }
-      this.apply(group.id, {
-        type: "attempt.created",
-        attemptId: attempt.id,
-        sessionId: session.id,
-        worktreePath: session.worktree?.path ?? session.workspace,
-      });
+      try {
+        this.apply(group.id, {
+          type: "attempt.created",
+          attemptId: attempt.id,
+          sessionId: session.id,
+          worktreePath: session.worktree?.path ?? session.workspace,
+        });
+      } catch (error) {
+        // Recording failed (a full disk, say). The session exists but the request
+        // was never sent, so the attempt is failed rather than left "creating".
+        this.failAttempt(group.id, attempt.id, messageOf(error));
+        continue;
+      }
       this.send(group.id, attempt.id, session.id, group.prompt);
+    }
+    this.failAttempt(group.id, undefined, INTERRUPTED_REASON);
+  }
+
+  /** Fails one attempt, or with no id every attempt still being created; never throws. */
+  private failAttempt(groupId: string, attemptId: string | undefined, reason: string): void {
+    try {
+      this.apply(
+        groupId,
+        attemptId
+          ? { type: "attempt.failed", attemptId, reason }
+          : { type: "interrupted", reason },
+      );
+    } catch {
+      // The store is unwritable or the group was decided; the in-memory record stands.
     }
   }
 

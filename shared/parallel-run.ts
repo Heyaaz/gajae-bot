@@ -312,6 +312,8 @@ export interface ParallelCleanupItem {
   branch: string;
   /** The worktree that has the branch checked out, when one does. */
   worktreePath?: string;
+  /** Git still lists the worktree but its folder is gone: only the record is pruned. */
+  worktreeMissing?: boolean;
   /** Modified and untracked paths that removing the worktree would discard. */
   uncommittedFiles: number;
   branchExists: boolean;
@@ -335,7 +337,9 @@ export function parallelCleanupConfirmation(plan: ParallelCleanupPlan): {
   const lines: string[] = [];
   for (const item of plan.items) {
     lines.push(`시도 #${item.attemptId} · ${item.branch}`);
-    if (item.worktreePath)
+    if (item.worktreePath && item.worktreeMissing)
+      lines.push(`  worktree 폴더가 이미 없어 Git의 기록만 정리합니다: ${item.worktreePath}`);
+    else if (item.worktreePath)
       lines.push(
         item.uncommittedFiles > 0
           ? `  worktree 삭제: ${item.worktreePath} (커밋하지 않은 변경 ${item.uncommittedFiles}개가 사라집니다)`

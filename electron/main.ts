@@ -554,6 +554,10 @@ parallelRuns = new ParallelRunService({
       if (!window.isDestroyed()) window.webContents.send(PARALLEL_IPC.changed, groups);
   },
 });
+void gjcController
+  .listSessions()
+  .then((sessions) => parallelRuns?.restore(sessions))
+  .catch(() => undefined);
 const unregisterParallelIpc = registerParallelIpcHandlers(parallelRuns, ipcSecurity);
 const terminalIpc = registerTerminalIpcHandlers(ipcSecurity);
 

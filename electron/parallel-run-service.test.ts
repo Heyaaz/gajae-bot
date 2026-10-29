@@ -419,3 +419,192 @@ describe("ParallelRunService against a real repository", () => {
     }
   });
 });
+
+async function realRepository(prefix: string) {
+  const parent = await mkdtemp(path.join(tmpdir(), prefix));
+  const repo = path.join(parent, "repo");
+  await execFile("git", ["init", "-q", "-b", "main", repo]);
+  await commitFile(repo, "base");
+  let created = 0;
+  /** Creates what the controller would: a worktree on a new attempt branch. */
+  const host: ParallelRunHost = {
+    createSession: async (input: CreateSessionInput) => {
+      created += 1;
+      const dir = path.join(parent, `wt-${created}`);
+      await git(repo, "worktree", "add", "-q", "-b", input.worktreeBranch!, dir);
+      return {
+        ...session(`s-${created}`, input),
+        workspace: dir,
+        worktree: { sourceWorkspace: repo, path: dir, branch: input.worktreeBranch!, managed: true },
+      };
+    },
+    sendMessage: async () => "prompt",
+    hideSession: vi.fn(),
+  };
+  return { parent, repo, host };
+}
+
+const reported = (id: string, status: AgentSession["status"]) => ({
+  type: "session.updated" as const,
+  session: { ...session(id, { runtime: "gjc", workspace: "/repo", isolation: "worktree" }), status },
+});
+
+describe("ParallelRunService hardening", () => {
+  it("refuses a pick while a cleanup is deleting, so the adopted branch survives", async () => {
+    const { parent, repo, host } = await realRepository("gajae-parallel-race-");
+    try {
+      let service!: ParallelRunService;
+      let picked: unknown;
+      const racingGit: GitRunner = async (cwd, args) => {
+        if (args[0] === "worktree" && args[1] === "remove" && picked === undefined) {
+          try {
+            service.adopt(service.list()[0]!.id, "2");
+            picked = "adopted";
+          } catch (error) {
+            picked = error;
+          }
+        }
+        return (await execFile("git", ["-C", cwd, ...args])).stdout;
+      };
+      service = new ParallelRunService({ store: memoryStore(), host, git: racingGit });
+      await service.start({ ...START, workspace: repo, presets: ["codex-pro", "codex-eco"], branch: "feat/race" });
+      await service.idle();
+      const group = service.list()[0]!;
+      service.adopt(group.id, "1");
+      const plan = await service.cleanupPlan(group.id);
+      await service.cleanup(group.id, plan);
+      expect(picked).toBeInstanceOf(Error);
+      expect(await git(repo, "branch", "--format=%(refname:short)")).toContain("feat/race-1");
+      expect(service.list()[0]!.state).toEqual({ kind: "adopted", attemptId: "1" });
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("never deletes the branch of an attempt that was adopted after the plan was read", async () => {
+    const { parent, repo, host } = await realRepository("gajae-parallel-recheck-");
+    try {
+      const service = new ParallelRunService({ store: memoryStore(), host });
+      await service.start({ ...START, workspace: repo, presets: ["codex-pro", "codex-eco"], branch: "feat/recheck" });
+      await service.idle();
+      const group = service.list()[0]!;
+      service.discard(group.id);
+      const plan = await service.cleanupPlan(group.id);
+      // Another window re-picks between the dialog and the deletion.
+      (service as unknown as { groups: Map<string, ParallelGroup> }).groups.set(group.id, {
+        ...service.list()[0]!,
+        state: { kind: "adopted", attemptId: "2" },
+      });
+      await expect(service.cleanup(group.id, plan)).rejects.toThrow();
+      expect(await git(repo, "branch", "--format=%(refname:short)")).toContain("feat/recheck-2");
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans up an attempt whose worktree folder was deleted by hand", async () => {
+    const { parent, repo, host } = await realRepository("gajae-parallel-missing-");
+    try {
+      const service = new ParallelRunService({ store: memoryStore(), host });
+      await service.start({ ...START, workspace: repo, presets: ["codex-pro", "codex-eco"], branch: "feat/gone" });
+      await service.idle();
+      const group = service.list()[0]!;
+      const gone = (group.attempts[1]!.state as { worktreePath: string }).worktreePath;
+      await rm(gone, { recursive: true, force: true });
+      service.adopt(group.id, "1");
+
+      const plan = await service.cleanupPlan(group.id);
+      expect(plan.items).toHaveLength(1);
+      expect(plan.items[0]).toMatchObject({ attemptId: "2", worktreeMissing: true, uncommittedFiles: 0 });
+      expect(parallelCleanupConfirmation(plan).detail).toContain("이미 없어");
+      const resolved = await service.cleanup(group.id, plan);
+      expect(resolved.attempts.map((attempt) => attempt.state.kind)).toEqual(["started", "removed"]);
+      expect((await git(repo, "branch", "--format=%(refname:short)")).split("\n").sort()).toEqual(["feat/gone-1", "main"]);
+      expect(await git(repo, "worktree", "list", "--porcelain")).not.toContain("feat/gone-2");
+    } finally {
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a second concurrent start on the same branch before it creates anything", async () => {
+    const host: ParallelRunHost = {
+      createSession: vi.fn(async (input: CreateSessionInput) => session(`s-${input.worktreeBranch}`, input)),
+      sendMessage: vi.fn(async () => "prompt" as const),
+      hideSession: vi.fn(),
+    };
+    const service = new ParallelRunService({ store: memoryStore(), host, git: freshRepository });
+    const input = { ...START, branch: "feat/same", presets: ["codex-pro", "codex-eco"] };
+    const results = await Promise.allSettled([service.start(input), service.start(input)]);
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    await service.idle();
+    expect(service.list()).toHaveLength(1);
+    expect(vi.mocked(host.createSession).mock.calls.map((call) => call[0].worktreeBranch)).toEqual([
+      "feat/same-1",
+      "feat/same-2",
+    ]);
+  });
+
+  it("limits a start to 2-4 attempts in the service itself", async () => {
+    const service = new ParallelRunService({
+      store: memoryStore(),
+      host: { createSession: vi.fn(), sendMessage: vi.fn(), hideSession: vi.fn() },
+      git: freshRepository,
+    });
+    await expect(service.start({ ...START, presets: ["a", "b", "c", "d", "e"] })).rejects.toThrow("2-4");
+    await expect(service.start({ ...START, presets: ["a"] })).rejects.toThrow("2-4");
+  });
+
+  it("does not stay in draft when recording an attempt throws", async () => {
+    const store = memoryStore();
+    let writes = 0;
+    store.putParallelGroup = (group: ParallelGroup) => {
+      writes += 1;
+      // Write 1 is start's draft; write 2 records attempt 1 as created.
+      if (writes === 2) throw new Error("disk full");
+      store.groups.set(group.id, group);
+    };
+    const host: ParallelRunHost = {
+      createSession: vi.fn(async (input: CreateSessionInput) => session(`s-${input.modelPreset}`, input)),
+      sendMessage: vi.fn(async () => "prompt" as const),
+      hideSession: vi.fn(),
+    };
+    const service = new ParallelRunService({ store, host, git: freshRepository });
+    await service.start({ ...START, presets: ["codex-pro", "codex-eco"] });
+    await service.idle();
+    const group = service.list()[0]!;
+    expect(group.state.kind).toBe("running");
+    expect(group.attempts.map((attempt) => attempt.state.kind)).toEqual(["failed", "started"]);
+    expect(host.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("reaches comparing after a restart when every started attempt is already idle", () => {
+    const attempt = (id: string, sessionId: string) => ({
+      id,
+      preset: "p",
+      branch: `b-${id}`,
+      state: { kind: "started" as const, sessionId, worktreePath: `/wt/${id}` },
+    });
+    const store = memoryStore([
+      {
+        id: "g",
+        title: "t",
+        prompt: "p",
+        workspace: "/repo",
+        createdAt: 1,
+        state: { kind: "running" },
+        attempts: [attempt("1", "s-1"), attempt("2", "s-2")],
+      },
+    ]);
+    const service = new ParallelRunService({
+      store,
+      host: { createSession: vi.fn(), sendMessage: vi.fn(), hideSession: vi.fn() },
+      git: freshRepository,
+    });
+    service.restore([reported("s-1", "idle").session, reported("s-2", "running").session]);
+    expect(service.list()[0]!.state).toEqual({ kind: "running" });
+    service.observe(reported("s-2", "idle"));
+    expect(service.list()[0]!.state).toEqual({ kind: "comparing" });
+    service.restore([reported("s-1", "idle").session, reported("s-2", "idle").session]);
+    expect(service.list()[0]!.state).toEqual({ kind: "comparing" });
+  });
+});
