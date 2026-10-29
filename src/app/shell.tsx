@@ -1,6 +1,5 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
-  GjcUpdateStatus,
   GoalOperation,
   HistorySession,
   MessageDelivery,
@@ -70,6 +69,7 @@ import {
 } from "./deferred-views";
 import { createTranscriptNavigation } from "./transcript-navigation";
 import { createSessionActions } from "./session-actions";
+import { useGjcUpdate, useRemoteStatus } from "./use-host-status";
 import { createBackendEventHandler } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
@@ -105,7 +105,6 @@ import {
   DEFAULT_DESKTOP_INTEGRATION,
   summarizeSessionAttention,
 } from "../../shared/desktop-integration";
-import type { RemoteClientStatus } from "../../shared/remote-protocol";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import {
   EMPTY_TRANSCRIPT_PAGE_STATE,
@@ -162,13 +161,6 @@ export default function App() {
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<"gjc" | "environment">("gjc");
-  const [updateStatus, setUpdateStatus] = useState<GjcUpdateStatus | null>(
-    null,
-  );
-  const [updateBusy, setUpdateBusy] = useState<
-    "checking" | "installing" | null
-  >(null);
-  const [updateError, setUpdateError] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [inspectorToolId, setInspectorToolId] = useState<string>();
   const [resumingId, setResumingId] = useState<string | null>(null);
@@ -292,29 +284,9 @@ export default function App() {
     const timer = window.setTimeout(() => setAppError(""), 4_500);
     return () => window.clearTimeout(timer);
   }, [appError]);
-  const updateCheckedRef = useRef(false);
   const settingsBridge = window.agentControlDesktop?.settings;
-  // A browser is the remote client of a host: the shell keeps its status so an
-  // unpaired device sees the pairing screen and a view-only device cannot type
-  // into a composer the host would refuse anyway.
   const remoteBridge = backend.remoteAccess;
-  const [remoteStatus, setRemoteStatus] = useState<RemoteClientStatus | null>(
-    remoteBridge ? null : { state: "connected" },
-  );
-
-  useEffect(() => {
-    const bridge = backend.remoteAccess;
-    if (!bridge) return;
-    let active = true;
-    void bridge.getStatus().then((status) => {
-      if (active) setRemoteStatus(status);
-    });
-    const unsubscribe = bridge.subscribe((status) => setRemoteStatus(status));
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [backend]);
+  const remoteStatus = useRemoteStatus(backend);
 
   // Until every required tool has been seen working once, the window opens on the
   // environment check so a fresh install shows what is missing before a session
@@ -335,48 +307,8 @@ export default function App() {
     };
   }, [settingsBridge]);
 
-  const checkForUpdate = useCallback(async (): Promise<void> => {
-    if (!settingsBridge) return;
-    setUpdateBusy("checking");
-    setUpdateError("");
-    try {
-      setUpdateStatus(await settingsBridge.checkGjcUpdate());
-    } catch (error) {
-      setUpdateError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setUpdateBusy(null);
-    }
-  }, [settingsBridge]);
-
-  const installUpdate = useCallback(async (): Promise<void> => {
-    if (!settingsBridge || !updateStatus?.updateAvailable) return;
-    if (
-      !window.confirm(
-        t`GJC ${updateStatus.latestVersion}(으)로 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.`,
-      )
-    )
-      return;
-    setUpdateBusy("installing");
-    setUpdateError("");
-    try {
-      setUpdateStatus(await settingsBridge.installGjcUpdate());
-    } catch (error) {
-      setUpdateError(error instanceof Error ? error.message : String(error));
-      setSettingsOpen(true);
-    } finally {
-      setUpdateBusy(null);
-    }
-  }, [settingsBridge, updateStatus]);
-
-  useEffect(() => {
-    if (updateCheckedRef.current) return;
-    // `gjc update --check` is its own process. Starting it while the broker
-    // index is still the reachability probe competes with the first session
-    // list, so it waits until that connection attempt has settled.
-    if (connection.state === "connecting") return;
-    updateCheckedRef.current = true;
-    queueMicrotask(() => void checkForUpdate());
-  }, [checkForUpdate, connection.state]);
+  const { updateStatus, updateBusy, updateError, checkForUpdate, installUpdate } =
+    useGjcUpdate(settingsBridge, connection.state, setSettingsOpen);
 
   useEffect(() => {
     selectedIdRef.current = selectedId;
