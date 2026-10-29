@@ -13,7 +13,6 @@ import type {
   BackendConnection,
   MessageInput,
   QuestionSubmission,
-  ToolViewMode,
   TranscriptItem,
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
@@ -70,6 +69,8 @@ import { createTranscriptNavigation } from "./transcript-navigation";
 import { createSessionActions } from "./session-actions";
 import { useGjcUpdate, useRemoteStatus } from "./use-host-status";
 import { ChatHeader } from "./chat-header";
+import { useComposerCallbacks } from "./use-composer-callbacks";
+import { usePreferenceToggles } from "./use-preference-toggles";
 import { createBackendEventHandler } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
@@ -1683,56 +1684,11 @@ export default function App() {
     }
     setSettingsOpen(true);
   }, [backend]);
-  // A card's 펼치기/접기 is optimistic: the click has to land on every visible card at
-  // once, and the store is what says whether the write happened. A refused write puts
-  // the previous value back, so the window never shows a preference it did not save.
-  const toggleThoughtsExpanded = useCallback((): void => {
-    const current = preferencesRef.current.thoughtsExpanded;
-    const next = !current;
-    if (!settingsBridge) {
-      // A browser is the remote client of a host, and the preference belongs to the host.
-      setAppError(t("설정은 Gajae 데스크톱 앱에서 열 수 있습니다."));
-      return;
-    }
-    setPreferences((latest) => ({ ...latest, thoughtsExpanded: next }));
-    void settingsBridge.setThoughtsExpanded(next).then(
-      (saved) =>
-        setPreferences((latest) => ({
-          ...latest,
-          thoughtsExpanded: saved,
-        })),
-      (error: unknown) => {
-        setPreferences((latest) => ({
-          ...latest,
-          thoughtsExpanded: current,
-        }));
-        setAppError(humanErrorMessage(error));
-      },
-    );
-  }, [settingsBridge]);
-  // The header density selector is optimistic for the same reason as the thought
-  // toggle: the click has to land immediately, while the store is the authority on
-  // whether it persisted. A browser has no host settings bridge, so the density
-  // stays local to that client instead of pretending to save on the host.
-  const changeToolViewMode = useCallback(
-    (next: ToolViewMode): void => {
-      const current = preferencesRef.current.toolViewMode;
-      if (next === current) return;
-      setPreferences((latest) => ({ ...latest, toolViewMode: next }));
-      if (!settingsBridge) return;
-      void settingsBridge.setToolViewMode(next).then(
-        (saved) =>
-          setPreferences((latest) => ({ ...latest, toolViewMode: saved })),
-        (error: unknown) => {
-          setPreferences((latest) => ({
-            ...latest,
-            toolViewMode: current,
-          }));
-          setAppError(humanErrorMessage(error));
-        },
-      );
-    },
-    [settingsBridge],
+  const { toggleThoughtsExpanded, changeToolViewMode } = usePreferenceToggles(
+    settingsBridge,
+    preferencesRef,
+    setPreferences,
+    setAppError,
   );
   const startFork = useCallback((session: AgentSession) => {
     void handlersRef.current.forkSession(session);
@@ -1884,45 +1840,15 @@ export default function App() {
       send: (input) => sendMessageRef.current(sessionId, input),
     });
   }, []);
-  const onComposerCancel = useCallback(() => {
-    const session = composerActionsRef.current.session;
-    if (!session) return Promise.resolve();
-    return composerActionsRef.current.cancelRun(session.id);
-  }, []);
-  const onComposerFlushQueued = useCallback(() => {
-    const session = composerActionsRef.current.session;
-    if (!session) return Promise.resolve();
-    return composerActionsRef.current.flushQueuedNow(session.id);
-  }, []);
-  const onComposerCompact = useCallback(() => {
-    const session = composerActionsRef.current.session;
-    if (!session) return;
-    void composerActionsRef.current.compactSession(session.id);
-  }, []);
-  const onComposerNewSession = useCallback(() => {
-    const session = composerActionsRef.current.session;
-    if (!session) return;
-    composerActionsRef.current.createSession({
-      title: "새 Gajae 세션",
-      workspace: session.workspace,
-    });
-  }, []);
-  const onComposerWorkspaceChange = useCallback((workspace: string) => {
-    composerActionsRef.current.createSession({
-      title: "새 Gajae 세션",
-      workspace,
-    });
-  }, []);
-  const onComposerConfigChange = useCallback((configId: string, value: string) => {
-    const session = composerActionsRef.current.session;
-    if (!session) return;
-    void composerActionsRef.current.setSessionConfig(session.id, configId, value);
-  }, []);
-  const onComposerCycleThinking = useCallback(() => {
-    const session = composerActionsRef.current.session;
-    if (!session) return;
-    void composerActionsRef.current.cycleThinking(session.id);
-  }, []);
+  const {
+    onComposerCancel,
+    onComposerFlushQueued,
+    onComposerCompact,
+    onComposerNewSession,
+    onComposerWorkspaceChange,
+    onComposerConfigChange,
+    onComposerCycleThinking,
+  } = useComposerCallbacks(composerActionsRef);
   const onRevealInspector = useCallback((toolId: string) => {
     setInspectorToolId(toolId);
     setInspectorOpen(true);
