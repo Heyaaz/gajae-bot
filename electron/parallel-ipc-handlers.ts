@@ -79,7 +79,11 @@ export function registerParallelIpcHandlers(
   handle(PARALLEL_IPC.cleanup, async (event, groupId: unknown) => {
     const id = requiredId(groupId, "Parallel group ID");
     const plan = await service.cleanupPlan(id);
-    await security.authorizeDestructive(event, parallelCleanupConfirmation(plan));
+    await security.authorizeDestructive(event, {
+      ...parallelCleanupConfirmation(plan),
+      confirmLabel: "정리",
+      danger: true,
+    });
     return service.cleanup(id, plan);
   });
   return () => {

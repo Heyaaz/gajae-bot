@@ -44,7 +44,7 @@ import { registerAutomationIpcHandlers } from "./automation-ipc-handlers.js";
 import {
   IpcSecurity,
   expectedTopLevelUrl,
-  nativeDestructiveConfirmation,
+  overlayDestructiveConfirmation,
   quickInputUrl,
   rendererLaunchConfig,
 } from "./ipc-security.js";
@@ -413,7 +413,7 @@ const gjcController = new GjcSdkController({
   emit: broadcastAgentEvent,
 });
 export const ipcSecurity = new IpcSecurity(
-  !app.isPackaged && smokeMode ? async () => true : nativeDestructiveConfirmation,
+  !app.isPackaged && smokeMode ? async () => true : overlayDestructiveConfirmation,
 );
 const unregisterGjcIpc = registerGjcIpcHandlers(gjcController, attachmentStore, ipcSecurity);
 // One authorized invoke hands a window this process launched the event stream endpoint.
@@ -1292,10 +1292,7 @@ function createWindow(): BrowserWindow {
             const deleteAction = document.querySelector('.session-context-menu .is-danger');
             assert(deleteAction, 'Session delete action did not render');
             deleteAction.click();
-            await wait(100);
-            assert(document.querySelector('.confirm-dialog'), 'Delete confirmation did not render');
-            document.querySelector('.confirm-dialog .button-danger')?.click();
-            await wait(150);
+            await wait(250);
             assert(document.querySelectorAll('.session-row').length === initialSessions, 'Deleted session remained in sidebar');
 
             return {

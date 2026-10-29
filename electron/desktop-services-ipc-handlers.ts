@@ -45,34 +45,38 @@ export function registerDesktopServicesIpcHandlers(management: ManagementService
   ipcMain.handle(IPC.management.addMcpServer, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, input: unknown) => {
     const target = workspace(value)
     const server = mcpInput(input)
-    await security.authorizeDestructive(event, { message: 'Add MCP server?', detail: `This will add the MCP server "${server.name}".` })
+    await security.authorizeDestructive(event, { message: 'MCP 서버를 추가할까요?', detail: server.name, confirmLabel: '추가' })
     return management.addMcpServer(target, server)
   }))
   ipcMain.handle(IPC.management.removeMcpServer, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, scope: unknown, name: unknown) => {
     if (scope !== 'user' && scope !== 'project') throw new Error('MCP scope is invalid')
     const target = workspace(value)
     const serverName = requiredString(name, 'MCP server name', 128)
-    await security.authorizeDestructive(event, { message: 'Remove MCP server?', detail: `This will remove the MCP server "${serverName}".` })
+    await security.authorizeDestructive(event, { message: 'MCP 서버를 제거할까요?', detail: serverName, confirmLabel: '제거', danger: true })
     return management.removeMcpServer(target, scope, serverName)
   }))
   ipcMain.handle(IPC.management.setPluginEnabled, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, name: unknown, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('Plugin enabled state is invalid')
     const workspacePath = workspace(value)
     const pluginName = requiredString(name, 'Plugin name', 128)
-    await security.authorizeDestructive(event, { message: 'Change plugin status?', detail: `This will ${enabled ? 'enable' : 'disable'} plugin "${pluginName}".` })
+    await security.authorizeDestructive(event, { message: enabled ? '플러그인을 켤까요?' : '플러그인을 끌까요?', detail: pluginName, confirmLabel: enabled ? '켜기' : '끄기' })
     return management.setPluginEnabled(workspacePath, pluginName, enabled)
   }))
   ipcMain.handle(IPC.management.installPlugin, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, target: unknown, scope: unknown) => {
     if (scope !== 'user' && scope !== 'project') throw new Error('Plugin scope is invalid')
     const workspacePath = workspace(value)
     const pluginTarget = requiredString(target, 'Plugin target', 256)
-    await security.authorizeDestructive(event, { message: 'Install plugin?', detail: `This will install plugin "${pluginTarget}".` })
+    await security.authorizeDestructive(event, {
+      message: '플러그인을 설치할까요? 패키지 코드가 설치되고 실행할 수 있게 됩니다. 신뢰하는 정확한 버전인지 확인하세요.',
+      detail: `${pluginTarget} · ${scope}`,
+      confirmLabel: '설치',
+    })
     return management.installPlugin(workspacePath, pluginTarget, scope)
   }))
   ipcMain.handle(IPC.management.uninstallPlugin, security.guarded(async (event: IpcMainInvokeEvent, value: unknown, name: unknown) => {
     const workspacePath = workspace(value)
     const pluginName = requiredString(name, 'Plugin name', 128)
-    await security.authorizeDestructive(event, { message: 'Uninstall plugin?', detail: `This will uninstall plugin "${pluginName}".` })
+    await security.authorizeDestructive(event, { message: '플러그인을 제거할까요? 설치된 코드가 삭제됩니다.', detail: pluginName, confirmLabel: '제거', danger: true })
     return management.uninstallPlugin(workspacePath, pluginName)
   }))
 
