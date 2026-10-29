@@ -128,7 +128,7 @@ export async function captureScreen(
       message: error instanceof Error ? error.message : String(error),
     };
   }
-  let data = await readFile(file).catch(() => undefined);
+  let data: Buffer | undefined = await readFile(file).catch(() => undefined);
   if (data && data.length > CAPTURE_MAX_BYTES) {
     const fitted = fitToLimit(data, options.downscale);
     if (!fitted) {
