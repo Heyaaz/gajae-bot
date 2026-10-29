@@ -14,7 +14,7 @@ import {
   type WebContents,
 } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -83,11 +83,16 @@ const {
   terminalSmokeMode,
   deepLinkSmokeMode,
 } = rendererLaunchConfig(app.isPackaged);
-if (terminalSmokeMode && !process.env.GAJAE_USER_DATA_DIR?.trim()) {
-  process.env.GAJAE_USER_DATA_DIR = path.join(tmpdir(), "gajae-terminal-smoke");
-}
-if (deepLinkSmokeMode && !process.env.GAJAE_USER_DATA_DIR?.trim()) {
-  process.env.GAJAE_USER_DATA_DIR = path.join(tmpdir(), `gajae-deep-link-smoke-${process.pid}`);
+// Every smoke runs on a throwaway userData so it never reads or writes the real
+// profile. Only the live gjc-smoke keeps the GJC agent dir, because it needs a
+// real GJC profile; an explicit GJC_CODING_AGENT_DIR is honored everywhere.
+if (!app.isPackaged && (smokeMode || terminalSmokeMode || deepLinkSmokeMode)) {
+  if (!process.env.GAJAE_USER_DATA_DIR?.trim()) {
+    process.env.GAJAE_USER_DATA_DIR = mkdtempSync(path.join(tmpdir(), "gajae-smoke-"));
+  }
+  if (!gjcSmokeMode && !process.env.GJC_CODING_AGENT_DIR?.trim()) {
+    process.env.GJC_CODING_AGENT_DIR = mkdtempSync(path.join(tmpdir(), "gajae-smoke-gjc-"));
+  }
 }
 const mockBackend =
   !app.isPackaged &&
@@ -931,7 +936,7 @@ function createWindow(): BrowserWindow {
             await wait(100);
             assert(document.querySelector('.composer-model'), 'Active model control did not render');
             assert(parseFloat(getComputedStyle(document.querySelector('.composer-context')).fontSize) <= 10, 'Workspace control text is still oversized');
-            assert(document.querySelector('.composer-model button')?.textContent?.includes('GPT-5.6 Sol'), 'Resolved profile default model did not render');
+            assert(document.querySelector('.composer-model button strong')?.textContent === 'Codex Medium', 'Selected profile name did not label the model button');
             assert(document.querySelector('.composer-model button > span')?.textContent?.trim() === 'high', 'Native Electron Shift-Tab did not cycle reasoning effort');
             assert(document.querySelector('.chat-branch')?.textContent?.trim() === 'main', 'Current session Git branch did not render');
             assert(typeof window.agentControlDesktop?.productivity?.searchTranscripts === 'function', 'Productivity bridge did not render');
