@@ -1,8 +1,26 @@
 # Gajae feature map
 
-**Map status: unproven.** No feature was driven for this map. Every journey below is
-derived from source and the repository README; treat each one as a claim to test, not a
-recorded result.
+**Map status: partially proven (2026-10-29).** The seven core journeys below were driven
+against the built app and real GJC 0.19.0 by `scripts/live-journeys.cjs`. Every other journey
+in the feature files remains a claim derived from source; treat it as unproven.
+
+### Journey status
+
+The driver calls the app's real preload bridge (`window.agentControlDesktop`) inside the real
+window. It does not click rail rows, so the visual entry points stay unproven. Only the
+region picker (`screencapture -i`) and the native confirmation dialog are stubbed.
+Evidence lives in `<LIVE_ROOT>/evidence/<journey>.json` (kept outside the repository); each
+file records the observed state and its cross-check.
+
+| Journey | Status | Evidence on 2026-10-29 |
+| --- | --- | --- |
+| Create, send, abort | verified | `j1.json`: reply `OK` in the transcript and in the session file under the isolated agent dir; a 4000-line turn aborted mid-stream (status back to `idle`, output cut at 928) and the same session answered `AFTER`. |
+| Resume a past session | verified | `j2.json`: after a full relaunch with every GJC process stopped, the session from the first launch is in the history list, opens with its 19 earlier items, and answers a question that needs them. The row reads `live: true` at launch, so the app re-adopts it rather than offering a cold file-only resume. |
+| Worktree session | verified | `j3.json`: `git worktree list` shows the session workspace on branch `live-179/worktree-journey`, the main checkout stays on `main`, and the session answers inside the worktree. |
+| Remote pairing | verified over loopback; Tailscale and phone unproven | `j4.json`: real host on `127.0.0.1:48791` serves the web client, `/api/state` is 401 without a token, a `view` device sees exactly the host's sessions and is refused a send with 403, a `control` device sends a message that the real session answers, and a revoked token reads 401. Tailscale was stubbed out on purpose; HTTPS over the tailnet and a real phone were not driven. |
+| Menu bar and Dock badge | verified | `j5.json`: Tray title `▶︎1` and a running-session menu while the turn ran, Dock badge rising from `1` to `2` when the turn finished unread while another session was viewed, and falling back to `1` after it was read. |
+| Best-of-N | verified | `j6.json`: two attempts, each with its own worktree and branch, session models `kimi-k3` and `deepseek-v4-flash` for presets `opencodego` and `open-weights-deepseek`; adopting attempt 1 removed nothing; cleanup answered Cancel changed nothing and Continue removed only attempt 2's worktree and branch. The confirmation dialog was a stub that recorded the exact text shown. |
+| Quick input capture | verified for downscaling; Space overlay unproven | `j7.json`: a 5120x2880 PNG of 30,330,516 bytes became an 8,016,679 byte attachment at 2509x1411 through the app's own nativeImage path. Showing over another Space or a fullscreen app was not observed. |
 
 Gajae is a macOS Electron desktop client for GJC sessions. The primary surface mapped
 here is the desktop app. Secondary surfaces are the paired remote web/PWA client (same
