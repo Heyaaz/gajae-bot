@@ -216,6 +216,26 @@ deletion and its unknown-outcome fence are described under
 or unknown outcome leaves the row and local evidence intact and shows an error;
 use that CLI's session picker for owner-local history deletion.
 
+When the broker cannot settle the delete (an unknown outcome, or the
+`lifecycle_legacy_history_ambiguous` fence that gjc/0.19.2 raises for every
+delete once the agent dir's lifecycle ledger holds legacy rows), Gajae deletes
+through GJC's own interactive `/session delete` instead
+(`electron/gjc-cli-session-delete.ts`). `gjc -p` does not run slash commands
+(it sends them to the model), so Gajae opens the transcript with
+`gjc --resume <path> --no-mcp --no-lsp` in a hidden terminal, with
+`GJC_AUTOMATION=1` so first-run onboarding does not open over the editor. It
+types the command, chooses Yes only on GJC's own deletion prompt with Yes
+already selected, presses Esc on any other dialog, and stops GJC once the
+transcript is gone. That also discards the empty session GJC opens after
+deleting. It never edits the ledger. It does this only for a saved transcript
+that no host is running. For a session another terminal's GJC holds open, the
+error says to type `/session delete` in that terminal. If GJC exits, times out
+(45 s) or shows a prompt it does not expect, the session stays recovering and
+nothing local is removed. `node scripts/gjc-cli-delete-e2e.mjs` (also the
+`cli-delete-e2e` step of `npm run gjc:matrix`) reproduces the fence with a
+legacy ledger row in a throwaway HOME and agent dir, and deletes through the
+real GJC. It passed on 0.19.2 in about 14 s per delete.
+
 ### Resume a session
 
 Eligible interactive GJC root sessions publish an SDK endpoint automatically
