@@ -626,163 +626,73 @@ export class GjcSdkController {
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
   private readonly questionHost: QuestionHost = ((controller: GjcSdkController): QuestionHost => ({
-    get sessionQuestions() {
-      return controller.sessionQuestions;
-    },
-    get questionRefreshes() {
-      return controller.questionRefreshes;
-    },
-    get disposed() {
-      return controller.disposed;
-    },
+    get sessionQuestions() { return controller.sessionQuestions; },
+    get questionRefreshes() { return controller.questionRefreshes; },
+    get disposed() { return controller.disposed; },
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get observedQuestions() {
-      return controller.observedQuestions;
-    },
-    get acceptedQuestions() {
-      return controller.acceptedQuestions;
-    },
-    get transcripts() {
-      return controller.transcripts;
-    },
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
+    get observedQuestions() { return controller.observedQuestions; },
+    get acceptedQuestions() { return controller.acceptedQuestions; },
+    get transcripts() { return controller.transcripts; },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
-    get emitEvent() {
-      return controller.emitEvent;
-    },
+    get emitEvent() { return controller.emitEvent; },
     markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
     emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
-    get sessions() {
-      return controller.sessions;
-    },
-    get cancellingSessions() {
-      return controller.cancellingSessions;
-    },
+    get sessions() { return controller.sessions; },
+    get cancellingSessions() { return controller.cancellingSessions; },
     updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
   }))(this);
 
   private readonly commandPaletteHost: CommandPaletteHost = ((controller: GjcSdkController): CommandPaletteHost => ({
-    get commandRefreshes() {
-      return controller.commandRefreshes;
-    },
-    get sessionAdvertisedCommands() {
-      return controller.sessionAdvertisedCommands;
-    },
-    get sessionDiscoveredCommands() {
-      return controller.sessionDiscoveredCommands;
-    },
-    get sessionCommands() {
-      return controller.sessionCommands;
-    },
-    get disposed() {
-      return controller.disposed;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
-    get commandRefreshTimers() {
-      return controller.commandRefreshTimers;
-    },
-    get commandRefreshAttempts() {
-      return controller.commandRefreshAttempts;
-    },
+    get commandRefreshes() { return controller.commandRefreshes; },
+    get sessionAdvertisedCommands() { return controller.sessionAdvertisedCommands; },
+    get sessionDiscoveredCommands() { return controller.sessionDiscoveredCommands; },
+    get sessionCommands() { return controller.sessionCommands; },
+    get disposed() { return controller.disposed; },
+    get sessions() { return controller.sessions; },
+    get commandRefreshTimers() { return controller.commandRefreshTimers; },
+    get commandRefreshAttempts() { return controller.commandRefreshAttempts; },
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get sessionSdkOperations() {
-      return controller.sessionSdkOperations;
-    },
-    get publishedCommandKeys() {
-      return controller.publishedCommandKeys;
-    },
-    get emitEvent() {
-      return controller.emitEvent;
-    },
+    get sessionSdkOperations() { return controller.sessionSdkOperations; },
+    get publishedCommandKeys() { return controller.publishedCommandKeys; },
+    get emitEvent() { return controller.emitEvent; },
   }))(this);
 
   private readonly goalTodoHost: GoalTodoHost = ((controller: GjcSdkController): GoalTodoHost => ({
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get sessionSdkOperations() {
-      return controller.sessionSdkOperations;
-    },
-    get progressWatchedAt() {
-      return controller.progressWatchedAt;
-    },
-    get sessionProgress() {
-      return controller.sessionProgress;
-    },
-    get disposed() {
-      return controller.disposed;
-    },
-    get progressTimers() {
-      return controller.progressTimers;
-    },
-    get progressReads() {
-      return controller.progressReads;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
+    get sessionSdkOperations() { return controller.sessionSdkOperations; },
+    get progressWatchedAt() { return controller.progressWatchedAt; },
+    get sessionProgress() { return controller.sessionProgress; },
+    get disposed() { return controller.disposed; },
+    get progressTimers() { return controller.progressTimers; },
+    get progressReads() { return controller.progressReads; },
+    get sessions() { return controller.sessions; },
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
-    get sessionTodoSnapshots() {
-      return controller.sessionTodoSnapshots;
-    },
-    get attachedSessions() {
-      return controller.attachedSessions;
-    },
-    get todoPollTimers() {
-      return controller.todoPollTimers;
-    },
-    get todoPollAttempts() {
-      return controller.todoPollAttempts;
-    },
-    get todoReads() {
-      return controller.todoReads;
-    },
+    get sessionTodoSnapshots() { return controller.sessionTodoSnapshots; },
+    get attachedSessions() { return controller.attachedSessions; },
+    get todoPollTimers() { return controller.todoPollTimers; },
+    get todoPollAttempts() { return controller.todoPollAttempts; },
+    get todoReads() { return controller.todoReads; },
     markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
-    get transcripts() {
-      return controller.transcripts;
-    },
+    get transcripts() { return controller.transcripts; },
     noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
-    get emitEvent() {
-      return controller.emitEvent;
-    },
+    get emitEvent() { return controller.emitEvent; },
   }))(this);
 
   private readonly sessionConfigHost: SessionConfigHost = ((controller: GjcSdkController): SessionConfigHost => ({
-    get modelProfiles() {
-      return controller.modelProfiles;
-    },
-    get modelPreset() {
-      return controller.modelPreset;
-    },
-    get modelPresetThinking() {
-      return controller.modelPresetThinking;
-    },
-    get explicitSessionThinking() {
-      return controller.explicitSessionThinking;
-    },
-    get sessionConfig() {
-      return controller.sessionConfig;
-    },
-    get emitEvent() {
-      return controller.emitEvent;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
+    get modelProfiles() { return controller.modelProfiles; },
+    get modelPreset() { return controller.modelPreset; },
+    get modelPresetThinking() { return controller.modelPresetThinking; },
+    get explicitSessionThinking() { return controller.explicitSessionThinking; },
+    get sessionConfig() { return controller.sessionConfig; },
+    get emitEvent() { return controller.emitEvent; },
+    get sessions() { return controller.sessions; },
     requireCli: () => controller.requireCli(),
     repoFor: (sessionId) => controller.repoFor(sessionId),
-    get disposed() {
-      return controller.disposed;
-    },
-    get contextUsageObservedAt() {
-      return controller.contextUsageObservedAt;
-    },
-    get contextUsageQueries() {
-      return controller.contextUsageQueries;
-    },
+    get disposed() { return controller.disposed; },
+    get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
+    get contextUsageQueries() { return controller.contextUsageQueries; },
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
     advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
@@ -790,260 +700,112 @@ export class GjcSdkController {
   }))(this);
 
   private readonly filesHost: FilesHost = ((controller: GjcSdkController): FilesHost => ({
-    get transcripts() {
-      return controller.transcripts;
-    },
+    get transcripts() { return controller.transcripts; },
     getTranscript: (sessionId) => controller.getTranscript(sessionId),
-    get artifactDirectory() {
-      return controller.artifactDirectory;
-    },
+    get artifactDirectory() { return controller.artifactDirectory; },
     requireCli: () => controller.requireCli(),
     ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
     repoFor: (sessionId) => controller.repoFor(sessionId),
-    get deletingSessions() {
-      return controller.deletingSessions;
-    },
-    get artifactSessionIds() {
-      return controller.artifactSessionIds;
-    },
-    get artifactWrites() {
-      return controller.artifactWrites;
-    },
-    get nextLocalId() {
-      return controller.nextLocalId;
-    },
-    set nextLocalId(value) {
-      controller.nextLocalId = value;
-    },
-    get sessionCwds() {
-      return controller.sessionCwds;
-    },
-    get workspace() {
-      return controller.workspace;
-    },
-    get sharedSessionFiles() {
-      return controller.sharedSessionFiles;
-    },
-    get sharedTranscriptReads() {
-      return controller.sharedTranscriptReads;
-    },
+    get deletingSessions() { return controller.deletingSessions; },
+    get artifactSessionIds() { return controller.artifactSessionIds; },
+    get artifactWrites() { return controller.artifactWrites; },
+    get nextLocalId() { return controller.nextLocalId; },
+    set nextLocalId(value) { controller.nextLocalId = value; },
+    get sessionCwds() { return controller.sessionCwds; },
+    get workspace() { return controller.workspace; },
+    get sharedSessionFiles() { return controller.sharedSessionFiles; },
+    get sharedTranscriptReads() { return controller.sharedTranscriptReads; },
   }))(this);
 
   private readonly runStateHost: RunStateHost = ((controller: GjcSdkController): RunStateHost => ({
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
-    get discoveredRunStates() {
-      return controller.discoveredRunStates;
-    },
-    get pendingAsyncWorkSessions() {
-      return controller.pendingAsyncWorkSessions;
-    },
-    get asyncJobReconciliations() {
-      return controller.asyncJobReconciliations;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
-    get liveRunningSessions() {
-      return controller.liveRunningSessions;
-    },
-    get transcriptRunningSessions() {
-      return controller.transcriptRunningSessions;
-    },
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
+    get discoveredRunStates() { return controller.discoveredRunStates; },
+    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
+    get asyncJobReconciliations() { return controller.asyncJobReconciliations; },
+    get sessions() { return controller.sessions; },
+    get liveRunningSessions() { return controller.liveRunningSessions; },
+    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
-    get idleTranscriptBaselines() {
-      return controller.idleTranscriptBaselines;
-    },
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
-    get runtimeIdleSessions() {
-      return controller.runtimeIdleSessions;
-    },
-    get liveEvidenceAt() {
-      return controller.liveEvidenceAt;
-    },
-    get liveRunningDigests() {
-      return controller.liveRunningDigests;
-    },
-    get compactingSessions() {
-      return controller.compactingSessions;
-    },
-    get compactionRecordBaseline() {
-      return controller.compactionRecordBaseline;
-    },
-    get compactionStartedAt() {
-      return controller.compactionStartedAt;
-    },
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
+    get idleTranscriptBaselines() { return controller.idleTranscriptBaselines; },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
+    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
+    get liveEvidenceAt() { return controller.liveEvidenceAt; },
+    get liveRunningDigests() { return controller.liveRunningDigests; },
+    get compactingSessions() { return controller.compactingSessions; },
+    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
+    get compactionStartedAt() { return controller.compactionStartedAt; },
+    get activePromptSessions() { return controller.activePromptSessions; },
     advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    get emitEvent() {
-      return controller.emitEvent;
-    },
+    get emitEvent() { return controller.emitEvent; },
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get disposed() {
-      return controller.disposed;
-    },
-    get runStateWatchers() {
-      return controller.runStateWatchers;
-    },
-    get runStateTimers() {
-      return controller.runStateTimers;
-    },
-    get sharedSessionWatchers() {
-      return controller.sharedSessionWatchers;
-    },
-    get generation() {
-      return controller.generation;
-    },
-    get lastDiscovered() {
-      return controller.lastDiscovered;
-    },
-    set lastDiscovered(value) {
-      controller.lastDiscovered = value;
-    },
+    get disposed() { return controller.disposed; },
+    get runStateWatchers() { return controller.runStateWatchers; },
+    get runStateTimers() { return controller.runStateTimers; },
+    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
+    get generation() { return controller.generation; },
+    get lastDiscovered() { return controller.lastDiscovered; },
+    set lastDiscovered(value) { controller.lastDiscovered = value; },
   }))(this);
 
   private readonly discoveryHost: DiscoveryHost = ((controller: GjcSdkController): DiscoveryHost => ({
     brokerSessions: (options) => controller.brokerSessions(options),
-    get lastDiscovered() {
-      return controller.lastDiscovered;
-    },
-    set lastDiscovered(value) {
-      controller.lastDiscovered = value;
-    },
-    get sessionMetadata() {
-      return controller.sessionMetadata;
-    },
+    get lastDiscovered() { return controller.lastDiscovered; },
+    set lastDiscovered(value) { controller.lastDiscovered = value; },
+    get sessionMetadata() { return controller.sessionMetadata; },
     liveRouteReachable: (row) => controller.liveRouteReachable(row),
-    get terminalOnlySessions() {
-      return controller.terminalOnlySessions;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
-    get lastLiveFingerprint() {
-      return controller.lastLiveFingerprint;
-    },
-    set lastLiveFingerprint(value) {
-      controller.lastLiveFingerprint = value;
-    },
-    get workspace() {
-      return controller.workspace;
-    },
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
-    get liveRunningSessions() {
-      return controller.liveRunningSessions;
-    },
-    get pendingAsyncWorkSessions() {
-      return controller.pendingAsyncWorkSessions;
-    },
+    get terminalOnlySessions() { return controller.terminalOnlySessions; },
+    get sessions() { return controller.sessions; },
+    get lastLiveFingerprint() { return controller.lastLiveFingerprint; },
+    set lastLiveFingerprint(value) { controller.lastLiveFingerprint = value; },
+    get workspace() { return controller.workspace; },
+    get activePromptSessions() { return controller.activePromptSessions; },
+    get liveRunningSessions() { return controller.liveRunningSessions; },
+    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
     syncRunStateWatchers: (sessionIds) => controller.syncRunStateWatchers(sessionIds),
     discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
     liveEvidenceQuiet: (sessionId) => controller.liveEvidenceQuiet(sessionId),
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
-    get attachedSessions() {
-      return controller.attachedSessions;
-    },
+    get attachedSessions() { return controller.attachedSessions; },
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
     settleQuietRunningRow: (sessionId, transcriptStatus, currentSession) => controller.settleQuietRunningRow(sessionId, transcriptStatus, currentSession),
-    get runtimeIdleSessions() {
-      return controller.runtimeIdleSessions;
-    },
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
+    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     sessionParentId: (sessionId) => controller.sessionParentId(sessionId),
     advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    get sessionCwds() {
-      return controller.sessionCwds;
-    },
-    get routeProbes() {
-      return controller.routeProbes;
-    },
+    get sessionCwds() { return controller.sessionCwds; },
+    get routeProbes() { return controller.routeProbes; },
     requireCli: () => controller.requireCli(),
-    get disposed() {
-      return controller.disposed;
-    },
-    get startupSessionRows() {
-      return controller.startupSessionRows;
-    },
-    set startupSessionRows(value) {
-      controller.startupSessionRows = value;
-    },
-    get cachedBrokerRows() {
-      return controller.cachedBrokerRows;
-    },
-    set cachedBrokerRows(value) {
-      controller.cachedBrokerRows = value;
-    },
-    get cachedBrokerRevision() {
-      return controller.cachedBrokerRevision;
-    },
-    set cachedBrokerRevision(value) {
-      controller.cachedBrokerRevision = value;
-    },
-    get sessionParents() {
-      return controller.sessionParents;
-    },
+    get disposed() { return controller.disposed; },
+    get startupSessionRows() { return controller.startupSessionRows; },
+    set startupSessionRows(value) { controller.startupSessionRows = value; },
+    get cachedBrokerRows() { return controller.cachedBrokerRows; },
+    set cachedBrokerRows(value) { controller.cachedBrokerRows = value; },
+    get cachedBrokerRevision() { return controller.cachedBrokerRevision; },
+    set cachedBrokerRevision(value) { controller.cachedBrokerRevision = value; },
+    get sessionParents() { return controller.sessionParents; },
   }))(this);
 
   private readonly lifecycleHost: LifecycleHost = ((controller: GjcSdkController): LifecycleHost => ({
     requireCli: () => controller.requireCli(),
-    get nextLocalId() {
-      return controller.nextLocalId;
-    },
-    set nextLocalId(value) {
-      controller.nextLocalId = value;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
+    get nextLocalId() { return controller.nextLocalId; },
+    set nextLocalId(value) { controller.nextLocalId = value; },
+    get sessions() { return controller.sessions; },
     brokerSessions: (options) => controller.brokerSessions(options),
-    get modelPreset() {
-      return controller.modelPreset;
-    },
-    get sessionCwds() {
-      return controller.sessionCwds;
-    },
-    get transcripts() {
-      return controller.transcripts;
-    },
-    get toolRowIndices() {
-      return controller.toolRowIndices;
-    },
-    get messageKeys() {
-      return controller.messageKeys;
-    },
-    get startupSessionRows() {
-      return controller.startupSessionRows;
-    },
-    set startupSessionRows(value) {
-      controller.startupSessionRows = value;
-    },
+    get modelPreset() { return controller.modelPreset; },
+    get sessionCwds() { return controller.sessionCwds; },
+    get transcripts() { return controller.transcripts; },
+    get toolRowIndices() { return controller.toolRowIndices; },
+    get messageKeys() { return controller.messageKeys; },
+    get startupSessionRows() { return controller.startupSessionRows; },
+    set startupSessionRows(value) { controller.startupSessionRows = value; },
     invalidateBrokerIndexCache: () => controller.invalidateBrokerIndexCache(),
-    get windowHostedSessions() {
-      return controller.windowHostedSessions;
-    },
-    get sessionMetadata() {
-      return controller.sessionMetadata;
-    },
+    get windowHostedSessions() { return controller.windowHostedSessions; },
+    get sessionMetadata() { return controller.sessionMetadata; },
     applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
-    get emitEvent() {
-      return controller.emitEvent;
-    },
-    get attachedSessions() {
-      return controller.attachedSessions;
-    },
+    get emitEvent() { return controller.emitEvent; },
+    get attachedSessions() { return controller.attachedSessions; },
     startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
     refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
     refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
@@ -1051,590 +813,262 @@ export class GjcSdkController {
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
     watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
     ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-    get forkRecoveryIntervalMs() {
-      return controller.forkRecoveryIntervalMs;
-    },
-    get deletionPromises() {
-      return controller.deletionPromises;
-    },
-    get deletingSessions() {
-      return controller.deletingSessions;
-    },
-    get workspace() {
-      return controller.workspace;
-    },
+    get forkRecoveryIntervalMs() { return controller.forkRecoveryIntervalMs; },
+    get deletionPromises() { return controller.deletionPromises; },
+    get deletingSessions() { return controller.deletingSessions; },
+    get workspace() { return controller.workspace; },
     stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
     removeSessionArtifacts: (sessionId) => controller.removeSessionArtifacts(sessionId),
     removeLocalSession: (sessionId, hide) => controller.removeLocalSession(sessionId, hide),
-    get transcriptAttachments() {
-      return controller.transcriptAttachments;
-    },
-    get dirtyTranscriptRows() {
-      return controller.dirtyTranscriptRows;
-    },
-    get desktopTranscriptBaselines() {
-      return controller.desktopTranscriptBaselines;
-    },
-    get activeAssistantMessages() {
-      return controller.activeAssistantMessages;
-    },
-    get activeThoughts() {
-      return controller.activeThoughts;
-    },
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
-    get activePromptAdmissions() {
-      return controller.activePromptAdmissions;
-    },
-    get cancellationWatermarks() {
-      return controller.cancellationWatermarks;
-    },
-    get liveRunningSessions() {
-      return controller.liveRunningSessions;
-    },
-    get liveRunningDigests() {
-      return controller.liveRunningDigests;
-    },
-    get liveEvidenceAt() {
-      return controller.liveEvidenceAt;
-    },
-    get transcriptRunningSessions() {
-      return controller.transcriptRunningSessions;
-    },
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
-    get runtimeIdleSessions() {
-      return controller.runtimeIdleSessions;
-    },
-    get pendingAsyncWorkSessions() {
-      return controller.pendingAsyncWorkSessions;
-    },
-    get completionDeferredSessions() {
-      return controller.completionDeferredSessions;
-    },
-    get asyncJobReconciliations() {
-      return controller.asyncJobReconciliations;
-    },
-    get runRevisions() {
-      return controller.runRevisions;
-    },
-    get discoveredRunStates() {
-      return controller.discoveredRunStates;
-    },
-    get idleTranscriptBaselines() {
-      return controller.idleTranscriptBaselines;
-    },
-    get compactingSessions() {
-      return controller.compactingSessions;
-    },
-    get compactionRecordBaseline() {
-      return controller.compactionRecordBaseline;
-    },
-    get compactionRecordWatermark() {
-      return controller.compactionRecordWatermark;
-    },
-    get compactionStartedAt() {
-      return controller.compactionStartedAt;
-    },
-    get suppressedUserMessageKeys() {
-      return controller.suppressedUserMessageKeys;
-    },
-    get echoedPromptTexts() {
-      return controller.echoedPromptTexts;
-    },
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
-    get sessionCommands() {
-      return controller.sessionCommands;
-    },
-    get publishedCommandKeys() {
-      return controller.publishedCommandKeys;
-    },
-    get commandRefreshes() {
-      return controller.commandRefreshes;
-    },
-    get sessionContextRefreshes() {
-      return controller.sessionContextRefreshes;
-    },
-    get sessionContextRefreshedAt() {
-      return controller.sessionContextRefreshedAt;
-    },
+    get transcriptAttachments() { return controller.transcriptAttachments; },
+    get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
+    get desktopTranscriptBaselines() { return controller.desktopTranscriptBaselines; },
+    get activeAssistantMessages() { return controller.activeAssistantMessages; },
+    get activeThoughts() { return controller.activeThoughts; },
+    get activePromptSessions() { return controller.activePromptSessions; },
+    get activePromptAdmissions() { return controller.activePromptAdmissions; },
+    get cancellationWatermarks() { return controller.cancellationWatermarks; },
+    get liveRunningSessions() { return controller.liveRunningSessions; },
+    get liveRunningDigests() { return controller.liveRunningDigests; },
+    get liveEvidenceAt() { return controller.liveEvidenceAt; },
+    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
+    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
+    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
+    get completionDeferredSessions() { return controller.completionDeferredSessions; },
+    get asyncJobReconciliations() { return controller.asyncJobReconciliations; },
+    get runRevisions() { return controller.runRevisions; },
+    get discoveredRunStates() { return controller.discoveredRunStates; },
+    get idleTranscriptBaselines() { return controller.idleTranscriptBaselines; },
+    get compactingSessions() { return controller.compactingSessions; },
+    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
+    get compactionRecordWatermark() { return controller.compactionRecordWatermark; },
+    get compactionStartedAt() { return controller.compactionStartedAt; },
+    get suppressedUserMessageKeys() { return controller.suppressedUserMessageKeys; },
+    get echoedPromptTexts() { return controller.echoedPromptTexts; },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
+    get sessionCommands() { return controller.sessionCommands; },
+    get publishedCommandKeys() { return controller.publishedCommandKeys; },
+    get commandRefreshes() { return controller.commandRefreshes; },
+    get sessionContextRefreshes() { return controller.sessionContextRefreshes; },
+    get sessionContextRefreshedAt() { return controller.sessionContextRefreshedAt; },
     clearCommandRefreshRetry: (sessionId) => controller.clearCommandRefreshRetry(sessionId),
     clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
     clearProgress: (sessionId) => controller.clearProgress(sessionId),
-    get sessionAdvertisedCommands() {
-      return controller.sessionAdvertisedCommands;
-    },
-    get sessionDiscoveredCommands() {
-      return controller.sessionDiscoveredCommands;
-    },
-    get sessionPlans() {
-      return controller.sessionPlans;
-    },
-    get sessionQuestions() {
-      return controller.sessionQuestions;
-    },
-    get sessionTodoSnapshots() {
-      return controller.sessionTodoSnapshots;
-    },
-    get todoReads() {
-      return controller.todoReads;
-    },
-    get sessionSdkOperations() {
-      return controller.sessionSdkOperations;
-    },
-    get sessionConfig() {
-      return controller.sessionConfig;
-    },
-    get terminalOnlySessions() {
-      return controller.terminalOnlySessions;
-    },
-    get routeProbes() {
-      return controller.routeProbes;
-    },
-    get modelProfiles() {
-      return controller.modelProfiles;
-    },
-    get explicitSessionThinking() {
-      return controller.explicitSessionThinking;
-    },
-    get sharedSessionWatchers() {
-      return controller.sharedSessionWatchers;
-    },
-    get runStateWatchers() {
-      return controller.runStateWatchers;
-    },
-    get runStateTimers() {
-      return controller.runStateTimers;
-    },
-    get sharedSessionRefreshTimers() {
-      return controller.sharedSessionRefreshTimers;
-    },
+    get sessionAdvertisedCommands() { return controller.sessionAdvertisedCommands; },
+    get sessionDiscoveredCommands() { return controller.sessionDiscoveredCommands; },
+    get sessionPlans() { return controller.sessionPlans; },
+    get sessionQuestions() { return controller.sessionQuestions; },
+    get sessionTodoSnapshots() { return controller.sessionTodoSnapshots; },
+    get todoReads() { return controller.todoReads; },
+    get sessionSdkOperations() { return controller.sessionSdkOperations; },
+    get sessionConfig() { return controller.sessionConfig; },
+    get terminalOnlySessions() { return controller.terminalOnlySessions; },
+    get routeProbes() { return controller.routeProbes; },
+    get modelProfiles() { return controller.modelProfiles; },
+    get explicitSessionThinking() { return controller.explicitSessionThinking; },
+    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
+    get runStateWatchers() { return controller.runStateWatchers; },
+    get runStateTimers() { return controller.runStateTimers; },
+    get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
     cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
-    get lastLiveFingerprint() {
-      return controller.lastLiveFingerprint;
-    },
-    set lastLiveFingerprint(value) {
-      controller.lastLiveFingerprint = value;
-    },
-    get lastDiscovered() {
-      return controller.lastDiscovered;
-    },
-    set lastDiscovered(value) {
-      controller.lastDiscovered = value;
-    },
+    get lastLiveFingerprint() { return controller.lastLiveFingerprint; },
+    set lastLiveFingerprint(value) { controller.lastLiveFingerprint = value; },
+    get lastDiscovered() { return controller.lastDiscovered; },
+    set lastDiscovered(value) { controller.lastDiscovered = value; },
     sdkOperations: (sessionId, options) => controller.sdkOperations(sessionId, options),
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
   }))(this);
 
   private readonly attachHost: AttachHost = ((controller: GjcSdkController): AttachHost => ({
     brokerSessions: (options) => controller.brokerSessions(options),
-    get historySummaryCache() {
-      return controller.historySummaryCache;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
+    get historySummaryCache() { return controller.historySummaryCache; },
+    get sessions() { return controller.sessions; },
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
-    get workspace() {
-      return controller.workspace;
-    },
-    get sessionMetadata() {
-      return controller.sessionMetadata;
-    },
-    get sessionCwds() {
-      return controller.sessionCwds;
-    },
-    get emitEvent() {
-      return controller.emitEvent;
-    },
-    get generation() {
-      return controller.generation;
-    },
+    get workspace() { return controller.workspace; },
+    get sessionMetadata() { return controller.sessionMetadata; },
+    get sessionCwds() { return controller.sessionCwds; },
+    get emitEvent() { return controller.emitEvent; },
+    get generation() { return controller.generation; },
     resumeSession: (sessionId) => controller.resumeSession(sessionId),
     readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
-    get disposed() {
-      return controller.disposed;
-    },
+    get disposed() { return controller.disposed; },
     markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
     installTranscript: (sessionId, items) => controller.installTranscript(sessionId, items),
     discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
     advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
     invalidateDesktopTranscript: (sessionId) => controller.invalidateDesktopTranscript(sessionId),
-    get terminalOnlySessions() {
-      return controller.terminalOnlySessions;
-    },
+    get terminalOnlySessions() { return controller.terminalOnlySessions; },
     stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
-    get attachedSessions() {
-      return controller.attachedSessions;
-    },
-    get attachAttempts() {
-      return controller.attachAttempts;
-    },
+    get attachedSessions() { return controller.attachedSessions; },
+    get attachAttempts() { return controller.attachAttempts; },
     ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
     refreshSessionSettings: (sessionId) => controller.refreshSessionSettings(sessionId),
     startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
     requireCli: () => controller.requireCli(),
     repoFor: (sessionId) => controller.repoFor(sessionId),
-    get messageKeys() {
-      return controller.messageKeys;
-    },
-    get modelPreset() {
-      return controller.modelPreset;
-    },
-    get windowHostedSessions() {
-      return controller.windowHostedSessions;
-    },
-    get sharedSessionFiles() {
-      return controller.sharedSessionFiles;
-    },
+    get messageKeys() { return controller.messageKeys; },
+    get modelPreset() { return controller.modelPreset; },
+    get windowHostedSessions() { return controller.windowHostedSessions; },
+    get sharedSessionFiles() { return controller.sharedSessionFiles; },
     applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
     refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
     refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
     readSharedTranscript: (sessionId) => controller.readSharedTranscript(sessionId),
     finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
-    get watchedTranscripts() {
-      return controller.watchedTranscripts;
-    },
+    get watchedTranscripts() { return controller.watchedTranscripts; },
     watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
     refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
-    get detachTimers() {
-      return controller.detachTimers;
-    },
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
-    get sharedSessionWatchers() {
-      return controller.sharedSessionWatchers;
-    },
-    get sharedSessionRefreshTimers() {
-      return controller.sharedSessionRefreshTimers;
-    },
-    get transcripts() {
-      return controller.transcripts;
-    },
-    get toolRowIndices() {
-      return controller.toolRowIndices;
-    },
-    get dirtyTranscriptRows() {
-      return controller.dirtyTranscriptRows;
-    },
-    get desktopTranscriptBaselines() {
-      return controller.desktopTranscriptBaselines;
-    },
-    get activeAssistantMessages() {
-      return controller.activeAssistantMessages;
-    },
-    get activeThoughts() {
-      return controller.activeThoughts;
-    },
-    get sessionSdkOperations() {
-      return controller.sessionSdkOperations;
-    },
-    get contextUsageObservedAt() {
-      return controller.contextUsageObservedAt;
-    },
-    get transcriptAttachments() {
-      return controller.transcriptAttachments;
-    },
-    get cli() {
-      return controller.cli;
-    },
-    get recovery() {
-      return controller.recovery;
-    },
-    set recovery(value) {
-      controller.recovery = value;
-    },
+    get detachTimers() { return controller.detachTimers; },
+    get activePromptSessions() { return controller.activePromptSessions; },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
+    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
+    get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
+    get transcripts() { return controller.transcripts; },
+    get toolRowIndices() { return controller.toolRowIndices; },
+    get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
+    get desktopTranscriptBaselines() { return controller.desktopTranscriptBaselines; },
+    get activeAssistantMessages() { return controller.activeAssistantMessages; },
+    get activeThoughts() { return controller.activeThoughts; },
+    get sessionSdkOperations() { return controller.sessionSdkOperations; },
+    get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
+    get transcriptAttachments() { return controller.transcriptAttachments; },
+    get cli() { return controller.cli; },
+    get recovery() { return controller.recovery; },
+    set recovery(value) { controller.recovery = value; },
   }))(this);
 
   private readonly transcriptStoreHost: TranscriptStoreHost = ((controller: GjcSdkController): TranscriptStoreHost => ({
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
+    get activePromptSessions() { return controller.activePromptSessions; },
     readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
     installTranscript: (sessionId, items) => controller.installTranscript(sessionId, items),
-    get terminalOnlySessions() {
-      return controller.terminalOnlySessions;
-    },
+    get terminalOnlySessions() { return controller.terminalOnlySessions; },
     readSharedTranscript: (sessionId) => controller.readSharedTranscript(sessionId),
     refreshTranscriptAttachment: (sessionId) => controller.refreshTranscriptAttachment(sessionId),
     terminalOnlyNotice: (sessionId) => controller.terminalOnlyNotice(sessionId),
     ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-    get sessions() {
-      return controller.sessions;
-    },
-    get emitEvent() {
-      return controller.emitEvent;
-    },
+    get sessions() { return controller.sessions; },
+    get emitEvent() { return controller.emitEvent; },
     lifecycleUncertainNotice: (sessionId) => controller.lifecycleUncertainNotice(sessionId),
     removeLocalSession: (sessionId, hide) => controller.removeLocalSession(sessionId, hide),
-    get transcripts() {
-      return controller.transcripts;
-    },
+    get transcripts() { return controller.transcripts; },
     getTranscript: (sessionId) => controller.getTranscript(sessionId),
-    get desktopTranscriptBaselines() {
-      return controller.desktopTranscriptBaselines;
-    },
-    get toolRowIndices() {
-      return controller.toolRowIndices;
-    },
-    get dirtyTranscriptRows() {
-      return controller.dirtyTranscriptRows;
-    },
+    get desktopTranscriptBaselines() { return controller.desktopTranscriptBaselines; },
+    get toolRowIndices() { return controller.toolRowIndices; },
+    get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
-    get transcriptEpoch() {
-      return controller.transcriptEpoch;
-    },
+    get transcriptEpoch() { return controller.transcriptEpoch; },
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get generation() {
-      return controller.generation;
-    },
+    get generation() { return controller.generation; },
     watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
     readTranscriptEnvelopes: (filePath, info) => controller.readTranscriptEnvelopes(filePath, info),
-    get compactionRecordWatermark() {
-      return controller.compactionRecordWatermark;
-    },
+    get compactionRecordWatermark() { return controller.compactionRecordWatermark; },
     reconciledAsyncJobIds: (sessionId, jobIds) => controller.reconciledAsyncJobIds(sessionId, jobIds),
-    get asyncJobReconciliations() {
-      return controller.asyncJobReconciliations;
-    },
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
-    get compactionRecordBaseline() {
-      return controller.compactionRecordBaseline;
-    },
-    get compactingSessions() {
-      return controller.compactingSessions;
-    },
-    get compactionStartedAt() {
-      return controller.compactionStartedAt;
-    },
-    get runtimeIdleSessions() {
-      return controller.runtimeIdleSessions;
-    },
-    get liveRunningDigests() {
-      return controller.liveRunningDigests;
-    },
-    get liveRunningSessions() {
-      return controller.liveRunningSessions;
-    },
-    get liveEvidenceAt() {
-      return controller.liveEvidenceAt;
-    },
-    get transcriptRunningSessions() {
-      return controller.transcriptRunningSessions;
-    },
-    get discoveredRunStates() {
-      return controller.discoveredRunStates;
-    },
+    get asyncJobReconciliations() { return controller.asyncJobReconciliations; },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
+    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
+    get compactingSessions() { return controller.compactingSessions; },
+    get compactionStartedAt() { return controller.compactionStartedAt; },
+    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
+    get liveRunningDigests() { return controller.liveRunningDigests; },
+    get liveRunningSessions() { return controller.liveRunningSessions; },
+    get liveEvidenceAt() { return controller.liveEvidenceAt; },
+    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
+    get discoveredRunStates() { return controller.discoveredRunStates; },
     patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
     recordPendingAsyncWork: (sessionId, jobIds) => controller.recordPendingAsyncWork(sessionId, jobIds),
     transcriptStartedNewWork: (sessionId, size, transcriptRunning) => controller.transcriptStartedNewWork(sessionId, size, transcriptRunning),
     updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
-    get sharedSessionFiles() {
-      return controller.sharedSessionFiles;
-    },
-    get sharedSessionWatchers() {
-      return controller.sharedSessionWatchers;
-    },
-    get disposed() {
-      return controller.disposed;
-    },
-    get sharedSessionRefreshTimers() {
-      return controller.sharedSessionRefreshTimers;
-    },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
+    get sharedSessionFiles() { return controller.sharedSessionFiles; },
+    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
+    get disposed() { return controller.disposed; },
+    get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
     publishTranscriptSync: (sessionId, previous, items) => controller.publishTranscriptSync(sessionId, previous, items),
     refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
     republishRunState: (sessionId) => controller.republishRunState(sessionId),
-    get toolSnapshots() {
-      return controller.toolSnapshots;
-    },
-    get imageDataUrls() {
-      return controller.imageDataUrls;
-    },
-    get sessionPlans() {
-      return controller.sessionPlans;
-    },
-    get sessionTodoSnapshots() {
-      return controller.sessionTodoSnapshots;
-    },
-    get activeAssistantMessages() {
-      return controller.activeAssistantMessages;
-    },
-    get activeThoughts() {
-      return controller.activeThoughts;
-    },
-    get sessionQuestions() {
-      return controller.sessionQuestions;
-    },
-    get watchedTranscripts() {
-      return controller.watchedTranscripts;
-    },
-    set watchedTranscripts(value) {
-      controller.watchedTranscripts = value;
-    },
-    get detachTimers() {
-      return controller.detachTimers;
-    },
-    get attachedSessions() {
-      return controller.attachedSessions;
-    },
+    get toolSnapshots() { return controller.toolSnapshots; },
+    get imageDataUrls() { return controller.imageDataUrls; },
+    get sessionPlans() { return controller.sessionPlans; },
+    get sessionTodoSnapshots() { return controller.sessionTodoSnapshots; },
+    get activeAssistantMessages() { return controller.activeAssistantMessages; },
+    get activeThoughts() { return controller.activeThoughts; },
+    get sessionQuestions() { return controller.sessionQuestions; },
+    get watchedTranscripts() { return controller.watchedTranscripts; },
+    set watchedTranscripts(value) { controller.watchedTranscripts = value; },
+    get detachTimers() { return controller.detachTimers; },
+    get attachedSessions() { return controller.attachedSessions; },
     scheduleDetach: (sessionId) => controller.scheduleDetach(sessionId),
   }))(this);
 
   private readonly controlHost: ControlHost = ((controller: GjcSdkController): ControlHost => ({
-    get sessions() {
-      return controller.sessions;
-    },
+    get sessions() { return controller.sessions; },
     persistedCompactionCount: (sessionId) => controller.persistedCompactionCount(sessionId),
-    get compactingSessions() {
-      return controller.compactingSessions;
-    },
-    get compactionStartedAt() {
-      return controller.compactionStartedAt;
-    },
-    get compactionRecordBaseline() {
-      return controller.compactionRecordBaseline;
-    },
+    get compactingSessions() { return controller.compactingSessions; },
+    get compactionStartedAt() { return controller.compactionStartedAt; },
+    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
     patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
     refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
-    get echoedPromptTexts() {
-      return controller.echoedPromptTexts;
-    },
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
+    get echoedPromptTexts() { return controller.echoedPromptTexts; },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     appendLocalUserMessage: (sessionId, text, input) => controller.appendLocalUserMessage(sessionId, text, input),
-    get pendingSteers() {
-      return controller.pendingSteers;
-    },
+    get pendingSteers() { return controller.pendingSteers; },
     ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-    get terminalOnlySessions() {
-      return controller.terminalOnlySessions;
-    },
+    get terminalOnlySessions() { return controller.terminalOnlySessions; },
     requireCli: () => controller.requireCli(),
     repoFor: (sessionId) => controller.repoFor(sessionId),
     markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get flushingSessions() {
-      return controller.flushingSessions;
-    },
+    get flushingSessions() { return controller.flushingSessions; },
     discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
     updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
     executeSdkSlashCommand: (sessionId, input, options) => controller.executeSdkSlashCommand(sessionId, input, options),
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
-    get generation() {
-      return controller.generation;
-    },
-    get activePromptAdmissions() {
-      return controller.activePromptAdmissions;
-    },
+    get activePromptSessions() { return controller.activePromptSessions; },
+    get generation() { return controller.generation; },
+    get activePromptAdmissions() { return controller.activePromptAdmissions; },
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
-    get activeAssistantMessages() {
-      return controller.activeAssistantMessages;
-    },
+    get activeAssistantMessages() { return controller.activeAssistantMessages; },
     finalizeThought: (sessionId) => controller.finalizeThought(sessionId),
     awaitPromptSettlement: (sessionId, operationRef, isCurrent) => controller.awaitPromptSettlement(sessionId, operationRef, isCurrent),
     finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
-    get nextLocalId() {
-      return controller.nextLocalId;
-    },
-    set nextLocalId(value) {
-      controller.nextLocalId = value;
-    },
+    get nextLocalId() { return controller.nextLocalId; },
+    set nextLocalId(value) { controller.nextLocalId = value; },
     appendTranscript: (item) => controller.appendTranscript(item),
     emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
-    get disposed() {
-      return controller.disposed;
-    },
+    get disposed() { return controller.disposed; },
     republishRunState: (sessionId) => controller.republishRunState(sessionId),
-    get cancellationWatermarks() {
-      return controller.cancellationWatermarks;
-    },
-    get cancellationPromises() {
-      return controller.cancellationPromises;
-    },
-    get cancellingSessions() {
-      return controller.cancellingSessions;
-    },
+    get cancellationWatermarks() { return controller.cancellationWatermarks; },
+    get cancellationPromises() { return controller.cancellationPromises; },
+    get cancellingSessions() { return controller.cancellingSessions; },
     fireAbort: (sessionId) => controller.fireAbort(sessionId),
     finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
-    get toolSnapshots() {
-      return controller.toolSnapshots;
-    },
+    get toolSnapshots() { return controller.toolSnapshots; },
     cancelOpenTools: (sessionId) => controller.cancelOpenTools(sessionId),
     settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
     cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
-    get liveRunningSessions() {
-      return controller.liveRunningSessions;
-    },
-    get liveRunningDigests() {
-      return controller.liveRunningDigests;
-    },
-    get liveEvidenceAt() {
-      return controller.liveEvidenceAt;
-    },
-    get transcriptRunningSessions() {
-      return controller.transcriptRunningSessions;
-    },
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
-    get runtimeIdleSessions() {
-      return controller.runtimeIdleSessions;
-    },
-    get pendingAsyncWorkSessions() {
-      return controller.pendingAsyncWorkSessions;
-    },
-    get discoveredRunStates() {
-      return controller.discoveredRunStates;
-    },
-    get transcripts() {
-      return controller.transcripts;
-    },
+    get liveRunningSessions() { return controller.liveRunningSessions; },
+    get liveRunningDigests() { return controller.liveRunningDigests; },
+    get liveEvidenceAt() { return controller.liveEvidenceAt; },
+    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
+    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
+    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
+    get discoveredRunStates() { return controller.discoveredRunStates; },
+    get transcripts() { return controller.transcripts; },
   }))(this);
 
   private readonly streamHost: StreamHost = ((controller: GjcSdkController): StreamHost => ({
-    get disposed() {
-      return controller.disposed;
-    },
-    get tailReads() {
-      return controller.tailReads;
-    },
-    get attachedSessions() {
-      return controller.attachedSessions;
-    },
-    get tailControllers() {
-      return controller.tailControllers;
-    },
+    get disposed() { return controller.disposed; },
+    get tailReads() { return controller.tailReads; },
+    get attachedSessions() { return controller.attachedSessions; },
+    get tailControllers() { return controller.tailControllers; },
     clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
-    get toolObservers() {
-      return controller.toolObservers;
-    },
-    get toolSnapshots() {
-      return controller.toolSnapshots;
-    },
-    get tailCheckpoints() {
-      return controller.tailCheckpoints;
-    },
-    get tailEventPositions() {
-      return controller.tailEventPositions;
-    },
+    get toolObservers() { return controller.toolObservers; },
+    get toolSnapshots() { return controller.toolSnapshots; },
+    get tailCheckpoints() { return controller.tailCheckpoints; },
+    get tailEventPositions() { return controller.tailEventPositions; },
     refreshWorkflowQuestions: (sessionId) => controller.refreshWorkflowQuestions(sessionId),
     requireCli: () => controller.requireCli(),
     projectToolStream: (sessionId, kind, payload) => controller.projectToolStream(sessionId, kind, payload),
@@ -1642,13 +1076,9 @@ export class GjcSdkController {
     projectMessageChunk: (sessionId, role, update) => controller.projectMessageChunk(sessionId, role, update),
     finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
     refreshTranscriptFromFile: (sessionId) => controller.refreshTranscriptFromFile(sessionId),
-    get transcripts() {
-      return controller.transcripts;
-    },
+    get transcripts() { return controller.transcripts; },
     noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
-    get emitEvent() {
-      return controller.emitEvent;
-    },
+    get emitEvent() { return controller.emitEvent; },
     appendTranscript: (item) => controller.appendTranscript(item),
     projectWorkflowGate: (sessionId, payload) => controller.projectWorkflowGate(sessionId, payload),
     requestProgressRefresh: (sessionId) => controller.requestProgressRefresh(sessionId),
@@ -1656,98 +1086,48 @@ export class GjcSdkController {
     settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
     handleSessionUpdate: (notification) => controller.handleSessionUpdate(notification),
     updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
-    get generation() {
-      return controller.generation;
-    },
+    get generation() { return controller.generation; },
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
     discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
     refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
     captureSessionState: (sessionId, options, mode) => controller.captureSessionState(sessionId, options, mode),
-    get sessionConfig() {
-      return controller.sessionConfig;
-    },
-    get modelProfiles() {
-      return controller.modelProfiles;
-    },
+    get sessionConfig() { return controller.sessionConfig; },
+    get modelProfiles() { return controller.modelProfiles; },
     refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
     refreshModelCapabilities: (sessionId) => controller.refreshModelCapabilities(sessionId),
     patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
-    get contextUsageObservedAt() {
-      return controller.contextUsageObservedAt;
-    },
-    get activeThoughts() {
-      return controller.activeThoughts;
-    },
-    get nextLocalId() {
-      return controller.nextLocalId;
-    },
-    set nextLocalId(value) {
-      controller.nextLocalId = value;
-    },
-    get sessionPlans() {
-      return controller.sessionPlans;
-    },
+    get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
+    get activeThoughts() { return controller.activeThoughts; },
+    get nextLocalId() { return controller.nextLocalId; },
+    set nextLocalId(value) { controller.nextLocalId = value; },
+    get sessionPlans() { return controller.sessionPlans; },
     markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
-    get toolRowIndices() {
-      return controller.toolRowIndices;
-    },
-    get locallyAbortedSessions() {
-      return controller.locallyAbortedSessions;
-    },
+    get toolRowIndices() { return controller.toolRowIndices; },
+    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     persistArtifact: (sessionId, artifactId, value) => controller.persistArtifact(sessionId, artifactId, value),
     readTodoRecords: (sessionId) => controller.readTodoRecords(sessionId),
     resolveToolImages: (items) => controller.resolveToolImages(items),
     emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
-    get pendingPermissions() {
-      return controller.pendingPermissions;
-    },
-    get sessions() {
-      return controller.sessions;
-    },
-    get sessionMetadata() {
-      return controller.sessionMetadata;
-    },
-    get compactionRecordWatermark() {
-      return controller.compactionRecordWatermark;
-    },
-    get compactingSessions() {
-      return controller.compactingSessions;
-    },
-    get compactionStartedAt() {
-      return controller.compactionStartedAt;
-    },
-    get compactionRecordBaseline() {
-      return controller.compactionRecordBaseline;
-    },
-    get cancellationWatermarks() {
-      return controller.cancellationWatermarks;
-    },
+    get pendingPermissions() { return controller.pendingPermissions; },
+    get sessions() { return controller.sessions; },
+    get sessionMetadata() { return controller.sessionMetadata; },
+    get compactionRecordWatermark() { return controller.compactionRecordWatermark; },
+    get compactingSessions() { return controller.compactingSessions; },
+    get compactionStartedAt() { return controller.compactionStartedAt; },
+    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
+    get cancellationWatermarks() { return controller.cancellationWatermarks; },
     recordLiveEvidence: (sessionId) => controller.recordLiveEvidence(sessionId),
     advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    get workingPhaseSessions() {
-      return controller.workingPhaseSessions;
-    },
-    get runtimeIdleSessions() {
-      return controller.runtimeIdleSessions;
-    },
+    get workingPhaseSessions() { return controller.workingPhaseSessions; },
+    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
     readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
-    get liveRunningSessions() {
-      return controller.liveRunningSessions;
-    },
+    get liveRunningSessions() { return controller.liveRunningSessions; },
     rememberLiveRunningTranscriptSize: (sessionId) => controller.rememberLiveRunningTranscriptSize(sessionId),
-    get activePromptSessions() {
-      return controller.activePromptSessions;
-    },
-    get transcriptRunningSessions() {
-      return controller.transcriptRunningSessions;
-    },
-    get pendingAsyncWorkSessions() {
-      return controller.pendingAsyncWorkSessions;
-    },
+    get activePromptSessions() { return controller.activePromptSessions; },
+    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
+    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
     clearRunningLatches: (sessionId) => controller.clearRunningLatches(sessionId),
-    get cancellingSessions() {
-      return controller.cancellingSessions;
-    },
+    get cancellingSessions() { return controller.cancellingSessions; },
   }))(this);
 
   constructor(options: GjcControllerOptions) {
