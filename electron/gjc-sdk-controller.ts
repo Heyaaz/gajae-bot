@@ -61,13 +61,6 @@ import {
   selectTranscriptPage,
   transcriptSyncWindow,
 } from "../shared/transcript-page.js";
-import {
-  buildGateAnswer,
-  gateAnswerRejection,
-  questionAnswerSummary,
-  questionFromGateRecord,
-  workflowGateRecord,
-} from "../shared/workflow-question.js";
 import { parseSessionProgress } from "../shared/session-progress.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { ImageDataUrlCache } from "./image-data-cache.js";
@@ -212,7 +205,6 @@ import {
   toolResultText,
   toolStatus,
   transcriptHeadLines,
-  transcriptTime,
   uncertainAfterSendError,
   uncertainLifecycleOutcomeError,
 } from "./gjc-sdk-foundation.js";
@@ -223,6 +215,16 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  hasAnswerableQuestion,
+  projectWorkflowGate,
+  questionById,
+  type QuestionHost,
+  questionKey,
+  refreshWorkflowQuestions,
+  settleOpenQuestions,
+  submitQuestionAnswer,
+} from "./gjc-sdk-questions.js";
 import { executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import {
   commitChanges,
@@ -686,6 +688,45 @@ export class GjcSdkController {
   private readonly toolObservers = new Map<string, AbortController>();
   /** The latest streamed tool rows, kept over a stale durable read. */
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
+
+  private readonly questionHost: QuestionHost = ((controller: GjcSdkController): QuestionHost => ({
+    get sessionQuestions() {
+      return controller.sessionQuestions;
+    },
+    get questionRefreshes() {
+      return controller.questionRefreshes;
+    },
+    get disposed() {
+      return controller.disposed;
+    },
+    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    get observedQuestions() {
+      return controller.observedQuestions;
+    },
+    get acceptedQuestions() {
+      return controller.acceptedQuestions;
+    },
+    get transcripts() {
+      return controller.transcripts;
+    },
+    get locallyAbortedSessions() {
+      return controller.locallyAbortedSessions;
+    },
+    noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+    markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
+    emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
+    get sessions() {
+      return controller.sessions;
+    },
+    get cancellingSessions() {
+      return controller.cancellingSessions;
+    },
+    updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
+    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
+  }))(this);
 
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
@@ -6099,358 +6140,45 @@ export class GjcSdkController {
   }
 
   private questionKey(sessionId: string, gateId: string): string {
-    return `${sessionId}\0${gateId}`;
+    return questionKey(sessionId, gateId);
   }
 
   private questionById(
     sessionId: string,
     gateId: string,
   ): QuestionActivity | undefined {
-    return this.sessionQuestions.get(sessionId)?.get(gateId);
+    return questionById(this.questionHost, sessionId, gateId);
   }
 
   private hasAnswerableQuestion(sessionId: string): boolean {
-    for (const question of this.sessionQuestions.get(sessionId)?.values() ?? []) {
-      if (
-        question.answerable &&
-        (question.status === "pending" || question.status === "rejected")
-      )
-        return true;
-    }
-    return false;
+    return hasAnswerableQuestion(this.questionHost, sessionId);
   }
 
-  /**
-   * Re-reads `workflow.gates.list` and projects question rows.
-   *
-   * Overlapping reads share one request. A failure leaves the cards already
-   * on screen; the next event or attach tries again.
-   */
   private refreshWorkflowQuestions(sessionId: string): Promise<void> {
-    const inflight = this.questionRefreshes.get(sessionId);
-    if (inflight) return inflight;
-    const run = this.loadWorkflowQuestions(sessionId).finally(() => {
-      if (this.questionRefreshes.get(sessionId) === run)
-        this.questionRefreshes.delete(sessionId);
-    });
-    this.questionRefreshes.set(sessionId, run);
-    return run;
-  }
-
-  private async loadWorkflowQuestions(sessionId: string): Promise<void> {
-    if (this.disposed) return;
-    let rows: unknown[] = [];
-    try {
-      rows = await this.querySessionItems(
-        sessionId,
-        "workflow.gates.list",
-        {},
-        { strict: true },
-      );
-    } catch {
-      return;
-    }
-    if (this.disposed) return;
-    const incoming = rows.flatMap((row) => {
-      const question = questionFromGateRecord(sessionId, row);
-      return question ? [this.withQuestionClock(question)] : [];
-    });
-    this.applyQuestionSnapshot(sessionId, incoming);
-  }
-
-  private withQuestionClock(question: QuestionActivity): QuestionActivity {
-    return {
-      ...question,
-      createdAt: question.createdAt
-        ? transcriptTime(question.createdAt)
-        : nowLabel(),
-    };
-  }
-
-  private applyQuestionSnapshot(
-    sessionId: string,
-    incoming: readonly QuestionActivity[],
-  ): void {
-    const seen = new Set<string>();
-    for (const row of incoming) {
-      seen.add(row.id);
-      const key = this.questionKey(sessionId, row.id);
-      this.observedQuestions.delete(key);
-      const previous = this.questionById(sessionId, row.id);
-      let next: QuestionActivity = previous
-        ? {
-            ...row,
-            createdAt: previous.createdAt,
-            ...(previous.answerSummary
-              ? { answerSummary: previous.answerSummary }
-              : {}),
-          }
-        : row;
-      if (
-        previous?.status === "rejected" &&
-        row.tag === "pending" &&
-        row.answerable
-      ) {
-        next = {
-          ...next,
-          status: "rejected",
-          answerable: true,
-          ...(previous.error ? { error: previous.error } : {}),
-        };
-      }
-      if (this.acceptedQuestions.has(key) && row.tag === "pending") {
-        next = {
-          ...next,
-          status: "answered",
-          answerable: false,
-          error: undefined,
-          ...(previous?.answerSummary
-            ? { answerSummary: previous.answerSummary }
-            : {}),
-        };
-      }
-      if (row.tag !== "pending") this.acceptedQuestions.delete(key);
-      this.writeQuestion(next, {
-        announce:
-          !previous && next.answerable && next.status === "pending",
-      });
-    }
-    for (const previous of this.sessionQuestions.get(sessionId)?.values() ?? []) {
-      if (seen.has(previous.id)) continue;
-      if (
-        !previous.answerable &&
-        previous.status !== "pending" &&
-        previous.status !== "rejected"
-      )
-        continue;
-      const key = this.questionKey(sessionId, previous.id);
-      if (this.observedQuestions.has(key)) {
-        this.observedQuestions.delete(key);
-        continue;
-      }
-      const status = this.questionAbsenceStatus(sessionId);
-      this.writeQuestion({
-        ...previous,
-        status,
-        answerable: false,
-        error: undefined,
-      });
-    }
-    this.syncQuestionWait(sessionId);
-  }
-
-  private questionAbsenceStatus(
-    sessionId: string,
-  ): "answered" | "cancelled" | "timeout" {
-    const items = this.transcripts.get(sessionId) ?? [];
-    const askFailed = items.some(
-      (item) =>
-        item.kind === "tool" &&
-        item.name.toLowerCase() === "ask" &&
-        item.status === "failed" &&
-        (item.output ?? "").includes("gjc.ask.timeout"),
-    );
-    if (askFailed) return "timeout";
-    const askAborted =
-      this.locallyAbortedSessions.has(sessionId) ||
-      items.some(
-        (item) =>
-          item.kind === "tool" &&
-          item.name.toLowerCase() === "ask" &&
-          (item.status === "cancelled" ||
-            (item.output ?? "").includes("ToolAbortError")),
-      );
-    if (askAborted) return "cancelled";
-    return "answered";
-  }
-
-  private writeQuestion(
-    question: QuestionActivity,
-    options?: { announce?: boolean },
-  ): void {
-    const stored: QuestionActivity = {
-      ...question,
-      options: question.options.map((option) => ({ ...option })),
-    };
-    const items = this.transcripts.get(question.sessionId) ?? [];
-    const index = items.findIndex(
-      (item) => item.kind === "question" && item.id === question.id,
-    );
-    if (index < 0) {
-      items.push(stored);
-      this.transcripts.set(question.sessionId, items);
-      this.noteTranscriptEpoch(question.sessionId);
-      this.emitEvent({
-        type: "transcript.appended",
-        item: cloneTranscriptItem(stored),
-      });
-    } else if (!sameTranscriptItem(items[index]!, stored)) {
-      items[index] = stored;
-      this.noteTranscriptEpoch(question.sessionId);
-      this.emitEvent({
-        type: "question.updated",
-        question: cloneTranscriptItem(stored) as QuestionActivity,
-      });
-    } else {
-      items[index] = stored;
-    }
-    let known = this.sessionQuestions.get(question.sessionId);
-    if (!known) {
-      known = new Map();
-      this.sessionQuestions.set(question.sessionId, known);
-    }
-    known.set(question.id, stored);
-    this.markTranscriptRowDirty(question.sessionId, question.id);
-    if (options?.announce) {
-      this.emitActivity(question.sessionId, "permission");
-      this.syncQuestionWait(question.sessionId);
-    }
-  }
-
-  private syncQuestionWait(sessionId: string): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || this.cancellingSessions.has(sessionId)) return;
-    const waiting = this.hasAnswerableQuestion(sessionId);
-    if (waiting && session.status !== "waiting" && session.status !== "failed")
-      this.updateSessionStatus(sessionId, "waiting");
-    else if (!waiting && session.status === "waiting")
-      this.updateSessionStatus(sessionId, "running");
+    return refreshWorkflowQuestions(this.questionHost, sessionId);
   }
 
   private settleOpenQuestions(
     sessionId: string,
     status: "cancelled" | "timeout",
   ): void {
-    for (const question of [
-      ...(this.sessionQuestions.get(sessionId)?.values() ?? []),
-    ]) {
-      if (
-        !question.answerable ||
-        (question.status !== "pending" && question.status !== "rejected")
-      )
-        continue;
-      this.acceptedQuestions.delete(this.questionKey(sessionId, question.id));
-      this.writeQuestion({
-        ...question,
-        status,
-        answerable: false,
-        error: undefined,
-      });
-    }
-    this.syncQuestionWait(sessionId);
+    return settleOpenQuestions(this.questionHost, sessionId, status);
   }
 
   private projectWorkflowGate(
     sessionId: string,
     payload: Record<string, unknown>,
   ): void {
-    const record = workflowGateRecord(payload);
-    const question = record
-      ? questionFromGateRecord(sessionId, record)
-      : undefined;
-    if (question) {
-      this.observedQuestions.add(this.questionKey(sessionId, question.id));
-      const previous = this.questionById(sessionId, question.id);
-      const formatted = this.withQuestionClock(question);
-      this.writeQuestion(
-        previous
-          ? {
-              ...formatted,
-              createdAt: previous.createdAt,
-              ...(previous.answerSummary
-                ? { answerSummary: previous.answerSummary }
-                : {}),
-              ...(previous.status === "rejected"
-                ? { status: "rejected" as const, error: previous.error }
-                : {}),
-            }
-          : formatted,
-        {
-          announce:
-            !previous && formatted.answerable && formatted.status === "pending",
-        },
-      );
-    }
-    void this.refreshWorkflowQuestions(sessionId);
+    return projectWorkflowGate(this.questionHost, sessionId, payload);
   }
 
-  private async submitQuestionAnswer(
+  private submitQuestionAnswer(
     sessionId: string,
     gateId: string,
     submission: QuestionSubmission,
     idempotencyKey: string,
   ): Promise<void> {
-    const question = this.questionById(sessionId, gateId);
-    if (!question) throw new Error("질문을 찾지 못했습니다.");
-    if (
-      !question.answerable ||
-      (question.status !== "pending" && question.status !== "rejected")
-    )
-      return;
-    let response: Record<string, unknown>;
-    try {
-      response = buildGateAnswer(submission, question);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.writeQuestion({
-        ...question,
-        status: "rejected",
-        answerable: true,
-        error: message,
-      });
-      this.syncQuestionWait(sessionId);
-      return;
-    }
-    try {
-      const result = await this.controlSession(
-        sessionId,
-        "workflow.gate_answer",
-        {
-          id: gateId,
-          response,
-          expectedSessionId: question.expectedSessionId || sessionId,
-        },
-        { idempotencyKey },
-      );
-      const rejection = gateAnswerRejection(result);
-      if (rejection) {
-        this.writeQuestion({
-          ...question,
-          status: "rejected",
-          answerable: true,
-          error: rejection,
-        });
-        this.syncQuestionWait(sessionId);
-        return;
-      }
-      this.acceptedQuestions.add(this.questionKey(sessionId, gateId));
-      this.writeQuestion({
-        ...question,
-        status: "answered",
-        answerable: false,
-        error: undefined,
-        answerSummary: questionAnswerSummary(submission),
-      });
-      this.syncQuestionWait(sessionId);
-      void this.refreshWorkflowQuestions(sessionId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        /no longer answerable|resource_gone|does not match this endpoint|Workflow gates are unavailable/iu.test(
-          message,
-        )
-      ) {
-        await this.refreshWorkflowQuestions(sessionId);
-        return;
-      }
-      this.writeQuestion({
-        ...question,
-        status: "rejected",
-        answerable: true,
-        error: message,
-      });
-      this.syncQuestionWait(sessionId);
-    }
+    return submitQuestionAnswer(this.questionHost, sessionId, gateId, submission, idempotencyKey);
   }
 
   private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
