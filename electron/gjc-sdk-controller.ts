@@ -91,13 +91,11 @@ import {
   LIFECYCLE_RECOVERY_ATTEMPTS,
   LIFECYCLE_RECOVERY_CLOCK_SLACK_MS,
   LIFECYCLE_RECOVERY_INTERVAL_MS,
-  LIVE_EVIDENCE_GRACE_MS,
   LIVE_MESSAGE_PREFIXES,
   LIVE_THOUGHT_PREFIX,
   LIVE_TOOL_STATUSES,
   OWNED_STOP_UNAVAILABLE_MESSAGE,
   OwnedStopUnavailableError,
-  PENDING_ASYNC_RECONCILE_INTERVAL_MS,
   PendingPermission,
   PersistedTurnState,
   PlanEntry,
@@ -163,7 +161,6 @@ import {
   persistedTranscriptRunning,
   persistedTurnState,
   precedingSharedRow,
-  readTranscriptTail,
   readableModelLabel,
   readableSessionTitle,
   receiptSubagentStatus,
@@ -195,6 +192,19 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  clearRunningLatches,
+  discoveredRunState,
+  liveEvidenceQuiet,
+  reconciledAsyncJobIds,
+  recordLiveEvidence,
+  recordPendingAsyncWork,
+  republishRunState,
+  type RunStateHost,
+  settleQuietRunningRow,
+  syncRunStateWatchers,
+  transcriptStartedNewWork,
+} from "./gjc-sdk-run-state.js";
 import {
   type FilesHost,
   locateSharedTranscriptFile,
@@ -878,6 +888,85 @@ export class GjcSdkController {
     },
   }))(this);
 
+  private readonly runStateHost: RunStateHost = ((controller: GjcSdkController): RunStateHost => ({
+    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
+    get discoveredRunStates() {
+      return controller.discoveredRunStates;
+    },
+    get pendingAsyncWorkSessions() {
+      return controller.pendingAsyncWorkSessions;
+    },
+    get asyncJobReconciliations() {
+      return controller.asyncJobReconciliations;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    get liveRunningSessions() {
+      return controller.liveRunningSessions;
+    },
+    get transcriptRunningSessions() {
+      return controller.transcriptRunningSessions;
+    },
+    get locallyAbortedSessions() {
+      return controller.locallyAbortedSessions;
+    },
+    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
+    get idleTranscriptBaselines() {
+      return controller.idleTranscriptBaselines;
+    },
+    get workingPhaseSessions() {
+      return controller.workingPhaseSessions;
+    },
+    get runtimeIdleSessions() {
+      return controller.runtimeIdleSessions;
+    },
+    get liveEvidenceAt() {
+      return controller.liveEvidenceAt;
+    },
+    get liveRunningDigests() {
+      return controller.liveRunningDigests;
+    },
+    get compactingSessions() {
+      return controller.compactingSessions;
+    },
+    get compactionRecordBaseline() {
+      return controller.compactionRecordBaseline;
+    },
+    get compactionStartedAt() {
+      return controller.compactionStartedAt;
+    },
+    get activePromptSessions() {
+      return controller.activePromptSessions;
+    },
+    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    get disposed() {
+      return controller.disposed;
+    },
+    get runStateWatchers() {
+      return controller.runStateWatchers;
+    },
+    get runStateTimers() {
+      return controller.runStateTimers;
+    },
+    get sharedSessionWatchers() {
+      return controller.sharedSessionWatchers;
+    },
+    get generation() {
+      return controller.generation;
+    },
+    get lastDiscovered() {
+      return controller.lastDiscovered;
+    },
+    set lastDiscovered(value) {
+      controller.lastDiscovered = value;
+    },
+  }))(this);
+
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
     this.configuredExecutable = options.executable;
@@ -1396,122 +1485,12 @@ export class GjcSdkController {
   private readonly runStateWatchers = new Map<string, FSWatcher>();
   private readonly runStateTimers = new Map<string, NodeJS.Timeout>();
 
-  /**
-   * Keeps a run-state watcher for exactly the sessions handed in.
-   *
-   * A watcher is cheap next to a poll -- it reads only when the file changes -- but it
-   * is still one file descriptor per session, so the set is bounded to the live rows
-   * and pruned as soon as a session leaves them.
-   */
-  private async syncRunStateWatchers(sessionIds: readonly string[]): Promise<void> {
-    if (this.disposed) return;
-    const wanted = new Set(sessionIds);
-    for (const [sessionId, watcher] of this.runStateWatchers) {
-      if (wanted.has(sessionId)) continue;
-      watcher.close();
-      this.runStateWatchers.delete(sessionId);
-      const timer = this.runStateTimers.get(sessionId);
-      if (timer) clearTimeout(timer);
-      this.runStateTimers.delete(sessionId);
-    }
-    for (const sessionId of wanted) {
-      if (this.runStateWatchers.has(sessionId)) continue;
-      // An already-open transcript has its own watcher doing strictly more work, so a
-      // second one here would read the same file twice for the same change.
-      if (this.sharedSessionWatchers.has(sessionId)) continue;
-      // The first scan may have had no transcript yet. Retry resolution on every
-      // reconciliation so an unchanged discovery fingerprint does not strand a
-      // live session without a watcher.
-      const filePath = await this.locateSharedTranscriptFile(sessionId);
-      if (!filePath) continue;
-      try {
-        const fileName = path.basename(filePath);
-        const watcher = watch(
-          path.dirname(filePath),
-          { persistent: false },
-          (_event, changedFile) => {
-            if (changedFile && changedFile.toString() !== fileName) return;
-            const previous = this.runStateTimers.get(sessionId);
-            if (previous) clearTimeout(previous);
-            this.runStateTimers.set(
-              sessionId,
-              setTimeout(() => {
-                this.runStateTimers.delete(sessionId);
-                void this.republishRunState(sessionId);
-              }, 150),
-            );
-          },
-        );
-        watcher.on("error", () => {
-          watcher.close();
-          this.runStateWatchers.delete(sessionId);
-        });
-        this.runStateWatchers.set(sessionId, watcher);
-      } catch {
-        // Polling still covers the row when the filesystem cannot be watched.
-      }
-    }
+  private syncRunStateWatchers(sessionIds: readonly string[]): Promise<void> {
+    return syncRunStateWatchers(this.runStateHost, sessionIds);
   }
 
-  /** Re-reads one session's run state and publishes the row if it moved. */
-  private async republishRunState(sessionId: string): Promise<void> {
-    if (this.disposed) return;
-    if (this.activePromptSessions.has(sessionId)) return;
-    const generation = this.generation;
-    const revision = this.currentRunRevision(sessionId);
-    // A session enters liveRunningSessions on gjcRunning:true and only leaves it on a
-    // matching gjcRunning:false. A terminal-owned session never sends that close, and
-    // a completion report is lost outright across a disconnect, so excluding the whole
-    // set here stopped run-state reads for the rest of the process and pinned the row
-    // to whatever it was left with.
-    //
-    // The transcript is still older than the live signal for the gap between a turn
-    // starting and its first row reaching disk, so it only overrules that signal once
-    // the file has grown past the size recorded when the work was reported -- the same
-    // rule readSharedTranscript uses. Without a baseline the transcript wins, matching
-    // rememberLiveRunningTranscriptSize's own fallback.
-    if (this.liveRunningSessions.has(sessionId)) {
-      const seenSize = this.liveRunningDigests.get(sessionId);
-      if (seenSize !== undefined) {
-        const filePath = await this.locateSharedTranscriptFile(sessionId);
-        if (!filePath) return;
-        try {
-          if (
-            (await stat(filePath)).size === seenSize &&
-            !this.pendingAsyncWorkSessions.has(sessionId)
-          )
-            return;
-        } catch {
-          return;
-        }
-      }
-    }
-    const status = await this.discoveredRunState(sessionId);
-    if (
-      generation !== this.generation ||
-      revision !== this.currentRunRevision(sessionId)
-    )
-      return;
-    if (!status) return;
-    if (status === "idle") {
-      this.liveRunningSessions.delete(sessionId);
-      this.liveRunningDigests.delete(sessionId);
-      this.liveEvidenceAt.delete(sessionId);
-      this.transcriptRunningSessions.delete(sessionId);
-      this.workingPhaseSessions.delete(sessionId);
-      this.runtimeIdleSessions.delete(sessionId);
-    }
-    const session = this.sessions.get(sessionId);
-    if (!session || session.status === status) return;
-    if (session.status === "failed" || session.status === "starting") return;
-    this.advanceRunRevision(sessionId);
-    session.status = status;
-    this.lastDiscovered = this.lastDiscovered.map((row) =>
-      row.id === sessionId
-        ? { ...row, status, runRevision: session.runRevision }
-        : row,
-    );
-    this.emitEvent({ type: "session.updated", session: { ...session } });
+  private republishRunState(sessionId: string): Promise<void> {
+    return republishRunState(this.runStateHost, sessionId);
   }
 
   /**
@@ -1564,401 +1543,52 @@ export class GjcSdkController {
     }
   }
 
-  /**
-   * Run state for a session discovery is listing, read from its transcript.
-   *
-   * Discovery covers every session the broker knows, so this must not turn a list
-   * refresh into hundreds of full file reads. Only the tail of the file is parsed,
-   * and the result is cached against the file's size so an unchanged transcript is
-   * answered without touching the disk again.
-   */
-  private async discoveredRunState(
+  private discoveredRunState(
     sessionId: string,
   ): Promise<AgentSession["status"] | undefined> {
-    try {
-      const filePath = await this.locateSharedTranscriptFile(sessionId);
-      if (!filePath) return undefined;
-      const info = await stat(filePath);
-      if (!info.isFile() || info.size > 64 * 1024 * 1024) return undefined;
-      const cached = this.discoveredRunStates.get(sessionId);
-      if (cached && cached.size === info.size) {
-        const markers = cached.runningJobIds ?? [];
-        const latched = this.pendingAsyncWorkSessions.get(sessionId) ?? [];
-        if (markers.length === 0 && latched.length === 0)
-          return this.effectiveTranscriptRunState(sessionId, cached.status);
-        // The transcript cannot move while its size is unchanged, so the only part
-        // of this verdict that still can is the detached work it rested on: a job
-        // paused or cancelled from outside writes no release row, and nothing else
-        // in the read path asks the runtime about it again. A latch is asked about
-        // here too: it outlives the cached verdict, and a verdict taken from a tail
-        // window can carry no marker at all while a full-history read left one.
-        const surviving = await this.reconcilePendingAsyncWork(
-          sessionId,
-          markers,
-          latched,
-        );
-        // A verdict this size rests entirely on markers reads idle once they are
-        // gone. One that rested on the rows themselves keeps what they said. A
-        // confirmed surviving latch holds it running; an unanswered lookup does not
-        // replace that row-derived running verdict.
-        const querySucceeded =
-          this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true;
-        // No stored markers means the cached verdict came from the rows themselves.
-        // A failed lookup of an inherited latch must not hide that foreground work.
-        const rowsRunning = markers.length === 0 && cached.status === "running";
-        const status = rowsRunning
-          ? ("running" as const)
-          : surviving.length > 0
-            ? querySucceeded
-              ? ("running" as const)
-              : ("unknown" as const)
-            : markers.length > 0
-              ? ("idle" as const)
-              : cached.status === "unknown"
-                ? "idle"
-                : cached.status;
-        this.discoveredRunStates.set(sessionId, {
-          size: info.size,
-          status,
-          // Keep a row-derived running verdict distinguishable from one that rests
-          // on markers. Storing the latch here would let the next failed lookup
-          // replace foreground work with `unknown`.
-          ...(rowsRunning || surviving.length === 0
-            ? {}
-            : { runningJobIds: surviving }),
-        });
-        return this.effectiveTranscriptRunState(sessionId, status);
-      }
-      // Never parse whole transcripts here. Measured across 399 local sessions
-      // (640MB), a full parse of each costs ~23s, which would stall every list
-      // refresh. Run state only depends on how the newest rows end, so a bounded
-      // tail is read instead.
-      // Expanding is only needed for a running -> idle decision whose user boundary
-      // fell outside the first window. Ordinary discovery stays at 256KB, preserving
-      // the measured ~30ms all-session scan instead of regressing toward full parses.
-      const envelopes = await readTranscriptTail(
-        filePath,
-        info.size,
-        this.sessions.get(sessionId)?.status === "running" ||
-          this.liveRunningSessions.has(sessionId),
-      );
-      if (!envelopes) return undefined;
-      const turn = persistedTurnState(envelopes);
-      const latched = this.pendingAsyncWorkSessions.get(sessionId) ?? [];
-      let runningJobIds: string[] | undefined;
-      let running = turn.running;
-      if (turn.pendingAsyncWorkOnly) {
-        // The one verdict a transcript cannot settle alone. A detached task that is
-        // paused, cancelled, or lost with its process writes no release row, so its
-        // launch marker stays in the file long after the work ended. The runtime's
-        // own job list decides -- and it is asked only when nothing else in the
-        // transcript keeps the session running.
-        runningJobIds = await this.reconcilePendingAsyncWork(
-          sessionId,
-          turn.pendingAsyncJobIds,
-          latched,
-        );
-        running = this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true &&
-          runningJobIds.length > 0;
-      } else if (!running && latched.length > 0) {
-        // This window names no launch marker and the rows read settled, but an
-        // earlier full-history read left detached work latched whose launch rows sit
-        // behind every window this read parses. Nothing here can retire those, and a
-        // window that cannot see a marker is not evidence the work ended: a real
-        // detached job outlives the turn that launched it. So the latch's markers go
-        // to the runtime, which is the only authority on whether the job is still
-        // alive, and an unanswered query keeps them. Leaving them unasked is what
-        // held a finished task-heavy session at 작업 중 -- every read computed idle
-        // and the stale latch turned it back into running.
-        const surviving = await this.reconcilePendingAsyncWork(
-          sessionId,
-          [],
-          latched,
-        );
-        running = this.asyncJobReconciliations.get(sessionId)?.querySucceeded === true &&
-          surviving.length > 0;
-        // Only a surviving latch is recorded: nothing in these rows rests on the
-        // markers, so an idle verdict here is the window's own account.
-        if (running) runningJobIds = surviving;
-      }
-      const uncertainPendingJobs =
-        !running &&
-        (this.pendingAsyncWorkSessions.get(sessionId)?.length ?? 0) > 0 &&
-        this.asyncJobReconciliations.get(sessionId)?.querySucceeded === false;
-      const status = running
-        ? ("running" as const)
-        : uncertainPendingJobs
-          ? ("unknown" as const)
-          : ("idle" as const);
-      if (status === "running") this.transcriptRunningSessions.add(sessionId);
-      else this.transcriptRunningSessions.delete(sessionId);
-      this.discoveredRunStates.set(sessionId, {
-        size: info.size,
-        status,
-        ...(runningJobIds ? { runningJobIds } : {}),
-      });
-      return this.effectiveTranscriptRunState(sessionId, status);
-    } catch {
-      return undefined;
-    }
+    return discoveredRunState(this.runStateHost, sessionId);
   }
 
-  /**
-   * Whether an idle row's transcript has started work since the row settled.
-   *
-   * A settled row is lifted only by rows written after it settled. A transcript that
-   * merely still reads running -- a turn that died mid-tool without a stop row -- is
-   * the same snapshot the idle verdict already overruled, so the size at that verdict
-   * is the baseline, and it is taken per run revision: any later status change
-   * starts a new baseline instead of comparing against an older settle.
-   */
   private transcriptStartedNewWork(
     sessionId: string,
     size: number,
     transcriptRunning: boolean,
   ): boolean {
-    if (this.sessions.get(sessionId)?.status !== "idle") return false;
-    if (this.locallyAbortedSessions.has(sessionId)) return false;
-    const revision = this.currentRunRevision(sessionId);
-    const baseline = this.idleTranscriptBaselines.get(sessionId);
-    if (!baseline || baseline.revision !== revision) {
-      this.idleTranscriptBaselines.set(sessionId, { revision, size });
-      return false;
-    }
-    return transcriptRunning && size > baseline.size;
+    return transcriptStartedNewWork(this.runStateHost, sessionId, size, transcriptRunning);
   }
 
-  private effectiveTranscriptRunState(
-    sessionId: string,
-    status: AgentSession["status"],
-  ): AgentSession["status"] {
-    if (
-      (status === "idle" || status === "unknown") &&
-      ((this.workingPhaseSessions.has(sessionId) &&
-        !this.runtimeIdleSessions.has(sessionId) &&
-        // A phase report ages like every other live signal. A 'working' phase with
-        // no report after it held a settled row running for the life of the process,
-        // and nothing else re-derives a verdict for a session a latch still names.
-        !this.liveEvidenceQuiet(sessionId)))
-    )
-      return "running";
-    if (
-      status === "idle" &&
-      this.pendingAsyncWorkSessions.has(sessionId)
-    ) {
-      return this.asyncJobReconciliations.get(sessionId)?.querySucceeded === false
-        ? "unknown"
-        : "running";
-    }
-    return status;
-  }
-
-  /**
-   * Records that a live report for this session confirmed work just now.
-   *
-   * Called from every path that accepts live evidence of work, never from a read of
-   * the transcript: this is the clock that decides when the transcript is the newer
-   * account.
-   */
   private recordLiveEvidence(sessionId: string): void {
-    this.liveEvidenceAt.set(sessionId, Date.now());
+    return recordLiveEvidence(this.runStateHost, sessionId);
   }
 
-  /** True when no live work signal arrived for this session inside the grace. */
   private liveEvidenceQuiet(sessionId: string): boolean {
-    const lastReportedAt = this.liveEvidenceAt.get(sessionId);
-    // A latch with no recorded report is quiet rather than forever fresh: every path
-    // that arms one records evidence, so an unrecorded latch describes work this
-    // process holds no live account of -- the state a settled transcript settles.
-    return (
-      lastReportedAt === undefined ||
-      Date.now() - lastReportedAt > LIVE_EVIDENCE_GRACE_MS
-    );
+    return liveEvidenceQuiet(this.runStateHost, sessionId);
   }
 
-  /**
-   * Drops every latch that can hold a settled row in the working group.
-   *
-   * One list for both callers, so a latch added later is released by each: the live
-   * idle report in patchSessionInfo, and the quiet-evidence reconciliation in
-   * discovery. The compaction entries stay dormant behind both callers' own
-   * compaction guards -- GJC's durable record is what ends compaction, never a
-   * transcript that merely reads idle -- but they belong to the same list.
-   */
   private clearRunningLatches(sessionId: string): void {
-    this.liveRunningSessions.delete(sessionId);
-    this.liveRunningDigests.delete(sessionId);
-    this.liveEvidenceAt.delete(sessionId);
-    this.transcriptRunningSessions.delete(sessionId);
-    this.workingPhaseSessions.delete(sessionId);
-    this.runtimeIdleSessions.delete(sessionId);
-    this.discoveredRunStates.delete(sessionId);
-    this.compactingSessions.delete(sessionId);
-    this.compactionRecordBaseline.delete(sessionId);
-    this.compactionStartedAt.delete(sessionId);
+    return clearRunningLatches(this.runStateHost, sessionId);
   }
 
-  /**
-   * Settles a row the live signal left running once the evidence behind it ran out.
-   *
-   * Only the transcript's own verdict settles a row here, so this is reached only
-   * when the file says the turn ended and nothing disagrees: this window is not
-   * driving the session, no live report has been accepted inside the grace, and no
-   * compaction is standing on GJC's durable receipt. The run revision advances with
-   * the status because the renderer keeps the revision it already holds over a lower
-   * one, and a row that kept its revision would stay exactly where it was.
-   *
-   * Nothing is announced as completed: this reconciliation can settle a turn that
-   * ended hours ago, while the live report path is what announces a turn that just
-   * finished.
-   *
-   * @returns true when the row was settled, so its status is now `idle`.
-   */
   private settleQuietRunningRow(
     sessionId: string,
     transcriptStatus: AgentSession["status"] | undefined,
     currentSession: AgentSession | undefined,
   ): boolean {
-    if (transcriptStatus !== "idle") return false;
-    if (currentSession?.status !== "running") return false;
-    if (this.activePromptSessions.has(sessionId)) return false;
-    // Compaction is released by its own durable record or by a non-compacting
-    // phase, never by a transcript that reads idle while the history is still being
-    // rewritten under it.
-    if (this.compactingSessions.has(sessionId)) return false;
-    if (!this.liveEvidenceQuiet(sessionId)) return false;
-    this.clearRunningLatches(sessionId);
-    this.advanceRunRevision(sessionId);
-    currentSession.status = "idle";
-    this.emitEvent({ type: "session.updated", session: { ...currentSession } });
-    return true;
+    return settleQuietRunningRow(this.runStateHost, sessionId, transcriptStatus, currentSession);
   }
 
-  /**
-   * The markers among `observed` and `inherited` the runtime still reports running.
-   *
-   * Two reads disagree about a long transcript and neither is wrong: the full-history
-   * read that installs a session can name every launch row the file still owes, while
-   * the bounded run-state read only ever sees the tail. `observed` is what the read at
-   * hand could see; `inherited` is what an earlier read latched and this one is not
-   * allowed to see -- a bounded window that lacks a launch row is not evidence that
-   * the work ended, so those markers are put to the runtime rather than dropped. A
-   * read that saw the whole file passes no inherited markers: a marker its rows no
-   * longer owe has been released, and merging it back would resurrect it.
-   *
-   * Only an answer from `runtime.jobs.list` retires a marker, and a query that could
-   * not be answered retires nothing. The answer is recorded as this session's latch,
-   * so what is left of these markers is what later reads put back to the runtime.
-   */
-  private async reconcilePendingAsyncWork(
-    sessionId: string,
-    observed: readonly string[],
-    inherited: readonly string[],
-  ): Promise<string[]> {
-    const candidates = new Set(observed);
-    for (const jobId of inherited) candidates.add(jobId);
-    const surviving = await this.reconciledAsyncJobIds(sessionId, [...candidates]);
-    this.recordPendingAsyncWork(sessionId, surviving);
-    return surviving;
-  }
-
-  /** Remembers the detached work a session still owes, or drops the latch when none is left. */
   private recordPendingAsyncWork(
     sessionId: string,
     jobIds: readonly string[],
   ): void {
-    if (jobIds.length > 0) this.pendingAsyncWorkSessions.set(sessionId, [...jobIds]);
-    else this.pendingAsyncWorkSessions.delete(sessionId);
+    return recordPendingAsyncWork(this.runStateHost, sessionId, jobIds);
   }
 
-  /** The launch markers a reconciliation has not retired. */
-  private unreconciledAsyncJobIds(
-    sessionId: string,
-    jobIds: readonly string[],
-  ): string[] {
-    const dead = this.asyncJobReconciliations.get(sessionId)?.deadJobIds;
-    if (!dead || dead.size === 0) return [...jobIds];
-    return jobIds.filter((jobId) => !dead.has(jobId));
-  }
-
-  /**
-   * The launch markers among `jobIds` the runtime still reports as running.
-   *
-   * A marker the runtime no longer lists was finished, paused, cancelled, or taken
-   * down with its process, and none of those are work in progress. A query that
-   * cannot be answered is not evidence the work ended, so every marker survives it --
-   * but the markers the attempt covered are remembered either way, so the run-state
-   * read path never turns into a query loop over a runtime that cannot answer while a
-   * marker nobody has asked about still gets an answer of its own.
-   */
-  private async reconciledAsyncJobIds(
+  private reconciledAsyncJobIds(
     sessionId: string,
     jobIds: readonly string[],
   ): Promise<string[]> {
-    const pending = this.unreconciledAsyncJobIds(sessionId, jobIds);
-    if (pending.length === 0) return pending;
-    const record = this.asyncJobReconciliations.get(sessionId);
-    const asked = record?.checkedJobIds;
-    const now = Date.now();
-    if (
-      record &&
-      pending.every((jobId) => asked?.has(jobId)) &&
-      now - record.checkedAt < PENDING_ASYNC_RECONCILE_INTERVAL_MS
-    )
-      return pending;
-    const dead = record?.deadJobIds ?? new Set<string>();
-    const live = await this.runningAsyncJobIds(sessionId);
-    this.asyncJobReconciliations.set(sessionId, {
-      checkedAt: now,
-      deadJobIds: dead,
-      checkedJobIds: new Set([...(asked ?? []), ...pending]),
-      querySucceeded: live !== undefined,
-    });
-    if (!live) return pending;
-    for (const jobId of pending) if (!live.has(jobId)) dead.add(jobId);
-    return pending.filter((jobId) => live.has(jobId));
-  }
-
-  /**
-   * The jobs a session's runtime currently reports as running, or undefined when it
-   * did not answer.
-   *
-   * `runtime.jobs.list` answers one wrapper row holding `running`, the entries the
-   * runtime still considers alive, next to `recent` and `delivery` bookkeeping. Only
-   * that list can retire a launch marker, and an empty answer is never fabricated:
-   * it resolves every marker as dead, so a runtime that could not be reached must
-   * not be reported as one that answered nothing.
-   */
-  private async runningAsyncJobIds(
-    sessionId: string,
-  ): Promise<Set<string> | undefined> {
-    let rows: unknown[];
-    try {
-      rows = await this.querySessionItems(sessionId, "runtime.jobs.list", {}, {
-        strict: true,
-      });
-    } catch {
-      return undefined;
-    }
-    let answered = false;
-    const running = new Set<string>();
-    for (const row of rows) {
-      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
-      const entries = (row as Record<string, unknown>).running;
-      if (!Array.isArray(entries)) continue;
-      answered = true;
-      for (const entry of entries) {
-        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-        const job = entry as Record<string, unknown>;
-        // An entry the runtime still carries with a status of its own -- paused, or
-        // cancelled and not yet reaped -- is not work in progress. A missing status
-        // is not evidence of an end either: the live list itself is the authority.
-        if (typeof job.id !== "string") continue;
-        if (job.status === undefined || job.status === "running")
-          running.add(job.id);
-      }
-    }
-    return answered ? running : undefined;
+    return reconciledAsyncJobIds(this.runStateHost, sessionId, jobIds);
   }
 
   /**
