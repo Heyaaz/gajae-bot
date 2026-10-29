@@ -48,7 +48,6 @@ import type {
   QueuedMessage,
   SessionProgress,
   SubagentSnapshot,
-  SystemNoticeActivity,
   TranscriptPage,
   TranscriptPageRequest,
 } from "../shared/agent-contract.js";
@@ -61,7 +60,6 @@ import {
   selectTranscriptPage,
   transcriptSyncWindow,
 } from "../shared/transcript-page.js";
-import { parseSessionProgress } from "../shared/session-progress.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { ImageDataUrlCache } from "./image-data-cache.js";
 import { resolveGjcExecutable, runtimeEnvironment } from "./runtime-path.js";
@@ -138,7 +136,6 @@ import {
   agentConfigOptions,
   artifactReferences,
   attachedPathsText,
-  boundedJson,
   brokerFailureMessage,
   busyPromptError,
   cancelledOperationError,
@@ -194,9 +191,6 @@ import {
   textFromContent,
   thinkingOptionsForModelCatalog,
   timestampMs,
-  todoQueryErrorText,
-  todoSnapshotPhases,
-  todoSnapshotRowId,
   todoSnapshotTask,
   toolDiffText,
   toolImageRefs,
@@ -213,6 +207,27 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  clearProgress,
+  clearTodoPoll,
+  getGoal,
+  type GoalTodoHost,
+  operateGoal,
+  PROGRESS_REFRESH_MIN_MS,
+  PROGRESS_STALE_MS,
+  PROGRESS_WATCH_MS,
+  readTodoRecords,
+  requestProgressRefresh,
+  TODO_EVENT_POLL_BASE_MS,
+  TODO_EVENT_POLL_MAX_MS,
+} from "./gjc-sdk-goal-todo.js";
+export {
+  TODO_EVENT_POLL_BASE_MS,
+  TODO_EVENT_POLL_MAX_MS,
+  PROGRESS_REFRESH_MIN_MS,
+  PROGRESS_STALE_MS,
+  PROGRESS_WATCH_MS,
+} from "./gjc-sdk-goal-todo.js";
 import {
   clearCommandRefreshRetry,
   COMMAND_REFRESH_RETRY_BASE_MS,
@@ -253,21 +268,6 @@ import {
 
 export * from "./gjc-sdk-foundation.js";
 
-/** Fallback todo read when the session has no live todo event channel. */
-export const TODO_EVENT_POLL_BASE_MS = 30_000;
-export const TODO_EVENT_POLL_MAX_MS = 120_000;
-/**
- * `session.progress` reads. A tool end, a gate or a turn end asks for one, and
- * those are coalesced to at most one read per interval. Without such an event
- * the goal poll re-reads a snapshot only after it has been stale this long.
- */
-export const PROGRESS_REFRESH_MIN_MS = 4_000;
-export const PROGRESS_STALE_MS = 30_000;
-/**
- * How long after its last goal read a session still counts as watched. The
- * slowest goal poll is 30s, so a watched session never lapses between polls.
- */
-export const PROGRESS_WATCH_MS = 60_000;
 /**
  * How long a loaded command/todo context is reused before it is read again.
  *
@@ -759,6 +759,55 @@ export class GjcSdkController {
     get publishedCommandKeys() {
       return controller.publishedCommandKeys;
     },
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+  }))(this);
+
+  private readonly goalTodoHost: GoalTodoHost = ((controller: GjcSdkController): GoalTodoHost => ({
+    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    get sessionSdkOperations() {
+      return controller.sessionSdkOperations;
+    },
+    get progressWatchedAt() {
+      return controller.progressWatchedAt;
+    },
+    get sessionProgress() {
+      return controller.sessionProgress;
+    },
+    get disposed() {
+      return controller.disposed;
+    },
+    get progressTimers() {
+      return controller.progressTimers;
+    },
+    get progressReads() {
+      return controller.progressReads;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
+    get sessionTodoSnapshots() {
+      return controller.sessionTodoSnapshots;
+    },
+    get attachedSessions() {
+      return controller.attachedSessions;
+    },
+    get todoPollTimers() {
+      return controller.todoPollTimers;
+    },
+    get todoPollAttempts() {
+      return controller.todoPollAttempts;
+    },
+    get todoReads() {
+      return controller.todoReads;
+    },
+    markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
+    get transcripts() {
+      return controller.transcripts;
+    },
+    noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
     get emitEvent() {
       return controller.emitEvent;
     },
@@ -4528,161 +4577,23 @@ export class GjcSdkController {
     return sdkOperations(this.commandPaletteHost, sessionId, options);
   }
 
-  async getGoal(sessionId: string): Promise<GoalSnapshot> {
-    // The todo read is shared with the transcript snapshot row, so the counters here
-    // and the row a user can expand are the same observation of the same store.
-    // A live tail already re-reads the store when a todo tool finishes, so this
-    // poll must not call `todo.list` on the goal cadence. Without that channel the
-    // fallback below is a long backoff, not another 4s/10s query.
-    const [goalRows, todoRows, progress] = await Promise.all([
-      this.querySessionItems(sessionId, "goal.list/get"),
-      this.todoRowsForGoal(sessionId),
-      this.progressForGoal(sessionId),
-    ]);
-    const state =
-      goalRows[0] &&
-      typeof goalRows[0] === "object" &&
-      !Array.isArray(goalRows[0])
-        ? (goalRows[0] as Record<string, unknown>)
-        : undefined;
-    const goal =
-      state?.goal &&
-      typeof state.goal === "object" &&
-      !Array.isArray(state.goal)
-        ? (state.goal as Record<string, unknown>)
-        : undefined;
-    const tasks = (todoRows ?? [])
-      .flatMap((row) => {
-        if (!row || typeof row !== "object" || Array.isArray(row)) return [];
-        const value = row as Record<string, unknown>;
-        return Array.isArray(value.tasks) ? value.tasks : [value];
-      })
-      .filter(
-        (task): task is Record<string, unknown> =>
-          Boolean(task) && typeof task === "object" && !Array.isArray(task),
-      );
-    const enabled = state?.enabled === true && Boolean(goal);
-    const status =
-      typeof goal?.status === "string"
-        ? goal.status
-        : typeof state?.mode === "string"
-          ? state.mode
-          : undefined;
-    // A dropped goal is discarded, so it must not occupy the progress row. It used
-    // to arrive as enabled with no mode, which the inspector rendered as an active
-    // goal because it only checks `enabled` and `objective`.
-    const live = enabled && status !== "dropped";
-    return {
-      enabled: live,
-      ...(live &&
-      (status === "active" || status === "paused" || status === "complete")
-        ? { mode: status }
-        : {}),
-      ...(live && typeof goal?.objective === "string"
-        ? { objective: goal.objective }
-        : {}),
-      completed: tasks.filter((task) => task.status === "completed").length,
-      total: tasks.length,
-      ...(progress ? { progress } : {}),
-    };
+  getGoal(sessionId: string): Promise<GoalSnapshot> {
+    return getGoal(this.goalTodoHost, sessionId);
   }
 
-  /**
-   * The progress snapshot the goal row shows.
-   *
-   * Only the capability set already cached from the palette read decides
-   * whether the session has `session.progress`: a CLI-primary session does not,
-   * and the goal poll must not add a `runtime.capabilities` read to find out.
-   */
-  private async progressForGoal(
-    sessionId: string,
-  ): Promise<SessionProgress | undefined> {
-    if (!this.sessionSdkOperations.get(sessionId)?.has("session.progress"))
-      return undefined;
-    this.progressWatchedAt.set(sessionId, Date.now());
-    const cached = this.sessionProgress.get(sessionId);
-    if (!cached) {
-      await this.readProgress(sessionId);
-      return this.sessionProgress.get(sessionId)?.progress;
-    }
-    if (Date.now() - cached.readAt >= PROGRESS_STALE_MS)
-      this.requestProgressRefresh(sessionId);
-    return cached.progress;
-  }
-
-  /**
-   * Coalesces refresh requests into at most one read per interval. Only a session
-   * a goal row is polling is read: the answer reaches the screen through that
-   * poll, so for any other session the read would be wasted.
-   */
   private requestProgressRefresh(sessionId: string): void {
-    if (
-      this.disposed ||
-      this.progressTimers.has(sessionId) ||
-      !this.sessionSdkOperations.get(sessionId)?.has("session.progress") ||
-      Date.now() - (this.progressWatchedAt.get(sessionId) ?? -Infinity) >
-        PROGRESS_WATCH_MS
-    )
-      return;
-    const readAt = this.sessionProgress.get(sessionId)?.readAt ?? 0;
-    const delay = Math.max(0, readAt + PROGRESS_REFRESH_MIN_MS - Date.now());
-    const timer = setTimeout(() => {
-      this.progressTimers.delete(sessionId);
-      void this.readProgress(sessionId);
-    }, delay);
-    this.progressTimers.set(sessionId, timer);
-  }
-
-  private readProgress(sessionId: string): Promise<void> {
-    const inflight = this.progressReads.get(sessionId);
-    if (inflight) return inflight;
-    const read = (async () => {
-      let progress: SessionProgress | undefined;
-      let failed = false;
-      try {
-        const items = await this.querySessionItems(
-          sessionId,
-          "session.progress",
-          {},
-          { strict: true },
-        );
-        progress = items
-          .map(parseSessionProgress)
-          .find((item): item is SessionProgress => item !== undefined);
-      } catch {
-        failed = true;
-      }
-      if (this.disposed || !this.sessions.has(sessionId)) return;
-      const previous = this.sessionProgress.get(sessionId);
-      this.sessionProgress.set(sessionId, {
-        progress: failed ? previous?.progress : progress,
-        readAt: Date.now(),
-      });
-    })().finally(() => {
-      if (this.progressReads.get(sessionId) === read)
-        this.progressReads.delete(sessionId);
-    });
-    this.progressReads.set(sessionId, read);
-    return read;
+    return requestProgressRefresh(this.goalTodoHost, sessionId);
   }
 
   private clearProgress(sessionId: string): void {
-    const timer = this.progressTimers.get(sessionId);
-    if (timer) clearTimeout(timer);
-    this.progressTimers.delete(sessionId);
-    this.sessionProgress.delete(sessionId);
-    this.progressReads.delete(sessionId);
-    this.progressWatchedAt.delete(sessionId);
+    return clearProgress(this.goalTodoHost, sessionId);
   }
 
-  async operateGoal(
+  operateGoal(
     sessionId: string,
     operation: GoalOperation,
   ): Promise<GoalSnapshot> {
-    await this.controlSession(sessionId, "mode.goal.operate", {
-      op: operation,
-    });
-    return this.getGoal(sessionId);
+    return operateGoal(this.goalTodoHost, sessionId, operation);
   }
 
   /**
@@ -6587,216 +6498,14 @@ export class GjcSdkController {
     return composed;
   }
 
-  /**
-   * Read the runtime's todo store and publish it as one transcript row.
-   *
-   * `todo.list` is the only todo source this window has: the tail protocol carries
-   * no todo event and the returned records have no documented schema beyond rows
-   * that may be wrapped in `tasks`. They are therefore retained and shown as data
-   * rather than reduced into task state this window would have to invent, and the
-   * query is strict -- a runtime that cannot answer is recorded as unreadable,
-   * which is not the same thing as an empty list.
-   */
-  /**
-   * Todo rows for the goal counters.
-   *
-   * An attached session hears todo changes from the tail (`todo_write` reads the
-   * store back). Polling `todo.list` on the goal interval repeated that read.
-   * A session with no tail still needs a fallback, and that fallback waits longer
-   * after each quiet pass.
-   */
-  private async todoRowsForGoal(sessionId: string): Promise<unknown[]> {
-    const snapshot = this.sessionTodoSnapshots.get(sessionId);
-    if (this.attachedSessions.has(sessionId)) {
-      this.clearTodoPoll(sessionId);
-      if (snapshot) return snapshot.rows ?? [];
-      return (await this.readTodoRecords(sessionId)) ?? [];
-    }
-    // A failed read still leaves a snapshot, and that must not turn the goal
-    // poll back into a `todo.list` on every pass. The backoff timer retries it.
-    if (snapshot) {
-      this.armTodoPoll(sessionId);
-      return snapshot.rows ?? [];
-    }
-    const rows = (await this.readTodoRecords(sessionId)) ?? [];
-    this.armTodoPoll(sessionId);
-    return rows;
-  }
-
-  private armTodoPoll(sessionId: string): void {
-    if (
-      this.disposed ||
-      this.attachedSessions.has(sessionId) ||
-      !this.sessions.has(sessionId) ||
-      this.todoPollTimers.has(sessionId)
-    )
-      return;
-    const attempt = this.todoPollAttempts.get(sessionId) ?? 0;
-    const delay = Math.min(
-      TODO_EVENT_POLL_MAX_MS,
-      TODO_EVENT_POLL_BASE_MS * 2 ** attempt,
-    );
-    const timer = setTimeout(() => {
-      this.todoPollTimers.delete(sessionId);
-      if (
-        this.disposed ||
-        !this.sessions.has(sessionId) ||
-        this.attachedSessions.has(sessionId)
-      )
-        return;
-      this.todoPollAttempts.set(sessionId, attempt + 1);
-      void this.readTodoRecords(sessionId).finally(() => {
-        if (
-          !this.disposed &&
-          this.sessions.has(sessionId) &&
-          !this.attachedSessions.has(sessionId)
-        )
-          this.armTodoPoll(sessionId);
-      });
-    }, delay);
-    this.todoPollTimers.set(sessionId, timer);
-  }
-
   private clearTodoPoll(sessionId: string): void {
-    const timer = this.todoPollTimers.get(sessionId);
-    if (timer) clearTimeout(timer);
-    this.todoPollTimers.delete(sessionId);
-    this.todoPollAttempts.delete(sessionId);
+    return clearTodoPoll(this.goalTodoHost, sessionId);
   }
 
-  private async readTodoRecords(
+  private readTodoRecords(
     sessionId: string,
   ): Promise<unknown[] | undefined> {
-    const pending = this.todoReads.get(sessionId);
-    if (pending) return pending;
-    const read = this.queryTodoRecords(sessionId);
-    this.todoReads.set(sessionId, read);
-    try {
-      return await read;
-    } finally {
-      if (this.todoReads.get(sessionId) === read) this.todoReads.delete(sessionId);
-    }
-  }
-
-  private async queryTodoRecords(
-    sessionId: string,
-  ): Promise<unknown[] | undefined> {
-    const observedAt = nowLabel();
-    let rows: unknown[] | undefined;
-    let failure: string | undefined;
-    try {
-      rows = await this.querySessionItems(
-        sessionId,
-        "todo.list",
-        {},
-        { strict: true },
-      );
-    } catch (error) {
-      failure = error instanceof Error ? error.message : String(error);
-    }
-    // A session this controller no longer holds must not have its row resurrected
-    // by a read that was already in flight when the session was removed.
-    if (this.disposed || !this.sessions.has(sessionId)) return undefined;
-    if (rows === undefined)
-      this.publishTodoSnapshot(sessionId, { error: failure, observedAt });
-    else this.publishTodoSnapshot(sessionId, { rows, observedAt });
-    return rows;
-  }
-
-  /**
-   * Record what the todo store held, or that it could not be read.
-   *
-   * A failed read keeps the last successful snapshot on screen and says it is
-   * stale; with no earlier success it says the store is unavailable. Neither case
-   * may render as an empty list.
-   */
-  private publishTodoSnapshot(
-    sessionId: string,
-    observed:
-      | { rows: unknown[]; observedAt: string }
-      | { error: string | undefined; observedAt: string },
-  ): void {
-    const previous = this.sessionTodoSnapshots.get(sessionId);
-    const header = ["- source: todo.list (strict read)"];
-    let rows = previous?.rows;
-    let json = previous?.json;
-    let observedAt = previous?.observedAt;
-    if ("rows" in observed) {
-      const nextJson = boundedJson(observed.rows) ?? "[]";
-      if (previous?.json === nextJson) return;
-      rows = observed.rows;
-      observedAt = observed.observedAt;
-      json = nextJson;
-      header.push(
-        `- observed: ${observed.observedAt}`,
-        `- records: ${observed.rows.length}`,
-      );
-    } else if (json !== undefined) {
-      header.push(
-        `- last success: ${observedAt ?? "unknown"}`,
-        `- read failed: ${todoQueryErrorText(observed.error)}`,
-        "- state: showing the last successful snapshot (stale)",
-      );
-    } else {
-      header.push(
-        `- observed: ${observed.observedAt}`,
-        `- read failed: ${todoQueryErrorText(observed.error)}`,
-        "- state: the todo store could not be read (this is not an empty list)",
-      );
-    }
-    const row: SystemNoticeActivity = {
-      id: todoSnapshotRowId(sessionId),
-      kind: "system",
-      sessionId,
-      title: "Todos",
-      content: [
-        ...header,
-        ...(json === undefined ? [] : ["```json", json, "```"]),
-      ].join("\n"),
-      createdAt: previous?.row.createdAt ?? nowLabel(),
-      sourceType: "todo.list",
-      // Phases are attached only when the store answered: a row without them falls
-      // back to the text card that already says the snapshot is stale or unreadable,
-      // because a checklist drawn from an older read would claim it is current.
-      ...("rows" in observed
-        ? {
-            todoPhases: todoSnapshotPhases(observed.rows),
-            observedAt: observed.observedAt,
-          }
-        : {}),
-    };
-    this.sessionTodoSnapshots.set(sessionId, {
-      row,
-      ...(rows === undefined ? {} : { rows }),
-      ...(json === undefined ? {} : { json }),
-      ...(observedAt === undefined ? {} : { observedAt }),
-    });
-    this.publishAppRow(sessionId, row);
-  }
-
-  /**
-   * Put an app-owned row into a session's transcript.
-   *
-   * A row that has not changed is not republished: the goal panel and a transcript
-   * bootstrap both read the same store, and each read would otherwise emit an IPC
-   * row with identical content. A session with no installed transcript keeps the row
-   * in its snapshot state, and the next install composes it in.
-   */
-  private publishAppRow(sessionId: string, row: SystemNoticeActivity): void {
-    this.markTranscriptRowDirty(sessionId, row.id);
-    const items = this.transcripts.get(sessionId);
-    if (items) {
-      const index = items.findIndex((item) => item.id === row.id);
-      const existing = index >= 0 ? items[index] : undefined;
-      if (existing && sameTranscriptItem(existing, row)) return;
-      if (index >= 0) items[index] = row;
-      else items.push(row);
-    }
-    this.noteTranscriptEpoch(sessionId);
-    this.emitEvent({
-      type: "transcript.appended",
-      item: cloneTranscriptItem(row),
-    });
+    return readTodoRecords(this.goalTodoHost, sessionId);
   }
 
   private captureSessionState(
