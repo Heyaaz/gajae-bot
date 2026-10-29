@@ -7,6 +7,7 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 import { getLanguage, t } from "../i18n";
+import type { ParallelGroup } from "../../shared/parallel-run";
 
 
 /**
@@ -103,6 +104,21 @@ export function statusLabel(status: AgentSession["status"], phase?: string): str
   if (status === "failed") return "Failed";
   if (status === "unknown") return t("상태 확인 불가");
   return "Idle";
+}
+
+export function parallelStateLabel(state: ParallelGroup["state"]): string {
+  switch (state.kind) {
+    case "draft":
+      return t("시도 만드는 중");
+    case "running":
+      return t("병렬 실행 중");
+    case "comparing":
+      return t("비교 준비됨");
+    case "adopted":
+      return t("채택함");
+    case "discarded":
+      return t("모두 버림");
+  }
 }
 
 export function connectionStateLabel(state: BackendConnection["state"]): string {

@@ -17,6 +17,9 @@ const RepoViewLazy = lazy(() =>
 const InboxViewLazy = lazy(() =>
   import("./inbox-view").then((mod) => ({ default: mod.InboxView })),
 );
+const ParallelViewLazy = lazy(() =>
+  import("./parallel-view").then((mod) => ({ default: mod.ParallelView })),
+);
 const SettingsDialogLazy = lazy(() =>
   import("./settings").then((mod) => ({ default: mod.SettingsDialog })),
 );
@@ -45,6 +48,12 @@ export function DeferredInboxView(
   props: ComponentProps<typeof import("./inbox-view").InboxView>,
 ) {
   return whenMounted(<InboxViewLazy {...props} />);
+}
+
+export function DeferredParallelView(
+  props: ComponentProps<typeof import("./parallel-view").ParallelView>,
+) {
+  return whenMounted(<ParallelViewLazy {...props} />);
 }
 
 export function DeferredSettingsDialog(

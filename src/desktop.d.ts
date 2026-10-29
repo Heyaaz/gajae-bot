@@ -7,6 +7,7 @@ import type { RemoteDesktopBridge } from "../shared/remote-protocol";
 import type { ProductivityDesktopBridge } from "../shared/productivity-ipc";
 import type { AutomationDesktopBridge } from "../shared/automation-ipc";
 import type { RepoDesktopBridge } from "../shared/repo-ipc";
+import type { ParallelDesktopBridge } from "../shared/parallel-ipc";
 import type { TerminalDesktopBridge } from "../shared/terminal-ipc";
 import type { SessionShortcut } from "../shared/settings-ipc";
 import type { QuickInputDesktopBridge } from "../shared/quick-input";
@@ -25,6 +26,7 @@ declare global {
     readonly productivity: ProductivityDesktopBridge;
     readonly automations: AutomationDesktopBridge;
     readonly repo: RepoDesktopBridge;
+    readonly parallel: ParallelDesktopBridge;
     readonly terminal: TerminalDesktopBridge;
     readonly quickInput: QuickInputDesktopBridge;
     onCycleEffort(listener: () => void): () => void;

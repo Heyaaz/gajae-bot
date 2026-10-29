@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { parseSessionWorkLink, type SessionWorkLink } from '../shared/agent-contract.js'
+import { parseParallelGroup, type ParallelGroup } from '../shared/parallel-run.js'
 
 export class SessionMetadataStore {
   private readonly filePath: string
@@ -11,6 +12,7 @@ export class SessionMetadataStore {
   private unread: Record<string, boolean>
   private worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }>
   private workLinks: Record<string, SessionWorkLink>
+  private parallelGroups: Record<string, ParallelGroup>
 
   constructor(userDataDirectory: string) {
     this.filePath = path.join(userDataDirectory, 'agent-control-sessions.json')
@@ -22,6 +24,7 @@ export class SessionMetadataStore {
     this.unread = stored.unread
     this.worktrees = stored.worktrees
     this.workLinks = stored.workLinks
+    this.parallelGroups = stored.parallelGroups
   }
 
   getAlias(sessionId: string): string | undefined {
@@ -57,6 +60,8 @@ export class SessionMetadataStore {
   setWorktree(sessionId: string, value: { sourceWorkspace: string; path: string; branch: string; managed: true }): void { this.worktrees[sessionId] = value; this.write() }
   getWorkLink(sessionId: string): SessionWorkLink | undefined { return this.workLinks[sessionId] }
   setWorkLink(sessionId: string, value: SessionWorkLink): void { this.workLinks[sessionId] = value; this.write() }
+  listParallelGroups(): ParallelGroup[] { return Object.values(this.parallelGroups) }
+  putParallelGroup(group: ParallelGroup): void { this.parallelGroups[group.id] = group; this.write() }
 
   hideSession(sessionId: string): void {
     this.hidden.add(sessionId)
@@ -118,11 +123,11 @@ export class SessionMetadataStore {
     this.write()
   }
 
-  private read(): { aliases: Record<string, string>; workspaces: Record<string, string>; hidden: string[]; ownership: Record<string, 'gajae' | 'external' | 'available'>; unread: Record<string, boolean>; worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }>; workLinks: Record<string, SessionWorkLink> } {
+  private read(): { aliases: Record<string, string>; workspaces: Record<string, string>; hidden: string[]; ownership: Record<string, 'gajae' | 'external' | 'available'>; unread: Record<string, boolean>; worktrees: Record<string, { sourceWorkspace: string; path: string; branch: string; managed: true }>; workLinks: Record<string, SessionWorkLink>; parallelGroups: Record<string, ParallelGroup> } {
     try {
       const value = JSON.parse(readFileSync(this.filePath, 'utf8')) as unknown
-      if (!value || typeof value !== 'object' || Array.isArray(value)) return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {}, workLinks: {} }
-      const candidate = value as { aliases?: unknown; workspaces?: unknown; hidden?: unknown; ownership?: unknown; unread?: unknown; worktrees?: unknown; workLinks?: unknown }
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {}, workLinks: {}, parallelGroups: {} }
+      const candidate = value as { aliases?: unknown; workspaces?: unknown; hidden?: unknown; ownership?: unknown; unread?: unknown; worktrees?: unknown; workLinks?: unknown; parallelGroups?: unknown }
       const rawAliases = candidate.aliases && typeof candidate.aliases === 'object' && !Array.isArray(candidate.aliases)
         ? candidate.aliases as Record<string, unknown>
         : value as Record<string, unknown>
@@ -164,16 +169,22 @@ export class SessionMetadataStore {
             return link ? [[sessionId, link]] : []
           }))
         : {}
-      return { aliases, workspaces, hidden, ownership, unread, worktrees, workLinks }
+      const parallelGroups = candidate.parallelGroups && typeof candidate.parallelGroups === 'object' && !Array.isArray(candidate.parallelGroups)
+        ? Object.fromEntries(Object.values(candidate.parallelGroups as Record<string, unknown>).flatMap((raw) => {
+            const group = parseParallelGroup(raw)
+            return group ? [[group.id, group]] : []
+          }))
+        : {}
+      return { aliases, workspaces, hidden, ownership, unread, worktrees, workLinks, parallelGroups }
     } catch {
-      return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {}, workLinks: {} }
+      return { aliases: {}, workspaces: {}, hidden: [], ownership: {}, unread: {}, worktrees: {}, workLinks: {}, parallelGroups: {} }
     }
   }
 
   private write(): void {
     mkdirSync(path.dirname(this.filePath), { recursive: true })
     const temporaryPath = `${this.filePath}.tmp`
-    writeFileSync(temporaryPath, `${JSON.stringify({ aliases: this.aliases, workspaces: this.workspaces, hidden: [...this.hidden], ownership: this.ownership, unread: this.unread, worktrees: this.worktrees, workLinks: this.workLinks }, null, 2)}\n`, { mode: 0o600 })
+    writeFileSync(temporaryPath, `${JSON.stringify({ aliases: this.aliases, workspaces: this.workspaces, hidden: [...this.hidden], ownership: this.ownership, unread: this.unread, worktrees: this.worktrees, workLinks: this.workLinks, parallelGroups: this.parallelGroups }, null, 2)}\n`, { mode: 0o600 })
     renameSync(temporaryPath, this.filePath)
   }
 }

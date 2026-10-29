@@ -20,6 +20,10 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { t } from "../i18n";
 import { sessionTitleText } from "./format";
+import {
+  PARALLEL_ATTEMPT_MAX,
+  PARALLEL_ATTEMPT_MIN,
+} from "../../shared/parallel-run";
 
 
 export interface NewSessionInput {
@@ -32,18 +36,38 @@ export interface NewSessionInput {
   workLink?: SessionWorkLink;
   initialPrompt?: string;
   initialImages?: ImageAttachment[];
+  /**
+   * Set for a Best-of-N run: one model preset per attempt. The request is then
+   * sent to every attempt instead of waiting in a composer.
+   */
+  parallelPresets?: string[];
 }
 
 export interface NewSessionDialogProps {
   defaultWorkspace: string;
   prefill?: NewSessionPrefill;
+  /** Offered only where attempts can be run, which is the desktop window. */
+  parallel?: { presets: readonly string[]; defaultPreset: string };
   onCancel: () => void;
   onCreate: (input: NewSessionInput) => void;
+}
+
+/** Different presets by default: comparing one model with itself is the rarer intent. */
+function defaultAttemptPresets(
+  presets: readonly string[],
+  defaultPreset: string,
+): string[] {
+  const order = [defaultPreset, ...presets.filter((preset) => preset !== defaultPreset)];
+  return Array.from(
+    { length: PARALLEL_ATTEMPT_MAX },
+    (_, index) => order[index % order.length]!,
+  );
 }
 
 export function NewSessionDialog({
   defaultWorkspace,
   prefill,
+  parallel,
   onCancel,
   onCreate,
 }: NewSessionDialogProps) {
@@ -59,6 +83,16 @@ export function NewSessionDialog({
     prefill?.worktreeBranch ?? "",
   );
   const [prompt, setPrompt] = useState(prefill?.prompt ?? "");
+  const [attemptCount, setAttemptCount] = useState(1);
+  const [attemptPresets, setAttemptPresets] = useState(
+    parallel ? defaultAttemptPresets(parallel.presets, parallel.defaultPreset) : [],
+  );
+  // A CI fix has to start from the failing branch; attempts start from HEAD.
+  const parallelOffered = Boolean(parallel) && !prefill?.worktreeBranchExisting;
+  const parallelRun = parallelOffered && attemptCount >= PARALLEL_ATTEMPT_MIN;
+  const presetsComplete = attemptPresets
+    .slice(0, attemptCount)
+    .every((preset) => preset.trim());
   const [choosing, setChoosing] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
   const settingsBridge = window.agentControlDesktop?.settings;
@@ -96,6 +130,20 @@ export function NewSessionDialog({
     const branch = worktreeBranch.trim() || undefined;
     const suggestedBranch =
       isolation === "worktree" && branch === prefill?.worktreeBranch;
+    if (parallelRun) {
+      if (!prompt.trim() || !presetsComplete) return;
+      onCreate({
+        title: trimmedTitle && trimmedTitle !== defaultTitle ? trimmedTitle : "새 Gajae 세션",
+        workspace,
+        isolation: "worktree",
+        worktreeBranch: branch,
+        initialPrompt: prompt.trim(),
+        parallelPresets: attemptPresets
+          .slice(0, attemptCount)
+          .map((preset) => preset.trim()),
+      });
+      return;
+    }
     onCreate({
       title:
         !trimmedTitle || trimmedTitle === defaultTitle
@@ -146,25 +194,82 @@ export function NewSessionDialog({
             onChange={(event) => setTitle(event.target.value)}
           />
         </label>
+        {parallelOffered && parallel && (
+          <fieldset className="parallel-options">
+            <legend>{t("병렬 실행")}</legend>
+            <label className="parallel-options__count">
+              <span>{t("시도 수")}</span>
+              <select
+                aria-label={t("병렬 실행 시도 수")}
+                value={attemptCount}
+                onChange={(event) => setAttemptCount(Number(event.target.value))}
+              >
+                <option value={1}>{t("1 (병렬 실행 안 함)")}</option>
+                {Array.from(
+                  { length: PARALLEL_ATTEMPT_MAX - PARALLEL_ATTEMPT_MIN + 1 },
+                  (_, index) => PARALLEL_ATTEMPT_MIN + index,
+                ).map((count) => (
+                  <option key={count} value={count}>
+                    {count}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {parallelRun && (
+              <>
+                <datalist id="parallel-model-presets">
+                  {parallel.presets.map((preset) => (
+                    <option key={preset} value={preset} />
+                  ))}
+                </datalist>
+                {attemptPresets.slice(0, attemptCount).map((preset, index) => (
+                  <label key={index} className="parallel-options__preset">
+                    <span>{t`시도 #${index + 1}`}</span>
+                    <input
+                      list="parallel-model-presets"
+                      aria-label={t`시도 #${index + 1} 모델 프리셋`}
+                      value={preset}
+                      onChange={(event) =>
+                        setAttemptPresets((current) =>
+                          current.map((value, at) =>
+                            at === index ? event.target.value : value,
+                          ),
+                        )
+                      }
+                    />
+                  </label>
+                ))}
+                <small>
+                  {t("시도마다 별도 worktree와 브랜치를 만들고, 첫 요청을 모든 시도에 바로 보냅니다.")}
+                </small>
+              </>
+            )}
+          </fieldset>
+        )}
         <fieldset className="isolation-options">
           <legend>{t("작업 격리")}</legend>
           <label>
             <input
               type="radio"
-              checked={isolation === "workspace"}
+              checked={!parallelRun && isolation === "workspace"}
+              disabled={parallelRun}
               onChange={() => setIsolation("workspace")}
             />{" "}
             {t("현재 workspace에서 작업")} </label>
           <label>
             <input
               type="radio"
-              checked={isolation === "worktree"}
+              checked={parallelRun || isolation === "worktree"}
               onChange={() => setIsolation("worktree")}
             />{" "}
             {t("별도 worktree 생성")} </label>
-          {isolation === "worktree" && (
+          {(parallelRun || isolation === "worktree") && (
             <input
-              placeholder={t("안전한 브랜치 (선택)")}
+              placeholder={
+                parallelRun
+                  ? t("브랜치 이름 (선택) · 시도마다 -1, -2…가 붙습니다")
+                  : t("안전한 브랜치 (선택)")
+              }
               value={worktreeBranch}
               onChange={(e) => setWorktreeBranch(e.target.value)}
             />
@@ -202,7 +307,9 @@ export function NewSessionDialog({
             onChange={(event) => setPrompt(event.target.value)}
           />
           <small>
-            {t("세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.")}
+            {parallelRun
+              ? t("모든 시도에 이 요청을 한 번씩 보냅니다.")
+              : t("세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.")}
           </small>
         </label>
         {images.length > 0 && (
@@ -223,9 +330,13 @@ export function NewSessionDialog({
           <button
             type="submit"
             className="button-primary"
-            disabled={!workspace}
+            disabled={
+              !workspace || (parallelRun && (!prompt.trim() || !presetsComplete))
+            }
           >
-            <Plus size={15} /> {t("세션 만들기")} </button>
+            <Plus size={15} />{" "}
+            {parallelRun ? t`시도 ${attemptCount}개 시작` : t("세션 만들기")}{" "}
+          </button>
         </footer>
       </form>
     </div>

@@ -36,6 +36,7 @@ function createHarness(invoke: IpcInvoke, fetchMock: typeof fetch) {
     "../shared/productivity-ipc.js": { PRODUCTIVITY_IPC: {} },
     "../shared/automation-ipc.js": { AUTOMATION_IPC: {} },
     "../shared/repo-ipc.js": { REPO_IPC: {} },
+    "../shared/parallel-ipc.js": { PARALLEL_IPC: {} },
     "../shared/terminal-ipc.js": {
       TERMINAL_IPC: {
         start: "agent-control:terminal:start",

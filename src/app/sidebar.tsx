@@ -7,6 +7,7 @@ import {
   EyeOff,
   FolderGit2,
   FolderOpen,
+  GitCompare,
   GitFork,
   Inbox,
   Layers,
@@ -20,7 +21,13 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
-import { connectionStateLabel, sessionTitleText, statusLabel } from "./format";
+import {
+  connectionStateLabel,
+  parallelStateLabel,
+  sessionTitleText,
+  statusLabel,
+} from "./format";
+import type { ParallelGroup } from "../../shared/parallel-run";
 import { gjcVersionWarning } from "../../shared/gjc-version";
 import { Dropdown } from "./primitives";
 import { ALL_PROJECTS_ID } from "./project-model";
@@ -38,13 +45,82 @@ import { t, useLanguage } from "../i18n";
 function familySummaryLabel(
   hidden: number,
   summary: SessionFamilySummary | null,
+  noun = "Fork",
 ): string {
   const counts = [
     summary?.failed ? `Failed ${summary.failed}` : "",
     summary?.unread ? `Unread ${summary.unread}` : "",
     summary?.working ? `Working ${summary.working}` : "",
   ].filter(Boolean);
-  return [`Fork ${hidden} hidden`, ...counts].join(" · ");
+  return [`${noun} ${hidden} hidden`, ...counts].join(" · ");
+}
+
+/** A Best-of-N group's own row: it opens the comparison, its attempts nest below. */
+export function ParallelGroupRow({
+  group,
+  updatedAt,
+  shortcutNumber,
+  selected,
+  hidden,
+  hiddenSummary,
+  familyOpen,
+  onToggleFamily,
+  onOpen,
+}: {
+  group: ParallelGroup;
+  updatedAt: string;
+  shortcutNumber?: number;
+  selected: boolean;
+  hidden: number;
+  hiddenSummary: SessionFamilySummary | null;
+  familyOpen: boolean;
+  onToggleFamily: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div
+      className={`session-row session-row--parallel ${selected ? "is-selected" : ""}`}
+      role="button"
+      tabIndex={0}
+      data-depth={0}
+      onClick={onOpen}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onOpen();
+      }}
+      aria-pressed={selected}
+    >
+      <span className="session-row__copy">
+        <span className="session-row__topline">
+          <strong>{sessionTitleText(group.title)}</strong>
+          <time>{updatedAt}</time>
+        </span>
+        <span className="session-row__subtitle">
+          <GitCompare size={11} aria-hidden="true" />{" "}
+          {t`병렬 ${group.attempts.length}개`} · {parallelStateLabel(group.state)}
+        </span>
+      </span>
+      <span className="session-row__meta">
+        <button
+          type="button"
+          className="session-family-toggle"
+          aria-expanded={familyOpen}
+          aria-label={familySummaryLabel(hidden, hiddenSummary, "Attempt")}
+          title={familySummaryLabel(hidden, hiddenSummary, "Attempt")}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleFamily();
+          }}
+        >
+          <span aria-hidden="true">{familyOpen ? "▾" : "▸"}</span>
+          {hidden > 0 && <em>{hidden}</em>}
+        </button>
+        {shortcutNumber !== undefined && <kbd>⌘{shortcutNumber}</kbd>}
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -274,6 +350,11 @@ export interface SidebarProps {
   updateStatus: GjcUpdateStatus | null;
   updateBusy: boolean;
   onUpdate: () => void;
+  /** Best-of-N groups whose attempts the rail nests under one row. */
+  parallelGroups?: readonly ParallelGroup[];
+  /** The group the comparison view is showing, so its row reads as selected. */
+  openParallelGroupId?: string | null;
+  onOpenParallelGroup?: (groupId: string) => void;
 }
 
 /**
@@ -315,6 +396,9 @@ function SidebarView({
   updateStatus,
   updateBusy,
   onUpdate,
+  parallelGroups,
+  openParallelGroupId,
+  onOpenParallelGroup,
 }: SidebarProps) {
   useLanguage();
   const versionWarning = gjcVersionWarning(connection.version);
@@ -340,8 +424,9 @@ function SidebarView({
         expanded: expandedGroups,
         collapsedFamilies,
         selectedId,
+        parallelGroups,
       }),
-    [sessions, expandedGroups, collapsedFamilies, selectedId],
+    [sessions, expandedGroups, collapsedFamilies, selectedId, parallelGroups],
   );
   // The digits the main process sends for ⌘1-⌘9 index the same list, so the numbers on
   // the rows have to come from the model rather than from a second reading of the
@@ -401,7 +486,22 @@ function SidebarView({
   }
 
   function renderNode(node: SessionRowNode) {
-    const { session } = node;
+    const { session, parallelGroup } = node;
+    if (parallelGroup)
+      return (
+        <ParallelGroupRow
+          key={session.id}
+          group={parallelGroup}
+          updatedAt={session.updatedAt}
+          shortcutNumber={shortcutNumbers.get(session.id)}
+          selected={openParallelGroupId === parallelGroup.id}
+          hidden={node.hidden}
+          hiddenSummary={node.hiddenSummary}
+          familyOpen={!collapsedFamilies.has(session.id)}
+          onToggleFamily={() => toggleFamily(session.id)}
+          onOpen={() => onOpenParallelGroup?.(parallelGroup.id)}
+        />
+      );
     return (
       <SessionRow
         key={session.id}

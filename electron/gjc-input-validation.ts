@@ -10,6 +10,7 @@ import type {
   WorktreePull,
 } from "../shared/agent-contract.js";
 import { parseSessionWorkLink } from "../shared/agent-contract.js";
+import { safeModelPreset } from "../shared/parallel-run.js";
 
 /**
  * Input validation shared by the Electron IPC surface and the remote access
@@ -70,6 +71,7 @@ export function createSessionInput(value: unknown): CreateSessionInput {
     worktreeBranchExisting?: unknown;
     worktreePull?: unknown;
     workLink?: unknown;
+    modelPreset?: unknown;
   };
   if (candidate.runtime !== "gjc")
     throw new Error("Only the GJC runtime is available through this bridge");
@@ -125,6 +127,8 @@ export function createSessionInput(value: unknown): CreateSessionInput {
       : parseSessionWorkLink(candidate.workLink);
   if (candidate.workLink !== undefined && !workLink)
     throw new Error("Session work link is invalid");
+  if (candidate.modelPreset !== undefined && !safeModelPreset(candidate.modelPreset))
+    throw new Error("Session model preset is invalid");
   try {
     if (!statSync(candidate.workspace).isDirectory()) throw new Error();
   } catch {
@@ -141,6 +145,9 @@ export function createSessionInput(value: unknown): CreateSessionInput {
     ...(candidate.worktreeBranchExisting ? { worktreeBranchExisting: true } : {}),
     ...(worktreePull ? { worktreePull } : {}),
     ...(workLink ? { workLink } : {}),
+    ...(typeof candidate.modelPreset === "string"
+      ? { modelPreset: candidate.modelPreset.trim() }
+      : {}),
   };
 }
 

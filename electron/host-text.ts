@@ -22,6 +22,8 @@ const ENGLISH: Readonly<Record<string, string>> = {
   "Gajae 열기": "Open Gajae",
   "새 버전이 나왔습니다. 눌러서 릴리스 페이지를 엽니다.":
     "A new version is out. Click to open the release page.",
+  "채택하지 않은 시도를 정리할까요?": "Clean up the attempts that were not adopted?",
+  "병렬 실행 시도를 모두 정리할까요?": "Clean up every attempt of this parallel run?",
 };
 
 let language: UiLanguage = "ko";

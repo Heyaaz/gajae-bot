@@ -81,12 +81,15 @@ import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
   DeferredInboxView,
+  DeferredParallelView,
   DeferredProjectList,
   DeferredRepoView,
   DeferredSettingsDialog,
 } from "./deferred-views";
 import { Sidebar } from "./sidebar";
-import { sessionListModel } from "./sidebar-model";
+import { parallelGroupIdOf, sessionListModel } from "./sidebar-model";
+import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
+import type { ParallelGroup } from "../../shared/parallel-run";
 import { Dropdown } from "./primitives";
 import {
   ALL_PROJECTS_ID,
@@ -105,6 +108,7 @@ import {
   Transcript,
 } from "./transcript";
 import {
+  BUILT_IN_MODEL_PRESETS,
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
   DEFAULT_TOOL_VIEW_MODE,
@@ -588,12 +592,16 @@ export default function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>(
     ALL_PROJECTS_ID,
   );
-  // The center area shows one of four things. A session pick always returns to the
-  // conversation; the repository screen, the project list and the inbox are entered
-  // on purpose.
+  // The center area shows one of five things. A session pick always returns to the
+  // conversation; the repository screen, the project list, the inbox and a parallel
+  // run's comparison are entered on purpose.
   const [centerView, setCenterView] = useState<
-    "conversation" | "repository" | "projects" | "inbox"
+    "conversation" | "repository" | "projects" | "inbox" | "parallel"
   >("conversation");
+  // Best-of-N groups as the main process holds them, and the one the comparison
+  // view shows when the center area is on it.
+  const [parallelGroups, setParallelGroups] = useState<ParallelGroup[]>([]);
+  const [parallelGroupId, setParallelGroupId] = useState<string | null>(null);
   const [surface, setSurface] = useState<"chat" | "terminal">("chat");
   const [terminalMounted, setTerminalMounted] = useState(false);
   const surfaceRef = useRef(surface);
@@ -1708,6 +1716,43 @@ export default function App() {
   // The preload object is frozen, so this is one reference for the process's life.
   const repoBridge: RepoDesktopBridge | null =
     window.agentControlDesktop?.repo ?? null;
+  const parallelBridge: ParallelDesktopBridge | null =
+    window.agentControlDesktop?.parallel ?? null;
+  useEffect(() => {
+    if (!parallelBridge) return;
+    let active = true;
+    const unsubscribe = parallelBridge.onChanged((groups) => {
+      active = false;
+      setParallelGroups(groups);
+    });
+    void parallelBridge
+      .list()
+      .then((groups) => {
+        if (active) setParallelGroups(groups);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [parallelBridge]);
+  // The dialog offers the presets it can name without a session: the configured
+  // default, the built-in presets and any profile a loaded session's picker listed.
+  const parallelPresetChoices = useMemo(
+    () => [
+      ...new Set([
+        preferences.modelPreset,
+        ...BUILT_IN_MODEL_PRESETS,
+        ...Object.values(configOptions).flatMap(
+          (options) =>
+            options
+              .find((option) => option.category === "model" || option.id === "model")
+              ?.options?.map((option) => option.value) ?? [],
+        ),
+      ]),
+    ],
+    [preferences.modelPreset, configOptions],
+  );
   // Only the paths actually in use are resolved, and only when the set changes: a
   // session's status changes far more often than its workspace does.
   const workspaceKey = useMemo(
@@ -1754,8 +1799,8 @@ export default function App() {
   // The digits the main process sends for ⌘1-⌘9 index this list, so it has to be the
   // rail's own order: pinned first, then the state groups, newest first inside each.
   const shortcutSessions = useMemo(
-    () => sessionListModel(filteredSessions).shortcuts,
-    [filteredSessions],
+    () => sessionListModel(filteredSessions, { parallelGroups }).shortcuts,
+    [filteredSessions, parallelGroups],
   );
 
   // Nothing is hidden any more: a request the composer is still holding was never
@@ -2038,8 +2083,36 @@ export default function App() {
     [],
   );
 
+  const openParallelGroup = useCallback((groupId: string): void => {
+    setParallelGroupId(groupId);
+    setNavOpen(false);
+    setCenterView("parallel");
+  }, []);
+
   const createSession = useCallback(
     (input: NewSessionInput): void => {
+      if (input.parallelPresets && parallelBridge) {
+        setNewSessionRequest(null);
+        setAppError("");
+        void parallelBridge
+          .start({
+            title: input.title,
+            workspace: input.workspace,
+            prompt: input.initialPrompt ?? "",
+            ...(input.worktreeBranch ? { branch: input.worktreeBranch } : {}),
+            presets: input.parallelPresets,
+          })
+          .then((group) => {
+            setParallelGroups((current) =>
+              current.some((entry) => entry.id === group.id)
+                ? current
+                : [group, ...current],
+            );
+            openParallelGroup(group.id);
+          })
+          .catch((error: unknown) => setAppError(humanErrorMessage(error)));
+        return;
+      }
       const draftId = `draft-${crypto.randomUUID()}`;
       const draft: AgentSession = {
         id: draftId,
@@ -2110,7 +2183,7 @@ export default function App() {
           setAppError(humanErrorMessage(error));
         });
     },
-    [backend],
+    [backend, parallelBridge, openParallelGroup],
   );
 
   const resolveSessionId = useCallback(async (sessionId: string): Promise<string> => {
@@ -2137,6 +2210,7 @@ export default function App() {
   // cancelling a run the user cannot see.
   const dismissibleSurfaceOpen =
     centerView === "inbox" ||
+    centerView === "parallel" ||
     searchOpen ||
     newSessionRequest !== null ||
     resumeOpen ||
@@ -2174,7 +2248,10 @@ export default function App() {
           return;
         }
         const session = shortcutSessions[shortcut.index];
-        if (session) selectSession(session.id);
+        if (!session) return;
+        const groupId = parallelGroupIdOf(session.id);
+        if (groupId) openParallelGroup(groupId);
+        else selectSession(session.id);
       },
     );
     const unsubscribeAbort = window.agentControlDesktop?.onAbortRun(() => {
@@ -2216,6 +2293,7 @@ export default function App() {
     dismissibleSurfaceOpen,
     openLinkedSession,
     openNewSessionDialog,
+    openParallelGroup,
     selectSession,
     selectedSession?.workspace,
     shortcutSessions,
@@ -2890,6 +2968,7 @@ export default function App() {
   const openRepository = useCallback(() => setCenterView("repository"), []);
   const openProjects = useCallback(() => setCenterView("projects"), []);
   const openConversation = useCallback(() => setCenterView("conversation"), []);
+  const openGroup = parallelGroups.find((group) => group.id === parallelGroupId);
   const toggleInbox = useCallback(() => {
     // On a phone the rail is a drawer over the content; the inbox is what the
     // user asked to see, so the drawer gets out of its way.
@@ -3120,6 +3199,9 @@ export default function App() {
         updateStatus={updateStatus}
         updateBusy={updateBusyFlag}
         onUpdate={startUpdate}
+        parallelGroups={parallelGroups}
+        openParallelGroupId={centerView === "parallel" ? parallelGroupId : null}
+        onOpenParallelGroup={openParallelGroup}
       />
 
       {runtimeUnavailable ? (
@@ -3157,6 +3239,17 @@ export default function App() {
           automations={window.agentControlDesktop?.automations}
           onOpenSession={openInboxSession}
           onClose={openConversation}
+        />
+      ) : centerView === "parallel" && openGroup && parallelBridge ? (
+        <DeferredParallelView
+          group={openGroup}
+          sessions={sessions}
+          backend={backend}
+          bridge={parallelBridge}
+          onOpenSession={selectSession}
+          onClose={openConversation}
+          onError={setAppError}
+          onSubmitReview={remoteViewOnly ? undefined : submitReview}
         />
       ) : centerView === "projects" ? (
         <DeferredProjectList
@@ -3456,6 +3549,14 @@ export default function App() {
           key={newSessionRequest.serial}
           defaultWorkspace={connection.workspace}
           prefill={newSessionRequest.prefill}
+          parallel={
+            parallelBridge
+              ? {
+                  presets: parallelPresetChoices,
+                  defaultPreset: preferences.modelPreset,
+                }
+              : undefined
+          }
           onCancel={() => setNewSessionRequest(null)}
           onCreate={createSession}
         />

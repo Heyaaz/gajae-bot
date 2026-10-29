@@ -1,5 +1,6 @@
 import type { AgentSession } from "../backend/types";
 import { sessionAttentionGroup } from "../../shared/desktop-integration";
+import { attemptSessionId, type ParallelGroup } from "../../shared/parallel-run";
 
 /**
  * The list is split by what the session is doing for the user rather than by
@@ -83,6 +84,8 @@ export interface SessionRowNode {
   hidden: number;
   /** What those members are, so the head row can say it without their rows. */
   hiddenSummary: SessionFamilySummary | null;
+  /** Set when this head is a Best-of-N group rather than a session. */
+  parallelGroup?: ParallelGroup;
 }
 
 export interface SessionGroupBlock {
@@ -119,6 +122,76 @@ export interface SessionListOptions {
   limit?: number;
   /** The row the user is reading, which neither a closed family nor the cap hides. */
   selectedId?: string | null;
+  /** Best-of-N groups; their attempts nest under one row per group. */
+  parallelGroups?: readonly ParallelGroup[];
+}
+
+const PARALLEL_HEAD_PREFIX = "parallel-group:";
+
+export function parallelHeadId(groupId: string): string {
+  return `${PARALLEL_HEAD_PREFIX}${groupId}`;
+}
+
+/** The group a rail row stands for, when the row is a group head. */
+export function parallelGroupIdOf(rowId: string): string | undefined {
+  return rowId.startsWith(PARALLEL_HEAD_PREFIX)
+    ? rowId.slice(PARALLEL_HEAD_PREFIX.length)
+    : undefined;
+}
+
+/**
+ * A Best-of-N group is drawn as a family whose head is the group itself. Its
+ * attempts nest under one row the way forks nest under their source, so closing
+ * it, the summary of what it holds back and which state section it lands in are
+ * the fork family's code rather than a second nesting system.
+ *
+ * The head is idle on purpose: a family is placed by its most actionable member,
+ * and the attempts are the members that can be working or failed.
+ */
+function withParallelHeads(
+  sessions: readonly AgentSession[],
+  groups: readonly ParallelGroup[],
+): { rows: readonly AgentSession[]; heads: ReadonlyMap<string, ParallelGroup> } {
+  const heads = new Map<string, ParallelGroup>();
+  if (groups.length === 0) return { rows: sessions, heads };
+  const byId = new Map(sessions.map((session) => [session.id, session]));
+  const headOf = new Map<string, string>();
+  const headRows: AgentSession[] = [];
+  for (const group of groups) {
+    const members = group.attempts.flatMap((attempt) => {
+      const sessionId = attemptSessionId(attempt);
+      const session = sessionId ? byId.get(sessionId) : undefined;
+      return session ? [session] : [];
+    });
+    if (members.length === 0) continue;
+    const id = parallelHeadId(group.id);
+    heads.set(id, group);
+    for (const member of members) headOf.set(member.id, id);
+    const newest = [...members].sort(byRecency)[0]!;
+    headRows.push({
+      id,
+      title: group.title,
+      subtitle: newest.subtitle,
+      workspace: group.workspace,
+      runtime: "gjc",
+      status: "idle",
+      updatedAt: newest.updatedAt,
+      updatedAtMs: Math.max(
+        group.createdAt,
+        ...members.map((member) => member.updatedAtMs ?? 0),
+      ),
+      pinned: false,
+      unread: false,
+      accent: newest.accent,
+      ownership: "gajae",
+      attachment: "attached",
+    });
+  }
+  const rows = sessions.map((session) => {
+    const head = headOf.get(session.id);
+    return head ? { ...session, parentId: head } : session;
+  });
+  return { rows: [...headRows, ...rows], heads };
 }
 
 interface FamilyLayout {
@@ -231,14 +304,19 @@ function summarize(members: readonly AgentSession[]): SessionFamilySummary {
 }
 
 export function sessionListModel(
-  sessions: readonly AgentSession[],
+  listed: readonly AgentSession[],
   {
     expanded,
     collapsedFamilies,
     limit = SESSION_GROUP_LIMIT,
     selectedId,
+    parallelGroups = [],
   }: SessionListOptions = {},
 ): SessionListModel {
+  const { rows: sessions, heads: parallelHeads } = withParallelHeads(
+    listed,
+    parallelGroups,
+  );
   const pinnedSessions = sessions
     .filter((session) => session.pinned)
     .slice()
@@ -297,6 +375,7 @@ export function sessionListModel(
     const hidden = open
       ? []
       : family.filter((member) => !visible.includes(member));
+    const parallelGroup = parallelHeads.get(root.id);
     const nodes: SessionRowNode[] = [
       {
         session: root,
@@ -304,6 +383,7 @@ export function sessionListModel(
         familyHead: family.length > 0,
         hidden: hidden.length,
         hiddenSummary: hidden.length > 0 ? summarize(hidden) : null,
+        ...(parallelGroup ? { parallelGroup } : {}),
       },
     ];
     for (const member of visible)

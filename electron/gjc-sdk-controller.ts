@@ -1970,7 +1970,7 @@ export class GjcSdkController {
         "session.create",
         {
           cwd: sessionWorkspace,
-          modelPreset: this.modelPreset,
+          modelPreset: input.modelPreset ?? this.modelPreset,
         },
         { repo: sessionWorkspace, idempotencyKey: createRequestId },
       );

@@ -48,6 +48,12 @@ import {
   type QuickInputSubmission,
 } from "../shared/quick-input.js";
 import type { RepoDesktopBridge } from "../shared/repo-ipc.js";
+import { PARALLEL_IPC } from "../shared/parallel-ipc.js";
+import type {
+  ParallelDesktopBridge,
+  ParallelStartInput,
+} from "../shared/parallel-ipc.js";
+import type { ParallelGroup } from "../shared/parallel-run.js";
 import {
   TERMINAL_IPC,
   type TerminalDesktopBridge,
@@ -594,6 +600,20 @@ const remote: RemoteDesktopBridge = Object.freeze({
     ipcRenderer.invoke(REMOTE_IPC.forgetDevice, deviceId),
   refresh: () => ipcRenderer.invoke(REMOTE_IPC.refresh),
 });
+const parallel: ParallelDesktopBridge = Object.freeze({
+  list: () => ipcRenderer.invoke(PARALLEL_IPC.list),
+  start: (input: ParallelStartInput) => ipcRenderer.invoke(PARALLEL_IPC.start, input),
+  adopt: (groupId: string, attemptId: string) =>
+    ipcRenderer.invoke(PARALLEL_IPC.adopt, groupId, attemptId),
+  discard: (groupId: string) => ipcRenderer.invoke(PARALLEL_IPC.discard, groupId),
+  cleanup: (groupId: string) => ipcRenderer.invoke(PARALLEL_IPC.cleanup, groupId),
+  onChanged: (listener: (groups: ParallelGroup[]) => void) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, groups: ParallelGroup[]) =>
+      listener(groups);
+    ipcRenderer.on(PARALLEL_IPC.changed, wrapped);
+    return () => ipcRenderer.removeListener(PARALLEL_IPC.changed, wrapped);
+  },
+});
 // Main sends a gajae:// link once the document has loaded, which can be before the
 // app has subscribed. The link waits here instead of being dropped.
 let sessionShortcutListener: ((shortcut: SessionShortcut) => void) | undefined;
@@ -619,6 +639,7 @@ contextBridge.exposeInMainWorld(
     productivity,
     automations,
     repo,
+    parallel,
     remote,
     terminal,
     quickInput,

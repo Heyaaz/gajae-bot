@@ -852,6 +852,12 @@ export interface CreateSessionInput {
    */
   worktreePull?: WorktreePull;
   workLink?: SessionWorkLink;
+  /**
+   * The model profile this session starts on instead of the configured default.
+   * `session.create` takes it as an exact profile id (gjc/0.19.0 refuses one it
+   * cannot resolve), so a parallel attempt runs on its own preset from its first turn.
+   */
+  modelPreset?: string;
 }
 
 export interface WorktreePull {

@@ -53,6 +53,9 @@ import { RemoteAccessService } from "./remote/service.js";
 import { registerRemoteIpcHandlers } from "./remote-ipc-handlers.js";
 import { RepoService } from "./repo-service.js";
 import { registerRepoIpcHandlers } from "./repo-ipc-handlers.js";
+import { ParallelRunService } from "./parallel-run-service.js";
+import { registerParallelIpcHandlers } from "./parallel-ipc-handlers.js";
+import { PARALLEL_IPC } from "../shared/parallel-ipc.js";
 import { registerTerminalIpcHandlers } from "./terminal-ipc-handlers.js";
 import { attachTerminalSmoke } from "./terminal-smoke.js";
 import {
@@ -141,6 +144,8 @@ let productivityService: ProductivityService | undefined;
 let remoteAccess: RemoteAccessService | undefined;
 // Declared here because the event fan-out and window lookups below run before it exists.
 let quickInput: QuickInputWindow | undefined;
+// Best-of-N groups learn that an attempt finished from the same events.
+let parallelRuns: ParallelRunService | undefined;
 // The desktop windows read runtime events over this loopback stream now instead of an
 // IPC push. Constructing it only allocates the process secret; the listener starts with
 // the first window.
@@ -206,6 +211,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
   // The remote devices watch the same runtime, so they see the same events the
   // desktop windows do rather than a separately polled view.
   remoteAccess?.publish(event);
+  parallelRuns?.observe(event);
   if (event.type !== "session.activity") return;
   const focused = windows.some((window) => window.isFocused());
   const viewingSession = windows.some(
@@ -540,6 +546,15 @@ const repoService = new RepoService({
   ghExecutable: process.env.GAJA_GH_BIN || undefined,
 });
 const unregisterRepoIpc = registerRepoIpcHandlers(repoService, ipcSecurity);
+parallelRuns = new ParallelRunService({
+  store: sessionMetadata,
+  host: gjcController,
+  notify: (groups) => {
+    for (const window of BrowserWindow.getAllWindows())
+      if (!window.isDestroyed()) window.webContents.send(PARALLEL_IPC.changed, groups);
+  },
+});
+const unregisterParallelIpc = registerParallelIpcHandlers(parallelRuns, ipcSecurity);
 const terminalIpc = registerTerminalIpcHandlers(ipcSecurity);
 
 function createWindow(): BrowserWindow {
@@ -1408,6 +1423,7 @@ app.on("before-quit", () => {
   unregisterAutomationIpc();
   unregisterRemoteIpc();
   unregisterRepoIpc();
+  unregisterParallelIpc();
   terminalIpc.disposeAll();
   terminalIpc.unregister();
   unregisterEventStreamIpc();

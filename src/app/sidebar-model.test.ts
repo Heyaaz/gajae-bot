@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { ParallelGroup } from "../../shared/parallel-run";
 import type { AgentSession } from "../backend/types";
 import {
   SESSION_GROUP_LABELS,
+  parallelGroupIdOf,
+  parallelHeadId,
   sessionGroupOf,
   sessionListModel,
 } from "./sidebar-model";
@@ -486,5 +489,70 @@ describe("session families", () => {
     expect(model.pinned.map((node) => node.session.id)).toEqual(["orphan", "kid"]);
     expect(model.pinned.map((node) => node.depth)).toEqual([0, 1]);
     expect(rowsOf(model)).toEqual([]);
+  });
+});
+
+describe("parallel groups", () => {
+  const group: ParallelGroup = {
+    id: "g1",
+    title: "로그인 고치기",
+    prompt: "로그인 버그를 고쳐 줘",
+    workspace: "/tmp/project",
+    createdAt: 1,
+    state: { kind: "running" },
+    attempts: [
+      { id: "1", preset: "codex-pro", branch: "b-1", state: { kind: "started", sessionId: "a1", worktreePath: "/wt/1" } },
+      { id: "2", preset: "codex-eco", branch: "b-2", state: { kind: "failed", reason: "x" } },
+      { id: "3", preset: "codex-medium", branch: "b-3", state: { kind: "started", sessionId: "a3", worktreePath: "/wt/3" } },
+    ],
+  };
+
+  it("nests the attempts under one group row, with a fork of an attempt below it", () => {
+    const rows = [
+      session({ id: "a1", updatedAtMs: 30 }),
+      session({ id: "a3", updatedAtMs: 20 }),
+      session({ id: "fork", parentId: "a1", updatedAtMs: 10 }),
+      session({ id: "solo", updatedAtMs: 5 }),
+    ];
+    const model = sessionListModel(rows, { parallelGroups: [group] });
+    const nodes = model.groups.flatMap((block) => block.rows);
+    expect(nodes.map((node) => [node.session.id, node.depth])).toEqual([
+      [parallelHeadId("g1"), 0],
+      ["a1", 1],
+      ["fork", 2],
+      ["a3", 1],
+      ["solo", 0],
+    ]);
+    expect(nodes[0]!.parallelGroup).toBe(group);
+    expect(nodes[0]!.familyHead).toBe(true);
+    expect(model.shortcuts.map((row) => row.id)).toEqual([parallelHeadId("g1"), "solo"]);
+    expect(parallelGroupIdOf(model.shortcuts[0]!.id)).toBe("g1");
+    expect(parallelGroupIdOf("a1")).toBeUndefined();
+  });
+
+  it("places the group by its most actionable attempt and keeps it closed on request", () => {
+    const rows = [
+      session({ id: "a1", status: "running" }),
+      session({ id: "a3", status: "waiting" }),
+    ];
+    const open = sessionListModel(rows, { parallelGroups: [group] });
+    expect(open.groups.map((block) => block.id)).toEqual(["needs-input"]);
+
+    const closed = sessionListModel(rows, {
+      parallelGroups: [group],
+      collapsedFamilies: new Set([parallelHeadId("g1")]),
+    });
+    // The approval wait stays on screen; the running attempt is counted on the head.
+    expect(rowsOf(closed)).toEqual([parallelHeadId("g1"), "a3"]);
+    expect(closed.groups[0]!.rows[0]!.hiddenSummary).toEqual({
+      failed: 0,
+      unread: 0,
+      working: 1,
+    });
+  });
+
+  it("draws no group row once none of its attempts is listed", () => {
+    const model = sessionListModel([session({ id: "solo" })], { parallelGroups: [group] });
+    expect(rowsOf(model)).toEqual(["solo"]);
   });
 });

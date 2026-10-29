@@ -349,6 +349,40 @@ every read is a `gh` subprocess whose failure is reported as a state:
 
 An empty issue or pull list is none of those: it is reported as an empty list.
 
+### Parallel runs (Best-of-N)
+
+`병렬 실행` in the new-session dialog runs one request as 2-4 attempts. Each
+attempt gets its own managed worktree, a new branch (`<branch>-1`, `-2`, … or
+`gajae/best-of-<id>-N` without a name) and its own model preset, and the first
+request is sent to each attempt once. More than one attempt always uses worktrees.
+A CI fix does not offer the option, because its attempts would start from `HEAD`
+instead of the failing branch, and a branch name that already exists is refused
+before anything is created.
+
+- Attempts are created one after another, because each creation writes the
+  source repository's `.git` and the broker's lifecycle ledger. Each request is
+  sent as soon as its session exists, so the attempts run at the same time. An
+  attempt that fails to create, or whose request did not run, is shown as failed
+  while the others keep running.
+- `session.create` takes the attempt's preset as `modelPreset`, which GJC 0.19.0
+  resolves as an exact profile ID. The comparison shows the preset the runtime
+  reports and marks one that differs from the request.
+- The rail nests the attempts under one group row, with the same code that nests
+  forks. The row opens the comparison: each attempt's state, changed-file count,
+  context usage and its own `변경 파일` panel, side by side.
+- `이 시도 채택` keeps that attempt's branch and worktree and merges nothing. Commit,
+  push or open a PR from its panel later.
+- Removing the other attempts always goes through the native confirmation. It
+  names each worktree and branch, the uncommitted files `--force` would discard,
+  and the commits on a branch that are on no remote and no other local branch.
+  Cancelling removes nothing and `나머지 정리` asks again. What is removed is read
+  from Git again after the confirmation, and nothing is removed if it changed.
+  A running attempt is refused until it is stopped. The removed attempts' sessions
+  are hidden from the rail; their GJC history is not deleted.
+- The group is one record in `agent-control-sessions.json`. If the app quits while
+  attempts are being created, the unfinished ones are marked failed on the next
+  start.
+
 ## Remote access
 
 A phone or a second personal machine runs the same app as a *remote client* of
