@@ -596,9 +596,10 @@ const unregisterOnboardingIpc = registerOnboardingIpcHandlers(
       await gjcController.reconnect();
     },
     applyModelPreset: async (modelPreset) => {
-      await applyRuntimePreferences(
-        settingsStore.save({ ...settingsStore.get(), modelPreset }),
-      );
+      const saved = settingsStore.save({ ...settingsStore.get(), modelPreset });
+      // The credential and the profile are saved; a runtime that fails to
+      // reattach reports that on its own connection state.
+      await applyRuntimePreferences(saved).catch(() => false);
     },
     openExternal: async (url) => {
       if (new URL(url).protocol === "https:") await shell.openExternal(url);

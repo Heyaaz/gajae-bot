@@ -15,9 +15,9 @@ export interface OnboardingServiceOptions {
   run: CommandRunner
   environment(): Record<string, string>
   install(onProgress: (progress: GjcInstallProgress) => void): Promise<GjcInstallResult>
-  /** Points the runtime at the new GJC and reconnects. */
+  /** Points the runtime at the new GJC and reconnects. A failure here does not undo the install. */
   reconnect(): Promise<void>
-  /** Saves the provider's model profile as the runtime default and reconnects. */
+  /** Saves the provider's model profile as the runtime default and reconnects; only a failed save rejects. */
   applyModelPreset(preset: string): Promise<void>
   openExternal(url: string): Promise<void>
   spawn?: SpawnSignIn
@@ -52,7 +52,9 @@ export class OnboardingService {
   async installGjc(emit: (event: OnboardingEvent) => void): Promise<{ version: string }> {
     if (await this.options.locateGjc()) throw new Error('GJC is already installed')
     const { version } = await this.options.install((progress) => emit({ type: 'install-progress', ...progress }))
-    await this.options.reconnect()
+    // GJC is installed either way. A runtime that then fails to attach shows that
+    // on its own connection state, which is where the user can retry it.
+    await this.options.reconnect().catch(() => undefined)
     return { version }
   }
 

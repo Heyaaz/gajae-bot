@@ -9,6 +9,7 @@ interface Mac {
   models?: CommandResult
   done?: boolean
   loginScript?: string
+  reconnectError?: string
 }
 
 function service(mac: Mac) {
@@ -35,6 +36,7 @@ function service(mac: Mac) {
     },
     reconnect: async () => {
       calls.push('reconnect')
+      if (mac.reconnectError) throw new Error(mac.reconnectError)
     },
     applyModelPreset: async (preset) => {
       calls.push(`preset ${preset}`)
@@ -58,6 +60,11 @@ describe('OnboardingService', () => {
     expect(events).toEqual([{ type: 'install-progress', receivedBytes: 5, totalBytes: 10 }])
     expect(calls).toEqual(['reconnect'])
     await expect(onboarding.installGjc(() => undefined)).rejects.toThrow('already installed')
+  })
+
+  it('reports an install that succeeded even when the runtime then fails to attach', async () => {
+    const { onboarding } = service({ reconnectError: 'runtime did not attach' })
+    await expect(onboarding.installGjc(() => undefined)).resolves.toEqual({ version: '0.19.2' })
   })
 
   it('asks for a sign-in when GJC lists no models', async () => {
