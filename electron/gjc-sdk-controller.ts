@@ -6,7 +6,6 @@ import {
 import { homedir } from "node:os";
 import path from "node:path";
 import { execFile as execFileCb } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { realpathSync, type FSWatcher, type Stats } from "node:fs";
 import type {
@@ -54,10 +53,7 @@ import {
   GjcSdkCli,
   SdkCliError,
   brokerExec,
-  envelopeResult,
-  freshOperationRef,
   isSessionMissing,
-  isSessionUnreachable,
   type SdkSessionRow,
 } from "./gjc-sdk-cli.js";
 
@@ -82,17 +78,11 @@ import {
   LIVE_THOUGHT_PREFIX,
   LIVE_TOOL_STATUSES,
   OWNED_STOP_UNAVAILABLE_MESSAGE,
-  OwnedStopUnavailableError,
   PendingPermission,
   PersistedTurnState,
   PlanEntry,
   RUN_STATE_TAIL_BYTES,
   ResolvedMessageInput,
-  PROMPT_NOT_EXECUTED_MESSAGE,
-  promptPreflightNotExecutedError,
-  promptPreflightNotExecutedReceipt,
-  requestFailureDetail,
-  SHARED_ROUTE_UNAVAILABLE_MESSAGE,
   STARTUP_TIMEOUT_MS,
   SdkSlashCommandSpec,
   SendMessageOptions,
@@ -108,10 +98,6 @@ import {
   ToolCallStatus,
   agentCommands,
   artifactReferences,
-  attachedPathsText,
-  brokerFailureMessage,
-  busyPromptError,
-  cancelledOperationError,
   canonicalWorkspace,
   cloneTranscriptItem,
   comparableRowText,
@@ -123,7 +109,6 @@ import {
   imageFromContent,
   inferToolName,
   markUpdated,
-  messageTextWithFiles,
   normalizeQueuedRequestText,
   nowLabel,
   persistedTranscriptRunning,
@@ -142,7 +127,6 @@ import {
   toolImageRefs,
   toolResultText,
   toolStatus,
-  uncertainAfterSendError,
 } from "./gjc-sdk-foundation.js";
 
 import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
@@ -151,6 +135,21 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  appendCancelledNotice,
+  awaitPromptSettlement,
+  cancelRun,
+  compactSession,
+  consumePromptEcho,
+  type ControlHost,
+  controlSession,
+  fireAbort,
+  flushQueuedNow,
+  listQueuedMessages,
+  queueFollowUp,
+  sendMessage,
+  steerSession,
+} from "./gjc-sdk-control.js";
 import {
   getTranscript,
   getTranscriptChanges,
@@ -302,21 +301,6 @@ export * from "./gjc-sdk-foundation.js";
  * CLI round trips, so a reopen seconds later must not repeat them.
  */
 export const SESSION_CONTEXT_REFRESH_TTL_MS = 15_000;
-
-/**
- * Manual compaction summarizes a whole context with the model. A 278k-token
- * session took 88 seconds on the installed runtime, so the ordinary 8-second
- * control deadline reports a false uncertainty while the host is still working.
- */
-const COMPACTION_TIMEOUT_MS = 300_000;
-const REQUEST_OUTCOME_RECONCILIATION_BUDGET_MS = 20_000;
-// The session file watcher and tail already carry the visible terminal row.
-// This query only reconciles the send promise's own record, so it is a backstop:
-// a 400ms cadence spawned a CLI process every ~0.4s for the whole budget, which
-// was the dominant cost of a long turn. One second still settles a quick turn
-// promptly without tying process spawns to the polling clock.
-const REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS = 1_000;
-const REQUEST_OUTCOME_QUERY_TIMEOUT_MS = 2_000;
 
 /** The id of the newest transcript row a tail read returned. */
 function lastTailTranscriptId(
@@ -1535,6 +1519,121 @@ export class GjcSdkController {
     scheduleDetach: (sessionId) => controller.scheduleDetach(sessionId),
   }))(this);
 
+  private readonly controlHost: ControlHost = ((controller: GjcSdkController): ControlHost => ({
+    get sessions() {
+      return controller.sessions;
+    },
+    persistedCompactionCount: (sessionId) => controller.persistedCompactionCount(sessionId),
+    get compactingSessions() {
+      return controller.compactingSessions;
+    },
+    get compactionStartedAt() {
+      return controller.compactionStartedAt;
+    },
+    get compactionRecordBaseline() {
+      return controller.compactionRecordBaseline;
+    },
+    patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
+    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
+    refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
+    get echoedPromptTexts() {
+      return controller.echoedPromptTexts;
+    },
+    get locallyAbortedSessions() {
+      return controller.locallyAbortedSessions;
+    },
+    appendLocalUserMessage: (sessionId, text, input) => controller.appendLocalUserMessage(sessionId, text, input),
+    get pendingSteers() {
+      return controller.pendingSteers;
+    },
+    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
+    get terminalOnlySessions() {
+      return controller.terminalOnlySessions;
+    },
+    requireCli: () => controller.requireCli(),
+    repoFor: (sessionId) => controller.repoFor(sessionId),
+    markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
+    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    get flushingSessions() {
+      return controller.flushingSessions;
+    },
+    discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
+    updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
+    executeSdkSlashCommand: (sessionId, input, options) => controller.executeSdkSlashCommand(sessionId, input, options),
+    get activePromptSessions() {
+      return controller.activePromptSessions;
+    },
+    get generation() {
+      return controller.generation;
+    },
+    get activePromptAdmissions() {
+      return controller.activePromptAdmissions;
+    },
+    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
+    get activeAssistantMessages() {
+      return controller.activeAssistantMessages;
+    },
+    finalizeThought: (sessionId) => controller.finalizeThought(sessionId),
+    awaitPromptSettlement: (sessionId, operationRef, isCurrent) => controller.awaitPromptSettlement(sessionId, operationRef, isCurrent),
+    finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
+    get nextLocalId() {
+      return controller.nextLocalId;
+    },
+    set nextLocalId(value) {
+      controller.nextLocalId = value;
+    },
+    appendTranscript: (item) => controller.appendTranscript(item),
+    emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
+    get disposed() {
+      return controller.disposed;
+    },
+    republishRunState: (sessionId) => controller.republishRunState(sessionId),
+    get cancellationWatermarks() {
+      return controller.cancellationWatermarks;
+    },
+    get cancellationPromises() {
+      return controller.cancellationPromises;
+    },
+    get cancellingSessions() {
+      return controller.cancellingSessions;
+    },
+    fireAbort: (sessionId) => controller.fireAbort(sessionId),
+    finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
+    get toolSnapshots() {
+      return controller.toolSnapshots;
+    },
+    cancelOpenTools: (sessionId) => controller.cancelOpenTools(sessionId),
+    settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
+    cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
+    get liveRunningSessions() {
+      return controller.liveRunningSessions;
+    },
+    get liveRunningDigests() {
+      return controller.liveRunningDigests;
+    },
+    get liveEvidenceAt() {
+      return controller.liveEvidenceAt;
+    },
+    get transcriptRunningSessions() {
+      return controller.transcriptRunningSessions;
+    },
+    get workingPhaseSessions() {
+      return controller.workingPhaseSessions;
+    },
+    get runtimeIdleSessions() {
+      return controller.runtimeIdleSessions;
+    },
+    get pendingAsyncWorkSessions() {
+      return controller.pendingAsyncWorkSessions;
+    },
+    get discoveredRunStates() {
+      return controller.discoveredRunStates;
+    },
+    get transcripts() {
+      return controller.transcripts;
+    },
+  }))(this);
+
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
     this.configuredExecutable = options.executable;
@@ -2010,62 +2109,8 @@ export class GjcSdkController {
     return persistedCompactionCount(this.transcriptStoreHost, sessionId);
   }
 
-  async compactSession(sessionId: string): Promise<void> {
-    // Compaction is a session control operation. Terminal-owned sessions route
-    // through the broker instead of requiring a second runtime attachment.
-    const statusBefore = this.sessions.get(sessionId)?.status;
-    const baseline = await this.persistedCompactionCount(sessionId);
-    this.compactingSessions.add(sessionId);
-    this.compactionStartedAt.delete(sessionId);
-    if (baseline === undefined)
-      this.compactionRecordBaseline.delete(sessionId);
-    else this.compactionRecordBaseline.set(sessionId, baseline);
-    this.patchSessionRuntime(sessionId, {
-      phase: "compacting",
-      status: "running",
-    });
-    try {
-      await this.controlSession(sessionId, "compaction.run", {}, {
-        timeoutMs: COMPACTION_TIMEOUT_MS,
-      });
-      // GJC intentionally reports null usage after compaction until a later model
-      // response provides a trustworthy provider anchor. Never leave the stale
-      // pre-compaction percentage visible while that new value is pending.
-      this.patchSessionRuntime(sessionId, {
-        usagePercent: undefined,
-        usagePending: true,
-      });
-      await this.refreshContextUsage(sessionId, { force: true });
-    } catch (error) {
-      if (uncertainAfterSendError(error)) {
-        // The host accepted the request and is still summarizing. Keep the
-        // compaction markers so the durable receipt can settle the phase; clearing
-        // them here left the session running forever even though the record landed.
-        this.patchSessionRuntime(sessionId, {
-          usagePercent: undefined,
-          usagePending: true,
-        });
-        return;
-      }
-      // Compaction marked the row running. Leaving it there after a failure keeps
-      // the composer queueing behind a turn that never started, so the status it
-      // replaced is restored -- and only that one, or a real turn running
-      // underneath would be reported idle.
-      this.compactingSessions.delete(sessionId);
-      this.compactionRecordBaseline.delete(sessionId);
-      this.compactionStartedAt.delete(sessionId);
-      this.patchSessionRuntime(sessionId, {
-        phase: undefined,
-        ...(statusBefore && statusBefore !== "running"
-          ? { status: statusBefore }
-          : {}),
-      });
-      throw error;
-    }
-    // The control call returning means GJC accepted the request, not that the
-    // history has been rewritten. Clearing the phase here reported compaction
-    // finished while it was still running, so the phase is left standing until
-    // GJC reports a non-compacting phase through patchSessionInfo.
+  compactSession(sessionId: string): Promise<void> {
+    return compactSession(this.controlHost, sessionId);
   }
 
   private appendLocalUserMessage(
@@ -2095,16 +2140,8 @@ export class GjcSdkController {
     this.appendTranscript(message);
   }
 
-  // Returns true when this user update is GJC repeating a prompt already shown.
   private consumePromptEcho(sessionId: string, text: string): boolean {
-    const echoes = this.echoedPromptTexts.get(sessionId);
-    if (!echoes?.length) return false;
-    const normalized = normalizeQueuedRequestText(text);
-    const index = echoes.indexOf(normalized);
-    if (index < 0) return false;
-    echoes.splice(index, 1);
-    if (echoes.length === 0) this.echoedPromptTexts.delete(sessionId);
-    return true;
+    return consumePromptEcho(this.controlHost, sessionId, text);
   }
 
   // Waiting work is hidden from the transcript only while it is still waiting.
@@ -2118,171 +2155,22 @@ export class GjcSdkController {
 
 
 
-  async steerSession(
+  steerSession(
     sessionId: string,
     input: ResolvedMessageInput,
     options?: { echo?: boolean },
   ): Promise<MessageDelivery> {
-    this.locallyAbortedSessions.delete(sessionId);
-    const text = messageTextWithFiles(input)
-      .replace(/^\/steer(?:\s+|$)/u, "")
-      .trim();
-    if (!text) throw new Error("Steering instructions are required");
-    // A steer is a user message too. Echoing it before the round trip is what
-    // makes it appear immediately; without this the bubble waits for GJC to
-    // stream its own user_message_chunk back, which is seconds late on a busy
-    // turn and reads as the window having swallowed the message. Callers that
-    // already echoed the same text pass echo: false so it is not shown twice.
-    if (options?.echo !== false) this.appendLocalUserMessage(sessionId, text, input);
-    const clientRef = `gajae-steer-${randomUUID()}`;
-    const pending = (async (): Promise<MessageDelivery> => {
-      let receipt: Record<string, unknown> | undefined;
-      try {
-        receipt = await this.controlSession(sessionId, "turn.steer", {
-          text,
-          clientRef,
-        });
-      } catch (error) {
-        if (!promptPreflightNotExecutedError(error)) throw error;
-        return {
-          kind: "not_executed",
-          detail: error.message,
-        };
-      }
-      if (receipt?.accepted === false || receipt?.status === "rejected") {
-        if (promptPreflightNotExecutedReceipt(receipt))
-          return {
-            kind: "not_executed",
-            detail: requestFailureDetail(receipt, "GJC rejected the steering request."),
-          };
-        // Upstream session-runtime.ts catches every sendUserMessage rejection for
-        // turn.steer, and AgentSession.#queueSteer can mutate its queue before a
-        // downstream throw. A generic rejected receipt therefore does not prove
-        // that no work began; only the canonical typed preflight error does.
-        throw new Error(
-          requestFailureDetail(receipt, "GJC rejected the steering request."),
-        );
-      }
-      const status = await this.reconcileRequestQuery(
-        sessionId,
-        "turn.steer_status",
-        { clientRef },
-        (record) =>
-          record.status === "accepted" ||
-          record.status === "rejected" ||
-          record.status === "unknown" ||
-          (record.status === "uncertain" &&
-            typeof record.terminalAt === "number"),
-      );
-      if (status?.status === "rejected") {
-        if (promptPreflightNotExecutedReceipt(status))
-          return {
-            kind: "not_executed",
-            detail: requestFailureDetail(status, "GJC rejected the steering request."),
-          };
-        throw new Error(
-          requestFailureDetail(status, "GJC rejected the steering request."),
-        );
-      }
-      return "steer";
-    })();
-    const previous = this.pendingSteers.get(sessionId);
-    const chained = previous
-      ? previous.then(
-          () => pending,
-          () => pending,
-        )
-      : pending;
-    this.pendingSteers.set(sessionId, chained);
-    try {
-      return await pending;
-    } finally {
-      if (this.pendingSteers.get(sessionId) === chained)
-        this.pendingSteers.delete(sessionId);
-    }
+    return steerSession(this.controlHost, sessionId, input, options);
   }
 
-  async queueFollowUp(
+  queueFollowUp(
     sessionId: string,
     input: ResolvedMessageInput,
   ): Promise<MessageDelivery> {
-    this.locallyAbortedSessions.delete(sessionId);
-    const text = messageTextWithFiles(input);
-    if (!text) throw new Error("Follow-up text is required");
-    try {
-      await this.ensureAttached(sessionId, false);
-    } catch {
-      if (
-        !this.terminalOnlySessions.has(sessionId) ||
-        this.sessions.get(sessionId)?.ownership !== "external"
-      )
-        throw new Error("세션 제어 상태를 확인할 수 없어 후속 메시지를 보내지 않았습니다.");
-    }
-    let receipt: Record<string, unknown> | undefined;
-    try {
-      receipt = await this.controlSession(sessionId, "turn.follow_up", {
-        text,
-      });
-    } catch (error) {
-      if (!promptPreflightNotExecutedError(error)) throw error;
-      return {
-        kind: "not_executed",
-        detail: error.message,
-      };
-    }
-    if (receipt?.accepted === false || receipt?.status === "rejected") {
-      if (promptPreflightNotExecutedReceipt(receipt))
-        return {
-          kind: "not_executed",
-          detail: requestFailureDetail(receipt, "GJC rejected the follow-up request."),
-        };
-      throw new Error(
-        requestFailureDetail(receipt, "GJC rejected the follow-up request."),
-      );
-    }
-    const commandId = receipt?.commandId;
-    const turnId = receipt?.turnId;
-    if (typeof commandId !== "string" || typeof turnId !== "string")
-      return "prompt";
-    const result = await this.reconcileRequestQuery(
-      sessionId,
-      "turn.result",
-      { kind: "prompt", commandId, turnId },
-      (record) =>
-        record.status === "terminal_ok" ||
-        record.status === "failed" ||
-        record.status === "unknown",
-    );
-    if (result?.status === "failed") {
-      if (result.startedAt === undefined)
-        return {
-          kind: "not_executed",
-          detail: requestFailureDetail(
-            result,
-            "GJC confirmed that the follow-up failed before execution.",
-          ),
-        };
-      if (typeof result.startedAt !== "number" || !Number.isFinite(result.startedAt))
-        return "prompt";
-      throw new Error(
-        requestFailureDetail(
-          result,
-          "GJC reported a follow-up failure after execution started.",
-        ),
-      );
-    }
-    return "prompt";
+    return queueFollowUp(this.controlHost, sessionId, input);
   }
 
-  /**
-   * One control operation over `gjc sdk session raw control`.
-   *
-   * There used to be a private in-process extension path with this CLI as fallback,
-   * and the two could disagree about whether an operation was accepted. The CLI is
-   * now the only path, so there is one answer per operation and no fallback to
-   * reconcile.
-   */
-  private async controlSession(
+  private controlSession(
     sessionId: string,
     operation:
       | "turn.prompt"
@@ -2312,125 +2200,15 @@ export class GjcSdkController {
     input: Record<string, unknown>,
     options?: { confirm?: boolean; idempotencyKey?: string; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined> {
-    const cli = await this.requireCli();
-    // A terminal abort is the only operation that needs a key of its own, and the
-    // key must be stable across a retry of the same user action.
-    const idempotencyKey =
-      options?.idempotencyKey ??
-      (operation === "turn.abort" && input.mode === "terminal"
-        ? `gajae-abort-${randomUUID()}`
-        : undefined);
-    try {
-      return await cli.rawControl(sessionId, operation, input, {
-        repo: this.repoFor(sessionId),
-        ...(idempotencyKey ? { idempotencyKey } : {}),
-        ...(options?.timeoutMs ? { timeoutMs: options.timeoutMs } : {}),
-        // An operator terminal abort is destructive and the host requires the flag.
-        confirm: options?.confirm === true || input.operator === true,
-      });
-    } catch (error) {
-      if (busyPromptError(error)) throw error;
-      // A session with no SDK endpoint is reported once, in terms the user can act
-      // on, instead of each caller surfacing the broker's routing language.
-      if (isSessionUnreachable(error)) {
-        if (operation === "turn.abort" && input.operator === true) {
-          try {
-            await cli.queryItems(sessionId, "session.metadata", {}, { repo: this.repoFor(sessionId) });
-          } catch {
-            this.markTerminalOnly(sessionId);
-            throw new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
-          }
-          this.terminalOnlySessions.delete(sessionId);
-          throw new OwnedStopUnavailableError();
-        }
-        this.markTerminalOnly(sessionId);
-        throw new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
-      }
-      throw new Error(brokerFailureMessage(error));
-    }
+    return controlSession(this.controlHost, sessionId, operation, input, options);
   }
 
-  async listQueuedMessages(sessionId: string): Promise<QueuedMessage[]> {
-    try {
-      const queued: QueuedMessage[] = [];
-      for (const row of await this.querySessionItems(
-        sessionId,
-        "queue.messages.list",
-        {},
-        { strict: true },
-      )) {
-        if (!row || typeof row !== "object" || Array.isArray(row)) continue;
-        const value = row as Record<string, unknown>;
-        if (typeof value.id !== "string" || typeof value.text !== "string")
-          continue;
-        const mode = value.mode === "steer" ? "steer" : "followUp";
-        queued.push({
-          id: value.id,
-          text: value.text,
-          mode,
-          label:
-            typeof value.label === "string" && value.label
-              ? value.label
-              : mode === "steer"
-                ? "Steer"
-                : "Queued",
-        });
-      }
-      return queued;
-    } catch {
-      return [];
-    }
+  listQueuedMessages(sessionId: string): Promise<QueuedMessage[]> {
+    return listQueuedMessages(this.controlHost, sessionId);
   }
 
-  /**
-   * GJC CLI empty submit: interrupt the current stream so the window can hand over
-   * the requests it is holding.
-   */
-  async flushQueuedNow(sessionId: string): Promise<boolean> {
-    if (this.flushingSessions.has(sessionId)) return true;
-    this.flushingSessions.add(sessionId);
-    try {
-      const pendingSteer = this.pendingSteers.get(sessionId);
-      if (pendingSteer) await pendingSteer.catch(() => undefined);
-      // The window owns its pending queue, so it already knows there is work to
-      // release. GJC reports no waiting steer of its own -- turn.steer is consumed
-      // by the open turn -- so there is nothing here to confirm against.
-      //
-      // A host that refuses the operator-owned Stop still serves ordinary control,
-      // and the held work is released by the renderer as a steer that the next turn
-      // boundary consumes. Failing that refusal here would leave the user's text
-      // stuck in the composer over a stop this window was never able to substantiate
-      // anyway, so the refusal is not an error for a release. A session the metadata
-      // probe could not reach still throws (see controlSession).
-      let stopped = false;
-      try {
-        await this.abortOwnedThroughControl(sessionId);
-        stopped = true;
-      } catch (error) {
-        if (!(error instanceof OwnedStopUnavailableError)) throw error;
-      }
-      // A release only marks the row running when a turn could not be stopped. A
-      // confirmed stop means the turn is over, and a host that never granted this
-      // window the operator Stop is answered by the transcript instead. Publishing
-      // running unconditionally was how a release against an already finished row
-      // left it looking mid-turn: every later message then arrived as a steer
-      // behind a turn that had ended, which is the queue the user watched swallow
-      // their text.
-      const stillRunning =
-        !stopped && (await this.discoveredRunState(sessionId)) === "running";
-      this.updateSessionStatus(sessionId, stillRunning ? "running" : "idle", {
-        announce: false,
-      });
-      return true;
-    } catch (error) {
-      if (uncertainAfterSendError(error) || cancelledOperationError(error)) {
-        this.updateSessionStatus(sessionId, "running");
-        return true;
-      }
-      throw error;
-    } finally {
-      this.flushingSessions.delete(sessionId);
-    }
+  flushQueuedNow(sessionId: string): Promise<boolean> {
+    return flushQueuedNow(this.controlHost, sessionId);
   }
 
   private appendSdkCommandOutput(
@@ -2484,301 +2262,15 @@ export class GjcSdkController {
     );
   }
 
-  async sendMessage(
+  sendMessage(
     sessionId: string,
     input: ResolvedMessageInput,
     options?: SendMessageOptions,
   ): Promise<MessageDelivery> {
-    this.locallyAbortedSessions.delete(sessionId);
-    if (await this.executeSdkSlashCommand(sessionId, input, options))
-      return "prompt";
-    const value = input.text.trim();
-    if (/^\/steer(?:\s+|$)/u.test(value)) {
-      return await this.steerSession(sessionId, input);
-    }
-    // `bare` is the user's own text; `promptText` adds the attachment block.
-    // steerSession composes the block itself, so the steer fallbacks below hand
-    // it `bare` -- passing promptText appended the same block a second time.
-    const bare = value.replace(/^\/queue(?:\s+|$)/u, "").trim();
-    const promptText = bare + attachedPathsText(input);
-    if (!promptText) return "prompt";
-    const session = this.sessions.get(sessionId);
-    if (
-      this.activePromptSessions.has(sessionId) ||
-      session?.status === "running"
-    ) {
-      return await this.steerSession(sessionId, { ...input, text: bare });
-    }
-    const admission = Symbol(sessionId);
-    const admissionGeneration = this.generation;
-    this.activePromptAdmissions.set(sessionId, admission);
-    this.activePromptSessions.add(sessionId);
-    const settleNotExecuted = async (detail: string): Promise<MessageDelivery> => {
-      if (this.activePromptAdmissions.get(sessionId) !== admission)
-        return "prompt";
-      const settlementGeneration = this.generation;
-      const settlementRevision = this.currentRunRevision(sessionId);
-      this.activePromptAdmissions.delete(sessionId);
-      this.activePromptSessions.delete(sessionId);
-      const runState = await this.discoveredRunState(sessionId);
-      if (
-        runState !== undefined &&
-        this.activePromptAdmissions.get(sessionId) === undefined &&
-        settlementGeneration === this.generation &&
-        settlementRevision === this.currentRunRevision(sessionId)
-      )
-        this.updateSessionStatus(sessionId, runState, { announce: false });
-      return { kind: "not_executed", detail };
-    };
-
-    // The bubble is echoed before any await so the window shows the request the
-    // moment it is submitted. Connecting and attaching are round trips, and doing
-    // them first left the composer looking like it had swallowed the message.
-    this.activeAssistantMessages.delete(sessionId);
-    this.finalizeThought(sessionId);
-    this.appendLocalUserMessage(sessionId, promptText, input);
-    this.updateSessionStatus(sessionId, "running");
-
-    try {
-      const cli = await this.requireCli();
-      await this.ensureAttached(sessionId, false);
-      // One fresh operation reference per logical prompt. A reused reference is
-      // rejected as a conflict while its record is retained, and after eviction it
-      // could be admitted again with the first outcome unknown, so a retry must
-      // never recycle one.
-      const operationRef = freshOperationRef();
-      let accepted: Awaited<ReturnType<GjcSdkCli["send"]>> | undefined;
-      let uncertain = false;
-      try {
-        accepted = await cli.send(sessionId, promptText, {
-          repo: this.repoFor(sessionId),
-          opRef: operationRef,
-        });
-      } catch (error) {
-        if (!uncertainAfterSendError(error)) throw error;
-        // The frame may already have reached the host. Never resend while the
-        // outcome is unknown or reuse its reference; reconcile that exact
-        // reference instead.
-        uncertain = true;
-      }
-      // `send` returning means the prompt was *accepted*, not that the agent
-      // stopped. A follow-up turn, a released steer, or background work keeps running
-      // and keeps appending to the transcript, so closing the row here reported 완료
-      // over live work. The prompt record and the session's own transcript are the
-      // accounts that cover what a single CLI call cannot see, so they decide.
-      const settledOperationRef = accepted?.operationRef ?? operationRef;
-      const settlement =
-        accepted?.status === "failed"
-          ? {
-              kind: "not_executed" as const,
-              detail: "GJC rejected the prompt",
-            }
-          : await this.awaitPromptSettlement(
-              sessionId,
-              settledOperationRef,
-              () => this.activePromptAdmissions.get(sessionId) === admission,
-            );
-      if (settlement === "unknown" && uncertain) {
-        // This send may have been cancelled and replaced while its settlement
-        // was being read. Only the original admission may publish the run state.
-        if (this.activePromptAdmissions.get(sessionId) === admission)
-          this.updateSessionStatus(sessionId, "running");
-        return "prompt";
-      }
-      if (typeof settlement === "object") {
-        return await settleNotExecuted(settlement.detail);
-      }
-      if (settlement === "unknown") {
-        // Poll exhaustion or unavailable evidence is not a terminal event. The
-        // file watcher and tail follower remain responsible for the later state.
-        if (this.activePromptAdmissions.get(sessionId) === admission)
-          this.updateSessionStatus(sessionId, "running");
-        return "prompt";
-      }
-      // A cancel or a newer prompt may have replaced this run while its
-      // settlement was being read. Finalizing now would close the thought and
-      // stream of the run that owns the row instead.
-      if (this.activePromptAdmissions.get(sessionId) !== admission)
-        return "prompt";
-      this.finalizeThought(sessionId);
-      this.finalizeAssistantMessage(sessionId);
-      await this.refreshContextUsage(sessionId, { force: true });
-      // updateSessionStatus announces the running -> idle transition itself.
-      //
-      // The prompt is released before the read because the run-state cache is keyed on
-      // the file, not the caller, and leaving this session marked as actively prompted
-      // would let a concurrent republish skip it. `finally` releasing it again is a
-      // no-op on a Set.
-      const settlementGeneration = this.generation;
-      const settlementRevision = this.currentRunRevision(sessionId);
-      const ownsRow = this.activePromptAdmissions.get(sessionId) === admission;
-      if (ownsRow) {
-        this.activePromptAdmissions.delete(sessionId);
-        this.activePromptSessions.delete(sessionId);
-      }
-      const stillRunning = await this.discoveredRunState(sessionId);
-      if (
-        ownsRow &&
-        stillRunning !== undefined &&
-        settlementGeneration === this.generation &&
-        settlementRevision === this.currentRunRevision(sessionId)
-      )
-        this.updateSessionStatus(sessionId, stillRunning);
-    } catch (caught) {
-      let error: unknown = caught;
-      // The user cancelled this send, or a newer prompt took the row while this
-      // one was in flight. Its late failure belongs to a run that no longer
-      // owns the window: settling here finalized the newer run's streaming
-      // message, published idle over it, and appended a failure notice for the
-      // prompt that was already cancelled.
-      if (this.activePromptAdmissions.get(sessionId) !== admission)
-        return "prompt";
-      if (promptPreflightNotExecutedError(error))
-        return await settleNotExecuted(error.message);
-      if (busyPromptError(error)) {
-        this.activePromptSessions.delete(sessionId);
-        return await this.steerSession(
-          sessionId,
-          { ...input, text: bare },
-          { echo: false },
-        );
-      }
-      if (isSessionUnreachable(error)) {
-        this.markTerminalOnly(sessionId);
-        error = new Error(SHARED_ROUTE_UNAVAILABLE_MESSAGE);
-      }
-      this.finalizeThought(sessionId);
-      this.finalizeAssistantMessage(sessionId);
-      void this.refreshContextUsage(sessionId, { force: true });
-      if (cancelledOperationError(error)) {
-        // A cancel is the user's own action, so it settles quietly.
-        this.updateSessionStatus(sessionId, "idle", { announce: false });
-        this.appendCancelledNotice(sessionId);
-        return "prompt";
-      }
-      // A failed run is announced as a failure below, so the idle transition must
-      // not also announce a completion.
-      this.updateSessionStatus(sessionId, "idle", { announce: false });
-      const notice: NoticeActivity = {
-        id: `gjc-error-${this.nextLocalId++}`,
-        kind: "notice",
-        sessionId,
-        title: "GJC run failed",
-        content: error instanceof Error ? error.message : String(error),
-        tone: "warning",
-        createdAt: nowLabel(),
-      };
-      this.appendTranscript(notice);
-      this.emitActivity(sessionId, "failed");
-      throw error;
-    } finally {
-      if (this.activePromptAdmissions.get(sessionId) === admission) {
-        this.activePromptAdmissions.delete(sessionId);
-        this.activePromptSessions.delete(sessionId);
-        queueMicrotask(() => {
-          if (
-            this.disposed ||
-            admissionGeneration !== this.generation ||
-            this.activePromptAdmissions.has(sessionId) ||
-            this.activePromptSessions.has(sessionId) ||
-            this.sessions.get(sessionId)?.status !== "running"
-          )
-            return;
-          void this.republishRunState(sessionId);
-        });
-      }
-    }
-    return "prompt";
+    return sendMessage(this.controlHost, sessionId, input, options);
   }
 
-  /**
-   * Reconciles one exact SDK selector for at most twenty seconds. `turn.result`
-   * and `turn.steer_status` are read-only; unknown, unavailable, and timed-out
-   * outcomes remain unknown and never authorize another submission.
-   */
-  private async reconcileRequestQuery(
-    sessionId: string,
-    query: "turn.result" | "turn.steer_status",
-    input: Record<string, unknown>,
-    isTerminal: (record: Record<string, unknown>) => boolean,
-    isCurrent?: () => boolean,
-  ): Promise<Record<string, unknown> | undefined> {
-    const generation = this.generation;
-    const cancellationWatermark = this.cancellationWatermarks.get(sessionId);
-    const deadline = Date.now() + REQUEST_OUTCOME_RECONCILIATION_BUDGET_MS;
-    const wasCancelledOrReplaced = () =>
-      this.disposed ||
-      generation !== this.generation ||
-      this.locallyAbortedSessions.has(sessionId) ||
-      this.cancellationWatermarks.get(sessionId) !== cancellationWatermark ||
-      isCurrent?.() === false;
-
-    while (!wasCancelledOrReplaced()) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return undefined;
-      let record: Record<string, unknown> | undefined;
-      let queryFailed = false;
-      try {
-        const cli = await this.requireCli();
-        if (wasCancelledOrReplaced()) return undefined;
-        const queryTimeout = Math.min(
-          REQUEST_OUTCOME_QUERY_TIMEOUT_MS,
-          deadline - Date.now(),
-        );
-        if (queryTimeout <= 0) return undefined;
-        const envelope = await cli.rawQuery(sessionId, query, input, {
-          repo: this.repoFor(sessionId),
-          timeoutMs: queryTimeout,
-        });
-        record = envelopeResult(envelope);
-      } catch {
-        if (wasCancelledOrReplaced()) return undefined;
-        queryFailed = true;
-      }
-      if (wasCancelledOrReplaced()) return undefined;
-      if (queryFailed) {
-        const waitMs = Math.min(
-          REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS,
-          deadline - Date.now(),
-        );
-        if (waitMs <= 0) return undefined;
-        await new Promise((resolve) => setTimeout(resolve, waitMs));
-        continue;
-      }
-      if (!record) return { status: "unknown" };
-      const normalized = {
-        ...record,
-        status: typeof record.status === "string" ? record.status : "unknown",
-      };
-      if (normalized.status === "unknown" || isTerminal(normalized))
-        return normalized;
-      const waitMs = Math.min(
-        REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS,
-        deadline - Date.now(),
-      );
-      if (waitMs <= 0) return undefined;
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
-    return undefined;
-  }
-
-  /**
-   * Waits for an accepted prompt to reach a terminal record.
-   *
-   * The semantic `send` call returns at acceptance rather than holding open for the
-   * whole turn, so the window's spinner and final status need reconciliation. The
-   * turn is followed here instead: `turn.result` is the lossless record, and the
-   * transcript is watched in parallel by the session-file watcher.
-   *
-   * A prompt that is still running when the poll budget ends is left running. This
-   * never forces the row idle and never reports a cancel, because `unknown` and
-   * "still going" are both uncertainty, not proof the work stopped.
-   *
-   * A failed record without `startedAt` is returned as a request-scoped outcome.
-   * Poll exhaustion, query errors, and unknown selectors remain unknown; callers
-   * must not replay any of them.
-   */
-  private async awaitPromptSettlement(
+  private awaitPromptSettlement(
     sessionId: string,
     operationRef: string,
     isCurrent?: () => boolean,
@@ -2787,253 +2279,24 @@ export class GjcSdkController {
     | "unknown"
     | { kind: "not_executed"; detail: string }
   > {
-    const record = await this.reconcileRequestQuery(
-      sessionId,
-      "turn.result",
-      { kind: "prompt", clientRef: operationRef },
-      (result) =>
-        result.status === "terminal_ok" ||
-        result.status === "failed" ||
-        result.status === "unknown",
-      isCurrent,
-    );
-    if (!record || record.status === "unknown") return "unknown";
-    if (record.status === "failed") {
-      if (record.startedAt === undefined)
-        return {
-          kind: "not_executed",
-          detail: requestFailureDetail(record, PROMPT_NOT_EXECUTED_MESSAGE),
-        };
-      if (typeof record.startedAt !== "number" || !Number.isFinite(record.startedAt))
-        return "unknown";
-      const error =
-        record.error && typeof record.error === "object"
-          ? (record.error as Record<string, unknown>)
-          : undefined;
-      if (error?.code === "aborted" || error?.code === "cancelled")
-        return "terminal";
-      throw new Error(requestFailureDetail(record, "GJC run failed."));
-    }
-    return record.status === "terminal_ok" ? "terminal" : "unknown";
+    return awaitPromptSettlement(this.controlHost, sessionId, operationRef, isCurrent);
   }
 
-  async cancelRun(sessionId: string): Promise<void> {
-    const previous = this.cancellationPromises.get(sessionId);
-    if (previous) return previous;
-    let resolveCancellation!: () => void;
-    let rejectCancellation!: (error: unknown) => void;
-    const completion = new Promise<void>((resolve, reject) => {
-      resolveCancellation = resolve;
-      rejectCancellation = reject;
-    });
-    // The initiating caller receives the original error below; keep the shared
-    // promise from becoming an unhandled rejection when no concurrent caller
-    // is waiting on it.
-    void completion.catch(() => undefined);
-    this.cancellationPromises.set(sessionId, completion);
-    this.cancellingSessions.add(sessionId);
-    try {
-      const stop = await this.fireAbort(sessionId);
-      if (stop === "no_active_turn") {
-        // Nothing was running, so nothing was cancelled: the run state this window
-        // was showing is cleared so the row settles at idle, and the transcript is
-        // left alone -- it stays the source of truth for whether work continued on
-        // another connection. A notice here would claim a stop that did not happen.
-        throw new Error("GJC가 현재 연결에서 활성 turn을 찾지 못했습니다. 세션 작업의 중지 여부는 확인되지 않았습니다.");
-      } else {
-        this.finalizeThought(sessionId);
-        this.finalizeAssistantMessage(sessionId);
-        this.finalizeAllMessages(sessionId);
-        this.toolSnapshots.delete(sessionId);
-        this.cancelOpenTools(sessionId);
-        this.settleOpenQuestions(sessionId, "cancelled");
-        this.cancelPermissionsForSession(sessionId);
-        this.appendCancelledNotice(sessionId, stop === "plain");
-        this.locallyAbortedSessions.add(sessionId);
-        this.cancellationWatermarks.set(sessionId, Date.now());
-        this.activePromptAdmissions.delete(sessionId);
-        this.activePromptSessions.delete(sessionId);
-        // Only confirmed aborts may clear run authority and publish idle.
-        this.clearRunState(sessionId);
-      }
-      this.updateSessionStatus(sessionId, "idle");
-      resolveCancellation();
-    } catch (error) {
-      // No state was cleared before confirmation, so keep whatever the runtime
-      // currently reports instead of inventing running work for an idle session.
-      rejectCancellation(error);
-      throw error;
-    } finally {
-      this.cancellingSessions.delete(sessionId);
-      if (this.cancellationPromises.get(sessionId) === completion)
-        this.cancellationPromises.delete(sessionId);
-    }
-    return completion;
+  cancelRun(sessionId: string): Promise<void> {
+    return cancelRun(this.controlHost, sessionId);
   }
 
-  /**
-   * Drops this window's run-authority state for a session whose run is over.
-   */
-  private clearRunState(sessionId: string): void {
-    this.liveRunningSessions.delete(sessionId);
-    this.liveRunningDigests.delete(sessionId);
-    this.liveEvidenceAt.delete(sessionId);
-    this.transcriptRunningSessions.delete(sessionId);
-    this.workingPhaseSessions.delete(sessionId);
-    this.runtimeIdleSessions.delete(sessionId);
-    this.pendingAsyncWorkSessions.delete(sessionId);
-    this.discoveredRunStates.delete(sessionId);
-    this.compactingSessions.delete(sessionId);
-    this.compactionRecordBaseline.delete(sessionId);
-    this.compactionStartedAt.delete(sessionId);
-  }
-
-  /**
-   * Stops the run, through the operator route when the host serves it and through the
-   * ordinary abort when the host answers but refuses the operator-owned Stop.
-   *
-   * The result names what was confirmed: `owned` stopped this window's turn and the
-   * work the runtime counts as owned, `plain` stopped the turn through the ordinary
-   * route only, and `no_active_turn` means there was no turn to stop at all.
-   */
-  private async fireAbort(
+  private fireAbort(
     sessionId: string,
   ): Promise<"owned" | "plain" | "no_active_turn"> {
-    try {
-      await this.abortOwnedThroughControl(sessionId);
-      return "owned";
-    } catch (error) {
-      if (!(error instanceof OwnedStopUnavailableError)) throw error;
-    }
-    const disposition = await this.abortPlainThroughControl(sessionId);
-    return disposition === "stopped" ? "plain" : "no_active_turn";
-  }
-
-  /**
-   * Ordinary `turn.abort` -- the payload and route a CLI cancel uses.
-   *
-   * Verified against gjc/0.18.11: `session-cli.ts` diverts `turn.abort` to the broker
-   * `session.control` route only when the payload carries an `operator` key
-   * (`operatorAbortBrokerRequest`), so this shape travels the ordinary Router control
-   * path a directly launched TUI host does serve. Its dispositions (`session-runtime`
-   * `abort`) are `{aborted:true}` -- the run is gone -- for this connection's own
-   * turn, `{aborted:false, turn:"no_active_turn"}` when this connection owned no
-   * active run, and `{aborted:false, reason:"queue_terminal_unconfirmed"}` when it
-   * could not confirm. `turn:"stopped"` is the terminal-abort confirmation, accepted
-   * here too so a runtime that answers the ordinary route with the terminal
-   * disposition still reads as confirmed.
-   *
-   * Only a confirmation counts as stopped. The ordinary route stops this connection's
-   * turn and nothing the runtime holds as work owned by another connection, so its
-   * confirmation never substantiates that owned background work stopped.
-   *
-   * A route failure is reported as the owned-stop refusal instead of marking the
-   * session read-only: a refused Stop is not evidence that the session lost ordinary
-   * control (the metadata probe just proved it answers), and the refusal keeps the
-   * retry guidance the user can act on.
-   */
-  private async abortPlainThroughControl(
-    sessionId: string,
-  ): Promise<"stopped" | "no_active_turn"> {
-    const cli = await this.requireCli();
-    const answer = await cli
-      .rawControl(sessionId, "turn.abort", {}, { repo: this.repoFor(sessionId) })
-      .catch((error: unknown): never => {
-        throw new OwnedStopUnavailableError(error);
-      });
-    if (answer?.turn === "stopped" || answer?.aborted === true) return "stopped";
-    // No active turn on this connection: nothing was stopped, and that is not a
-    // failure to report.
-    if (answer?.turn === "no_active_turn") return "no_active_turn";
-    throw new Error(
-      `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(answer ?? null)}`,
-    );
+    return fireAbort(this.controlHost, sessionId);
   }
 
   private appendCancelledNotice(
     sessionId: string,
     ownedWorkUnconfirmed = false,
   ): void {
-    // A plain abort stops this connection's turn; reaching the work the runtime
-    // counts as owned needs the operator route, so that cancel states the limit in
-    // one sentence instead of claiming background work stopped.
-    const content = ownedWorkUnconfirmed
-      ? "진행 중인 작업이 취소되어 종료됐습니다. 다만 이 호스트의 백그라운드 작업은 중지 여부가 확인되지 않았습니다."
-      : "진행 중인 작업이 취소되어 종료됐습니다.";
-    const items = this.transcripts.get(sessionId) ?? [];
-    // The persisted transcript reports an aborted turn as `shared-cancelled-`,
-    // so checking only for this window's own prefix announced the same
-    // cancellation a second time once the rebuild had already landed. The caveat is
-    // part of the notice, so a cancel that states it is not swallowed by an earlier
-    // cancel that does not.
-    if (
-      items.some(
-        (item) =>
-          item.kind === "notice" &&
-          item.title === "작업 취소됨" &&
-          item.content === content,
-      )
-    )
-      return;
-    this.appendTranscript({
-      id: `gjc-cancelled-${this.nextLocalId++}`,
-      kind: "notice",
-      sessionId,
-      title: "작업 취소됨",
-      content,
-      tone: "neutral",
-      createdAt: nowLabel(),
-    });
-  }
-
-  /**
-   * Stops the current turn and this window's own background work.
-   *
-   * Terminal abort is session-scoped: it cancels the current turn and exactly the
-   * owned background work without signalling or closing the GJC session process.
-   * A signal is never sent -- SIGINT would take down a session the user may be
-   * sharing with a terminal.
-   *
-   * The payload carries only `mode`/`scope`/`operator`: the host validates terminal
-   * abort input strictly and rejects any other key (including `confirm` and
-   * `idempotencyKey`, which travel as CLI flags) with `usage`. Verified against
-   * gjc/0.18.11: adding a `clientRef` or `turnId` field to the terminal payload is
-   * rejected before dispatch.
-   *
-   * Only `turn: "stopped"` is a confirmation. The historical gjc/0.18.11 bug
-   * (fixed in 0.18.12) answered the typed disposition `{turn:"no_active_turn", terminal:"terminal_no_effect"}` when the
-   * broker route cannot see the host's active prompt -- reproducible while a turn is
-   * verifiably running (`status` in_flight and `turn.steer` accepted on the same
-   * session) -- and the turn keeps running. Reporting that as a cancellation would
-   * tell the user work stopped while it is still going, so the failure is surfaced
-   * instead and the local run state is left untouched.
-   */
-  private async abortOwnedThroughControl(
-    sessionId: string,
-  ): Promise<Record<string, unknown>> {
-    // The local running event precedes the host's broker registration. A Stop
-    // pressed in that gap answers `no_active_turn` even though the prompt is
-    // being accepted, so re-ask briefly before reporting the stop unconfirmed.
-    let result: Record<string, unknown> | undefined;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const idempotencyKey = `gajae-abort-${randomUUID()}`;
-      result = await this.controlSession(
-        sessionId,
-        "turn.abort",
-        {
-          mode: "terminal",
-          scope: "owned",
-          operator: true,
-        },
-        { idempotencyKey, confirm: true },
-      );
-      if (result?.turn === "stopped") return result;
-      if (result?.turn !== "no_active_turn" || attempt === 4) break;
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    throw new Error(
-      `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(result ?? null)}`,
-    );
+    return appendCancelledNotice(this.controlHost, sessionId, ownedWorkUnconfirmed);
   }
 
   toolDecisionInfo(
