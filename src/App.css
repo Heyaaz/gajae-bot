@@ -2340,6 +2340,124 @@
     monospace;
   white-space: pre-wrap;
 }
+.diff-lines {
+  max-height: 420px;
+  overflow: auto;
+  font:
+    10px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+}
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+}
+.diff-line code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 8px 0 4px;
+  color: var(--text-secondary);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-line-number {
+  flex: 0 0 34px;
+  min-height: 15px;
+  padding: 0 5px 0 0;
+  color: var(--text-tertiary);
+  font: inherit;
+  text-align: right;
+  background: none;
+  border: 0;
+  border-right: 1px solid var(--border);
+}
+button.diff-line-number {
+  cursor: pointer;
+}
+button.diff-line-number:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.diff-line--add code {
+  color: var(--success);
+}
+.diff-line--del code {
+  color: var(--danger);
+}
+.diff-line--hunk code,
+.diff-line--meta code {
+  color: var(--text-tertiary);
+}
+.diff-line.has-comment {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.diff-line.is-selected {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+.diff-comment-form,
+.diff-review-card {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.diff-comment-form {
+  margin: 4px 6px;
+}
+.diff-comment-form small,
+.diff-review-location {
+  color: var(--text-tertiary);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.diff-comment-form textarea,
+.diff-review-card textarea {
+  min-height: 52px;
+  padding: 6px;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  resize: vertical;
+}
+.diff-review {
+  display: grid;
+  gap: 8px;
+}
+.diff-review > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.diff-review > header strong {
+  font-size: 11px;
+  font-weight: 600;
+}
+.diff-panel .diff-review-card pre {
+  max-height: 120px;
+  padding: 6px;
+  font-size: 10px;
+  background: var(--bg-code);
+  border-radius: 4px;
+}
+.diff-review-card p {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.diff-review-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
 
 .diff-empty {
   color: var(--text-tertiary);

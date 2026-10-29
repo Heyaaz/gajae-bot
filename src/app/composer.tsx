@@ -259,6 +259,55 @@ export async function releaseQueuedSession(
   }
 }
 
+/** The held row a submission becomes while a turn is live. */
+export function heldComposerRequest(
+  content: string,
+  files: FileAttachment[],
+  images: ImageAttachment[],
+  runningSubmission: LiveTurnSubmissionMode,
+): PendingRequest {
+  const preview = composerQueuePreview(content, files, images);
+  const mode = liveTurnSubmissionMode(content, runningSubmission, false) === "steer"
+    ? "steer" : "followUp";
+  return {
+    id: `local-${crypto.randomUUID()}`,
+    text: preview.text,
+    mode,
+    label: mode === "steer" ? "Steer" : "Queued",
+    images,
+    files,
+  };
+}
+
+/**
+ * Submit for a session exactly as Enter in its composer would, whether or not
+ * that composer is mounted. A live turn, or work already held, makes it a held
+ * row in the session's queue; otherwise it is sent, and a rejected send returns
+ * to the session's draft with the same notice Enter gives.
+ */
+export function submitComposerInput(
+  sessionId: string,
+  input: MessageInput,
+  options: {
+    running: boolean;
+    runningSubmission: LiveTurnSubmissionMode;
+    send: (input: MessageInput) => Promise<unknown>;
+  },
+): void {
+  const pending = composerQueue(sessionId);
+  if (options.running || pending.length > 0) {
+    saveComposerQueue(
+      sessionId,
+      appendPendingRequest(
+        pending,
+        heldComposerRequest(input.text, input.files, input.images, options.runningSubmission),
+      ),
+    );
+    return;
+  }
+  void options.send(input).catch(() => publishComposerDraftRecovery(sessionId, input));
+}
+
 /** Whether any release for this session is already handing requests over. */
 export function queueReleaseInFlight(sessionId: string): boolean {
   return releasingQueues.has(sessionId);
@@ -1410,18 +1459,11 @@ export const Composer = memo(function Composer({
     if (holdForTurn) {
       // Steer intent is held visibly too. Only Send now releases an individual
       // instruction into the running turn; submitting must not skip this row.
-      const preview = composerQueuePreview(content, files, images);
-      const mode = liveTurnSubmissionMode(content, runningSubmission, false) === "steer"
-        ? "steer" : "followUp";
       setPendingQueue((current) =>
-        appendPendingRequest(current, {
-          id: `local-${crypto.randomUUID()}`,
-          text: preview.text,
-          mode,
-          label: mode === "steer" ? "Steer" : "Queued",
-          images,
-          files,
-        }),
+        appendPendingRequest(
+          current,
+          heldComposerRequest(content, files, images, runningSubmission),
+        ),
       );
     } else {
       // SDK slash commands are controls/queries, not prompts. They remain useful

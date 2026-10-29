@@ -57,6 +57,7 @@ import {
   Composer,
   prefillComposerDraft,
   releaseQueuedSession,
+  submitComposerInput,
   subscribeComposerReleaseRetry,
 } from "./composer";
 import {
@@ -2936,6 +2937,18 @@ export default function App() {
     if (!session) return Promise.resolve(undefined);
     return current.sendMessage(session.id, input);
   }, []);
+  // A diff review is submitted as if typed into that session's composer, so a
+  // live turn holds it as a row instead of sending it.
+  const submitReview = useCallback((sessionId: string, text: string) => {
+    submitComposerInput(sessionId, { text, images: [], files: [] }, {
+      running: composerTurnLive(
+        sessionsRef.current.find((session) => session.id === sessionId) ?? null,
+        transcriptsRef.current[sessionId] ?? EMPTY_TRANSCRIPT,
+      ),
+      runningSubmission: preferencesRef.current.runningSubmission,
+      send: (input) => sendMessageRef.current(sessionId, input),
+    });
+  }, []);
   const onComposerCancel = useCallback(() => {
     const session = composerActionsRef.current.session;
     if (!session) return Promise.resolve();
@@ -3111,6 +3124,7 @@ export default function App() {
           onOpenSession={selectSession}
           onClose={openConversation}
           onError={setAppError}
+          onSubmitReview={remoteViewOnly ? undefined : submitReview}
         />
       ) : selectedSession ? (
         <main className="workspace" data-surface={surface}>
@@ -3338,6 +3352,7 @@ export default function App() {
                 loading={diffLoading}
                 onRefresh={() => void refreshDiff()}
                 onClose={() => setDiffOpen(false)}
+                onSubmitReview={remoteViewOnly ? undefined : submitReview}
               />
             )}
           </div>

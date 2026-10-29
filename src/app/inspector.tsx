@@ -1,5 +1,6 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
+  ChangedFile,
   DiffSnapshot,
   GitStatusSnapshot,
   GoalOperation,
@@ -9,9 +10,36 @@ import type {
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
 import { Copy, RotateCcw, Target, X } from "lucide-react";
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { sessionTitleText, statusLabel, storyStatusLabel, subagentLabel } from "./format";
 import { t, useLanguage } from "../i18n";
+import {
+  anchorLineKeys,
+  diffLineKey,
+  diffLineNumber,
+  formatReview,
+  isCommentable,
+  parseDiffPatch,
+  reviewAnchor,
+  reviewComments,
+  reviewLocation,
+  saveReviewComments,
+  subscribeReviewComments,
+  type DiffLine,
+  type ReviewAnchor,
+  type ReviewComment,
+} from "./review-model";
 
 
 export function shouldClearCommitMessage(
@@ -282,6 +310,79 @@ function scoped<T>(
   return state?.sessionId === sessionId ? state.value : fallback;
 }
 
+/** Rows picked for a new comment, by line key so a refresh of the same diff keeps them. */
+type LineSelection = { fileId: string; anchor: string; focus: string };
+
+type ParsedFile = { file: ChangedFile; lines: DiffLine[] };
+
+function rowIndex(lines: readonly DiffLine[], key: string): number {
+  return lines.findIndex((line) => isCommentable(line) && diffLineKey(line) === key);
+}
+
+function commentedRows(
+  parsed: ParsedFile,
+  comments: readonly ReviewComment[],
+): Set<number> {
+  const rows = new Set<number>();
+  for (const comment of comments) {
+    if (comment.file !== parsed.file.path) continue;
+    const [first, last] = anchorLineKeys(comment);
+    const from = rowIndex(parsed.lines, first);
+    const to = rowIndex(parsed.lines, last);
+    if (from < 0 || to < 0) continue;
+    for (let index = from; index <= to; index += 1) rows.add(index);
+  }
+  return rows;
+}
+
+function DiffFileLines({
+  parsed,
+  selected,
+  commented,
+  onPick,
+  form,
+}: {
+  parsed: ParsedFile;
+  selected: readonly [number, number] | null;
+  commented: ReadonlySet<number>;
+  onPick: (key: string, extend: boolean) => void;
+  form: ReactNode;
+}) {
+  if (!parsed.lines.some(isCommentable))
+    return <pre>{parsed.file.patch || t("(패치 없음)")}</pre>;
+  return (
+    <div className="diff-lines">
+      {parsed.lines.map((line, index) => {
+        const inSelection =
+          selected !== null && index >= selected[0] && index <= selected[1];
+        return (
+          <Fragment key={index}>
+            <div
+              className={`diff-line diff-line--${line.kind}${inSelection ? " is-selected" : ""}${commented.has(index) ? " has-comment" : ""}`}
+            >
+              {isCommentable(line) ? (
+                <button
+                  type="button"
+                  className="diff-line-number"
+                  aria-pressed={inSelection}
+                  title={t("코멘트할 줄 선택 (Shift+클릭으로 범위 선택)")}
+                  onClick={(event) => onPick(diffLineKey(line), event.shiftKey)}
+                >
+                  {diffLineNumber(line)}
+                </button>
+              ) : (
+                <span className="diff-line-number" />
+              )}
+              <code>{line.text}</code>
+            </div>
+            {selected?.[1] === index && form}
+          </Fragment>
+        );
+      })}
+    </div>
+  );
+}
+
 export function DiffPanel({
   session,
   backend,
@@ -289,6 +390,7 @@ export function DiffPanel({
   loading,
   onRefresh,
   onClose,
+  onSubmitReview,
 }: {
   session: AgentSession;
   backend: AgentBackend;
@@ -296,6 +398,8 @@ export function DiffPanel({
   loading: boolean;
   onRefresh: () => void;
   onClose: () => void;
+  /** Hands the formatted review to the session's composer rules; omitted where sending is not allowed. */
+  onSubmitReview?: (sessionId: string, text: string) => void;
 }) {
   const sessionIdRef = useRef(session.id);
   sessionIdRef.current = session.id;
@@ -325,6 +429,123 @@ export function DiffPanel({
   const commitMessage = scoped(draftState, session.id, "");
   const gitBusy = scoped(busyState, session.id, false);
   const gitError = scoped(errorState, session.id, "");
+  const comments = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) => subscribeReviewComments(session.id, listener),
+      [session.id],
+    ),
+    () => reviewComments(session.id),
+  );
+  const [lineState, setLineState] = useState<SessionScoped<LineSelection | null> | null>(null);
+  const lineSelection = scoped(lineState, session.id, null);
+  const [noteState, setNoteState] = useState<SessionScoped<string> | null>(null);
+  const note = scoped(noteState, session.id, "");
+  const [editState, setEditState] = useState<
+    SessionScoped<{ id: string; body: string } | null> | null
+  >(null);
+  const editing = scoped(editState, session.id, null);
+  const parsedFiles = useMemo(
+    () =>
+      (diff?.files ?? []).map((file) => ({ file, lines: parseDiffPatch(file.patch) })),
+    [diff],
+  );
+  const selectedFile = parsedFiles.find(
+    (parsed) => parsed.file.id === lineSelection?.fileId,
+  );
+  const selectedRows: [number, number] | null =
+    selectedFile && lineSelection
+      ? [
+          rowIndex(selectedFile.lines, lineSelection.anchor),
+          rowIndex(selectedFile.lines, lineSelection.focus),
+        ]
+      : null;
+  const selectedAnchor: ReviewAnchor | null =
+    selectedFile && selectedRows && selectedRows.every((row) => row >= 0)
+      ? reviewAnchor(selectedFile.file.path, selectedFile.lines, ...selectedRows)
+      : null;
+
+  function pickLine(parsed: ParsedFile, key: string, extend: boolean): void {
+    const current = lineSelection;
+    let next: LineSelection | null = { fileId: parsed.file.id, anchor: key, focus: key };
+    if (current?.fileId === parsed.file.id) {
+      const from = rowIndex(parsed.lines, current.anchor);
+      // A range never leaves its hunk; a shift-click outside it starts over.
+      if (extend && from >= 0 && reviewAnchor(parsed.file.path, parsed.lines, from, rowIndex(parsed.lines, key)))
+        next = { ...current, focus: key };
+      else if (!extend && current.anchor === key && current.focus === key) next = null;
+    }
+    setLineState({ sessionId: session.id, value: next });
+  }
+
+  function addComment(): void {
+    const body = note.trim();
+    if (!selectedAnchor || !body) return;
+    saveReviewComments(session.id, [
+      ...reviewComments(session.id),
+      { ...selectedAnchor, id: crypto.randomUUID(), body },
+    ]);
+    setLineState({ sessionId: session.id, value: null });
+    setNoteState({ sessionId: session.id, value: "" });
+  }
+
+  function saveEdit(): void {
+    const body = editing?.body.trim();
+    if (!editing || !body) return;
+    saveReviewComments(
+      session.id,
+      reviewComments(session.id).map((comment) =>
+        comment.id === editing.id ? { ...comment, body } : comment,
+      ),
+    );
+    setEditState({ sessionId: session.id, value: null });
+  }
+
+  function sendReview(): void {
+    const pending = reviewComments(session.id);
+    if (!onSubmitReview || pending.length === 0) return;
+    onSubmitReview(session.id, formatReview(pending));
+    saveReviewComments(session.id, []);
+    setEditState({ sessionId: session.id, value: null });
+  }
+
+  const commentForm = selectedAnchor && (
+    <form
+      className="diff-comment-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        addComment();
+      }}
+    >
+      <small>{reviewLocation(selectedAnchor)}</small>
+      <textarea
+        autoFocus
+        aria-label={t("코멘트")}
+        placeholder={t("이 코드에 대한 코멘트")}
+        value={note}
+        onChange={(event) =>
+          setNoteState({ sessionId: session.id, value: event.target.value })
+        }
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            addComment();
+          }
+        }}
+      />
+      <div className="diff-review-actions">
+        <button
+          className="button-secondary"
+          type="button"
+          onClick={() => setLineState({ sessionId: session.id, value: null })}
+        >
+          {t("취소")}
+        </button>
+        <button className="button-primary" type="submit" disabled={!note.trim()}>
+          {t("코멘트 추가")}
+        </button>
+      </div>
+    </form>
+  );
   const refreshGit = useCallback(() => {
     const sessionId = session.id;
     const request = ++gitRequestRef.current;
@@ -551,14 +772,106 @@ export function DiffPanel({
         <p className="diff-empty">
           {t("Git 변경 작업은 Gajae managed worktree 세션에서만 사용할 수 있습니다.")} </p>
       )}
+      {comments.length > 0 && (
+        <section className="diff-review" aria-label={t("리뷰 코멘트")}>
+          <header>
+            <strong>{t`리뷰 코멘트 ${comments.length}개`}</strong>
+            {onSubmitReview && (
+              <button className="button-primary" type="button" onClick={sendReview}>
+                {t("리뷰 보내기")}
+              </button>
+            )}
+          </header>
+          {comments.map((comment) => (
+            <article key={comment.id} className="diff-review-card">
+              <code className="diff-review-location">{reviewLocation(comment)}</code>
+              <pre>{comment.excerpt}</pre>
+              {editing?.id === comment.id ? (
+                <>
+                  <textarea
+                    autoFocus
+                    aria-label={t("코멘트 수정")}
+                    value={editing.body}
+                    onChange={(event) =>
+                      setEditState({
+                        sessionId: session.id,
+                        value: { id: comment.id, body: event.target.value },
+                      })
+                    }
+                  />
+                  <div className="diff-review-actions">
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      onClick={() => setEditState({ sessionId: session.id, value: null })}
+                    >
+                      {t("취소")}
+                    </button>
+                    <button
+                      className="button-primary"
+                      type="button"
+                      disabled={!editing.body.trim()}
+                      onClick={saveEdit}
+                    >
+                      {t("저장")}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p>{comment.body}</p>
+                  <div className="diff-review-actions">
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      onClick={() =>
+                        setEditState({
+                          sessionId: session.id,
+                          value: { id: comment.id, body: comment.body },
+                        })
+                      }
+                    >
+                      {t("수정")}
+                    </button>
+                    <button
+                      className="button-secondary"
+                      type="button"
+                      onClick={() =>
+                        saveReviewComments(
+                          session.id,
+                          reviewComments(session.id).filter(
+                            (entry) => entry.id !== comment.id,
+                          ),
+                        )
+                      }
+                    >
+                      {t("삭제")}
+                    </button>
+                  </div>
+                </>
+              )}
+            </article>
+          ))}
+        </section>
+      )}
       {diff?.error && <p className="diff-error">{diff.error}</p>}
       {!loading && !diff?.error && (diff?.files.length ?? 0) === 0 && (
         <p className="diff-empty">{t("변경된 파일이 없습니다.")}</p>
       )}
-      {diff?.files.map((file) => (
-        <details key={file.id} open>
-          <summary>{file.path}</summary>
-          <pre>{file.patch || t("(패치 없음)")}</pre>
+      {parsedFiles.map((parsed) => (
+        <details key={parsed.file.id} open>
+          <summary>{parsed.file.path}</summary>
+          <DiffFileLines
+            parsed={parsed}
+            selected={
+              parsed === selectedFile && selectedAnchor && selectedRows
+                ? [Math.min(...selectedRows), Math.max(...selectedRows)]
+                : null
+            }
+            commented={commentedRows(parsed, comments)}
+            onPick={(key, extend) => pickLine(parsed, key, extend)}
+            form={parsed === selectedFile ? commentForm : null}
+          />
         </details>
       ))}
     </aside>

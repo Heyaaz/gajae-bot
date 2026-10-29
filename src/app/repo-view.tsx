@@ -711,6 +711,8 @@ export interface RepoViewProps {
   onOpenSession: (sessionId: string) => void;
   onClose: () => void;
   onError: (message: string) => void;
+  /** Sends a diff review through the session's composer rules. */
+  onSubmitReview?: (sessionId: string, text: string) => void;
 }
 
 /** Which session's changed files are open, and what has arrived for it. */
@@ -747,6 +749,7 @@ export function RepoView({
   onOpenSession,
   onClose,
   onError,
+  onSubmitReview,
 }: RepoViewProps) {
   const [tab, setTab] = useState<RepoViewTab>("overview");
   const [repository, setRepository] = useState<RepoLoad<RepositorySnapshot>>({
@@ -932,6 +935,7 @@ export function RepoView({
             loading={currentChanges.loading}
             onRefresh={() => openChanges(currentChanges.session)}
             onClose={() => setChanges(null)}
+            onSubmitReview={onSubmitReview}
           />
         </>
       );
