@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import {
   parseQuickInputSubmission,
   quickInputProjects,
 } from "../shared/quick-input.js";
-import { QuickInputShortcut, captureScreen, type GlobalShortcutApi } from "./quick-input.js";
+import { QuickInputShortcut, captureScreen, CAPTURE_MAX_BYTES, type GlobalShortcutApi } from "./quick-input.js";
 
 function fakeShortcuts(taken: string[] = []) {
   const live = new Map<string, () => void>();
@@ -88,6 +88,33 @@ describe("captureScreen", () => {
     expect(Buffer.from(result.capture.data, "base64").toString()).toBe("png-bytes");
     expect(result.file && path.dirname(result.file)).toBe(directory);
     expect(readdirSync(directory)).toEqual([result.capture.name]);
+  });
+
+  it("shrinks a capture over the attachment limit so it can still be sent", async () => {
+    const directory = captureDirectory();
+    const big = Buffer.alloc(CAPTURE_MAX_BYTES + 1, 1);
+    const result = await captureScreen({
+      directory,
+      screenAccess: () => "granted",
+      runCapture: async (file) => writeFileSync(file, big),
+      downscale: (png, factor) => Buffer.alloc(Math.round(png.length * factor), 2),
+    });
+    expect(result.outcome).toBe("captured");
+    if (result.outcome !== "captured" || !result.file) return;
+    const stored = readFileSync(result.file);
+    expect(stored.length).toBeLessThanOrEqual(CAPTURE_MAX_BYTES);
+    expect(Buffer.from(result.capture.data, "base64").length).toBe(stored.length);
+  });
+
+  it("fails at capture time when an oversized capture cannot be shrunk", async () => {
+    const directory = captureDirectory();
+    const result = await captureScreen({
+      directory,
+      screenAccess: () => "granted",
+      runCapture: async (file) => writeFileSync(file, Buffer.alloc(CAPTURE_MAX_BYTES + 1)),
+    });
+    expect(result).toMatchObject({ outcome: "failed", message: expect.stringContaining("10 MiB") });
+    expect(readdirSync(directory)).toEqual([]);
   });
 
   it("does not run screencapture again once Screen Recording is denied", async () => {

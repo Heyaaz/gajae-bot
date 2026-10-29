@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   QuickInputShortcutStatus,
@@ -76,7 +76,14 @@ export interface ScreenCaptureOptions {
   /** Runs `screencapture` and resolves once the user has finished or cancelled. */
   runCapture?(file: string): Promise<void>;
   now?(): number;
+  /** Re-encodes a PNG at `factor` of its size; absent means oversized captures fail. */
+  downscale?(png: Buffer, factor: number): Buffer;
 }
+
+/** The attachment limit for an image (`imageAttachment`), checked here so it fails at capture. */
+export const CAPTURE_MAX_BYTES = 10 * 1024 * 1024;
+const DOWNSCALE_FACTOR = 0.7;
+const DOWNSCALE_ATTEMPTS = 8;
 
 const CAPTURE_LIFETIME_MS = 24 * 60 * 60 * 1000;
 
@@ -104,7 +111,20 @@ export async function captureScreen(
       message: error instanceof Error ? error.message : String(error),
     };
   }
-  const data = await readFile(file).catch(() => undefined);
+  let data = await readFile(file).catch(() => undefined);
+  if (data && data.length > CAPTURE_MAX_BYTES) {
+    const fitted = fitToLimit(data, options.downscale);
+    if (!fitted) {
+      await unlink(file).catch(() => undefined);
+      return {
+        outcome: "failed",
+        message: "캡처가 10 MiB 제한을 초과합니다. 더 작은 영역을 선택해 주세요.",
+      };
+    }
+    // The submitted file is the one the attachment limit is checked against.
+    await writeFile(file, fitted);
+    data = fitted;
+  }
   if (!data || data.length === 0) {
     // No file is what both Escape and a refusal leave behind; only the
     // permission state tells them apart.
@@ -117,6 +137,25 @@ export async function captureScreen(
     capture: { id: randomUUID(), name, data: data.toString("base64") },
     file,
   };
+}
+
+function fitToLimit(
+  png: Buffer,
+  downscale: ScreenCaptureOptions["downscale"],
+): Buffer | undefined {
+  if (!downscale) return undefined;
+  let current = png;
+  let scale = 1;
+  for (let attempt = 0; attempt < DOWNSCALE_ATTEMPTS; attempt += 1) {
+    scale *= DOWNSCALE_FACTOR;
+    try {
+      current = downscale(png, scale);
+    } catch {
+      return undefined;
+    }
+    if (current.length > 0 && current.length <= CAPTURE_MAX_BYTES) return current;
+  }
+  return undefined;
 }
 
 function deniedAccess(access: ScreenAccess): boolean {

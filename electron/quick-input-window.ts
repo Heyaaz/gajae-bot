@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, screen, shell } from "electron";
+import { BrowserWindow, ipcMain, nativeImage, screen, shell } from "electron";
 import {
   QUICK_INPUT_IPC,
   parseQuickInputSubmission,
@@ -29,6 +29,14 @@ export interface QuickInputWindowOptions {
 
 const SCREEN_RECORDING_SETTINGS =
   "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+
+function downscalePng(png: Buffer, factor: number): Buffer {
+  const image = nativeImage.createFromBuffer(png);
+  const { width } = image.getSize();
+  return image
+    .resize({ width: Math.max(1, Math.round(width * factor)), quality: "best" })
+    .toPNG();
+}
 
 /**
  * The small window the global shortcut opens over whatever app is in front.
@@ -133,6 +141,12 @@ export class QuickInputWindow {
         sandbox: true,
       },
     });
+    if (process.platform === "darwin") {
+      // Without these the panel stays on the Space it was created in and cannot
+      // sit over a full-screen app, so the shortcut would switch Spaces.
+      window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      window.setAlwaysOnTop(true, "screen-saver");
+    }
     this.options.security.register(window, this.options.url);
     window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     window.webContents.on("will-navigate", (event) => event.preventDefault());
@@ -157,6 +171,7 @@ export class QuickInputWindow {
       const { file, ...result } = await captureScreen({
         directory: this.options.captureDirectory,
         screenAccess: this.options.screenAccess,
+        downscale: downscalePng,
       });
       if (result.outcome === "captured" && file)
         this.captures.set(result.capture.id, file);
