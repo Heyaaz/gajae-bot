@@ -184,11 +184,9 @@ import {
   redactSensitiveText,
   sameTranscriptItem,
   sanitizeLocalAttachmentBlocks,
-  sdkSlashCommandsForOperations,
   sessionInfoToAgentSession,
   sharedContentText,
   sharedTranscriptItems,
-  skillsDisabledByConfig,
   tailReadPause,
   tailRetryPause,
   taskStatus,
@@ -215,6 +213,19 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  clearCommandRefreshRetry,
+  COMMAND_REFRESH_RETRY_BASE_MS,
+  COMMAND_REFRESH_RETRY_MAX_MS,
+  type CommandPaletteHost,
+  publishSessionCommands,
+  refreshSdkCommands,
+  sdkOperations,
+} from "./gjc-sdk-command-palette.js";
+export {
+  COMMAND_REFRESH_RETRY_BASE_MS,
+  COMMAND_REFRESH_RETRY_MAX_MS,
+} from "./gjc-sdk-command-palette.js";
 import {
   hasAnswerableQuestion,
   projectWorkflowGate,
@@ -245,9 +256,6 @@ export * from "./gjc-sdk-foundation.js";
 /** Fallback todo read when the session has no live todo event channel. */
 export const TODO_EVENT_POLL_BASE_MS = 30_000;
 export const TODO_EVENT_POLL_MAX_MS = 120_000;
-/** Command palette refresh after a failed read, doubled until the cap. */
-export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
-export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
 /**
  * `session.progress` reads. A tool end, a gate or a turn end asks for one, and
  * those are coalesced to at most one read per interval. Without such an event
@@ -330,15 +338,6 @@ const REQUEST_OUTCOME_RECONCILIATION_BUDGET_MS = 20_000;
 // promptly without tying process spawns to the polling clock.
 const REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS = 1_000;
 const REQUEST_OUTCOME_QUERY_TIMEOUT_MS = 2_000;
-
-function commandPublicationKey(commands: readonly AgentCommand[]): string {
-  return commands
-    .map(
-      (command) =>
-        `${command.name}\0${command.description}\0${command.hint ?? ""}`,
-    )
-    .join("\n");
-}
 
 /** The id of the newest transcript row a tail read returned. */
 function lastTailTranscriptId(
@@ -726,6 +725,43 @@ export class GjcSdkController {
     },
     updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
+  }))(this);
+
+  private readonly commandPaletteHost: CommandPaletteHost = ((controller: GjcSdkController): CommandPaletteHost => ({
+    get commandRefreshes() {
+      return controller.commandRefreshes;
+    },
+    get sessionAdvertisedCommands() {
+      return controller.sessionAdvertisedCommands;
+    },
+    get sessionDiscoveredCommands() {
+      return controller.sessionDiscoveredCommands;
+    },
+    get sessionCommands() {
+      return controller.sessionCommands;
+    },
+    get disposed() {
+      return controller.disposed;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    get commandRefreshTimers() {
+      return controller.commandRefreshTimers;
+    },
+    get commandRefreshAttempts() {
+      return controller.commandRefreshAttempts;
+    },
+    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    get sessionSdkOperations() {
+      return controller.sessionSdkOperations;
+    },
+    get publishedCommandKeys() {
+      return controller.publishedCommandKeys;
+    },
+    get emitEvent() {
+      return controller.emitEvent;
+    },
   }))(this);
 
   constructor(options: GjcControllerOptions) {
@@ -2205,24 +2241,11 @@ export class GjcSdkController {
     return refresh;
   }
 
-  /**
-   * Hands the renderer a command palette once per distinct content.
-   *
-   * Reopening a session used to emit the cached palette on every visit, and the
-   * shell replaced its state with a new array of the same commands.
-   */
   private publishSessionCommands(
     sessionId: string,
     commands: readonly AgentCommand[],
   ): void {
-    const key = commandPublicationKey(commands);
-    if (this.publishedCommandKeys.get(sessionId) === key) return;
-    this.publishedCommandKeys.set(sessionId, key);
-    this.emitEvent({
-      type: "session.commands",
-      sessionId,
-      commands: commands.map((command) => ({ ...command })),
-    });
+    return publishSessionCommands(this.commandPaletteHost, sessionId, commands);
   }
 
   /**
@@ -4487,207 +4510,22 @@ export class GjcSdkController {
     }
   }
 
-  /**
-   * Rebuilds one session's command palette.
-   *
-   * Three sources feed it:
-   *  - this window's adapter specs, filtered by the operations the runtime
-   *    advertises (`runtime.capabilities`);
-   *  - dynamic commands synthesized from runtime state (`discoverDynamicCommands`),
-   *    which is what fills a skill palette on create/attach before GJC has published
-   *    anything of its own;
-   *  - the runtime's advertised commands (`available_commands_update`), which win on
-   *    a name collision.
-   *
-   * The palette is rebuilt from those sources whole, so a command the runtime stops
-   * listing leaves with it. An authoritative update is also authority over the
-   * synthesized set: once one arrives, even an empty one, the runtime's own list is
-   * used alone and the synthesized entries are dropped instead of being merged back
-   * in. A failing source contributes nothing rather than clearing the palette.
-   */
   private refreshSdkCommands(
     sessionId: string,
     advertised?: AgentCommand[],
   ): Promise<void> {
-    // An advertised update carries new authority and must run on its own. Every
-    // other caller is asking for the same rebuild, so join the one in flight
-    // instead of starting a second pair of capability/skill CLI reads.
-    if (advertised) return this.rebuildSdkCommands(sessionId, advertised);
-    const inFlight = this.commandRefreshes.get(sessionId);
-    if (inFlight) return inFlight;
-    const refresh = this.rebuildSdkCommands(sessionId).finally(() => {
-      if (this.commandRefreshes.get(sessionId) === refresh)
-        this.commandRefreshes.delete(sessionId);
-    });
-    this.commandRefreshes.set(sessionId, refresh);
-    return refresh;
-  }
-
-  private async rebuildSdkCommands(
-    sessionId: string,
-    advertised?: AgentCommand[],
-  ): Promise<void> {
-    if (advertised) this.sessionAdvertisedCommands.set(sessionId, advertised);
-    // A capability query that answers nothing is not the same as one that answered
-    // "no": the cached set is reused when there is one, and the adapter specs stay
-    // out of the palette rather than reporting a guess either way. A query that
-    // fails is neither: the palette already on screen stays, and the read is
-    // retried with backoff instead of being abandoned until the next open.
-    let operations: Set<string>;
-    try {
-      operations = await this.sdkOperations(sessionId, { strict: true });
-    } catch {
-      this.scheduleCommandRefreshRetry(sessionId);
-      return;
-    }
-    const authoritative = this.sessionAdvertisedCommands.get(sessionId);
-    let discovered: AgentCommand[] | undefined;
-    if (authoritative === undefined) {
-      try {
-        discovered = await this.discoverDynamicCommands(sessionId, operations);
-      } catch {
-        this.scheduleCommandRefreshRetry(sessionId);
-        return;
-      }
-    }
-    if (discovered) this.sessionDiscoveredCommands.set(sessionId, discovered);
-    else this.sessionDiscoveredCommands.delete(sessionId);
-    if (
-      operations.size === 0 &&
-      authoritative === undefined &&
-      discovered === undefined
-    ) {
-      // Nothing to rebuild from: never publish an empty palette over a good cache.
-      // An empty answer is still an answer, so a previous failure stops retrying.
-      this.clearCommandRefreshRetry(sessionId);
-      return;
-    }
-    const commands = [
-      ...new Map(
-        [
-          ...sdkSlashCommandsForOperations([...operations]),
-          ...(discovered ?? []),
-          ...(authoritative ?? []),
-        ].map((command) => [command.name, command]),
-      ).values(),
-    ];
-    this.sessionCommands.set(sessionId, commands);
-    this.clearCommandRefreshRetry(sessionId);
-    this.publishSessionCommands(sessionId, commands);
-  }
-
-  private scheduleCommandRefreshRetry(sessionId: string): void {
-    if (
-      this.disposed ||
-      !this.sessions.has(sessionId) ||
-      this.commandRefreshTimers.has(sessionId)
-    )
-      return;
-    const attempt = this.commandRefreshAttempts.get(sessionId) ?? 0;
-    const delay = Math.min(
-      COMMAND_REFRESH_RETRY_MAX_MS,
-      COMMAND_REFRESH_RETRY_BASE_MS * 2 ** attempt,
-    );
-    this.commandRefreshAttempts.set(sessionId, attempt + 1);
-    const timer = setTimeout(() => {
-      this.commandRefreshTimers.delete(sessionId);
-      if (this.disposed || !this.sessions.has(sessionId)) return;
-      void this.refreshSdkCommands(sessionId);
-    }, delay);
-    this.commandRefreshTimers.set(sessionId, timer);
+    return refreshSdkCommands(this.commandPaletteHost, sessionId, advertised);
   }
 
   private clearCommandRefreshRetry(sessionId: string): void {
-    const timer = this.commandRefreshTimers.get(sessionId);
-    if (timer) clearTimeout(timer);
-    this.commandRefreshTimers.delete(sessionId);
-    this.commandRefreshAttempts.delete(sessionId);
+    return clearCommandRefreshRetry(this.commandPaletteHost, sessionId);
   }
 
-  /**
-   * Dynamic commands synthesized from runtime state, used only until the runtime
-   * publishes its own list.
-   *
-   * `skill.list/state` is the only dynamic command source gjc/0.18.11 exposes through
-   * the SDK query surface: there is no query for the slash-command snapshot the
-   * runtime builds for its own UI (`getSessionSlashCommands`, which filters
-   * `skillsSettings.enableSkillCommands` and `skill.hide`), and this window does not
-   * pretend to reproduce that registry. Rows that carry a visibility flag are honored
-   * and a config that explicitly disables skills removes the whole set, but a hidden
-   * skill in a row that carries no flag cannot be told apart from a visible one, so
-   * these entries are advertised as selectable agent work only: `/skill:<name>` is
-   * still delivered to the runtime as a prompt, and the runtime decides whether the
-   * skill runs. They are also dropped as soon as an `available_commands_update`
-   * arrives, since the runtime's own list is the authority on its own commands.
-   */
-  private async discoverDynamicCommands(
-    sessionId: string,
-    operations: ReadonlySet<string>,
-  ): Promise<AgentCommand[] | undefined> {
-    if (!operations.has("skill.list/state")) return undefined;
-    const [skills, config] = await Promise.all([
-      this.querySessionItems(sessionId, "skill.list/state", {}, { strict: true }),
-      operations.has("config.list/get")
-        ? this.querySessionItems(
-            sessionId,
-            "config.list/get",
-            {},
-            { strict: true },
-          )
-        : Promise.resolve([]),
-    ]);
-    if (skillsDisabledByConfig(config)) return [];
-    const commands = new Map<string, AgentCommand>();
-    for (const row of skills) {
-      if (!row || typeof row !== "object" || Array.isArray(row)) continue;
-      const skill = row as Record<string, unknown>;
-      const name = typeof skill.name === "string" ? skill.name.trim() : "";
-      if (!name) continue;
-      if (
-        skill.hide === true ||
-        skill.hidden === true ||
-        skill.enabled === false ||
-        skill.visible === false
-      )
-        continue;
-      const commandName = `skill:${name}`;
-      if (commands.has(commandName)) continue;
-      const description =
-        typeof skill.description === "string" ? skill.description : "";
-      commands.set(commandName, {
-        name: commandName,
-        description: description || `Run the ${name} skill`,
-        hint: "[instructions]",
-      });
-    }
-    return [...commands.values()];
-  }
-
-  private async sdkOperations(
+  private sdkOperations(
     sessionId: string,
     options?: { strict?: boolean },
   ): Promise<Set<string>> {
-    const cached = this.sessionSdkOperations.get(sessionId);
-    if (cached) return cached;
-    const rows = await this.querySessionItems(
-      sessionId,
-      "runtime.capabilities",
-      {},
-      options?.strict ? { strict: true } : undefined,
-    );
-    const operations = new Set(
-      rows.flatMap((row) => {
-        if (!row || typeof row !== "object" || Array.isArray(row)) return [];
-        const value = row as Record<string, unknown>;
-        return Array.isArray(value.operations)
-          ? value.operations.filter(
-              (operation): operation is string => typeof operation === "string",
-            )
-          : [];
-      }),
-    );
-    if (operations.size > 0) this.sessionSdkOperations.set(sessionId, operations);
-    return operations;
+    return sdkOperations(this.commandPaletteHost, sessionId, options);
   }
 
   async getGoal(sessionId: string): Promise<GoalSnapshot> {
