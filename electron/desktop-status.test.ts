@@ -202,6 +202,22 @@ describe("desktopStatusRenderer", () => {
     expect(calls).toEqual(["tray:\u25B6\uFE0E1", "badge:"]);
   });
 
+  it("redraws an unchanged state once the host language changes", () => {
+    const trays: (StatusTray | null)[] = [];
+    const render = desktopStatusRenderer({
+      setTray: (tray) => trays.push(tray),
+      setBadge: () => undefined,
+    });
+    const state = stateOf([session("a", { status: "running" })]);
+    render(state);
+    setHostLanguage("en");
+    render(state);
+    expect(trays.map((tray) => tray?.menu.at(-1))).toEqual([
+      { kind: "open-app", label: "Gajae 열기" },
+      { kind: "open-app", label: "Open Gajae" },
+    ]);
+  });
+
   it("hides and restores the menu bar item when the preference flips", () => {
     const { calls, surface } = recordingSurface();
     const render = desktopStatusRenderer(surface);

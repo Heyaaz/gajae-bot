@@ -337,9 +337,10 @@ type BadgingNavigator = Navigator & {
 /**
  * Mirrors unread sessions onto the installed PWA icon.
  *
- * The desktop window keeps its own sidebar count; the badge is what a phone can
- * see without opening the app. Rejection is non-fatal: a browser without the
- * Badging API simply has no icon badge.
+ * The badge is what a phone can see without opening the app. Inside the desktop
+ * app the same API writes the Dock badge, which the main process owns: it also
+ * counts sessions waiting for input, so a renderer clear would erase those.
+ * Rejection is non-fatal: a browser without the Badging API has no icon badge.
  */
 export function syncAppBadge(
   count: number,
@@ -347,6 +348,7 @@ export function syncAppBadge(
     typeof navigator === "undefined" ? undefined : navigator,
 ): void {
   if (!nav) return;
+  if (typeof window !== "undefined" && window.agentControlDesktop) return;
   if (count > 0) void nav.setAppBadge?.(count).catch(() => undefined);
   else void nav.clearAppBadge?.().catch(() => undefined);
 }

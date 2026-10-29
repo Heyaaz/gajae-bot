@@ -3,7 +3,7 @@ import { open, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import path from 'node:path'
-import type { AgentControlPreferences, FileAttachment, ImageAttachment } from '../shared/agent-contract.js'
+import type { AgentControlPreferences, FileAttachment, ImageAttachment, UiLanguage } from '../shared/agent-contract.js'
 import { SETTINGS_IPC } from '../shared/settings-ipc.js'
 import type { DesktopIntegrationPreferences } from '../shared/desktop-integration.js'
 import type { SettingsStore } from './settings-store.js'
@@ -104,6 +104,7 @@ export function registerSettingsIpcHandlers(
   appUpdates?: Pick<AppUpdateMonitor, 'status' | 'check'>,
   environment?: { check(): Promise<EnvironmentReport>; due(): boolean },
   quickInputShortcut?: { status(): QuickInputShortcutStatus },
+  onLanguage?: (language: UiLanguage) => void,
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -189,6 +190,7 @@ export function registerSettingsIpcHandlers(
   ipcMain.handle(SETTINGS_IPC.setLanguage, security.guarded((_event, value: unknown) => {
     const saved = store.setLanguage(value)
     setHostLanguage(saved)
+    onLanguage?.(saved)
     return saved
   }))
   ipcMain.handle(SETTINGS_IPC.setRunningSubmission, security.guarded((_event, value: unknown) =>

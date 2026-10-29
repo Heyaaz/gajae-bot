@@ -327,6 +327,23 @@ describe("remote PWA badge", () => {
     syncAppBadge(0, { setAppBadge, clearAppBadge } as never);
     expect(clearAppBadge).toHaveBeenCalledOnce();
   });
+
+  it("leaves the Dock badge to the main process inside the desktop app", () => {
+    // In Electron the Badging API writes the Dock badge itself. The main process
+    // counts waiting sessions there too, so a renderer clear on "no unread"
+    // wiped a badge that still meant "session A needs input".
+    vi.stubGlobal("window", { agentControlDesktop: {} });
+    try {
+      const setAppBadge = vi.fn(async () => undefined);
+      const clearAppBadge = vi.fn(async () => undefined);
+      syncAppBadge(1, { setAppBadge, clearAppBadge } as never);
+      syncAppBadge(0, { setAppBadge, clearAppBadge } as never);
+      expect(setAppBadge).not.toHaveBeenCalled();
+      expect(clearAppBadge).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("composer turn state", () => {

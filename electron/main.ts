@@ -507,6 +507,9 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
       !smokeMode && !terminalSmokeMode && !desktopState.get().environmentReady,
   },
   quickInputShortcut,
+  // The menu bar is drawn before the window resolves the language, and redraws
+  // otherwise only on a session change.
+  () => renderDesktopStatus?.(desktopIntegration.state()),
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
