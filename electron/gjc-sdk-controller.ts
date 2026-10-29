@@ -168,7 +168,6 @@ import {
   durableTurnEnded,
   durableTwinOf,
   execFile,
-  gitBranchFromHeader,
   hasLivePrefix,
   historySessionSummary,
   sessionCwdFromLines,
@@ -198,7 +197,6 @@ import {
   receiptSubagentStatus,
   recentLabel,
   redactSensitiveText,
-  safeGitPath,
   sameTranscriptItem,
   sanitizeLocalAttachmentBlocks,
   sdkSlashCommandsForOperations,
@@ -233,6 +231,15 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  commitChanges,
+  getGitStatus,
+  pushChanges,
+  remotesWithBranch,
+  stageFiles,
+  unstageFiles,
+  type GitScope,
+} from "./gjc-sdk-git.js";
 import {
   projectTranscriptItemForDelivery,
   resolveTranscriptBodyArtifact,
@@ -351,17 +358,6 @@ function lastTailTranscriptId(
   return undefined;
 }
 
-async function remotesWithBranch(root: string, branch: string): Promise<number> {
-  const [remotes, refs] = await Promise.all([
-    execFile("git", ["-C", root, "remote"]),
-    execFile("git", ["-C", root, "for-each-ref", "--format=%(refname)", "refs/remotes/"]),
-  ]);
-  const present = new Set(refs.stdout.split("\n").map((line) => line.trim()));
-  return remotes.stdout
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((remote) => remote && present.has(`refs/remotes/${remote}/${branch}`)).length;
-}
 
 export class GjcSdkController {
   private workspace: string;
@@ -8692,126 +8688,27 @@ export class GjcSdkController {
     return undefined;
   }
 
-  async getGitStatus(sessionId: string): Promise<GitStatusSnapshot> {
-    const workspace = this.sessionCwds.get(sessionId) ?? this.workspace;
-    // A session can live in a directory that is not a repository at all. `git status`
-    // exits non-zero there, and that rejection reached the IPC handler as an
-    // unhandled error every time the panel polled. No repository is a state, not a
-    // failure, so it is reported as one.
-    let result: { stdout: string };
-    try {
-      result = await execFile(
-        "git",
-        ["-C", workspace, "status", "--porcelain=v1", "-z", "--branch"],
-        { maxBuffer: 2 * 1024 * 1024 },
-      );
-    } catch {
-      return { workspace, branch: "", ahead: 0, behind: 0, files: [] };
-    }
-    let branch = "";
-    let upstream: string | undefined;
-    let ahead = 0;
-    let behind = 0;
-    const files: GitStatusSnapshot["files"] = [];
-    const entries = result.stdout.split("\0").filter(Boolean);
-    for (let index = 0; index < entries.length; index += 1) {
-      const entry = entries[index]!;
-      if (entry.startsWith("## ")) {
-        const header = entry.slice(3);
-        const match =
-          /^(.*?)\.\.\.([^ ]+)(?: \[ahead (\d+)(?:, behind (\d+))?\]| \[behind (\d+)\])?$/u.exec(
-            header,
-          );
-        if (match) {
-          branch = match[1] ?? "";
-          upstream = match[2];
-          ahead = Number(match[3] ?? 0);
-          behind = Number(match[4] ?? match[5] ?? 0);
-        } else branch = gitBranchFromHeader(header);
-        continue;
-      }
-      if (entry.length < 4) continue;
-      const indexStatus = entry[0] ?? ".";
-      const workingTree = entry[1] ?? ".";
-      const filePath = entry.slice(3);
-      if (safeGitPath(filePath))
-        files.push({ path: filePath, index: indexStatus, workingTree });
-      if (indexStatus === "R" || indexStatus === "C") index += 1;
-    }
+  private gitScope(): GitScope {
     return {
-      workspace,
-      branch,
-      ...(upstream ? { upstream } : {}),
-      ahead,
-      behind,
-      files,
+      workspace: this.workspace,
+      sessions: this.sessions,
+      sessionCwds: this.sessionCwds,
     };
   }
-
-  private async mutateGit(
-    sessionId: string,
-    args: string[],
-  ): Promise<GitStatusSnapshot> {
-    const session = this.sessions.get(sessionId);
-    const worktree = session?.worktree;
-    if (
-      !session ||
-      !worktree?.managed ||
-      path.resolve(session.workspace) !== path.resolve(worktree.path)
-    )
-      throw new Error("Git mutation requires a managed Gajae worktree");
-    const root = (
-      await execFile("git", [
-        "-C",
-        worktree.path,
-        "rev-parse",
-        "--show-toplevel",
-      ])
-    ).stdout.trim();
-    if (path.resolve(root) !== path.resolve(worktree.path))
-      throw new Error("Managed worktree path verification failed");
-    await execFile("git", ["-C", worktree.path, ...args]);
-    return this.getGitStatus(sessionId);
+  async getGitStatus(sessionId: string): Promise<GitStatusSnapshot> {
+    return getGitStatus(this.gitScope(), sessionId);
   }
-  async stageFiles(
-    sessionId: string,
-    paths: string[],
-  ): Promise<GitStatusSnapshot> {
-    const status = await this.getGitStatus(sessionId);
-    const allowed = new Set(status.files.map((file) => file.path));
-    if (
-      paths.some((filePath) => !allowed.has(filePath) || !safeGitPath(filePath))
-    )
-      throw new Error(
-        "Path is not an eligible repository-relative changed file",
-      );
-    return this.mutateGit(sessionId, ["add", "--", ...paths]);
+  async stageFiles(sessionId: string, paths: string[]): Promise<GitStatusSnapshot> {
+    return stageFiles(this.gitScope(), sessionId, paths);
   }
-  async unstageFiles(
-    sessionId: string,
-    paths: string[],
-  ): Promise<GitStatusSnapshot> {
-    const status = await this.getGitStatus(sessionId);
-    const allowed = new Set(status.files.map((file) => file.path));
-    if (
-      paths.some((filePath) => !allowed.has(filePath) || !safeGitPath(filePath))
-    )
-      throw new Error(
-        "Path is not an eligible repository-relative changed file",
-      );
-    return this.mutateGit(sessionId, ["restore", "--staged", "--", ...paths]);
+  async unstageFiles(sessionId: string, paths: string[]): Promise<GitStatusSnapshot> {
+    return unstageFiles(this.gitScope(), sessionId, paths);
   }
-  async commitChanges(
-    sessionId: string,
-    message: string,
-  ): Promise<GitStatusSnapshot> {
-    const text = message.trim();
-    if (!text || text.length > 512)
-      throw new Error("Commit message is required and bounded");
-    return this.mutateGit(sessionId, ["commit", "-m", text]);
+  async commitChanges(sessionId: string, message: string): Promise<GitStatusSnapshot> {
+    return commitChanges(this.gitScope(), sessionId, message);
   }
   async pushChanges(sessionId: string): Promise<GitStatusSnapshot> {
-    return this.mutateGit(sessionId, ["push"]);
+    return pushChanges(this.gitScope(), sessionId);
   }
 
   private appendTranscript(item: TranscriptItem): void {
