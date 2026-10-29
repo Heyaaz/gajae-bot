@@ -2102,11 +2102,12 @@ export default function App() {
   }, []);
 
   const createSession = useCallback(
-    (input: NewSessionInput): void => {
+    (input: NewSessionInput): void | Promise<void> => {
       if (input.parallelPresets && parallelBridge) {
-        setNewSessionRequest(null);
         setAppError("");
-        void parallelBridge
+        // The dialog stays open until the start is accepted, so a branch clash or
+        // any other correctable error leaves the user's request where they typed it.
+        return parallelBridge
           .start({
             title: input.title,
             workspace: input.workspace,
@@ -2120,10 +2121,12 @@ export default function App() {
                 ? current
                 : [group, ...current],
             );
+            setNewSessionRequest(null);
             openParallelGroup(group.id);
           })
-          .catch((error: unknown) => setAppError(humanErrorMessage(error)));
-        return;
+          .catch((error: unknown) => {
+            throw new Error(humanErrorMessage(error));
+          });
       }
       const draftId = `draft-${crypto.randomUUID()}`;
       const draft: AgentSession = {

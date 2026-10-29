@@ -308,3 +308,36 @@ describe("workspaceLabelFor", () => {
     expect(workspaceLabelFor("")).toBe("");
   });
 });
+
+describe("NewSessionDialog parallel start", () => {
+  const submitEvent = { preventDefault: () => undefined };
+  const parallel = { presets: ["codex-pro", "codex-eco"], defaultPreset: "codex-pro" };
+  beforeEach(() => {
+    hookState.slots = [];
+    vi.stubGlobal("window", {});
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("shows a failed start in the dialog and keeps the request for another try", async () => {
+    const onCreate = vi.fn().mockRejectedValueOnce(new Error("이름 충돌"));
+    const props = { parallel, onCreate, prefill: { workspace: "/p", prompt: "긴 요청" } };
+    let tree = renderNewSessionDialog(props);
+    findElement(tree, (element) => element.type === "select").props.onChange({
+      target: { value: "2" },
+    });
+    tree = renderNewSessionDialog(props);
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    tree = renderNewSessionDialog(props);
+    expect(
+      findElement(tree, (element) => element.type === "p" && element.props?.role === "alert")
+        .props.children,
+    ).toBe("이름 충돌");
+    expect(findElement(tree, (element) => element.type === "textarea").props.value).toBe(
+      "긴 요청",
+    );
+    expect(onCreate).toHaveBeenCalledOnce();
+    expect(onCreate.mock.calls[0]![0].parallelPresets).toHaveLength(2);
+  });
+});

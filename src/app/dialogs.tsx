@@ -49,7 +49,8 @@ export interface NewSessionDialogProps {
   /** Offered only where attempts can be run, which is the desktop window. */
   parallel?: { presets: readonly string[]; defaultPreset: string };
   onCancel: () => void;
-  onCreate: (input: NewSessionInput) => void;
+  /** A promise keeps the dialog open until it settles; a rejection is shown in it. */
+  onCreate: (input: NewSessionInput) => void | Promise<void>;
 }
 
 /** Different presets by default: comparing one model with itself is the rarer intent. */
@@ -95,6 +96,8 @@ export function NewSessionDialog({
     .every((preset) => preset.trim());
   const [choosing, setChoosing] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState("");
   const settingsBridge = window.agentControlDesktop?.settings;
   const images = prefill?.images ?? [];
 
@@ -131,8 +134,10 @@ export function NewSessionDialog({
     const suggestedBranch =
       isolation === "worktree" && branch === prefill?.worktreeBranch;
     if (parallelRun) {
-      if (!prompt.trim() || !presetsComplete) return;
-      onCreate({
+      if (!prompt.trim() || !presetsComplete || submitting) return;
+      setSubmitError("");
+      setSubmitting(true);
+      void Promise.resolve(onCreate({
         title: trimmedTitle && trimmedTitle !== defaultTitle ? trimmedTitle : "새 Gajae 세션",
         workspace,
         isolation: "worktree",
@@ -141,7 +146,11 @@ export function NewSessionDialog({
         parallelPresets: attemptPresets
           .slice(0, attemptCount)
           .map((preset) => preset.trim()),
-      });
+      }))
+        .catch((error: unknown) =>
+          setSubmitError(error instanceof Error ? error.message : String(error)),
+        )
+        .finally(() => setSubmitting(false));
       return;
     }
     onCreate({
@@ -300,6 +309,7 @@ export function NewSessionDialog({
           </div>
         </label>
         {workspaceError && <p role="alert">{workspaceError}</p>}
+        {submitError && <p role="alert">{submitError}</p>}
         <label>
           <span>{t("첫 요청")}</span>
           <textarea
@@ -331,7 +341,9 @@ export function NewSessionDialog({
             type="submit"
             className="button-primary"
             disabled={
-              !workspace || (parallelRun && (!prompt.trim() || !presetsComplete))
+              !workspace ||
+              submitting ||
+              (parallelRun && (!prompt.trim() || !presetsComplete))
             }
           >
             <Plus size={15} />{" "}
