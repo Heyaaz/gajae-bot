@@ -6,14 +6,10 @@ import {
   type MenuItemConstructorOptions,
   type NativeImage,
 } from "electron";
-import {
-  templateMask,
-  type DesktopStatusSurface,
-  type StatusMenuEntry,
-} from "./desktop-status.js";
+import type { DesktopStatusSurface, StatusMenuEntry } from "./desktop-status.js";
 
 export interface ElectronStatusSurfaceOptions {
-  /** The app icon the menu bar image is derived from. */
+  /** The menu bar template image; its `@2x` sibling is loaded with it. */
   iconPath: string;
   openSession(sessionId: string): void;
   openApp(): void;
@@ -62,35 +58,14 @@ function menuItem(
   }
 }
 
-const MENU_BAR_POINTS = 18;
-const MASK_SIZE = MENU_BAR_POINTS * 16;
-// The icon's own rounded-square frame would otherwise become a box around the
-// figure.
-const FRAME_INSET = 0.11;
-
+/**
+ * The menu bar image: Gajae's figure (antennae, straw hat, goggles, cloak) drawn
+ * as an 18pt silhouette. Derived from the app icon it read as noise at this size.
+ * The `Template` file name makes macOS tint it for the menu bar's appearance.
+ */
 export function menuBarIcon(iconPath: string): NativeImage {
-  const source = nativeImage.createFromPath(iconPath);
+  const image = nativeImage.createFromPath(iconPath);
   // A missing icon leaves a title-only item rather than no menu bar status at all.
-  if (source.isEmpty()) return source;
-  const { width, height } = source.getSize();
-  const inset = Math.round(Math.min(width, height) * FRAME_INSET);
-  const figure = source
-    .crop({ x: inset, y: inset, width: width - inset * 2, height: height - inset * 2 })
-    .resize({ width: MASK_SIZE, height: MASK_SIZE, quality: "best" });
-  const mask = nativeImage.createFromBitmap(templateMask(figure.toBitmap()), {
-    width: MASK_SIZE,
-    height: MASK_SIZE,
-  });
-  const image = nativeImage.createEmpty();
-  for (const scaleFactor of [1, 2]) {
-    const size = MENU_BAR_POINTS * scaleFactor;
-    const scaled = mask.resize({ width: size, height: size, quality: "best" });
-    const solid = nativeImage.createFromBitmap(
-      templateMask(scaled.toBitmap(), { opaqueAbove: 64 }),
-      { width: size, height: size },
-    );
-    image.addRepresentation({ scaleFactor, buffer: solid.toPNG() });
-  }
-  image.setTemplateImage(true);
+  if (!image.isEmpty()) image.setTemplateImage(true);
   return image;
 }

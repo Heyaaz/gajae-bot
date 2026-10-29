@@ -13,7 +13,6 @@ import {
   desktopStatusModel,
   desktopStatusRenderer,
   STATUS_MENU_LIMIT,
-  templateMask,
   type StatusTray,
 } from "./desktop-status.js";
 import { setHostLanguage } from "./host-text.js";
@@ -230,26 +229,6 @@ describe("desktopStatusRenderer", () => {
       "badge:",
       "tray:hidden",
       "tray:\u25B6\uFE0E1",
-    ]);
-  });
-});
-
-describe("templateMask", () => {
-  it("keeps only dark opaque pixels, as black", () => {
-    const bitmap = Buffer.from([
-      10, 20, 30, 255, // dark line art
-      250, 120, 40, 255, // orange fill
-      0, 0, 0, 0, // transparent corner
-      20, 20, 20, 60, // dark but mostly transparent edge
-    ]);
-    expect([...templateMask(bitmap)]).toEqual([
-      0, 0, 0, 255,
-      0, 0, 0, 0,
-      0, 0, 0, 0,
-      0, 0, 0, 0,
-    ]);
-    expect([...templateMask(bitmap, { opaqueAbove: 50 })].slice(12)).toEqual([
-      0, 0, 0, 255,
     ]);
   });
 });

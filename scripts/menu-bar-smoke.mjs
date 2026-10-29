@@ -18,7 +18,7 @@ import { electronStatusSurface, menuBarIcon } from '../dist-electron/electron/de
  * regression.
  */
 const appPath = path.resolve(import.meta.dirname, '..')
-const iconPath = path.join(appPath, 'src/assets/gajae-icon-ui.png')
+const iconPath = path.join(appPath, 'src/assets/gajae-menubar-Template.png')
 
 app.setName('Gajae Menu Bar Smoke')
 
@@ -73,6 +73,7 @@ app.whenReady().then(() => {
     console.log(JSON.stringify({ icon: { size: icon.getSize(), template: icon.isTemplateImage(), scales: icon.getScaleFactors() } }))
     assert.equal(icon.isTemplateImage(), true, 'menu bar icon is a template image')
     assert.deepEqual(icon.getSize(), { width: 18, height: 18 }, 'menu bar icon is 18pt')
+    assert.deepEqual(icon.getScaleFactors(), [1, 2], 'menu bar icon has a Retina representation')
 
     const opened = []
     const surface = electronStatusSurface({

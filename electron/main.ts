@@ -117,11 +117,9 @@ if (!smokeMode && !terminalSmokeMode && !app.requestSingleInstanceLock()) {
 const appIconPath = app.isPackaged
   ? path.join(process.resourcesPath, "electron.icns")
   : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
-// nativeImage cannot decode the packaged .icns, so the menu bar image is derived
-// from a PNG copy the packager places beside it.
 const menuBarIconPath = app.isPackaged
-  ? path.join(process.resourcesPath, "gajae-icon-ui.png")
-  : path.join(app.getAppPath(), "src/assets/gajae-icon-ui.png");
+  ? path.join(process.resourcesPath, "gajae-menubar-Template.png")
+  : path.join(app.getAppPath(), "src/assets/gajae-menubar-Template.png");
 const userDataDirectory = app.getPath("userData");
 // Search index, session metadata, artifacts, and automations all live under this
 // directory, and Electron only creates it lazily. A first launch on a clean
