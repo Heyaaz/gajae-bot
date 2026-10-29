@@ -1,10 +1,7 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
-  DiffSnapshot,
-  GitStatusSnapshot,
   GjcUpdateStatus,
   GoalOperation,
-  GoalSnapshot,
   HistorySession,
   MessageDelivery,
   SubagentSnapshot,
@@ -65,7 +62,6 @@ import {
   statusLabel,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
-import { goalPollDelay } from "./goal-poll";
 import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
@@ -75,6 +71,7 @@ import {
   DeferredRepoView,
   DeferredSettingsDialog,
 } from "./deferred-views";
+import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
 import { useMessageDelivery } from "./use-message-delivery";
 import { Sidebar } from "./sidebar";
@@ -180,27 +177,8 @@ export default function App() {
   );
   const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
-  const [diff, setDiff] = useState<DiffSnapshot | null>(null);
-  const diffOpenRef = useRef(diffOpen);
-  diffOpenRef.current = diffOpen;
-  // Every diff belongs to the session it was requested for; bumping this drops
-  // an answer that arrives after the user moved on.
-  const diffRequestRef = useRef(0);
-  const [selectedGit, setSelectedGit] = useState<GitStatusSnapshot | null>(
-    null,
-  );
-  const [goal, setGoal] = useState<GoalSnapshot>({
-    enabled: false,
-    completed: 0,
-    total: 0,
-  });
-  const goalRescheduleRef = useRef<(snapshot: GoalSnapshot) => void>(
-    () => undefined,
-  );
 
-  const [goalBusySessionId, setGoalBusySessionId] = useState<string | null>(null);
   const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
-  const [diffLoading, setDiffLoading] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<AgentSession | null>(
     null,
   );
@@ -888,59 +866,12 @@ export default function App() {
     };
   }, [backend, selectedId, cachedSelectedTranscript]);
 
-  useEffect(() => {
-    if (!selectedSessionId) return;
-    let active = true;
-    let refreshing = false;
-    let timer: number | undefined;
-    const clearTimer = (): void => {
-      if (timer === undefined) return;
-      window.clearTimeout(timer);
-      timer = undefined;
-    };
-    const schedule = (snapshot: GoalSnapshot): void => {
-      if (!active) return;
-      clearTimer();
-      timer = window.setTimeout(refresh, goalPollDelay(snapshot, selectedSessionStatus));
-    };
-    const refresh = (): void => {
-      if (!active || refreshing) return;
-      refreshing = true;
-      void backend
-        .getGoal(selectedSessionId)
-        .then((snapshot) => {
-          if (!active || selectedIdRef.current !== selectedSessionId) return;
-          setGoal(snapshot);
-          schedule(snapshot);
-        })
-        .catch(() => {
-          if (!active || selectedIdRef.current !== selectedSessionId) return;
-          const snapshot = { enabled: false, completed: 0, total: 0 };
-          setGoal(snapshot);
-          schedule(snapshot);
-        })
-        .finally(() => { refreshing = false; });
-    };
-    goalRescheduleRef.current = (snapshot) => {
-      if (active) schedule(snapshot);
-    };
-    // Goal and todo state advance at tool-call pace, not at streaming pace. No
-    // active goal backs off to 30s; a goal operation reschedules immediately from
-    // the snapshot it already received instead of issuing another query.
-    queueMicrotask(refresh);
-    const refreshOnVisible = (): void => {
-      if (document.hidden) return;
-      clearTimer();
-      refresh();
-    };
-    document.addEventListener("visibilitychange", refreshOnVisible);
-    return () => {
-      active = false;
-      clearTimer();
-      goalRescheduleRef.current = () => undefined;
-      document.removeEventListener("visibilitychange", refreshOnVisible);
-    };
-  }, [backend, selectedSessionId, selectedSessionStatus]);
+  const { goal, setGoal, goalRescheduleRef, goalBusySessionId, setGoalBusySessionId } = useGoal(
+    backend,
+    selectedIdRef,
+    selectedSessionId,
+    selectedSessionStatus,
+  );
 
   useEffect(() => {
     if (!selectedSessionId || !inspectorOpen) {
@@ -1002,65 +933,17 @@ export default function App() {
     syncAppBadge(unreadCount);
   }, [unreadCount]);
 
-  useEffect(() => {
-    if (!selectedSessionId) {
-      queueMicrotask(() => setSelectedGit(null));
-      return;
-    }
-    let active = true;
-    const refresh = (): void => {
-      void backend
-        .getGitStatus(selectedSessionId)
-        .then((status) => {
-          if (active) setSelectedGit(status);
-        })
-        .catch(() => {
-          if (active) setSelectedGit(null);
-        });
-    };
-    queueMicrotask(refresh);
-    window.addEventListener("focus", refresh);
-    return () => {
-      active = false;
-      window.removeEventListener("focus", refresh);
-    };
-  }, [backend, selectedSessionId, selectedSessionStatus]);
+  const selectedGit = useGitStatus(backend, selectedSessionId, selectedSessionStatus);
 
-  const refreshDiff = useCallback(async (): Promise<void> => {
-    const sessionId = selectedId;
-    if (!sessionId) return;
-    const request = ++diffRequestRef.current;
-    const workspace = selectedSession?.workspace ?? "";
-    setDiffLoading(true);
-    try {
-      const snapshot = await backend.getDiff(sessionId);
-      if (diffRequestRef.current !== request || selectedIdRef.current !== sessionId)
-        return;
-      setDiff(snapshot);
-    } catch (e) {
-      if (diffRequestRef.current !== request || selectedIdRef.current !== sessionId)
-        return;
-      setDiff({
-        sessionId,
-        workspace,
-        files: [],
-        refreshedAt: new Date().toISOString(),
-        error: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      if (diffRequestRef.current === request) setDiffLoading(false);
-    }
-  }, [backend, selectedId, selectedSession?.workspace]);
+  const { diff, diffLoading, refreshDiff } = useDiff(
+    backend,
+    diffOpen,
+    selectedId,
+    selectedIdRef,
+    selectedSession?.workspace,
+  );
 
-  // A session switch invalidates the diff already on screen and anything still in
-  // flight, so those patches can never be read -- or acted on -- under the new
-  // session.
-  useEffect(() => {
-    diffRequestRef.current += 1;
-    setDiff(null);
-    setDiffLoading(false);
-    if (selectedId && diffOpenRef.current) void refreshDiff();
-  }, [selectedId, diffOpen, refreshDiff]);
+
 
   async function operateGoal(operation: GoalOperation): Promise<void> {
     const sessionId = selectedId;
