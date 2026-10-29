@@ -53,6 +53,10 @@ const probe = `(async (seeded, ESTIMATED_ROW_PX) => {
   const column = document.querySelector('.transcript-column');
   if (!column) return { error: 'transcript never rendered' };
   for (let i = 0; i < 80 && column.getBoundingClientRect().width < 100; i += 1) await wait(50);
+  // The previously selected session's transcript is still mounted when the click lands and is
+  // replaced once the clicked session's page loads; measuring that detached element reads
+  // as a zero-size viewport.
+  for (let i = 0; i < 80 && !document.querySelector('.transcript-entry[id^="transcript-seeded-"]'); i += 1) await wait(50);
 
   const transcript = document.querySelector('.transcript');
   const toggle = [...document.querySelectorAll('button')].find(
@@ -870,7 +874,11 @@ const followReading = `(() => {
     if (box.top >= viewport.bottom) continue;
     if (!entry || box.top < entry.top) entry = { id: node.id, top: box.top };
   }
-  const slots = [...document.querySelectorAll('.transcript-slot')];
+  // The progress row trails the reply as its own slot and has no entry id, so the newest
+  // block is the newest slot that holds one.
+  const slots = [...document.querySelectorAll('.transcript-slot')].filter((slot) =>
+    slot.querySelector('[id^="transcript-"]'),
+  );
   const last = slots.length
     ? slots.reduce((newest, slot) =>
         Number(slot.dataset.index) > Number(newest.dataset.index) ? slot : newest,
