@@ -18,6 +18,14 @@ import {
   restorePulledDraft,
   withoutReleasedRequest,
 } from "../composer-utils";
+import {
+  activeMention,
+  mentionCandidates,
+  mentionKeyAction,
+  rankMentionCandidates,
+  withoutMention,
+} from "../composer-mentions";
+import type { MentionCandidates } from "../composer-mentions";
 import type {
   LiveTurnSubmissionMode,
   PendingRequest,
@@ -30,6 +38,7 @@ import {
   CircleStop,
   Command,
   FolderGit2,
+  FileText,
   FolderOpen,
   Paperclip,
   Pencil,
@@ -37,7 +46,7 @@ import {
   Zap,
   X,
 } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
 import { configOptionGroups, directoryName, httpUrls, humanErrorMessage } from "./format";
 import { LinkPreviewCard } from "./primitives";
@@ -57,6 +66,16 @@ type ComposerDraft = {
 };
 
 export type ComposerSnapshot = ComposerDraft & { pendingQueue: PendingRequest[] };
+
+/**
+ * The last workspace listing behind the `@` popup, for the session it was read
+ * for. No entry for the current session means it is still loading.
+ */
+type MentionFiles =
+  | { sessionId: string; status: "ready"; candidates: MentionCandidates; truncated: boolean }
+  | { sessionId: string; status: "failed"; message: string };
+
+const MENTION_RESULT_LIMIT = 30;
 
 // Screen navigation can unmount the composer without ending the session. Keep
 // its local-only work outside the component lifetime, keyed by session identity.
@@ -719,6 +738,12 @@ export const Composer = memo(function Composer({
   const [workspaceOpen, setWorkspaceOpen] = useState(false);
   const [configMenu, setConfigMenu] = useState<string | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
+  const [caret, setCaret] = useState<number | null>(null);
+  const [mentionFiles, setMentionFiles] = useState<MentionFiles | null>(null);
+  // The highlight belongs to the query it was moved on; a new query starts at the top.
+  const [mentionSelection, setMentionSelection] = useState({ query: "", index: 0 });
+  // Esc closes the popup for the token it was open on; a new `@` opens it again.
+  const [dismissedMentionStart, setDismissedMentionStart] = useState<number | null>(null);
   // The composer is the single owner of pending work. GJC is only told about a
   // request when it is actually released, so there is no remote queue to
   // reconcile against and nothing can retire a chip behind the user's back.
@@ -781,6 +806,8 @@ export const Composer = memo(function Composer({
   const promptHistoryRef = useRef(new Map<string, string[]>());
   const historyDraftRef = useRef("");
   const settingsBridge = window.agentControlDesktop?.settings;
+  // Remote devices have no workspace listing, so `@` stays plain text there.
+  const workspaceBridge = window.agentControlDesktop?.gjc;
   const slashBody =
     value.startsWith("/") && !value.includes("\n") ? value.slice(1) : null;
   const commandQuery =
@@ -794,6 +821,30 @@ export const Composer = memo(function Composer({
           command.name.toLowerCase().includes(commandQuery),
         );
   const paletteOpen = commandQuery !== null;
+  const mentionsEnabled = Boolean(workspaceBridge) && !readOnly;
+  const mention = useMemo(
+    () =>
+      mentionsEnabled
+        ? activeMention(value, Math.min(caret ?? value.length, value.length))
+        : null,
+    [mentionsEnabled, value, caret],
+  );
+  const mentionOpen = mention !== null && mention.start !== dismissedMentionStart;
+  const mentionQuery = mentionOpen ? mention.query : null;
+  const sessionMentionFiles = mentionFiles?.sessionId === sessionId ? mentionFiles : null;
+  const readyCandidates =
+    sessionMentionFiles?.status === "ready" ? sessionMentionFiles.candidates : null;
+  // Ranking a large workspace costs milliseconds, so it reruns only for a new query.
+  const mentionMatches = useMemo(
+    () =>
+      readyCandidates && mentionQuery !== null
+        ? rankMentionCandidates(readyCandidates, mentionQuery, MENTION_RESULT_LIMIT)
+        : [],
+    [readyCandidates, mentionQuery],
+  );
+  const mentionIndex =
+    mentionSelection.query === mentionQuery ? mentionSelection.index : 0;
+  const mentionPaletteRef = useRef<HTMLDivElement>(null);
   const paletteRequestedRef = useRef(false);
   useEffect(() => {
     if (!paletteOpen) {
@@ -1187,6 +1238,38 @@ export const Composer = memo(function Composer({
     else if (selectedBottom > visibleBottom)
       palette.scrollTop = selectedBottom - palette.clientHeight;
   }, [commandIndex, commandQuery, matchingCommands.length]);
+
+  // Each opening asks again; the main process serves repeats from its own cache,
+  // so files the agent wrote since the last `@` are offered without a reload.
+  useEffect(() => {
+    if (!mentionOpen || !workspaceBridge) return;
+    const owner = sessionId;
+    let current = true;
+    workspaceBridge.listWorkspaceFiles(owner).then(
+      (index) => {
+        if (!current) return;
+        setMentionFiles({
+          sessionId: owner,
+          status: "ready",
+          candidates: mentionCandidates(index.files),
+          truncated: index.truncated,
+        });
+      },
+      (error: unknown) => {
+        if (!current) return;
+        setMentionFiles({ sessionId: owner, status: "failed", message: humanErrorMessage(error) });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [mentionOpen, sessionId, workspaceBridge]);
+
+  useLayoutEffect(() => {
+    mentionPaletteRef.current
+      ?.querySelector<HTMLElement>(`[data-mention-index="${mentionIndex}"]`)
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [mentionIndex, mentionMatches]);
 
   useEffect(() => {
     function closePopovers(event: Event): void {
@@ -1619,6 +1702,35 @@ export const Composer = memo(function Composer({
     requestAnimationFrame(() => textareaRef.current?.focus());
   }
 
+  /**
+   * Turn the `@token` into an attachment chip. The token leaves the draft at once;
+   * the attachment arrives when main has issued its token, and is filed under the
+   * session that chose it even if the user has switched away by then.
+   */
+  async function chooseMention(relativePath: string): Promise<void> {
+    if (!mention || !workspaceBridge) return;
+    const owner = sessionId;
+    const next = withoutMention(value, mention);
+    setValue(next.value);
+    setCaret(next.caret);
+    requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(next.caret, next.caret);
+    });
+    if (filesRef.current.some((file) => file.label === relativePath)) return;
+    if (filesRef.current.length >= 5) {
+      setAttachmentError(t("파일은 메시지당 최대 5개까지 첨부할 수 있습니다"));
+      return;
+    }
+    setAttachmentError("");
+    try {
+      const prepared = await workspaceBridge.attachWorkspaceFiles(owner, [relativePath]);
+      commitPrepared(owner, "files", prepared);
+    } catch (error) {
+      setAttachmentError(humanErrorMessage(error));
+    }
+  }
+
   function selectConfig(configId: string, selectedValue: string): void {
     onConfigChange(configId, selectedValue);
     setConfigMenu(null);
@@ -1651,6 +1763,41 @@ export const Composer = memo(function Composer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    const now = performance.now();
+    const composing =
+      event.nativeEvent.isComposing ||
+      event.keyCode === 229 ||
+      composingRef.current;
+    const mentionAction = mentionOpen
+      ? mentionKeyAction(
+          {
+            key: event.key,
+            shiftKey: event.shiftKey,
+            metaKey: event.metaKey,
+            ctrlKey: event.ctrlKey,
+            altKey: event.altKey,
+            composing,
+            afterCommit:
+              now - compositionEndedAtRef.current < IME_FOLLOWUP_WINDOW_MS,
+          },
+          mentionMatches.length > 0,
+        )
+      : null;
+    if (mentionAction) {
+      event.preventDefault();
+      if (mentionAction === "next" || mentionAction === "previous") {
+        const step = mentionAction === "next" ? 1 : mentionMatches.length - 1;
+        setMentionSelection({
+          query: mentionQuery!,
+          index: (mentionIndex + step) % mentionMatches.length,
+        });
+      } else if (mentionAction === "choose")
+        void chooseMention(
+          mentionMatches[Math.min(mentionIndex, mentionMatches.length - 1)]!,
+        );
+      else if (mentionAction === "dismiss") setDismissedMentionStart(mention!.start);
+      return;
+    }
     if (event.key === "Escape" || event.key === "Esc") {
       setWorkspaceOpen(false);
       setConfigMenu(null);
@@ -1679,12 +1826,9 @@ export const Composer = memo(function Composer({
         {
           key: event.key,
           shiftKey: event.shiftKey,
-          composing:
-            event.nativeEvent.isComposing ||
-            event.keyCode === 229 ||
-            composingRef.current,
+          composing,
           compositionEndedAt: compositionEndedAtRef.current,
-          now: performance.now(),
+          now,
           draftEmpty: !textarea.value.trim(),
           paletteOpen: matchingCommands.length > 0,
         },
@@ -1840,7 +1984,7 @@ export const Composer = memo(function Composer({
         <div className="composer-files">
           {files.map((file) => (
             <span className="attachment-chip" key={file.id}>
-              <span>{file.name}</span>
+              <span title={file.label}>{file.label ?? file.name}</span>
               <button
                 type="button"
                 aria-label={`Remove ${file.name}`}
@@ -1877,9 +2021,14 @@ export const Composer = memo(function Composer({
         disabled={readOnly}
         onChange={(event) => {
           setValue(event.target.value);
+          setCaret(event.target.selectionStart);
+          // Leaving the token ends its dismissal, so the next `@` opens the popup.
+          if (!activeMention(event.target.value, event.target.selectionStart))
+            setDismissedMentionStart(null);
           setHistoryCursor(-1);
           historyDraftRef.current = "";
         }}
+        onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
         onCompositionStart={() => {
           composingRef.current = true;
         }}
@@ -1946,6 +2095,53 @@ export const Composer = memo(function Composer({
               {t("스킬 불러오는 중…")}
             </small>
           )}
+        </div>
+      )}
+      {mentionOpen && (
+        <div className="command-palette mention-palette" ref={mentionPaletteRef}
+          role="listbox" aria-label={t("워크스페이스 파일")}>
+          <header>
+            <FileText size={14} /> {t("워크스페이스 파일")}
+            <span className="command-palette-count">{mentionMatches.length}</span>
+            <span className="command-palette-help">{t("↑↓ 선택 · Enter 첨부 · Esc 닫기")}</span>
+          </header>
+          {mentionMatches.map((relativePath, index) => {
+            const slash = relativePath.lastIndexOf("/");
+            return (
+              <button
+                key={relativePath}
+                type="button"
+                role="option"
+                aria-selected={index === mentionIndex}
+                data-mention-index={index}
+                className={`command-palette-item${index === mentionIndex ? " is-selected" : ""}`}
+                title={relativePath}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void chooseMention(relativePath)}
+              >
+                <span className="command-palette-icon" aria-hidden>
+                  <FileText size={15} />
+                </span>
+                <span className="command-palette-copy">
+                  <strong>{relativePath.slice(slash + 1)}</strong>
+                  <small>{slash > 0 ? relativePath.slice(0, slash) : "./"}</small>
+                </span>
+              </button>
+            );
+          })}
+          {sessionMentionFiles?.status !== "ready" ? (
+            <small className="command-palette-loading">
+              {sessionMentionFiles?.status === "failed"
+                ? sessionMentionFiles.message
+                : t("파일 목록을 불러오는 중…")}
+            </small>
+          ) : mentionMatches.length === 0 ? (
+            <small className="command-palette-loading">{t("일치하는 파일이 없습니다")}</small>
+          ) : sessionMentionFiles.truncated ? (
+            <small className="command-palette-loading">
+              {t("파일이 많아 일부만 검색합니다")}
+            </small>
+          ) : null}
         </div>
       )}
       <div className="composer-toolbar">

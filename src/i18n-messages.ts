@@ -725,4 +725,10 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "실패한 단계의 로그입니다.": "Log of the failed steps:",
   "실패한 단계의 로그입니다. {limit}KB 상한을 넘은 앞부분은 생략했습니다.": "Log of the failed steps. The beginning was cut to stay within {limit} KB.",
   "로그가 비어 있습니다.": "The log is empty.",
+  "파일은 메시지당 최대 5개까지 첨부할 수 있습니다": "You can attach up to 5 files per message",
+  "워크스페이스 파일": "Workspace files",
+  "↑↓ 선택 · Enter 첨부 · Esc 닫기": "↑↓ select · Enter attach · Esc close",
+  "파일 목록을 불러오는 중…": "Loading files…",
+  "일치하는 파일이 없습니다": "No matching files",
+  "파일이 많아 일부만 검색합니다": "Too many files; searching only part of the workspace",
 };

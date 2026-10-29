@@ -160,6 +160,20 @@ An authoritative command update replaces that provisional skill list. TUI-only
 commands and commands without a public SDK equivalent are not claimed as supported;
 desktop slash commands are not a complete copy of the CLI command surface.
 
+### File mentions
+
+Type `@` at the start of the draft or after a space to search the session
+workspace's files. ↑/↓ moves the highlight, Enter or Tab attaches the file, and Esc
+closes the list without stopping the run. The `@text` leaves the draft and the file
+becomes a path chip, sent the same way as a file chosen with the attach button.
+
+The list comes from `git ls-files --cached --others --exclude-standard`, so
+`.gitignore` decides what is offered. Outside Git it is a bounded directory walk
+that skips `.git` and `node_modules`. Either way it stops at 100,000 files and says
+so. The main process reuses a listing for 10 seconds, so files written since then
+appear on the next `@`. Mentions are desktop only: a remote device has no workspace
+listing, and `@` stays plain text there.
+
 ### Shortcuts
 
 | Key         | Action                |

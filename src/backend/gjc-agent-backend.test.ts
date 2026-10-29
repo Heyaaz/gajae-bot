@@ -26,6 +26,10 @@ class FakeGjcBridge implements GjcDesktopBridge {
     content: "# Preview",
     size: 9,
   });
+  listWorkspaceFiles = vi
+    .fn()
+    .mockResolvedValue({ files: [], truncated: false, source: "git" });
+  attachWorkspaceFiles = vi.fn().mockResolvedValue([]);
   getGoal = vi
     .fn()
     .mockResolvedValue({ enabled: false, completed: 0, total: 0 });

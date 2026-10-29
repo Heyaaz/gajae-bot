@@ -1,9 +1,9 @@
-import { mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GjcSdkController } from "./gjc-sdk-controller.js";
-import type { TranscriptPage } from "../shared/agent-contract.js";
+import type { FileAttachment, TranscriptPage } from "../shared/agent-contract.js";
 import type { IpcSecurity } from "./ipc-security.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
 import { AttachmentStore } from "./attachment-store.js";
@@ -13,6 +13,7 @@ import {
   withResolvedMessageInput,
 } from "./gjc-ipc-handlers.js";
 import { createSessionInput } from "./gjc-input-validation.js";
+import { resolveWorkspaceFile } from "./workspace-files.js";
 
 const handled = vi.hoisted(() => new Map<string, (...args: unknown[]) => unknown>());
 
@@ -471,5 +472,78 @@ describe("session creation IPC validation", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+describe("workspace mention IPC", () => {
+  async function setup() {
+    const root = await mkdtemp(path.join(tmpdir(), "gajae-mention-ipc-"));
+    roots.push(root);
+    await mkdir(path.join(root, "src"));
+    await writeFile(path.join(root, "src", "renderer.ts"), "export {};\n");
+    const send = vi.fn().mockResolvedValue("prompt");
+    const store = new AttachmentStore();
+    store.activateSender(7);
+    registerGjcIpcHandlers(
+      {
+        sendMessage: send,
+        resolveWorkspaceFile: (_sessionId: string, relativePath: string) =>
+          resolveWorkspaceFile(root, relativePath),
+      } as unknown as GjcSdkController,
+      store,
+      {
+        guarded: (handler: (...args: unknown[]) => unknown) =>
+          async (...args: unknown[]) => handler(...args),
+        owner: vi.fn(),
+        authorizeDestructive: vi.fn(),
+      } as unknown as IpcSecurity,
+    );
+    return { root, send };
+  }
+
+  it("issues the picker's attachment for a mentioned path and sends its native path", async () => {
+    const { root, send } = await setup();
+    const event = { sender: { id: 7 } };
+    const attached = (await handled.get(GJC_IPC.attachWorkspaceFiles)!(
+      event,
+      "session-a",
+      ["src/renderer.ts"],
+    )) as FileAttachment[];
+    expect(attached).toEqual([
+      expect.objectContaining({
+        name: "renderer.ts",
+        label: "src/renderer.ts",
+        mimeType: "text/typescript",
+        size: 11,
+      }),
+    ]);
+    await handled.get(GJC_IPC.sendMessage)!(event, "session-a", {
+      text: "read it",
+      images: [],
+      files: attached,
+    });
+    expect(send).toHaveBeenCalledWith(
+      "session-a",
+      expect.objectContaining({
+        files: [
+          expect.objectContaining({
+            name: "renderer.ts",
+            nativePath: await realpath(path.join(root, "src", "renderer.ts")),
+          }),
+        ],
+      }),
+      { allowDestructive: false },
+    );
+  });
+
+  it("refuses a path outside the workspace and more than one message's files", async () => {
+    await setup();
+    const attach = handled.get(GJC_IPC.attachWorkspaceFiles)!;
+    const event = { sender: { id: 7 } };
+    await expect(attach(event, "session-a", ["../outside.txt"])).rejects.toThrow();
+    await expect(attach(event, "session-a", ["/etc/hosts"])).rejects.toThrow();
+    await expect(
+      attach(event, "session-a", Array(6).fill("src/renderer.ts")),
+    ).rejects.toThrow("at most 5 files");
   });
 });

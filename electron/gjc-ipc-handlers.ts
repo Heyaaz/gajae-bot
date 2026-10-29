@@ -1,5 +1,6 @@
 import { ipcMain } from "electron";
 import type {
+  FileAttachment,
   MessageDelivery,
   TranscriptPageRequest,
 } from "../shared/agent-contract.js";
@@ -23,6 +24,7 @@ import {
 } from "./gjc-sdk-controller.js";
 import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
+import { fileAttachment } from "./settings-ipc-handlers.js";
 import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
 import type { IpcSecurity } from "./ipc-security.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
@@ -377,6 +379,39 @@ export function registerGjcIpcHandlers(
         requiredId(sessionId, "Session ID"),
         requiredString(filePath, "File path"),
       ),
+  );
+  handle(GJC_IPC.listWorkspaceFiles, (_event, sessionId: unknown) =>
+    controller.listWorkspaceFiles(requiredId(sessionId, "Session ID")),
+  );
+  // A mention leaves the renderer as a workspace-relative path and comes back as
+  // the same token-backed attachment the file picker issues, so sending it goes
+  // through the one lease check every attachment takes.
+  handle(
+    GJC_IPC.attachWorkspaceFiles,
+    async (event, sessionId: unknown, paths: unknown) => {
+      const id = requiredId(sessionId, "Session ID");
+      const relativePaths = gitPaths(paths);
+      if (relativePaths.length > 5)
+        throw new Error("Attach at most 5 files per message");
+      const prepared: FileAttachment[] = [];
+      try {
+        for (const relativePath of relativePaths) {
+          try {
+            const nativePath = await controller.resolveWorkspaceFile(id, relativePath);
+            const attachment = await fileAttachment(nativePath, attachments, event.sender.id);
+            prepared.push({ ...attachment, label: relativePath });
+          } catch (error) {
+            console.error(`Workspace mention attachment failed for ${relativePath}`, error);
+            throw new Error(`${relativePath}: 파일을 첨부하지 못했습니다`);
+          }
+        }
+        return prepared;
+      } catch (error) {
+        if (prepared.length > 0)
+          attachments.revoke(event.sender.id, prepared.map((attachment) => attachment.token));
+        throw error;
+      }
+    },
   );
   handle(GJC_IPC.getGoal, (_event, sessionId: unknown) =>
     controller.getGoal(requiredId(sessionId, "Session ID")),

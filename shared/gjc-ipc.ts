@@ -44,6 +44,8 @@ export const GJC_IPC = {
   getDiff: "agent-control:gjc:get-diff",
   readArtifact: "agent-control:gjc:read-artifact",
   previewFile: "agent-control:gjc:preview-file",
+  listWorkspaceFiles: "agent-control:gjc:list-workspace-files",
+  attachWorkspaceFiles: "agent-control:gjc:attach-workspace-files",
   getGoal: "agent-control:gjc:get-goal",
   operateGoal: "agent-control:gjc:operate-goal",
   listSubagents: "agent-control:gjc:list-subagents",

@@ -40,6 +40,7 @@ import type {
   DiffSnapshot,
   EffectiveRuntimeState,
   GeneratedFilePreview,
+  WorkspaceFileIndex,
   GitStatusSnapshot,
   GoalOperation,
   GoalSnapshot,
@@ -227,6 +228,10 @@ import {
 } from "./gjc-sdk-foundation.js";
 
 import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
+import {
+  resolveWorkspaceFile,
+  WorkspaceFileLister,
+} from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
 import {
   projectTranscriptItemForDelivery,
@@ -352,6 +357,7 @@ export class GjcSdkController {
   private readonly artifactDirectory: string;
   private readonly sessions = new Map<string, AgentSession>();
   private readonly sessionCwds = new Map<string, string>();
+  private readonly workspaceFiles = new WorkspaceFileLister();
   private readonly attachedSessions = new Set<string>();
   /**
    * Sessions the renderer is showing or keeping in its transcript cache.
@@ -4623,6 +4629,15 @@ export class GjcSdkController {
         totalBytes: offset,
       };
     }
+  }
+
+  listWorkspaceFiles(sessionId: string): Promise<WorkspaceFileIndex> {
+    return this.workspaceFiles.list(this.repoFor(sessionId));
+  }
+
+  /** The real path of a file an `@` mention names in the session workspace. */
+  resolveWorkspaceFile(sessionId: string, relativePath: string): Promise<string> {
+    return resolveWorkspaceFile(this.repoFor(sessionId), relativePath);
   }
 
   async previewFile(

@@ -381,6 +381,10 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ) as Promise<ArtifactContent>,
   previewFile: (sessionId: string, filePath: string) =>
     ipcRenderer.invoke(GJC_IPC.previewFile, sessionId, filePath),
+  listWorkspaceFiles: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.listWorkspaceFiles, sessionId),
+  attachWorkspaceFiles: (sessionId: string, paths: string[]) =>
+    ipcRenderer.invoke(GJC_IPC.attachWorkspaceFiles, sessionId, paths),
   getGoal: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.getGoal, sessionId),
   operateGoal: (

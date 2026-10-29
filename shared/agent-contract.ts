@@ -343,6 +343,22 @@ export interface FileAttachment {
   mimeType: string;
   size: number;
   token: string;
+  /**
+   * The workspace-relative path of a file attached by an `@` mention, which is
+   * what its chip shows. Display only: the send boundary drops it, because the
+   * attachment name must stay a bare file name.
+   */
+  label?: string;
+}
+
+/** The files an `@` mention can name in one session workspace. */
+export interface WorkspaceFileIndex {
+  /** Workspace-relative paths with `/` separators. */
+  files: string[];
+  /** The listing stopped at its cap, so a query can miss a file past it. */
+  truncated: boolean;
+  /** `git` honours `.gitignore`; `scan` is the bounded walk outside a repository. */
+  source: "git" | "scan";
 }
 
 export interface MessageInput {
@@ -982,6 +998,12 @@ export interface GjcDesktopBridge {
     sessionId: string,
     filePath: string,
   ): Promise<GeneratedFilePreview>;
+  listWorkspaceFiles(sessionId: string): Promise<WorkspaceFileIndex>;
+  /** Issues file attachments for workspace-relative paths of the session workspace. */
+  attachWorkspaceFiles(
+    sessionId: string,
+    paths: string[],
+  ): Promise<FileAttachment[]>;
   getGoal(sessionId: string): Promise<GoalSnapshot>;
   operateGoal(
     sessionId: string,
