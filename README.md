@@ -11,33 +11,49 @@ files; they never share a TUI connection.
 ## User setup
 
 - Apple-silicon macOS (arm64 only)
-- Bun 1.4 or newer for the GJC runtime
-- GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code) repository, version `0.18.12` or newer (the newest verified compatibility target is `gajae-code@0.19.0`)
 - Optional: the [`gh` CLI](https://cli.github.com), signed in with `gh auth login`, for the repository screen's issues, pull requests and CI
 
-For a clean install, install GJC first, then copy the notarized Gajae release to
-`/Applications`:
+Copy the notarized Gajae release to `/Applications` and open it:
 
 ```bash
-bun add -g gajae-code@0.19.0
 cd Gajae-0.1.0-darwin-arm64
 shasum -a 256 -c Gajae-0.1.0-darwin-arm64.zip.sha256
 ditto -x -k Gajae-0.1.0-darwin-arm64.zip .
 cp -R Gajae.app /Applications/Gajae.app
 ```
 
+On a Mac without GJC, the first launch walks through setup without a terminal:
+
+1. It installs the GJC CLI from the public [`Yeachan-Heo/gajae-code`](https://github.com/Yeachan-Heo/gajae-code)
+   releases, checked against the release's SHA-256, into `~/.local/bin/gjc`, the
+   same place GJC's own installer uses, so `gjc update` keeps working.
+2. It signs in to one provider through GJC's own login (a browser login, or an
+   API key pasted into the app). GJC stores the credential; Gajae does not.
+3. It switches to GJC's recommended model profile for that provider and opens
+   the first conversation.
+
+A Mac that already runs GJC skips this. GJC `0.18.12` or newer is required (the
+newest verified compatibility target is `0.19.0`); to install it yourself, run
+GJC's installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Yeachan-Heo/gajae-code/main/scripts/install.sh | sh
+```
+
 The app is version `0.1.0`; that is the desktop app release version and is
-separate from the GJC CLI version. Update each independently. Keep `gjc` on
-`PATH` or set its path in app settings.
+separate from the GJC CLI version. Update each independently.
 
 Lookup order for the executable:
 
 1. Path set in app settings
 2. `GJC_BIN`
-3. `~/.bun/bin/gjc`
-4. `~/.local/bin/gjc`
-5. `/opt/homebrew/bin/gjc`
-6. `/usr/local/bin/gjc`
+3. `$GJC_INSTALL_DIR/gjc`
+4. `PATH`
+5. `~/.local/bin`, `~/.bun/bin`, `~/.nvm/current/bin`, `~/.volta/bin`,
+   `/opt/homebrew/bin`, `/usr/local/bin` (a Finder launch has none of these on `PATH`)
+
+Bun is needed only when `gjc` is a Bun launcher script (a Bun global or source
+install), not for the release binary.
 
 Default model preset is `codex-medium`. If `~/.gjc/agent/models.yml` defines it, that mapping wins.
 
