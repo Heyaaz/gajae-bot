@@ -33,6 +33,6 @@ describe("GJC minimum version", () => {
     expect(gjcVersionWarning("0.18.12")).toBeUndefined();
     expect(gjcVersionWarning(undefined)).toBeUndefined();
     expect(gjcVersionWarning("0.18.11")).toContain("older than the required 0.18.12");
-    expect(gjcVersionWarning("0.18.10")).toContain("bun add -g gajae-code@latest");
+    expect(gjcVersionWarning("0.18.10")).toContain("`gjc update`");
   });
 });

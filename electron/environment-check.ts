@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { BUILT_IN_MODEL_PRESETS } from "../shared/agent-contract.js";
@@ -32,6 +32,8 @@ export type CommandRunner = (
 export interface EnvironmentProbeContext {
   locate(name: string, extraCandidates?: readonly string[]): Promise<string | undefined>;
   locateGjc(): Promise<string | undefined>;
+  /** Whether the file starts with `#!`, i.e. needs an interpreter to run. */
+  isScript(executable: string): Promise<boolean>;
   run: CommandRunner;
   modelPreset: string;
   /** models.yml text, or undefined when there is none. */
@@ -51,13 +53,15 @@ interface Finding<P extends EnvironmentProblem> {
 interface EnvironmentCheckDefinition<P extends EnvironmentProblem> {
   id: EnvironmentCheckId;
   required: boolean;
+  /** When this resolves false the row is left out of the report. */
+  applies?(context: EnvironmentProbeContext): Promise<boolean>;
   probe(context: EnvironmentProbeContext): Promise<Finding<P>>;
   fixes: Record<P, string>;
 }
 
 export interface EnvironmentCheck {
   id: EnvironmentCheckId;
-  check(context: EnvironmentProbeContext): Promise<EnvironmentCheckRow>;
+  check(context: EnvironmentProbeContext): Promise<EnvironmentCheckRow | undefined>;
 }
 
 function defineCheck<P extends EnvironmentProblem>(
@@ -65,7 +69,10 @@ function defineCheck<P extends EnvironmentProblem>(
 ): EnvironmentCheck {
   return {
     id: definition.id,
-    check: async (context) => row(definition, await definition.probe(context)),
+    check: async (context) =>
+      definition.applies && !(await definition.applies(context))
+        ? undefined
+        : row(definition, await definition.probe(context)),
   };
 }
 
@@ -92,7 +99,10 @@ function row<P extends EnvironmentProblem>(
 
 const VERSION = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/u;
 const BUN_INSTALL = "curl -fsSL https://bun.sh/install | bash";
-const GJC_INSTALL = "bun add -g gajae-code@latest";
+// GJC's own documented install path: a standalone binary in ~/.local/bin. The npm
+// package is a source/development channel and is not kept current.
+const GJC_INSTALL =
+  "curl -fsSL https://raw.githubusercontent.com/Yeachan-Heo/gajae-code/main/scripts/install.sh | sh";
 const TAILSCALE_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 
 async function versionFinding(
@@ -132,6 +142,13 @@ export const ENVIRONMENT_CHECKS: readonly EnvironmentCheck[] = [
   defineCheck({
     id: "bun",
     required: true,
+    // The release binary embeds its runtime. Only a `#!/usr/bin/env bun` launcher
+    // (a Bun global or source install) needs Bun, and a missing GJC is installed
+    // as the binary.
+    applies: async (context) => {
+      const gjc = await context.locateGjc();
+      return gjc ? context.isScript(gjc) : false;
+    },
     probe: async (context) =>
       versionFinding(context, "bun", await context.locate("bun")),
     fixes: {
@@ -147,7 +164,7 @@ export const ENVIRONMENT_CHECKS: readonly EnvironmentCheck[] = [
       versionFinding(context, "gjc", await context.locateGjc()),
     fixes: {
       "not-found": GJC_INSTALL,
-      "too-old": GJC_INSTALL,
+      "too-old": "gjc update",
       unreadable: GJC_INSTALL,
     },
   }),
@@ -221,9 +238,11 @@ export async function checkEnvironment(
   context: EnvironmentProbeContext,
   now: () => number = Date.now,
 ): Promise<EnvironmentReport> {
-  const rows = await Promise.all(
-    ENVIRONMENT_CHECKS.map((definition) => definition.check(context)),
-  );
+  const rows = (
+    await Promise.all(
+      ENVIRONMENT_CHECKS.map((definition) => definition.check(context)),
+    )
+  ).filter((row): row is EnvironmentCheckRow => row !== undefined);
   return { rows, ready: environmentReady(rows), checkedAtMs: now() };
 }
 
@@ -259,6 +278,18 @@ export const runCommand: CommandRunner = (executable, args) =>
     child.stdin?.end();
   });
 
+export async function isScript(executable: string): Promise<boolean> {
+  const handle = await open(executable, "r").catch(() => undefined);
+  if (!handle) return false;
+  try {
+    const head = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(head, 0, 2, 0);
+    return bytesRead === 2 && head.toString("latin1") === "#!";
+  } finally {
+    await handle.close();
+  }
+}
+
 export function hostEnvironmentContext(settings: {
   gjcExecutable: string | undefined;
   modelPreset: string;
@@ -267,6 +298,7 @@ export function hostEnvironmentContext(settings: {
     locate: async (name, extraCandidates = []) =>
       (await findExecutable(name)) ?? (await firstExecutable(extraCandidates)),
     locateGjc: () => resolveGjcExecutable(settings.gjcExecutable),
+    isScript,
     run: runCommand,
     modelPreset: settings.modelPreset,
     readModelsFile: () =>

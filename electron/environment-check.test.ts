@@ -6,6 +6,7 @@ import type { EnvironmentCheckRow } from "../shared/environment-check.js";
 import {
   checkEnvironment,
   configuredProfileIds,
+  isScript,
   runCommand,
   type CommandResult,
   type EnvironmentProbeContext,
@@ -17,6 +18,8 @@ import { findExecutable, resolveGjcExecutable } from "./runtime-path.js";
 interface Machine {
   executables: Record<string, string>;
   answers: Record<string, CommandResult>;
+  /** Executables that are `#!` launchers rather than binaries. */
+  scripts?: string[];
   modelPreset?: string;
   modelsFile?: string;
 }
@@ -27,6 +30,7 @@ function context(machine: Machine): EnvironmentProbeContext {
       machine.executables[name] ??
       extra.find((candidate) => Object.values(machine.executables).includes(candidate)),
     locateGjc: async () => machine.executables.gjc,
+    isScript: async (executable) => machine.scripts?.includes(executable) ?? false,
     run: async (executable, args) =>
       machine.answers[`${executable} ${args.join(" ")}`] ?? { found: false },
     modelPreset: machine.modelPreset ?? "codex-medium",
@@ -46,6 +50,9 @@ const failed = (exitCode: number, stderr = ""): CommandResult => ({
   stdout: "",
   stderr,
 });
+
+const INSTALL_GJC =
+  "curl -fsSL https://raw.githubusercontent.com/Yeachan-Heo/gajae-code/main/scripts/install.sh | sh";
 
 const ready: Machine = {
   executables: {
@@ -78,12 +85,20 @@ describe("checkEnvironment", () => {
     expect(report.ready).toBe(true);
     expect(report.checkedAtMs).toBe(7);
     expect(report.rows.map((row) => [row.id, row.status, row.detail])).toEqual([
-      ["bun", "ok", "1.4.0 · /Users/me/.bun/bin/bun"],
       ["gjc", "ok", "0.19.0 · /Users/me/.local/bin/gjc"],
       ["model-preset", "ok", "codex-medium"],
       ["gh", "ok", "github.com · octo"],
       ["tailscale", "ok", "Running"],
     ]);
+  });
+
+  it("asks for Bun only when GJC is a launcher script that runs on it", async () => {
+    const found = await rows({ ...ready, scripts: ["/Users/me/.local/bin/gjc"] });
+    expect(found.bun).toMatchObject({
+      status: "ok",
+      required: true,
+      detail: "1.4.0 · /Users/me/.bun/bin/bun",
+    });
   });
 
   it("names exactly what a clean Mac is missing, with the command for each", async () => {
@@ -98,8 +113,7 @@ describe("checkEnvironment", () => {
           : [row.id, row.status, row.problem, row.fix],
       ),
     ).toEqual([
-      ["bun", "missing", "not-found", "curl -fsSL https://bun.sh/install | bash"],
-      ["gjc", "missing", "not-found", "bun add -g gajae-code@latest"],
+      ["gjc", "missing", "not-found", INSTALL_GJC],
       ["model-preset", "ok"],
       ["gh", "warning", "not-found", "brew install gh"],
       ["tailscale", "warning", "not-found", "brew install --cask tailscale"],
@@ -109,6 +123,7 @@ describe("checkEnvironment", () => {
   it("holds GJC and bun to their minimum versions", async () => {
     const found = await rows({
       ...ready,
+      scripts: ["/Users/me/.local/bin/gjc"],
       answers: {
         ...ready.answers,
         "/Users/me/.bun/bin/bun --version": ok("1.3.9\n"),
@@ -120,7 +135,7 @@ describe("checkEnvironment", () => {
       status: "warning",
       problem: "too-old",
       detail: "0.18.11 · /Users/me/.local/bin/gjc",
-      fix: "bun add -g gajae-code@latest",
+      fix: "gjc update",
     });
   });
 
@@ -128,6 +143,7 @@ describe("checkEnvironment", () => {
     // The launcher is `#!/usr/bin/env bun`, so without bun it exits 127.
     const found = await rows({
       ...ready,
+      scripts: ["/Users/me/.local/bin/gjc"],
       executables: { ...ready.executables, bun: "" },
       answers: {
         ...ready.answers,
@@ -219,6 +235,14 @@ describe("host lookups", () => {
     await expect(findExecutable("gajae-env-tool", directory)).resolves.toBe(tool);
     await expect(findExecutable("gajae-env-absent", directory)).resolves.toBeUndefined();
     await expect(resolveGjcExecutable(tool)).resolves.toBe(tool);
+  });
+
+  it("tells a launcher script from a binary by its first bytes", async () => {
+    const binary = path.join(directory, "gajae-env-binary");
+    writeFileSync(binary, Buffer.from([0xcf, 0xfa, 0xed, 0xfe]));
+    await expect(isScript(tool)).resolves.toBe(true);
+    await expect(isScript(binary)).resolves.toBe(false);
+    await expect(isScript(path.join(directory, "absent"))).resolves.toBe(false);
   });
 
   it("tells an absent command from one that failed, and never waits on stdin", async () => {

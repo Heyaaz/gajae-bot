@@ -73,5 +73,5 @@ export function gjcVersionSupported(version: string | undefined): boolean {
 /** The update guidance to show for an old runtime, or undefined when none is due. */
 export function gjcVersionWarning(version: string | undefined): string | undefined {
   if (!version || gjcVersionSupported(version)) return undefined;
-  return `GJC ${version} is older than the required ${GJC_MINIMUM_VERSION}. Update with \`bun add -g gajae-code@latest\` and reconnect.`;
+  return `GJC ${version} is older than the required ${GJC_MINIMUM_VERSION}. Update with \`gjc update\` and reconnect.`;
 }
