@@ -12,6 +12,7 @@ import type { AgentSession } from "../backend/types";
 import { t, useLanguage } from "../i18n";
 import {
   humanErrorMessage,
+  isDeclinedConfirmation,
   parallelStateLabel,
   sessionTitleText,
   statusLabel,
@@ -32,13 +33,6 @@ export interface ParallelViewProps {
 interface DiffState {
   diff: DiffSnapshot | null;
   loading: boolean;
-}
-
-/** A cancelled native confirmation is the user's answer, not a failure to report. */
-function cancelled(error: unknown): boolean {
-  return /Operation cancelled/u.test(
-    error instanceof Error ? error.message : String(error),
-  );
 }
 
 function attemptStatus(attempt: ParallelAttempt, session?: AgentSession): string {
@@ -144,7 +138,7 @@ export function ParallelView({
     try {
       await work();
     } catch (error) {
-      if (!cancelled(error)) onError(humanErrorMessage(error));
+      if (!isDeclinedConfirmation(error)) onError(humanErrorMessage(error));
     } finally {
       setBusy(false);
     }

@@ -3,6 +3,7 @@ import type { Automation, AutomationInput, AutomationRun } from "../../shared/au
 import { Play, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { isDeclinedConfirmation } from "./format";
 import { Dropdown } from "./primitives";
 import { locale, t } from "../i18n";
 
@@ -42,7 +43,8 @@ export function ManagementPanel({
     try {
       onSnapshot(await operation());
     } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
+      if (!isDeclinedConfirmation(error))
+        onError(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy("");
     }
@@ -144,16 +146,11 @@ export function ManagementPanel({
                   className="button-danger"
                   type="button"
                   disabled={Boolean(busy)}
-                  onClick={() => {
-                    if (window.confirm(t`${server.name} MCP 서버를 제거할까요?`))
-                      void mutate(`mcp-${server.name}`, () =>
-                        bridge.removeMcpServer(
-                          workspace,
-                          server.scope,
-                          server.name,
-                        ),
-                      );
-                  }}
+                  onClick={() =>
+                    void mutate(`mcp-${server.name}`, () =>
+                      bridge.removeMcpServer(workspace, server.scope, server.name),
+                    )
+                  }
                 >
                   {t("제거")} </button>
               </article>
@@ -172,13 +169,7 @@ export function ManagementPanel({
           onSubmit={(event) => {
             event.preventDefault();
             const target = pluginTarget.trim();
-            if (
-              !target ||
-              !window.confirm(
-                t`${target} 패키지의 코드를 ${pluginScope} 범위에 설치하고 실행 가능하게 할까요? 신뢰하는 정확한 버전인지 확인하세요.`,
-              )
-            )
-              return;
+            if (!target) return;
             void mutate(`plugin-install-${target}`, () =>
               bridge.installPlugin(workspace, target, pluginScope),
             ).then(() => setPluginTarget(""));
@@ -265,16 +256,11 @@ export function ManagementPanel({
                     className="button-danger"
                     type="button"
                     disabled={Boolean(busy)}
-                    onClick={() => {
-                      if (
-                        window.confirm(
-                          t`${plugin.name} 플러그인을 제거할까요? 설치된 코드가 삭제됩니다.`,
-                        )
+                    onClick={() =>
+                      void mutate(`plugin-remove-${plugin.name}`, () =>
+                        bridge.uninstallPlugin(workspace, plugin.name),
                       )
-                        void mutate(`plugin-remove-${plugin.name}`, () =>
-                          bridge.uninstallPlugin(workspace, plugin.name),
-                        );
-                    }}
+                    }
                   >
                     {t("제거")} </button>
                 </div>
@@ -411,7 +397,8 @@ export function AutomationPanel({
       await operation();
       await reload();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (!isDeclinedConfirmation(reason))
+        setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setBusy("");
     }
@@ -606,10 +593,7 @@ export function AutomationPanel({
                   type="button"
                   disabled={Boolean(busy)}
                   onClick={() => {
-                    if (
-                      bridge &&
-                      window.confirm(t`${automation.name} 자동화를 삭제할까요?`)
-                    )
+                    if (bridge)
                       void mutate(`delete-${automation.id}`, () =>
                         bridge.delete(automation.id),
                       );

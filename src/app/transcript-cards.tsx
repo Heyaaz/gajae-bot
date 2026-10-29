@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { locale, t } from "../i18n";
+import { confirmChoice } from "./confirm";
 import { MarkdownBody } from "./transcript-markdown";
 
 export function CompactionCard({
@@ -205,10 +206,13 @@ export function MessageDeliveryRow({
               type="button"
               className="notice-card-retry"
               disabled={attempt.retrying || attempt.submitting}
-              onClick={() => {
+              onClick={async () => {
                 if (
                   attempt.state === "unconfirmed" &&
-                  !window.confirm(t("전달 결과를 확인할 수 없습니다. 아직 대기 중일 수 있어 다시 시도하면 중복 실행될 수 있습니다. 그래도 다시 시도할까요?"))
+                  !(await confirmChoice(
+                    t("그래도 다시 시도할까요?"),
+                    t("전달 결과를 확인할 수 없습니다. 아직 대기 중일 수 있어 다시 시도하면 중복 실행될 수 있습니다."),
+                  ).catch(() => false))
                 )
                   return;
                 onRetry(attempt.id);

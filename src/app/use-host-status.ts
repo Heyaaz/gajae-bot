@@ -3,7 +3,7 @@ import type { GjcUpdateStatus } from "../../shared/agent-contract";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { BackendConnection } from "../backend/types";
-import { t } from "../i18n";
+import { isDeclinedConfirmation } from "./format";
 
 export function useRemoteStatus(backend: AgentBackend) {
   // A browser is the remote client of a host: the shell keeps its status so an
@@ -60,17 +60,12 @@ export function useGjcUpdate(
 
   const installUpdate = useCallback(async (): Promise<void> => {
     if (!settingsBridge || !updateStatus?.updateAvailable) return;
-    if (
-      !window.confirm(
-        t`GJC ${updateStatus.latestVersion}(으)로 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.`,
-      )
-    )
-      return;
     setUpdateBusy("installing");
     setUpdateError("");
     try {
       setUpdateStatus(await settingsBridge.installGjcUpdate());
     } catch (error) {
+      if (isDeclinedConfirmation(error)) return;
       setUpdateError(error instanceof Error ? error.message : String(error));
       setSettingsOpen(true);
     } finally {
