@@ -77,6 +77,19 @@ export async function imageAttachment(filePath: string, store: AttachmentStore, 
   }
 }
 
+/** Issues every file or none: tokens already issued are revoked when one fails. */
+export async function imageAttachments(filePaths: readonly string[], store: AttachmentStore, senderId: number): Promise<ImageAttachment[]> {
+  const prepared: ImageAttachment[] = []
+  try {
+    for (const [index, filePath] of filePaths.entries()) prepared.push(await imageAttachment(filePath, store, senderId, index))
+    return prepared
+  } catch (error) {
+    const tokens = prepared.flatMap((attachment) => attachment.token ? [attachment.token] : [])
+    if (tokens.length > 0) store.revoke(senderId, tokens)
+    throw error
+  }
+}
+
 export function fileMimeType(filePath: string): string | undefined {
   return FILE_MIME_TYPES[path.extname(filePath).toLowerCase()]
 }

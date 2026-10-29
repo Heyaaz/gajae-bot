@@ -69,7 +69,7 @@ import { DesktopStateStore } from "./desktop-state-store.js";
 import { checkEnvironment, hostEnvironmentContext } from "./environment-check.js";
 import { deepLinksInArgv, sessionShortcutForDeepLink } from "./deep-link.js";
 import { startDeepLinkSmoke } from "./deep-link-smoke.js";
-import { imageAttachment } from "./settings-ipc-handlers.js";
+import { imageAttachments } from "./settings-ipc-handlers.js";
 import { QuickInputShortcut } from "./quick-input.js";
 import { QuickInputWindow, type QuickInputHandoff } from "./quick-input-window.js";
 import { quickInputProjects } from "../shared/quick-input.js";
@@ -351,11 +351,11 @@ async function handOffQuickInput(handoff: QuickInputHandoff): Promise<void> {
   const window = sessionWindow();
   revealWindow(window);
   await loadedWindow(window);
-  const images = [];
-  for (const [index, file] of handoff.images.entries())
-    images.push(
-      await imageAttachment(file, attachmentStore, window.webContents.id, index),
-    );
+  const images = await imageAttachments(
+    handoff.images,
+    attachmentStore,
+    window.webContents.id,
+  );
   window.webContents.send(DESKTOP_IPC.sessionShortcut, {
     type: "new",
     prefill: {
