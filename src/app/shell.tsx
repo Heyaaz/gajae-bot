@@ -36,7 +36,6 @@ import { TerminalView } from "./terminal-view";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
-  prefillComposerDraft,
   releaseQueuedSession,
   submitComposerInput,
   subscribeComposerReleaseRetry,
@@ -46,12 +45,10 @@ import {
   GlobalSearchDialog,
   NewSessionDialog,
   ResumeSessionDialog,
-  type NewSessionInput,
 } from "./dialogs";
 import {
   BUNDLED_GJC_COMMANDS,
   EMPTY_TRANSCRIPT,
-  directoryName,
   humanErrorMessage,
   sessionTitleText,
 } from "./format";
@@ -71,23 +68,20 @@ import { useGjcUpdate, useRemoteStatus } from "./use-host-status";
 import { ChatHeader } from "./chat-header";
 import { useComposerCallbacks } from "./use-composer-callbacks";
 import { usePreferenceToggles } from "./use-preference-toggles";
+import { useCreateSession } from "./use-create-session";
+import { useProjectModel } from "./use-project-model";
 import { createBackendEventHandler } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
 import { useMessageDelivery } from "./use-message-delivery";
 import { Sidebar } from "./sidebar";
-import { parallelGroupIdOf, sessionListModel } from "./sidebar-model";
+import { parallelGroupIdOf } from "./sidebar-model";
 import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
 import type { ParallelGroup } from "../../shared/parallel-run";
 import {
   ALL_PROJECTS_ID,
-  buildProjectGroups,
-  projectPathOf,
-  resolveProjectSelection,
-  sessionsOfProject,
 } from "./project-model";
 import type { RepoDesktopBridge } from "../../shared/repo-ipc";
-import type { ProjectPathResolution } from "../../shared/repo-ipc";
 import { QuestionBanner } from "./question-card";
 import {
   ApprovalBanner,
@@ -219,12 +213,6 @@ export default function App() {
   useEffect(() => {
     surfaceRef.current = surface;
   }, [surface]);
-  // Git project roots, as the main process resolved them. Empty until that answer
-  // arrives, and empty forever in a renderer with no desktop bridge; the grouping
-  // falls back to workspace paths in that case rather than dropping sessions.
-  const [projectResolutions, setProjectResolutions] = useState<
-    ProjectPathResolution[]
-  >([]);
   // The whole object the store answered with is kept, not only the label the sidebar
   // renders: the reasoning-card preference is a field of it, and a card toggles that
   // one field through the bridge without touching the rest.
@@ -740,55 +728,13 @@ export default function App() {
     ],
     [preferences.modelPreset, configOptions],
   );
-  // Only the paths actually in use are resolved, and only when the set changes: a
-  // session's status changes far more often than its workspace does.
-  const workspaceKey = useMemo(
-    () => [...new Set(sessions.map(projectPathOf))].sort().join("\n"),
-    [sessions],
-  );
-  useEffect(() => {
-    // No bridge (a browser or a remote client) and no workspaces both leave the
-    // grouping to the workspace paths themselves; there is nothing to resolve.
-    if (!repoBridge || !workspaceKey) return;
-    let active = true;
-    void repoBridge
-      .resolveProjects(workspaceKey.split("\n"))
-      .then((resolved) => {
-        if (active) setProjectResolutions(resolved);
-      })
-      // A failed lookup leaves the previous answer in place. Grouping by workspace
-      // path is still correct, only coarser, and clearing it would redraw the whole
-      // rail as ungrouped for a transient IPC failure.
-      .catch(() => undefined);
-    return () => {
-      active = false;
-    };
-  }, [repoBridge, workspaceKey]);
-
-  const projectGroups = useMemo(
-    () => buildProjectGroups(sessions, projectResolutions),
-    [sessions, projectResolutions],
-  );
-  // A project whose last session was deleted must not leave the rail filtered by a
-  // row that no longer exists.
-  const activeProjectId = useMemo(
-    () => resolveProjectSelection(selectedProjectId, projectGroups),
-    [selectedProjectId, projectGroups],
-  );
-  const activeProject = useMemo(
-    () => projectGroups.find((group) => group.id === activeProjectId) ?? null,
-    [projectGroups, activeProjectId],
-  );
-  const filteredSessions = useMemo(
-    () => sessionsOfProject(sessions, projectGroups, activeProjectId),
-    [sessions, projectGroups, activeProjectId],
-  );
-  // The digits the main process sends for ⌘1-⌘9 index this list, so it has to be the
-  // rail's own order: pinned first, then the state groups, newest first inside each.
-  const shortcutSessions = useMemo(
-    () => sessionListModel(filteredSessions, { parallelGroups }).shortcuts,
-    [filteredSessions, parallelGroups],
-  );
+  const {
+    projectGroups,
+    activeProjectId,
+    activeProject,
+    filteredSessions,
+    shortcutSessions,
+  } = useProjectModel(sessions, parallelGroups, repoBridge, selectedProjectId);
 
   // Nothing is hidden any more: a request the composer is still holding was never
   // sent, so it cannot appear here, and anything that did reach GJC is an ordinary
@@ -991,104 +937,17 @@ export default function App() {
     setCenterView("parallel");
   }, []);
 
-  const createSession = useCallback(
-    (input: NewSessionInput): void | Promise<void> => {
-      if (input.parallelPresets && parallelBridge) {
-        setAppError("");
-        // The dialog stays open until the start is accepted, so a branch clash or
-        // any other correctable error leaves the user's request where they typed it.
-        return parallelBridge
-          .start({
-            title: input.title,
-            workspace: input.workspace,
-            prompt: input.initialPrompt ?? "",
-            ...(input.worktreeBranch ? { branch: input.worktreeBranch } : {}),
-            presets: input.parallelPresets,
-          })
-          .then((group) => {
-            setParallelGroups((current) =>
-              current.some((entry) => entry.id === group.id)
-                ? current
-                : [group, ...current],
-            );
-            setNewSessionRequest(null);
-            openParallelGroup(group.id);
-          })
-          .catch((error: unknown) => {
-            throw new Error(humanErrorMessage(error));
-          });
-      }
-      const draftId = `draft-${crypto.randomUUID()}`;
-      const draft: AgentSession = {
-        id: draftId,
-        title: input.title,
-        subtitle: directoryName(input.workspace),
-        workspace: input.workspace,
-        runtime: "gjc",
-        status: "starting",
-        updatedAt: "now",
-        updatedAtMs: Date.now(),
-        pinned: false,
-        unread: false,
-        accent: "#ff8a34",
-        ownership: "gajae",
-        attachment: "attached",
-      };
-      setSessions((current) => [draft, ...current]);
-      setSelectedId(draftId);
-      setTranscripts((current) => cacheTranscript(current, draftId, []));
-      setNewSessionRequest(null);
-      setAppError("");
-
-      const creation = backend.createSession({
-        runtime: "gjc",
-        title: input.title,
-        workspace: input.workspace,
-        isolation: input.isolation ?? "workspace",
-        worktreeBranch: input.worktreeBranch,
-        ...(input.worktreeBranchExisting ? { worktreeBranchExisting: true } : {}),
-        ...(input.worktreePull ? { worktreePull: input.worktreePull } : {}),
-        ...(input.workLink ? { workLink: input.workLink } : {}),
-      });
-      pendingSessions.current.set(draftId, creation);
-      void creation
-        .then((session) => {
-          // Only the real id outlives this draft, so the prompt waits for it.
-          // It is never sent from here: the user reads it and presses send.
-          if (input.initialPrompt || input.initialImages)
-            prefillComposerDraft(
-              session.id,
-              input.initialPrompt ?? "",
-              input.initialImages,
-            );
-          setSessions((current) => [
-            session,
-            ...current.filter(
-              (item) => item.id !== draftId && item.id !== session.id,
-            ),
-          ]);
-          setSelectedId((current) =>
-            current === draftId ? session.id : current,
-          );
-          setTranscripts((current) => {
-            const next = { ...current };
-            const items = current[session.id] ?? current[draftId] ?? [];
-            delete next[draftId];
-            return cacheTranscript(next, session.id, items);
-          });
-        })
-        .catch((error) => {
-          setSessions((current) =>
-            current.map((session) =>
-              session.id === draftId
-                ? { ...session, status: "failed" }
-                : session,
-            ),
-          );
-          setAppError(humanErrorMessage(error));
-        });
-    },
-    [backend, parallelBridge, openParallelGroup],
+  const createSession = useCreateSession(
+    backend,
+    parallelBridge,
+    openParallelGroup,
+    pendingSessions,
+    setAppError,
+    setParallelGroups,
+    setNewSessionRequest,
+    setSessions,
+    setSelectedId,
+    setTranscripts,
   );
 
   const resolveSessionId = useCallback(async (sessionId: string): Promise<string> => {
