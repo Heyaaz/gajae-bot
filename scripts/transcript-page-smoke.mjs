@@ -266,9 +266,17 @@ window.agentControlDesktop = {
     await resolvePage(around);
     await rendererUntil("document.querySelector('.transcript')?.textContent.includes('USER-BODY-25')");
     await assertRenderer(`
+      assert(!document.querySelector('.transcript-load-earlier'), 'Earlier-page control showed before the reader reached the top');
+      const transcript = document.querySelector('.transcript');
+      transcript.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true, cancelable: true }));
+      transcript.scrollTop = 0;
+      transcript.dispatchEvent(new Event('scroll', { bubbles: true }));
+    `);
+    await rendererUntil("document.querySelector('.transcript-load-earlier button')");
+    await assertRenderer(`
       const button = document.querySelector('.transcript-load-earlier button');
-      assert(button && (button.textContent.includes('이전 대화 불러오기') || button.textContent.includes('Load earlier messages')), 'Earlier-page control is missing');
-      button.click();
+      assert(button && ['이전 대화 불러오기', '이전 대화 불러오는 중', 'Load earlier messages', 'Loading earlier messages'].some(label => button.textContent.includes(label)), 'Earlier-page control is missing');
+      if (!button.disabled) button.click();
     `);
     const before = await waitForPage(call => call.request?.beforeId === 'request-15', around.callId);
     const overlap = before.itemIds.filter(id => around.itemIds.includes(id));
