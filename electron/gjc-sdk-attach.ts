@@ -1,4 +1,4 @@
-import { open, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { FSWatcher } from "node:fs";
 import type { AgentCommand, AgentControlPreferences, AgentEvent, AgentSession, HistorySession, TranscriptItem } from "../shared/agent-contract.js";
@@ -16,15 +16,6 @@ import {
   transcriptHeadLines,
   UNWATCHED_DETACH_GRACE_MS,
 } from "./gjc-sdk-foundation.js";
-import { brokerSessions } from "./gjc-sdk-discovery.js";
-import { discoveredRunState } from "./gjc-sdk-run-state.js";
-import { locateSharedTranscriptFile } from "./gjc-sdk-files.js";
-import {
-  refreshContextUsage,
-  refreshSessionConfigOptions,
-  refreshSessionSettings,
-} from "./gjc-sdk-session-config.js";
-import { refreshSdkCommands } from "./gjc-sdk-command-palette.js";
 import path from "node:path";
 
 /** The controller members history open, resume and attach/detach read and write. */

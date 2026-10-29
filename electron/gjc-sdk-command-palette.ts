@@ -1,4 +1,3 @@
-import { open } from "node:fs/promises";
 import type { AgentCommand, AgentEvent, AgentSession } from "../shared/agent-contract.js";
 import { sdkSlashCommandsForOperations, skillsDisabledByConfig } from "./gjc-sdk-foundation.js";
 

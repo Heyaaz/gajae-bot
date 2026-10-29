@@ -1,4 +1,3 @@
-import { open } from "node:fs/promises";
 import type { AgentConfigOption, AgentConfigOptionValue, AgentControlPreferences, AgentEvent, AgentSession } from "../shared/agent-contract.js";
 import { GjcSdkCli } from "./gjc-sdk-cli.js";
 import {

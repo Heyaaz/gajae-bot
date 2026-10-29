@@ -1,4 +1,4 @@
-import { open, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { type FSWatcher, watch } from "node:fs";
 import type { AgentEvent, AgentSession } from "../shared/agent-contract.js";
 import {
@@ -7,7 +7,6 @@ import {
   persistedTurnState,
   readTranscriptTail,
 } from "./gjc-sdk-foundation.js";
-import { locateSharedTranscriptFile } from "./gjc-sdk-files.js";
 import path from "node:path";
 
 /** The controller members run-state verdicts and their watchers read and write. */

@@ -1,4 +1,4 @@
-import { rename, stat } from "node:fs/promises";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { AgentSession } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
@@ -11,13 +11,7 @@ import {
   sessionInfoToAgentSession,
   transcriptHeadLines,
 } from "./gjc-sdk-foundation.js";
-import {
-  discoveredRunState,
-  liveEvidenceQuiet,
-  settleQuietRunningRow,
-  syncRunStateWatchers,
-} from "./gjc-sdk-run-state.js";
-import { locateSharedTranscriptFile, statsRevision } from "./gjc-sdk-files.js";
+import { statsRevision } from "./gjc-sdk-files.js";
 import path from "node:path";
 
 /** Agent dir the broker and `getAgentDir()` share (`GJC_CODING_AGENT_DIR` or `~/.gjc/agent`). */

@@ -1,8 +1,4 @@
-import {
-  open,
-  readFile,
-  stat,
-} from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
 import { execFile as execFileCb } from "node:child_process";
@@ -240,13 +236,8 @@ import {
   getGoal,
   type GoalTodoHost,
   operateGoal,
-  PROGRESS_REFRESH_MIN_MS,
-  PROGRESS_STALE_MS,
-  PROGRESS_WATCH_MS,
   readTodoRecords,
   requestProgressRefresh,
-  TODO_EVENT_POLL_BASE_MS,
-  TODO_EVENT_POLL_MAX_MS,
 } from "./gjc-sdk-goal-todo.js";
 export {
   TODO_EVENT_POLL_BASE_MS,
@@ -257,8 +248,6 @@ export {
 } from "./gjc-sdk-goal-todo.js";
 import {
   clearCommandRefreshRetry,
-  COMMAND_REFRESH_RETRY_BASE_MS,
-  COMMAND_REFRESH_RETRY_MAX_MS,
   type CommandPaletteHost,
   publishSessionCommands,
   refreshSdkCommands,

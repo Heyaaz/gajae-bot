@@ -20,11 +20,6 @@ import {
   TodoSnapshotState,
   uncertainLifecycleOutcomeError,
 } from "./gjc-sdk-foundation.js";
-import { brokerSessions, invalidateBrokerIndexCache } from "./gjc-sdk-discovery.js";
-import { locateSharedTranscriptFile, removeSessionArtifacts } from "./gjc-sdk-files.js";
-import { refreshContextUsage, refreshSessionConfigOptions } from "./gjc-sdk-session-config.js";
-import { clearProgress, clearTodoPoll } from "./gjc-sdk-goal-todo.js";
-import { clearCommandRefreshRetry, refreshSdkCommands, sdkOperations } from "./gjc-sdk-command-palette.js";
 import { remotesWithBranch } from "./gjc-sdk-git.js";
 import path from "node:path";
 

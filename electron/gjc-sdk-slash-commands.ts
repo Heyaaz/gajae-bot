@@ -1,5 +1,4 @@
 import path from "node:path";
-import { rename } from "node:fs/promises";
 import type { AgentEvent, AgentSession } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import {

@@ -1,4 +1,3 @@
-import { open } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentSession, MessageDelivery, NoticeActivity, QueuedMessage, ToolActivity, TranscriptItem } from "../shared/agent-contract.js";
 import { envelopeResult, freshOperationRef, GjcSdkCli, isSessionUnreachable } from "./gjc-sdk-cli.js";
@@ -20,13 +19,6 @@ import {
   SHARED_ROUTE_UNAVAILABLE_MESSAGE,
   uncertainAfterSendError,
 } from "./gjc-sdk-foundation.js";
-import { persistedCompactionCount } from "./gjc-sdk-transcript-store.js";
-import { ensureAttached } from "./gjc-sdk-attach.js";
-import { discoveredRunState, republishRunState } from "./gjc-sdk-run-state.js";
-import { patchSessionRuntime, refreshContextUsage } from "./gjc-sdk-session-config.js";
-import { settleOpenQuestions } from "./gjc-sdk-questions.js";
-import { executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
-import path from "node:path";
 
 /**
  * Manual compaction summarizes a whole context with the model. A 278k-token

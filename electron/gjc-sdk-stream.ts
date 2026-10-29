@@ -26,27 +26,6 @@ import {
   toolStatus,
 } from "./gjc-sdk-foundation.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
-import { sendMessage } from "./gjc-sdk-control.js";
-import {
-  markTranscriptRowDirty,
-  noteTranscriptEpoch,
-  readPersistedTranscript,
-  refreshTranscriptFromFile,
-  rememberLiveRunningTranscriptSize,
-  resolveToolImages,
-} from "./gjc-sdk-transcript-store.js";
-import { clearRunningLatches, discoveredRunState, recordLiveEvidence } from "./gjc-sdk-run-state.js";
-import { persistArtifact } from "./gjc-sdk-files.js";
-import {
-  captureSessionState,
-  patchSessionRuntime,
-  refreshModelCapabilities,
-  refreshSessionConfigOptions,
-} from "./gjc-sdk-session-config.js";
-import { clearTodoPoll, readTodoRecords, requestProgressRefresh } from "./gjc-sdk-goal-todo.js";
-import { refreshSdkCommands } from "./gjc-sdk-command-palette.js";
-import { projectWorkflowGate, refreshWorkflowQuestions, settleOpenQuestions } from "./gjc-sdk-questions.js";
-import path from "node:path";
 
 /** The id of the newest transcript row a tail read returned. */
 export function lastTailTranscriptId(
@@ -905,7 +884,7 @@ export function patchTool(host: StreamHost, toolId: string, patch: Partial<ToolA
  * row can still report a tool as awaiting approval, and the window has to show
  * that state and be able to clear it on cancel.
  */
-function requestPermission(
+export function requestPermission(
   host: StreamHost,
   request: PendingPermission["request"],
 ): Promise<{ outcome: { outcome: string; optionId?: string } }> {

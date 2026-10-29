@@ -25,16 +25,7 @@ import {
   TodoSnapshotState,
   TRANSCRIPT_RESCAN_WINDOW,
 } from "./gjc-sdk-foundation.js";
-import { ensureAttached, refreshTranscriptAttachment, scheduleDetach } from "./gjc-sdk-attach.js";
-import { removeLocalSession } from "./gjc-sdk-lifecycle.js";
-import {
-  reconciledAsyncJobIds,
-  recordPendingAsyncWork,
-  republishRunState,
-  transcriptStartedNewWork,
-} from "./gjc-sdk-run-state.js";
-import { locateSharedTranscriptFile, readTranscriptEnvelopes, statsRevision } from "./gjc-sdk-files.js";
-import { patchSessionRuntime, refreshContextUsage } from "./gjc-sdk-session-config.js";
+import { statsRevision } from "./gjc-sdk-files.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 import path from "node:path";
 
