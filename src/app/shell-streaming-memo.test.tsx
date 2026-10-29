@@ -416,6 +416,27 @@ describe("session shortcuts from the main process", () => {
     expect(shownSession()).toBe("s-1");
   });
 
+  it("gives back the screenshots of a quick input request that a newer one replaces", async () => {
+    const discardAttachments = vi.fn(async () => undefined);
+    (window as unknown as { agentControlDesktop: { settings: unknown } }).agentControlDesktop.settings =
+      new Proxy({}, {
+        get: (_target, name) =>
+          name === "discardAttachments" ? discardAttachments : () => new Promise(() => undefined),
+      });
+    await mountApp();
+    const image = (token: string) => ({
+      id: token, name: "capture.png", mimeType: "image/png", token, data: "AAAA",
+    });
+    await act(async () =>
+      shortcut!({ type: "new", prefill: { workspace: "/tmp/a", images: [image("a".repeat(43))] } }),
+    );
+    expect(discardAttachments).not.toHaveBeenCalled();
+    await act(async () =>
+      shortcut!({ type: "new", prefill: { workspace: "/tmp/b", images: [image("b".repeat(43))] } }),
+    );
+    expect(discardAttachments).toHaveBeenCalledExactlyOnceWith(["a".repeat(43)]);
+  });
+
   it("creates at once for a plain new and waits for confirmation with a prefill", async () => {
     await mountApp();
     await act(async () => shortcut!({ type: "new" }));

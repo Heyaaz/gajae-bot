@@ -2073,8 +2073,20 @@ export default function App() {
     [selectSession],
   );
 
+  const newSessionRequestRef = useRef(newSessionRequest);
+  newSessionRequestRef.current = newSessionRequest;
+
   const openNewSessionDialog = useCallback(
     (prefill?: NewSessionPrefill): void => {
+      // A second request remounts the dialog, which never runs its own cancel;
+      // the first request's screenshots are given back here instead.
+      const abandoned = (newSessionRequestRef.current?.prefill?.images ?? []).flatMap(
+        (image) => (image.token ? [image.token] : []),
+      );
+      if (abandoned.length > 0)
+        void window.agentControlDesktop?.settings
+          ?.discardAttachments(abandoned)
+          .catch(() => undefined);
       setNewSessionRequest((current) => ({
         prefill,
         serial: (current?.serial ?? 0) + 1,
