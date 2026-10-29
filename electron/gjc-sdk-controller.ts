@@ -1,7 +1,6 @@
 import {
   open,
   readFile,
-  readdir,
   stat,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -79,11 +78,9 @@ import {
 
 import {
   ABANDONED_STOP_REASONS,
-  ATTACH_RETRY_INTERVAL_MS,
   AvailableCommand,
   CLOCK_LABEL,
   ContentBlock,
-  GJC_ACCENT,
   GjcControllerOptions,
   HISTORY_SUMMARY_HEAD_BYTES,
   LIVE_MESSAGE_PREFIXES,
@@ -96,7 +93,6 @@ import {
   PlanEntry,
   RUN_STATE_TAIL_BYTES,
   ResolvedMessageInput,
-  UNWATCHED_DETACH_GRACE_MS,
   PROMPT_NOT_EXECUTED_MESSAGE,
   promptPreflightNotExecutedError,
   promptPreflightNotExecutedReceipt,
@@ -134,7 +130,6 @@ import {
   durableTwinOf,
   hasLivePrefix,
   historySessionSummary,
-  sessionCwdFromLines,
   imageFromContent,
   inferToolName,
   isLiveOnlyRow,
@@ -145,7 +140,6 @@ import {
   missingSessionError,
   normalizeQueuedRequestText,
   nowLabel,
-  parentSessionOf,
   persistedModelState,
   persistedTranscriptRunning,
   persistedTurnState,
@@ -153,7 +147,6 @@ import {
   readableModelLabel,
   readableSessionTitle,
   receiptSubagentStatus,
-  recentLabel,
   sameTranscriptItem,
   sanitizeLocalAttachmentBlocks,
   sharedContentText,
@@ -169,7 +162,6 @@ import {
   toolImageRefs,
   toolResultText,
   toolStatus,
-  transcriptHeadLines,
   uncertainAfterSendError,
 } from "./gjc-sdk-foundation.js";
 
@@ -179,6 +171,16 @@ import {
   WorkspaceFileLister,
 } from "./workspace-files.js";
 import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  type AttachHost,
+  ensureAttached,
+  listHistorySessions,
+  openHistorySession,
+  recoverOwnedSessions,
+  refreshTranscriptAttachment,
+  resumeSession,
+  scheduleDetach,
+} from "./gjc-sdk-attach.js";
 import {
   createSession,
   deleteSession,
@@ -1269,6 +1271,130 @@ export class GjcSdkController {
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
   }))(this);
 
+  private readonly attachHost: AttachHost = ((controller: GjcSdkController): AttachHost => ({
+    brokerSessions: (options) => controller.brokerSessions(options),
+    get historySummaryCache() {
+      return controller.historySummaryCache;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
+    get workspace() {
+      return controller.workspace;
+    },
+    get sessionMetadata() {
+      return controller.sessionMetadata;
+    },
+    get sessionCwds() {
+      return controller.sessionCwds;
+    },
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+    get generation() {
+      return controller.generation;
+    },
+    resumeSession: (sessionId) => controller.resumeSession(sessionId),
+    readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
+    get disposed() {
+      return controller.disposed;
+    },
+    markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
+    installTranscript: (sessionId, items) => controller.installTranscript(sessionId, items),
+    discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
+    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
+    invalidateDesktopTranscript: (sessionId) => controller.invalidateDesktopTranscript(sessionId),
+    get terminalOnlySessions() {
+      return controller.terminalOnlySessions;
+    },
+    stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
+    get attachedSessions() {
+      return controller.attachedSessions;
+    },
+    get attachAttempts() {
+      return controller.attachAttempts;
+    },
+    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
+    refreshSessionSettings: (sessionId) => controller.refreshSessionSettings(sessionId),
+    startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
+    requireCli: () => controller.requireCli(),
+    repoFor: (sessionId) => controller.repoFor(sessionId),
+    get messageKeys() {
+      return controller.messageKeys;
+    },
+    get modelPreset() {
+      return controller.modelPreset;
+    },
+    get windowHostedSessions() {
+      return controller.windowHostedSessions;
+    },
+    get sharedSessionFiles() {
+      return controller.sharedSessionFiles;
+    },
+    applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
+    refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
+    refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
+    readSharedTranscript: (sessionId) => controller.readSharedTranscript(sessionId),
+    finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
+    get watchedTranscripts() {
+      return controller.watchedTranscripts;
+    },
+    watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
+    refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
+    get detachTimers() {
+      return controller.detachTimers;
+    },
+    get activePromptSessions() {
+      return controller.activePromptSessions;
+    },
+    get workingPhaseSessions() {
+      return controller.workingPhaseSessions;
+    },
+    get sharedSessionWatchers() {
+      return controller.sharedSessionWatchers;
+    },
+    get sharedSessionRefreshTimers() {
+      return controller.sharedSessionRefreshTimers;
+    },
+    get transcripts() {
+      return controller.transcripts;
+    },
+    get toolRowIndices() {
+      return controller.toolRowIndices;
+    },
+    get dirtyTranscriptRows() {
+      return controller.dirtyTranscriptRows;
+    },
+    get desktopTranscriptBaselines() {
+      return controller.desktopTranscriptBaselines;
+    },
+    get activeAssistantMessages() {
+      return controller.activeAssistantMessages;
+    },
+    get activeThoughts() {
+      return controller.activeThoughts;
+    },
+    get sessionSdkOperations() {
+      return controller.sessionSdkOperations;
+    },
+    get contextUsageObservedAt() {
+      return controller.contextUsageObservedAt;
+    },
+    get transcriptAttachments() {
+      return controller.transcriptAttachments;
+    },
+    get cli() {
+      return controller.cli;
+    },
+    get recovery() {
+      return controller.recovery;
+    },
+    set recovery(value) {
+      controller.recovery = value;
+    },
+  }))(this);
+
   constructor(options: GjcControllerOptions) {
     this.workspace = canonicalWorkspace(options.workspace);
     this.configuredExecutable = options.executable;
@@ -1548,33 +1674,7 @@ export class GjcSdkController {
   private readonly transcriptAttachments = new Map<string, Promise<void>>();
 
   private refreshTranscriptAttachment(sessionId: string): void {
-    if (
-      !this.disposed &&
-      this.sessions.get(sessionId)?.attachment === "attachable" &&
-      !this.terminalOnlySessions.has(sessionId) &&
-      !this.attachedSessions.has(sessionId) &&
-      !this.transcriptAttachments.has(sessionId)
-    ) {
-      const lastAttempt = this.attachAttempts.get(sessionId) ?? 0;
-      if (Date.now() - lastAttempt > ATTACH_RETRY_INTERVAL_MS) {
-        this.attachAttempts.set(sessionId, Date.now());
-        const generation = this.generation;
-        const refresh = (async () => {
-          try {
-            await this.ensureAttached(sessionId, false);
-            if (!this.disposed && generation === this.generation && this.sessions.has(sessionId))
-              await this.refreshSessionSettings(sessionId);
-          } catch {
-            // Readable history does not establish runtime control. Required control
-            // operations still report their own attachment errors.
-          }
-        })().finally(() => {
-          if (this.transcriptAttachments.get(sessionId) === refresh)
-            this.transcriptAttachments.delete(sessionId);
-        });
-        this.transcriptAttachments.set(sessionId, refresh);
-      }
-    }
+    return refreshTranscriptAttachment(this.attachHost, sessionId);
   }
 
   /**
@@ -1646,61 +1746,7 @@ export class GjcSdkController {
   }
 
   private scheduleDetach(sessionId: string): void {
-    if (
-      this.disposed ||
-      this.detachTimers.has(sessionId) ||
-      this.watchedTranscripts?.has(sessionId)
-    )
-      return;
-    const timer = setTimeout(() => {
-      this.detachTimers.delete(sessionId);
-      if (this.disposed || this.watchedTranscripts?.has(sessionId)) return;
-      if (!this.attachedSessions.has(sessionId)) return;
-      const session = this.sessions.get(sessionId);
-      if (
-        this.activePromptSessions.has(sessionId) ||
-        this.workingPhaseSessions.has(sessionId) ||
-        session?.status === "running"
-      ) {
-        this.scheduleDetach(sessionId);
-        return;
-      }
-      this.detachSession(sessionId);
-    }, UNWATCHED_DETACH_GRACE_MS);
-    timer.unref?.();
-    this.detachTimers.set(sessionId, timer);
-  }
-
-  private detachSession(sessionId: string): void {
-    if (!this.attachedSessions.has(sessionId)) return;
-    const session = this.sessions.get(sessionId);
-    if (
-      this.activePromptSessions.has(sessionId) ||
-      this.workingPhaseSessions.has(sessionId) ||
-      session?.status === "running"
-    )
-      return;
-    this.stopTailFollower(sessionId);
-    this.attachedSessions.delete(sessionId);
-    const watcher = this.sharedSessionWatchers.get(sessionId);
-    watcher?.close();
-    this.sharedSessionWatchers.delete(sessionId);
-    const refreshTimer = this.sharedSessionRefreshTimers.get(sessionId);
-    if (refreshTimer) clearTimeout(refreshTimer);
-    this.sharedSessionRefreshTimers.delete(sessionId);
-    this.transcripts.delete(sessionId);
-    this.toolRowIndices.delete(sessionId);
-    this.dirtyTranscriptRows.delete(sessionId);
-    this.desktopTranscriptBaselines.delete(sessionId);
-    this.messageKeys.delete(sessionId);
-    this.activeAssistantMessages.delete(sessionId);
-    this.activeThoughts.delete(sessionId);
-    this.sessionSdkOperations.delete(sessionId);
-    this.contextUsageObservedAt.delete(sessionId);
-    if (session) {
-      session.attachment = "attachable";
-      this.emitEvent({ type: "session.updated", session: { ...session } });
-    }
+    return scheduleDetach(this.attachHost, sessionId);
   }
 
   async getTranscript(sessionId: string): Promise<TranscriptItem[]> {
@@ -4035,442 +4081,31 @@ export class GjcSdkController {
     }, delay);
   }
 
-  /**
-   * Re-attaches owned sessions after a reconnect.
-   *
-   * Called from both the startup microtask and the reconnect retry, so concurrent
-   * calls share one pass. Idle sessions the renderer is not showing are left for
-   * their next selection: reattaching every recorded session at once started a
-   * tail reader, a tool observer, and several config/command queries per session
-   * before the first screen was interactive.
-   */
   private recoverOwnedSessions(): Promise<void> {
-    if (!this.cli) return Promise.resolve();
-    if (this.recovery) return this.recovery;
-    const pass = this.recoverOwnedSessionsOnce().finally(() => {
-      if (this.recovery === pass) this.recovery = undefined;
-    });
-    this.recovery = pass;
-    return pass;
-  }
-
-  private async recoverOwnedSessionsOnce(): Promise<void> {
-    const watched = this.watchedTranscripts;
-    const candidates = [...this.sessions.values()]
-      .filter((session) => {
-        if (
-          session.ownership !== "gajae" ||
-          this.attachedSessions.has(session.id) ||
-          !this.sessionCwds.get(session.id)
-        )
-          return false;
-        if (!watched) return true;
-        return (
-          watched.has(session.id) ||
-          session.status === "running" ||
-          this.activePromptSessions.has(session.id) ||
-          this.workingPhaseSessions.has(session.id)
-        );
-      })
-      .sort(
-        (left, right) =>
-          Number(right.status === "running") -
-          Number(left.status === "running"),
-      );
-    let next = 0;
-    const recoverOne = async (): Promise<void> => {
-      while (true) {
-        const session = candidates[next];
-        next += 1;
-        if (!session) return;
-        try {
-          await this.ensureAttached(session.id, false);
-          session.attachment = "attached";
-          // Re-attaching says this window can talk to the session again, not that its
-          // turn ended. Another process may have kept working through the disconnect,
-          // so the transcript decides; `idle` is only the answer when it has none.
-          session.status = (await this.discoveredRunState(session.id)) ?? "idle";
-          session.unread = true;
-          this.sessionMetadata?.setUnread(session.id, true);
-          this.emitEvent({ type: "session.updated", session: { ...session } });
-          this.emitEvent({
-            type: "session.activity",
-            sessionId: session.id,
-            title: session.title,
-            unread: true,
-            category: "recovered",
-          });
-        } catch {
-          session.attachment = "recovering";
-          session.status = "failed";
-          this.emitEvent({ type: "session.updated", session: { ...session } });
-        }
-      }
-    };
-    await Promise.all(
-      Array.from(
-        { length: Math.min(2, candidates.length) },
-        () => recoverOne(),
-      ),
-    );
+    return recoverOwnedSessions(this.attachHost);
   }
 
   private async resolveExecutable(): Promise<string> {
     return (await resolveGjcExecutable(this.configuredExecutable)) ?? "gjc";
   }
 
-  /**
-   * Past sessions on disk, newest first.
-   *
-   * Discovery only lists sessions the broker still reports as live, so everything
-   * else is unreachable from the window even though `gjc --resume <id>` opens it
-   * fine. The session files are the authority on what exists.
-   */
-  async listHistorySessions(): Promise<HistorySession[]> {
-    const agentDirectory = path.resolve(
-      process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
-    );
-    const sessionsDirectory = path.join(agentDirectory, "sessions");
-    // Liveness is decoration here; the files still list fine without it.
-    const liveIds = new Set(
-      ((await this.brokerSessions()) ?? [])
-        .filter((session) => session.live)
-        .map((session) => session.sessionId),
-    );
-    const files: Array<{
-      path: string;
-      id: string;
-      modified: number;
-      size: number;
-    }> = [];
-    try {
-      for (const bucket of await readdir(sessionsDirectory, {
-        withFileTypes: true,
-      })) {
-        if (!bucket.isDirectory()) continue;
-        const directory = path.join(sessionsDirectory, bucket.name);
-        for (const entry of await readdir(directory, { withFileTypes: true })) {
-          if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
-          const id = entry.name.slice(0, -".jsonl".length).split("_").at(-1);
-          if (!id) continue;
-          const filePath = path.join(directory, entry.name);
-          try {
-            const info = await stat(filePath);
-            // A huge transcript is still listed, but its summary is read from a
-            // bounded head rather than the whole file.
-            files.push({
-              path: filePath,
-              id,
-              modified: info.mtimeMs,
-              size: info.size,
-            });
-          } catch {
-            /* the file went away between listing and reading */
-          }
-        }
-      }
-    } catch {
-      return [];
-    }
-    files.sort((left, right) => right.modified - left.modified);
-    // Every saved session is reachable. The head reads are bounded per file and run
-    // with a small worker pool, so a large history costs latency proportional to the
-    // files but does not open thousands of descriptors at once.
-    const sessions: Array<HistorySession | undefined> = new Array(files.length);
-    let next = 0;
-    const read = async (): Promise<void> => {
-      while (true) {
-        const index = next;
-        next += 1;
-        const file = files[index];
-        if (!file) return;
-        try {
-          const cached = this.historySummaryCache.get(file.path);
-          let summary = cached?.summary;
-          let parentId = cached?.parentId;
-          if (!cached || cached.mtimeMs !== file.modified || cached.size !== file.size) {
-            const headLines = await transcriptHeadLines(file.path);
-            summary = historySessionSummary(headLines);
-            if (!summary) {
-              this.historySummaryCache.delete(file.path);
-              continue;
-            }
-            parentId = parentSessionOf(headLines[0], file.id);
-            this.historySummaryCache.set(file.path, {
-              mtimeMs: file.modified,
-              size: file.size,
-              summary,
-              ...(parentId ? { parentId } : {}),
-            });
-          }
-          if (!summary) continue;
-          const workspace = summary.cwd ?? "";
-          sessions[index] = {
-            id: file.id,
-            title: summary.title ?? readableSessionTitle(file.id, undefined),
-            workspace,
-            updatedAt: recentLabel(new Date(file.modified).toISOString()),
-            messageCount: summary.messageCount,
-            live: liveIds.has(file.id),
-            // The same envelope line the summary already reads, so a fork is marked
-            // by having been read rather than by a second pass over the file.
-            parentId,
-          };
-        } catch {
-          /* the file went away or is not a readable transcript */
-        }
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(8, files.length) }, read),
-    );
-    const present = new Set(files.map((file) => file.path));
-    for (const filePath of this.historySummaryCache.keys()) {
-      if (!present.has(filePath)) this.historySummaryCache.delete(filePath);
-    }
-    return sessions.filter(
-      (session): session is HistorySession => session !== undefined,
-    );
+  listHistorySessions(): Promise<HistorySession[]> {
+    return listHistorySessions(this.attachHost);
   }
 
-  /**
-   * Open saved history and try to restore control independently. An unreachable
-   * runtime must not make a readable transcript fail to open.
-   */
-  async openHistorySession(sessionId: string): Promise<AgentSession> {
-    if (this.sessions.has(sessionId)) return this.openHistoryWithControl(sessionId);
-    const filePath = await this.locateSharedTranscriptFile(sessionId);
-    if (!filePath)
-      throw new Error(`세션 기록을 찾지 못했습니다: ${sessionId}`);
-    let cwd: string | undefined;
-    try {
-      // The envelope is in the head. The body is read later, when the transcript
-      // itself is opened, so picking a session does not load the whole JSONL.
-      cwd = sessionCwdFromLines(await transcriptHeadLines(filePath));
-    } catch {
-      /* the workspace falls back below */
-    }
-    const workspace = cwd ?? this.workspace;
-    const session: AgentSession = {
-      id: sessionId,
-      title: readableSessionTitle(sessionId, undefined),
-      subtitle: path.basename(workspace) || workspace,
-      workspace,
-      runtime: "gjc",
-      status: "idle",
-      updatedAt: "now",
-      updatedAtMs: Date.now(),
-      pinned: false,
-      unread: false,
-      accent: GJC_ACCENT,
-      ownership: this.sessionMetadata?.getOwnership(sessionId) ?? "external",
-      attachment: "recovering",
-    };
-    this.sessions.set(sessionId, session);
-    this.sessionCwds.set(sessionId, workspace);
-    this.sessionMetadata?.setWorkspace(sessionId, workspace);
-    this.emitEvent({ type: "session.created", session: { ...session } });
-    return this.openHistoryWithControl(sessionId);
+  openHistorySession(sessionId: string): Promise<AgentSession> {
+    return openHistorySession(this.attachHost, sessionId);
   }
 
-  private async openHistoryWithControl(sessionId: string): Promise<AgentSession> {
-    const generation = this.generation;
-    try {
-      return await this.resumeSession(sessionId);
-    } catch (error) {
-      if (!isSessionUnreachable(error)) throw error;
-      // Only a real persisted read authorizes history-only opening. Never
-      // fabricate an empty conversation or re-host a live CLI after this refusal.
-      const items = await this.readPersistedTranscript(sessionId);
-      if (items === undefined) throw error;
-      if (this.disposed || generation !== this.generation || !this.sessions.has(sessionId))
-        throw new Error("GJC session history opening was cancelled");
-      this.markTerminalOnly(sessionId);
-      this.installTranscript(sessionId, items);
-      // The row is not discovered, so nothing else describes its run state. The
-      // transcript is the only account of a CLI that is still working, and the
-      // freshly opened row must not claim it finished.
-      const status = await this.discoveredRunState(sessionId);
-      const opened = this.sessions.get(sessionId);
-      if (
-        opened &&
-        status &&
-        opened.status !== status &&
-        opened.status !== "failed" &&
-        opened.status !== "starting"
-      ) {
-        this.advanceRunRevision(sessionId);
-        opened.status = status;
-        this.emitEvent({ type: "session.updated", session: { ...opened } });
-      }
-      this.invalidateDesktopTranscript(sessionId);
-      return { ...this.sessions.get(sessionId)! };
-    }
+  resumeSession(sessionId: string): Promise<AgentSession> {
+    return resumeSession(this.attachHost, sessionId);
   }
 
-  /**
-   * Re-attach a session this window lost control of.
-   *
-   * A session goes `terminal-only` when a terminal held the lease, and
-   * `recovering` when a reconnect could not resume it. Both states are dead ends
-   * in the window: the transcript is readable but nothing can be sent. Attaching
-   * again is the only recovery, and it has to be user-driven because the lease
-   * may still be held -- retrying on a timer would just fail repeatedly.
-   */
-  async resumeSession(sessionId: string): Promise<AgentSession> {
-    const session = this.sessions.get(sessionId);
-    if (!session) throw new Error(`Unknown GJC session: ${sessionId}`);
-    // The refusal that produced terminal-only is not permanent, so the flag is
-    // cleared before retrying or ensureAttached would be skipped entirely.
-    this.terminalOnlySessions.delete(sessionId);
-    this.stopTailFollower(sessionId);
-    this.attachedSessions.delete(sessionId);
-    this.attachAttempts.delete(sessionId);
-    try {
-      await this.ensureAttached(sessionId, true);
-      await this.refreshSessionSettings(sessionId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (/no current Router attachment|provider_lease_conflict/iu.test(message)) {
-        this.terminalOnlySessions.add(sessionId);
-        session.attachment = "terminal-only";
-        session.ownership = "external";
-        this.emitEvent({ type: "session.updated", session: { ...session } });
-        throw new Error(
-          "다른 터미널이 이 세션을 잡고 있어 이어서 진행할 수 없습니다. 해당 GJC를 종료한 뒤 다시 시도하세요.",
-        );
-      }
-      // A lifecycle receipt is evidence that the attach was recorded, not whether
-      // it happened. The transcript is read from the session file either way, so
-      // an unverifiable receipt leaves the session readable instead of failing
-      // the resume outright -- it only means live control is not guaranteed.
-      if (!lifecycleUncertainError(error)) throw error;
-      this.attachedSessions.delete(sessionId);
-      session.attachment = "recovering";
-      this.emitEvent({ type: "session.updated", session: { ...session } });
-    }
-    const resumed = this.sessions.get(sessionId);
-    if (!resumed) throw new Error(`Unknown GJC session: ${sessionId}`);
-    // The renderer reloads a bounded page after this invalidation, rather than
-    // receiving the entire transcript over IPC.
-    this.invalidateDesktopTranscript(sessionId);
-    return { ...resumed };
-  }
-
-  /**
-   * Makes a session controllable from this window.
-   *
-   * An SDK session that is already live needs no attach: the broker routes control
-   * to its host and this window is just another client. Only a session with no live
-   * endpoint is resumed, which is what re-hosts it. `replay` reloads the transcript
-   * from the session file rather than asking a connection to stream it back.
-   */
-  private async ensureAttached(
+  private ensureAttached(
     sessionId: string,
     replay: boolean,
   ): Promise<void> {
-    if (this.attachedSessions.has(sessionId)) {
-      // Attachment and the tail reader are separate lives. A reader that died on
-      // a transient broker error left the session attached, so every later use
-      // took this early return and the follower was never restarted.
-      this.startTailFollower(sessionId);
-      return;
-    }
-    const cli = await this.requireCli();
-    const generation = this.generation;
-    const wasListed = this.sessions.has(sessionId);
-    const requireCurrentAttachment = (): void => {
-      if (this.disposed || generation !== this.generation || (wasListed && !this.sessions.has(sessionId)))
-        throw new Error("GJC session attachment was cancelled");
-    };
-    requireCurrentAttachment();
-    const cwd = this.repoFor(sessionId);
-    if (replay) {
-      this.installTranscript(sessionId, []);
-      this.messageKeys.set(sessionId, new Map());
-    }
-    const row = await cli.inspectSession(sessionId, { repo: cwd });
-    requireCurrentAttachment();
-    if (row?.deleted)
-      throw new SdkCliError(
-        "session_deleted",
-        `Session ${sessionId} was deleted.`,
-      );
-    // A live terminal host can serve several clients. Probe its public route;
-    // generation zero is not proof of an exclusive terminal lease.
-    if (row?.live === true)
-      await cli.queryItems(sessionId, "session.metadata", {}, { repo: cwd });
-    let rehosted = false;
-    if (!row?.live) {
-      // Resume re-hosts a session whose endpoint is gone. `sessionPath` is passed
-      // when known so the host adopts this exact transcript rather than resolving a
-      // same-id file elsewhere.
-      const sessionPath = await this.locateSharedTranscriptFile(sessionId);
-      requireCurrentAttachment();
-      await cli.rawGlobal(
-        "session.resume",
-        {
-          sessionId,
-          cwd,
-          ...(sessionPath ? { sessionPath } : {}),
-          modelPreset: this.modelPreset,
-        },
-        { repo: cwd },
-      );
-      rehosted = true;
-      this.windowHostedSessions.add(sessionId);
-      // The re-host writes a new timestamped session file. Drop the path this window
-      // cached, or the next lifecycle call (delete especially) hands GJC the previous
-      // generation's file and the operation comes back with an unknown outcome.
-      this.sharedSessionFiles.delete(sessionId);
-    }
-    // Only a session this window hosts may have its permission handling applied.
-    // A session already live in another host belongs to that host, and rewriting its
-    // policy changes how *that* agent runs tools: the desktop smoke attached to a
-    // live session to read its model profiles, set the app's fail-closed `deny`, and
-    // left the session rejecting every tool call afterwards. Reading a session is not
-    // authority over it.
-    const owned = rehosted || this.sessions.get(sessionId)?.ownership === "gajae";
-    requireCurrentAttachment();
-    if (owned) await this.applyPermissionMode(sessionId);
-    // Command discovery is independent of the config surface and is what the
-    // palette needs first. Start it alongside the config reads instead of after
-    // them: each CLI query costs a process, and the old order made a fresh
-    // session spend seconds on model profiles before skills could appear.
-    void this.refreshSdkCommands(sessionId);
-    await this.refreshSessionConfigOptions(sessionId);
-    requireCurrentAttachment();
-    if (replay) {
-      const restored = await this.readSharedTranscript(sessionId).catch(() => []);
-      if (restored.length > 0) this.installTranscript(sessionId, restored);
-      this.finalizeAllMessages(sessionId);
-    }
-    this.attachedSessions.add(sessionId);
-    this.terminalOnlySessions.delete(sessionId);
-    this.startTailFollower(sessionId);
-    if (
-      this.watchedTranscripts !== undefined &&
-      !this.watchedTranscripts.has(sessionId)
-    )
-      this.scheduleDetach(sessionId);
-    // The session file is the live account now that no connection streams updates.
-    const watched = await this.locateSharedTranscriptFile(sessionId);
-    if (watched) this.watchSharedTranscript(sessionId, watched);
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      if (rehosted) {
-        session.ownership = "gajae";
-        this.sessionMetadata?.setOwnership(sessionId, "gajae");
-      }
-      session.attachment = "attached";
-      // A successful attach clears the failure this window recorded, but it does not
-      // observe the turn. Opening a session someone else is driving must not report
-      // that work as finished, so the transcript answers and `idle` is the fallback.
-      if (session.status === "failed")
-        session.status = (await this.discoveredRunState(sessionId)) ?? "idle";
-      this.emitEvent({ type: "session.updated", session: { ...session } });
-    }
-    void this.refreshContextUsage(sessionId, { force: true });
+    return ensureAttached(this.attachHost, sessionId, replay);
   }
 
   /**
