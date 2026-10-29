@@ -800,6 +800,10 @@ export const Composer = memo(function Composer({
   const imagesRef = useRef(images);
   imagesRef.current = images;
   const filesRef = useRef(files);
+  // Mentions chosen but not yet attached, per session. The cap and the duplicate
+  // check read this so a second pick made before the first one answers still
+  // counts it.
+  const pendingMentionsRef = useRef(new Map<string, Set<string>>());
   filesRef.current = files;
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -924,10 +928,13 @@ export const Composer = memo(function Composer({
       if (owner === renderedSessionRef.current && owner === draftSessionRef.current) {
         if (kind === "images") {
           const next = mergePreparedAttachments(imagesRef.current, prepared as ImageAttachment[], 6);
+          discardPrepared((prepared as ImageAttachment[]).filter((image) => !next.includes(image)));
           imagesRef.current = next;
           setImages(next);
         } else {
           const next = mergePreparedAttachments(filesRef.current, prepared as FileAttachment[], 5);
+          // Whatever the limit cut off will never be sent, so give it back.
+          discardPrepared((prepared as FileAttachment[]).filter((file) => !next.includes(file)));
           filesRef.current = next;
           setFiles(next);
         }
@@ -942,7 +949,7 @@ export const Composer = memo(function Composer({
       }
       storePreparedAttachments(draftsRef.current, owner, kind, prepared);
     },
-    [],
+    [discardPrepared],
   );
 
   const addDroppedImages = useCallback(
@@ -1717,17 +1724,27 @@ export const Composer = memo(function Composer({
       textareaRef.current?.focus();
       textareaRef.current?.setSelectionRange(next.caret, next.caret);
     });
-    if (filesRef.current.some((file) => file.label === relativePath)) return;
-    if (filesRef.current.length >= 5) {
+    const pending = pendingMentionsRef.current.get(owner) ?? new Set<string>();
+    if (
+      pending.has(relativePath) ||
+      filesRef.current.some((file) => file.label === relativePath)
+    )
+      return;
+    if (filesRef.current.length + pending.size >= 5) {
       setAttachmentError(t("파일은 메시지당 최대 5개까지 첨부할 수 있습니다"));
       return;
     }
     setAttachmentError("");
+    pending.add(relativePath);
+    pendingMentionsRef.current.set(owner, pending);
     try {
       const prepared = await workspaceBridge.attachWorkspaceFiles(owner, [relativePath]);
       commitPrepared(owner, "files", prepared);
     } catch (error) {
       setAttachmentError(humanErrorMessage(error));
+    } finally {
+      pending.delete(relativePath);
+      if (pending.size === 0) pendingMentionsRef.current.delete(owner);
     }
   }
 

@@ -25,15 +25,18 @@ function attachmentFor(relativePath: string): FileAttachment {
   };
 }
 
-function installDesktopBridge() {
+function installDesktopBridge(
+  files: string[] = WORKSPACE_FILES,
+  attach: (path: string) => Promise<FileAttachment> = async (path) => attachmentFor(path),
+) {
   const gjc = {
     listWorkspaceFiles: vi.fn(async () => ({
-      files: WORKSPACE_FILES,
+      files,
       truncated: false,
       source: "git" as const,
     })),
     attachWorkspaceFiles: vi.fn(async (_sessionId: string, paths: string[]) =>
-      paths.map(attachmentFor),
+      Promise.all(paths.map(attach)),
     ),
   };
   (window as unknown as { agentControlDesktop?: unknown }).agentControlDesktop = {
@@ -165,6 +168,46 @@ describe("composer @ mentions", () => {
         images: [],
         files: [attachmentFor("scripts/attachment-render-smoke.mjs")],
       });
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("attaches a file picked twice before the first answer only once", async () => {
+    const release: Array<() => void> = [];
+    const gjc = installDesktopBridge(WORKSPACE_FILES, (path) =>
+      new Promise((resolve) => release.push(() => resolve(attachmentFor(path)))),
+    );
+    const test = await mount();
+    try {
+      await type(test.textarea, "@READ");
+      await press(test.textarea, "Enter");
+      await type(test.textarea, "@READ");
+      await press(test.textarea, "Enter");
+      await act(async () => release.forEach((resolve) => resolve()));
+      expect(gjc.attachWorkspaceFiles).toHaveBeenCalledTimes(1);
+      expect(test.node.querySelectorAll(".attachment-chip")).toHaveLength(1);
+    } finally {
+      await test.close();
+    }
+  });
+
+  it("stops at five files even when the picks outrun the answers", async () => {
+    const names = ["f1.ts", "f2.ts", "f3.ts", "f4.ts", "f5.ts", "f6.ts"];
+    const release: Array<() => void> = [];
+    const gjc = installDesktopBridge(names, (path) =>
+      new Promise((resolve) => release.push(() => resolve(attachmentFor(path)))),
+    );
+    const test = await mount();
+    try {
+      for (const name of names) {
+        await type(test.textarea, `@${name}`);
+        await press(test.textarea, "Enter");
+      }
+      expect(gjc.attachWorkspaceFiles).toHaveBeenCalledTimes(5);
+      expect(test.node.textContent).toContain("최대 5개");
+      await act(async () => release.forEach((resolve) => resolve()));
+      expect(test.node.querySelectorAll(".attachment-chip")).toHaveLength(5);
     } finally {
       await test.close();
     }
