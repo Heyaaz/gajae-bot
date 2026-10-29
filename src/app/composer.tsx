@@ -2,14 +2,12 @@ import type { FileAttachment, MessageDelivery } from "../../shared/agent-contrac
 import type { AgentCommand, AgentConfigOption, ImageAttachment, MessageInput } from "../backend/types";
 import {
   appendPendingRequest,
-  composerQueuePreview,
   consumeQueuePullKey,
   droppedImageAttachments,
   IME_FOLLOWUP_WINDOW_MS,
   imeCommitSubmits,
   isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
-  liveTurnSubmissionMode,
   parkDraft,
   pullQueuedRequest,
   releaseRequests,
@@ -41,7 +39,6 @@ import {
   FileText,
   FolderOpen,
   Paperclip,
-  Pencil,
   Sparkles,
   Zap,
   X,
@@ -51,21 +48,74 @@ import type { FormEvent, KeyboardEvent } from "react";
 import { configOptionGroups, directoryName, httpUrls, humanErrorMessage } from "./format";
 import { LinkPreviewCard } from "./primitives";
 import { t } from "../i18n";
+import {
+  cancelBeforeQueueDiscard,
+  canReleaseQueue,
+  composerDraftRecoveries,
+  composerQueue,
+  composerSnapshots,
+  mergePreparedAttachments,
+  mergeRecoveredDraft,
+  acknowledgeComposerDraftRecoveries,
+  parkComposerSession,
+  publishComposerDraftRecovery,
+  heldComposerRequest,
+  releasingQueues,
+  requestQueueReleaseRetry,
+  restoreRejectedDraft,
+  saveComposerQueue,
+  saveComposerSnapshot,
+  storePreparedAttachments,
+  subscribeComposerDraftRecovery,
+  subscribeComposerQueue,
+} from "./composer-session";
+import type { ComposerDraft } from "./composer-session";
+import {
+  FAST_SERVICE_TIERS,
+  FastTierControls,
+  fastTierBusy,
+  requestFastTier,
+} from "./composer-fast-tier";
+import type { FastTierRequest } from "./composer-fast-tier";
+import { handleComposerEnter, selectedCommandDraft } from "./composer-enter";
+import { QueueChip } from "./composer-queue-chip";
 
-
-const FAST_SERVICE_TIERS = new Set([
-  "priority",
-  "openai-only",
-  "claude-only",
-]);
-
-type ComposerDraft = {
-  value: string;
-  images: ImageAttachment[];
-  files: FileAttachment[];
-};
-
-export type ComposerSnapshot = ComposerDraft & { pendingQueue: PendingRequest[] };
+export {
+  acknowledgeComposerDraftRecoveries,
+  canReleaseQueue,
+  cancelBeforeQueueDiscard,
+  composerDraftRecoveries,
+  composerQueue,
+  heldComposerRequest,
+  mergePreparedAttachments,
+  mergeRecoveredDraft,
+  parkComposerSession,
+  prefillComposerDraft,
+  publishComposerDraftRecovery,
+  queueReleaseInFlight,
+  releaseQueuedSession,
+  requestQueueReleaseRetry,
+  restoreRejectedDraft,
+  saveComposerQueue,
+  saveComposerSnapshot,
+  storePreparedAttachments,
+  submitComposerInput,
+  subscribeComposerDraftRecovery,
+  subscribeComposerQueue,
+  subscribeComposerReleaseRetry,
+} from "./composer-session";
+export type { ComposerDraftRecovery, ComposerSnapshot } from "./composer-session";
+export {
+  advertisesFast,
+  FastTierControls,
+  fastTierBusy,
+  requestFastTier,
+} from "./composer-fast-tier";
+export type { FastTierControlsProps, FastTierRequest } from "./composer-fast-tier";
+export { handleComposerEnter, selectedCommandDraft } from "./composer-enter";
+export type { ComposerEnterEffects, ComposerEnterEvent } from "./composer-enter";
+export { QueueChip } from "./composer-queue-chip";
+export type { QueueChipProps } from "./composer-queue-chip";
 
 /**
  * The last workspace listing behind the `@` popup, for the session it was read
@@ -76,595 +126,6 @@ type MentionFiles =
   | { sessionId: string; status: "failed"; message: string };
 
 const MENTION_RESULT_LIMIT = 30;
-
-// Screen navigation can unmount the composer without ending the session. Keep
-// its local-only work outside the component lifetime, keyed by session identity.
-const composerSnapshots = new Map<string, ComposerSnapshot>();
-
-/**
- * Text that still has to reach whichever composer is active for its session: a
- * rejected send, whose outcome is unknown and says so, or a prefill the user has
- * not sent yet, which arrives without a notice.
- */
-export type ComposerDraftRecovery = {
-  revision: number;
-  input: MessageInput;
-  origin: "rejected-send" | "prefill";
-};
-
-let recoveryRevision = 0;
-const draftRecoveries = new Map<string, ComposerDraftRecovery[]>();
-const draftRecoveryListeners = new Map<string, Set<() => void>>();
-
-/**
- * Queue a failed submission for its session rather than the component instance
- * that sent it. A remounted composer has new refs and a new draft; only session
- * identity survives that replacement.
- */
-export function publishComposerDraftRecovery(
-  sessionId: string,
-  input: MessageInput,
-  origin: ComposerDraftRecovery["origin"] = "rejected-send",
-): void {
-  const entries = draftRecoveries.get(sessionId) ?? [];
-  entries.push({ revision: ++recoveryRevision, input, origin });
-  draftRecoveries.set(sessionId, entries.slice(-50));
-  for (const listener of draftRecoveryListeners.get(sessionId) ?? []) listener();
-}
-
-/** Put text and images into a session's draft without sending them, mounted composer or not. */
-export function prefillComposerDraft(
-  sessionId: string,
-  text: string,
-  images: ImageAttachment[] = [],
-): void {
-  publishComposerDraftRecovery(sessionId, { text, images, files: [] }, "prefill");
-}
-
-export function composerDraftRecoveries(
-  sessionId: string,
-): readonly ComposerDraftRecovery[] {
-  return draftRecoveries.get(sessionId) ?? [];
-}
-
-export function acknowledgeComposerDraftRecoveries(
-  sessionId: string,
-  throughRevision: number,
-): void {
-  const remaining = (draftRecoveries.get(sessionId) ?? []).filter(
-    (entry) => entry.revision > throughRevision,
-  );
-  if (remaining.length > 0) draftRecoveries.set(sessionId, remaining);
-  else draftRecoveries.delete(sessionId);
-}
-
-export function subscribeComposerDraftRecovery(
-  sessionId: string,
-  listener: () => void,
-): () => void {
-  const listeners = draftRecoveryListeners.get(sessionId) ?? new Set();
-  listeners.add(listener);
-  draftRecoveryListeners.set(sessionId, listeners);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) draftRecoveryListeners.delete(sessionId);
-  };
-}
-
-/** Merge rejected inputs over a newer draft without replacing what the user typed. */
-export function mergeRecoveredDraft(
-  current: ComposerDraft,
-  recovered: readonly MessageInput[],
-): ComposerDraft {
-  let merged = current;
-  for (const input of recovered)
-    merged = {
-      value: [input.text, merged.value].filter(Boolean).join("\n"),
-      images: [...input.images, ...merged.images],
-      files: [...input.files, ...merged.files],
-    };
-  return merged;
-}
-
-export function saveComposerSnapshot(
-  snapshots: Map<string, ComposerSnapshot>,
-  sessionId: string,
-  snapshot: ComposerSnapshot,
-): void {
-  snapshots.set(sessionId, snapshot);
-}
-
-// A release belongs to the session, not to the composer instance that started it.
-// The shell and a mounted composer both observe the end of a turn, and a request
-// may only be handed over once.
-const releasingQueues = new Set<string>();
-const queueListeners = new Map<string, Set<() => void>>();
-const queueReleaseRetryListeners = new Set<(sessionId: string) => void>();
-
-/** Watch for a release lock that ended with work still queued. */
-export function subscribeComposerReleaseRetry(
-  listener: (sessionId: string) => void,
-): () => void {
-  queueReleaseRetryListeners.add(listener);
-  return () => queueReleaseRetryListeners.delete(listener);
-}
-
-/**
- * Hand still-releasable work back after the owning instance gives up its lock.
- *
- * The shell observed the idle transition while this lock was held and could not
- * start its own release. Without this notice the retired instance's finally block
- * only freed the lock, leaving an idle session with a queued request forever.
- */
-export function requestQueueReleaseRetry(
-  sessionId: string,
-  pending: readonly PendingRequest[],
-): void {
-  if (pending.length === 0 || pending[0]?.blocked) return;
-  for (const listener of queueReleaseRetryListeners) listener(sessionId);
-}
-
-/** Watch a session's held queue even when this composer is not the one sending. */
-export function subscribeComposerQueue(
-  sessionId: string,
-  listener: () => void,
-): () => void {
-  const listeners = queueListeners.get(sessionId) ?? new Set();
-  listeners.add(listener);
-  queueListeners.set(sessionId, listeners);
-  return () => {
-    listeners.delete(listener);
-    if (listeners.size === 0) queueListeners.delete(sessionId);
-  };
-}
-
-/** The queue the shell may release while the composer is showing another screen. */
-export function composerQueue(sessionId: string): PendingRequest[] {
-  return composerSnapshots.get(sessionId)?.pendingQueue ?? [];
-}
-
-export function saveComposerQueue(
-  sessionId: string,
-  pending: PendingRequest[],
-): void {
-  const snapshot = composerSnapshots.get(sessionId);
-  saveComposerSnapshot(composerSnapshots, sessionId, {
-    ...(snapshot ?? { value: "", images: [], files: [] }),
-    pendingQueue: pending,
-  });
-  for (const listener of queueListeners.get(sessionId) ?? []) listener();
-}
-
-/**
- * Park the queue of the session being left and load the next session's queue.
- *
- * The module snapshot is authoritative for a session this composer is not
- * showing. Keeping a component-local copy here is what let a queue released by
- * the shell reappear when the user navigated back.
- */
-export function parkComposerSession(
-  previous: string,
-  activeQueue: PendingRequest[],
-  next: string,
-): PendingRequest[] {
-  saveComposerQueue(previous, activeQueue);
-  return composerQueue(next);
-}
-
-/**
- * Hand over a session's held requests without a mounted composer.
- *
- * The shell calls this when a run ends while another screen is open. Ownership is
- * keyed by session so this loop and a mounted composer's own release can never
- * both send the same request.
- */
-export async function releaseQueuedSession(
-  sessionId: string,
-  send: (request: PendingRequest) => Promise<unknown>,
-  canSend: () => boolean = () => true,
-): Promise<void> {
-  if (releasingQueues.has(sessionId) || composerQueue(sessionId).length === 0)
-    return;
-  releasingQueues.add(sessionId);
-  try {
-    await releaseRequests({
-      canSend,
-      read: () => composerQueue(sessionId),
-      write: (pending) => saveComposerQueue(sessionId, pending),
-      send: (request) => send(request),
-    });
-  } finally {
-    releasingQueues.delete(sessionId);
-  }
-}
-
-/** The held row a submission becomes while a turn is live. */
-export function heldComposerRequest(
-  content: string,
-  files: FileAttachment[],
-  images: ImageAttachment[],
-  runningSubmission: LiveTurnSubmissionMode,
-): PendingRequest {
-  const preview = composerQueuePreview(content, files, images);
-  const mode = liveTurnSubmissionMode(content, runningSubmission, false) === "steer"
-    ? "steer" : "followUp";
-  return {
-    id: `local-${crypto.randomUUID()}`,
-    text: preview.text,
-    mode,
-    label: mode === "steer" ? "Steer" : "Queued",
-    images,
-    files,
-  };
-}
-
-/**
- * Submit for a session exactly as Enter in its composer would, whether or not
- * that composer is mounted. A live turn, or work already held, makes it a held
- * row in the session's queue; otherwise it is sent, and a rejected send returns
- * to the session's draft with the same notice Enter gives.
- */
-export function submitComposerInput(
-  sessionId: string,
-  input: MessageInput,
-  options: {
-    running: boolean;
-    runningSubmission: LiveTurnSubmissionMode;
-    send: (input: MessageInput) => Promise<unknown>;
-  },
-): void {
-  const pending = composerQueue(sessionId);
-  if (options.running || pending.length > 0) {
-    saveComposerQueue(
-      sessionId,
-      appendPendingRequest(
-        pending,
-        heldComposerRequest(input.text, input.files, input.images, options.runningSubmission),
-      ),
-    );
-    return;
-  }
-  void options.send(input).catch(() => publishComposerDraftRecovery(sessionId, input));
-}
-
-/** Whether any release for this session is already handing requests over. */
-export function queueReleaseInFlight(sessionId: string): boolean {
-  return releasingQueues.has(sessionId);
-}
-
-/**
- * Apply a Fast tier change through the runtime's own service-tier control.
- *
- * The command is sent with no attachments on purpose: the runtime only treats a
- * slash command as a control when the message carries none, and only a control
- * applies to the session immediately -- with an attachment the same text would be
- * delivered as prompt work into the open turn.
- *
- * Nothing here predicts the outcome. The composer's indicator follows the
- * serviceTier the session reports back, so a refused request leaves the buttons on
- * the tier that is actually in force instead of a state this call invented. That
- * refusal is reported and consumed rather than re-thrown: the send came from a
- * button with no awaiting caller, so an escaping rejection would land in the
- * renderer's unhandled queue.
- */
-export async function requestFastTier(options: {
-  fast: boolean;
-  send: (input: MessageInput) => Promise<MessageDelivery | undefined>;
-  report: (message: string) => void;
-}): Promise<void> {
-  try {
-    await options.send({
-      text: options.fast ? "/fast on" : "/fast off",
-      images: [],
-      files: [],
-    });
-  } catch (error) {
-    options.report(error instanceof Error ? error.message : String(error));
-  }
-}
-
-/** A Fast request in flight, owned by the session that asked for it. */
-export interface FastTierRequest {
-  sessionId: string;
-}
-
-/**
- * Whether this session has a Fast request of its own on the wire.
- *
- * Ownership is compared instead of holding one boolean, because the composer is a
- * single mounted component for every session: a request sent from one row can
- * still be in flight long after the user moved on, and a plain flag left the next
- * row's buttons disabled behind work that no longer concerned it.
- */
-export function fastTierBusy(
-  request: FastTierRequest | null,
-  sessionId: string,
-): boolean {
-  return request?.sessionId === sessionId;
-}
-
-export function mergePreparedAttachments<T>(
-  current: readonly T[],
-  prepared: readonly T[],
-  limit: number,
-): T[] {
-  return [...current, ...prepared].slice(0, limit);
-}
-
-export function storePreparedAttachments(
-  drafts: Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>,
-  owner: string,
-  kind: "images" | "files",
-  prepared: ImageAttachment[] | FileAttachment[],
-): void {
-  const draft = drafts.get(owner) ?? { value: "", images: [], files: [] };
-  if (kind === "images")
-    draft.images = mergePreparedAttachments(draft.images, prepared as ImageAttachment[], 6);
-  else draft.files = mergePreparedAttachments(draft.files, prepared as FileAttachment[], 5);
-  drafts.set(owner, draft);
-}
-
-export async function cancelBeforeQueueDiscard(
-  cancel: () => Promise<void>,
-  discard: () => void,
-): Promise<void> {
-  await cancel();
-  discard();
-}
-
-export function restoreRejectedDraft(
-  currentOwner: string,
-  drafts: Map<string, { value: string; images: ImageAttachment[]; files: FileAttachment[] }>,
-  owner: string,
-  input: MessageInput,
-): { value: string; images: ImageAttachment[]; files: FileAttachment[] } | null {
-  const failed = { value: input.text, images: input.images, files: input.files };
-  if (currentOwner === owner) return failed;
-  // The user moved on and may have written a new draft in that session meanwhile.
-  // Replacing it with the rejected input lost everything typed after the send.
-  const parked = drafts.get(owner);
-  drafts.set(
-    owner,
-    parked
-      ? {
-          value: [failed.value, parked.value].filter(Boolean).join("\n"),
-          images: [...failed.images, ...parked.images],
-          files: [...failed.files, ...parked.files],
-        }
-      : failed,
-  );
-  return null;
-}
-
-/**
- * Whether a release loop may hand over another request.
- *
- * Ownership alone is not enough: the composer that started the loop can unmount
- * while its awaited send is still in flight, and its refs still name the session.
- * A remounted instance restores the same queue from the snapshot, so without the
- * mount check both loops would send the next request twice.
- */
-export function canReleaseQueue(
-  mounted: boolean,
-  draftOwner: string,
-  owner: string,
-): boolean {
-  return mounted && draftOwner === owner;
-}
-
-/** Whether this session's runtime advertises the Fast service-tier control. */
-export function advertisesFast(
-  commands: readonly { name: string }[],
-): boolean {
-  return commands.some((command) => command.name === "fast");
-}
-
-export interface FastTierControlsProps {
-  commands: readonly { name: string }[];
-  /** Whether the session reports a priority tier right now, never a local guess. */
-  fastMode: boolean;
-  /** A Fast request for this session is still awaiting the runtime. */
-  busy: boolean;
-  readOnly: boolean;
-  onSelect: (fast: boolean) => void;
-}
-
-/**
- * The Fast pair in the model popover header.
- *
- * Two named buttons rather than one toggle: the tier belongs to the runtime, so
- * each press says which state is being asked for and `aria-pressed` marks the one
- * in force. The runtime only offers the control when it advertises `/fast`, so a
- * backend without a service tier shows no buttons at all. Pressing one leaves the
- * menu open -- the model list is the same menu, and closing it would hide the
- * profiles the user came for.
- */
-export function FastTierControls({
-  commands,
-  fastMode,
-  busy,
-  readOnly,
-  onSelect,
-}: FastTierControlsProps) {
-  if (!advertisesFast(commands)) return null;
-  const disabled = readOnly || busy;
-  return (
-    <span
-      className="config-option-menu-fast"
-      role="group"
-      aria-label={t("Fast 모드")}
-    >
-      <button
-        type="button"
-        aria-pressed={fastMode}
-        disabled={disabled}
-        title={t("Fast 모드 켜기 (/fast on)")}
-        onClick={() => onSelect(true)}
-      >
-        Fast on
-      </button>
-      <button
-        type="button"
-        aria-pressed={!fastMode}
-        disabled={disabled}
-        title={t("Fast 모드 끄기 (/fast off)")}
-        onClick={() => onSelect(false)}
-      >
-        Fast off
-      </button>
-    </span>
-  );
-}
-
-/**
- * The draft a selected palette command leaves in the composer.
- *
- * The trailing space is not cosmetic. The palette matches the bare `/name` query,
- * so leaving the textarea on exactly the value that was selected kept the match
- * alive and the next Enter re-selected the command instead of submitting it. Only
- * commands that still need input reach this line -- a hint-less command without the
- * `skill:` prefix was executed and returned above, and `skill:*` is agent work that
- * has to stay a draft -- so the space is unconditional.
- */
-export function selectedCommandDraft(name: string): string {
-  return `/${name} `;
-}
-
-/**
- * The composer state one Enter keydown is decided against, and nothing else the
- * textarea's keydown handler deals with.
- *
- * The Enter paths are split out of that handler so the contract -- including the
- * Shift+Enter newline, which has to leave the keydown to the textarea -- can be
- * driven directly in tests the way the sidebar's Escape consumer is.
- */
-export interface ComposerEnterEvent {
-  key: string;
-  /** Shift+Enter is always a newline, never a submit. */
-  shiftKey: boolean;
-  /** Any of the signals the Korean IME raises while its last syllable is open. */
-  composing: boolean;
-  /** When the last composition commit landed, in `performance.now()` time. */
-  compositionEndedAt: number;
-  /** `performance.now()` for this keydown. */
-  now: number;
-  /** The textarea holds nothing but whitespace. */
-  draftEmpty: boolean;
-  /** The slash-command palette is open and owns a settled Enter. */
-  paletteOpen: boolean;
-}
-
-export interface ComposerEnterEffects {
-  preventDefault: () => void;
-  /** Send the draft, or hold it behind the queue -- everything Enter means. */
-  submit: () => void;
-  /** Hold this Enter until the composition it landed in commits. */
-  arm: (at: number) => void;
-  /** Forget an armed Enter so a later commit cannot submit on its behalf. */
-  disarm: () => void;
-  /** Submit once the frame that ends the current composition has run. */
-  defer: () => void;
-}
-
-/**
- * Apply one Enter keydown to the composer, returning whether it was consumed.
- *
- * Shift+Enter is the one path that is never consumed: it leaves the keydown
- * un-prevented so the textarea inserts the newline and the autosize picks up the
- * taller draft. That has to hold mid-composition too -- the IME delivers a plain
- * Enter while the final syllable is still open, and treating that same signal as a
- * submit on Shift+Enter queued the text the user was only making a line break in.
- * An Enter armed by an earlier keypress is dropped here as well: the commit that
- * follows this keystroke is the IME closing *this* line, not finishing that submit.
- *
- * A plain Enter keeps its two IME paths (arm now, submit from the commit; submit
- * from the follow-up keydown right after a commit) and its two settled meanings
- * (the palette's selection, or send/hold depending on the turn).
- */
-export function handleComposerEnter(
-  event: ComposerEnterEvent,
-  effects: ComposerEnterEffects,
-): boolean {
-  if (event.key !== "Enter") return false;
-  if (event.shiftKey) {
-    effects.disarm();
-    return false;
-  }
-  // macOS Korean IME emits Enter while the final syllable is still composing.
-  // Treating that keydown as submit sends the full sentence and then the last
-  // syllable again as a second steer (for example "steer 테스트" + "트"), so the
-  // submission waits for the IME to commit. It is armed here and fired from
-  // compositionend, which is the first moment the final text is readable.
-  if (event.composing) {
-    effects.preventDefault();
-    // An empty draft has nothing left to compose, so this is a real empty
-    // submit -- the gesture that interrupts the run and releases the queue.
-    if (event.draftEmpty) {
-      effects.disarm();
-      effects.submit();
-      return true;
-    }
-    effects.arm(event.now);
-    return true;
-  }
-  // One physical Enter can reach the handler twice around a commit: once while
-  // the composition still owns it (armed above) and once after the commit has
-  // landed. Both are the same submission, so the second only defers to the frame
-  // the commit scheduled.
-  if (event.now - event.compositionEndedAt < IME_FOLLOWUP_WINDOW_MS) {
-    effects.preventDefault();
-    if (!event.draftEmpty) effects.defer();
-    return true;
-  }
-  // The palette selects its highlighted command rather than sending the query.
-  if (event.paletteOpen) return false;
-  effects.preventDefault();
-  effects.submit();
-  return true;
-}
-
-export interface QueueChipProps {
-  entry: PendingRequest;
-  onPull: () => void;
-  onDiscard: () => void;
-  onSendNow?: () => void;
-  disabled?: boolean;
-}
-
-/**
- * One held request with explicit send, edit, and discard controls.
- *
- * The chip body pulls the request back into the draft, where the exact text can be
- * edited or sent on its own; the × beside it discards that one entry. `type` is
- * explicit on both: the composer is a form, so a bare button here would submit the
- * draft the user is trying to take a request out of.
- */
-export function QueueChip({ entry, onPull, onDiscard, onSendNow, disabled = false }: QueueChipProps) {
-  return (
-    <span className={`composer-queue-item composer-queue-item--${entry.mode}${entry.blocked ? " composer-queue-item--blocked" : ""}`}>
-      <button type="button" className="composer-queue-pull" onClick={onPull} disabled={disabled}
-        title={entry.blocked ? t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 입력창으로 꺼내세요.") : undefined}>
-        {entry.blocked && <em>{t("확인 필요")}</em>}
-        <span className="composer-queue-text">{entry.text}</span>
-      </button>
-      <button
-        type="button"
-        className="composer-queue-discard"
-        disabled={disabled}
-        aria-label={t("대기 항목 버리기")}
-        onClick={onDiscard}
-      >
-        <X size={10} />
-      </button>
-      {onSendNow && (
-        <button type="button" className="composer-queue-send" disabled={disabled || entry.blocked}
-          onClick={onSendNow}>{t("지금 보내기")}</button>
-      )}
-      <button type="button" className="composer-queue-edit" disabled={disabled}
-        aria-label={t("대기 메시지 수정")} onClick={onPull}><Pencil size={12} /></button>
-    </span>
-  );
-}
 
 export interface ComposerProps {
   sessionId: string;
