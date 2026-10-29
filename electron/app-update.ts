@@ -184,7 +184,13 @@ export class AppUpdateMonitor {
     const announced = this.options.announced.get();
     if (announced && compareGjcVersions(status.latestVersion, announced) <= 0)
       return status;
-    this.options.announced.set(status.latestVersion);
+    // The release was read; failing to record that it was shown must not turn the
+    // check into a failure. The cost is announcing it again after a relaunch.
+    try {
+      this.options.announced.set(status.latestVersion);
+    } catch (error) {
+      console.error("App update: could not record the announced version", error);
+    }
     if (notify) this.options.notify(status);
     return status;
   }

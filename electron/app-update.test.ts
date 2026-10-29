@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -172,6 +172,27 @@ describe("AppUpdateMonitor", () => {
     await updates.check({ notify: true });
     expect(updates.status()).toMatchObject({ state: "unknown", reason: "not-found" });
     expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("still answers and announces when the announcement cannot be saved", async () => {
+    // An automatic check runs as `void check()`, so a throwing write was an
+    // unhandled rejection in the main process; a check from settings showed an
+    // error although the release had been read.
+    const userData = mkdtempSync(path.join(tmpdir(), "gajae-update-"));
+    mkdirSync(path.join(userData, "agent-control-desktop-state.json.tmp"));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const { updates, notify } = monitor(answering(200, release("v0.2.0")), userData);
+      await expect(updates.check({ notify: true })).resolves.toMatchObject({
+        state: "available",
+        latestVersion: "0.2.0",
+      });
+      expect(notify).toHaveBeenCalledOnce();
+      expect(updates.status()).toMatchObject({ state: "available" });
+      expect(logged).toHaveBeenCalled();
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it("shares one request between overlapping checks", async () => {
