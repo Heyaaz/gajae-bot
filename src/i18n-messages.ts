@@ -579,7 +579,6 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "리뷰 필요": "Review required",
   "리뷰 없음": "No reviews",
   "병합됨": "Merged",
-  "개 세션": " sessions",
   "개 파일": " files",
   "[삭제됨]": "[redacted]",
   "7일이 지난 놓친 실행은 보충하지 않습니다.": "Missed runs older than 7 days will not be made up.",

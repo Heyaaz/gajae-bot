@@ -63,7 +63,7 @@ export function ProjectList({
                 <code>{project.root}</code>
                 <small>
                   {project.repository ? t("Git 레포") : t("Git 레포 아님")} {t("· 세션")}{" "}
-                  {project.sessions.length}{t("개 세션")} </small>
+                  {project.sessions.length}{t("개")} </small>
               </button>
               {project.repository ? (
                 <button
