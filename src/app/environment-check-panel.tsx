@@ -62,8 +62,9 @@ function EnvironmentRow({ row }: { row: EnvironmentCheckRow }) {
 /**
  * Whether this Mac has what Gajae runs on, with the command for anything missing.
  *
- * The app only looks: every fix is a command for the user to run, because an
- * installer run from here would act outside what they can see and undo.
+ * This panel only looks: every fix is a command for the user to run. The one
+ * install the app does itself, GJC on a Mac without it, is first-run setup's
+ * explicit step with its own progress.
  */
 export function EnvironmentCheckPanel({
   bridge,
@@ -130,7 +131,7 @@ export function EnvironmentCheckPanel({
         {report?.rows.map((row) => <EnvironmentRow key={row.id} row={row} />)}
       </div>
       <p className="settings-note">
-        {t("앱은 아무것도 설치하지 않습니다. 필요한 명령을 복사해 터미널에서 실행한 뒤 다시 점검하세요.")}
+        {t("필요한 명령을 복사해 터미널에서 실행한 뒤 다시 점검하세요.")}
       </p>
     </div>
   );

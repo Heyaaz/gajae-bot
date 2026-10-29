@@ -67,6 +67,8 @@ import { createTranscriptNavigation } from "./transcript-navigation";
 import { createSessionActions } from "./session-actions";
 import { useGjcUpdate, useRemoteStatus } from "./use-host-status";
 import { ChatHeader } from "./chat-header";
+import { OnboardingView } from "./onboarding-view";
+import type { OnboardingStep } from "../../shared/onboarding";
 import { useComposerCallbacks } from "./use-composer-callbacks";
 import { usePreferenceToggles } from "./use-preference-toggles";
 import { useComposerModel } from "./use-composer-model";
@@ -279,24 +281,30 @@ export default function App() {
   const remoteBridge = backend.remoteAccess;
   const remoteStatus = useRemoteStatus(backend);
 
-  // Until every required tool has been seen working once, the window opens on the
-  // environment check so a fresh install shows what is missing before a session
-  // fails on it. A host without the channel (an older main, a smoke) just skips it.
+  const onboardingBridge = window.agentControlDesktop?.onboarding;
+  const [onboardingStep, setOnboardingStep] = useState<OnboardingStep | null>(null);
+  // A Mac that has never run GJC opens on first-run setup. Past that, until every
+  // required tool has been seen working once, the window opens on the environment
+  // check so a fresh install shows what is missing before a session fails on it. A
+  // host without either channel (an older main, a smoke) just skips it.
   useEffect(() => {
-    if (!settingsBridge) return;
     let active = true;
-    void settingsBridge
-      .environmentCheckDue()
-      .then((due) => {
-        if (!active || !due) return;
-        setSettingsTab("environment");
-        setSettingsOpen(true);
-      })
-      .catch(() => undefined);
+    void (async () => {
+      const step = await onboardingBridge?.pendingStep().catch(() => null);
+      if (!active) return;
+      if (step) {
+        setOnboardingStep(step);
+        return;
+      }
+      const due = await settingsBridge?.environmentCheckDue().catch(() => false);
+      if (!active || !due) return;
+      setSettingsTab("environment");
+      setSettingsOpen(true);
+    })();
     return () => {
       active = false;
     };
-  }, [settingsBridge]);
+  }, [onboardingBridge, settingsBridge]);
 
   const { updateStatus, updateBusy, updateError, checkForUpdate, installUpdate } =
     useGjcUpdate(settingsBridge, connection.state, setSettingsOpen);
@@ -2036,6 +2044,14 @@ export default function App() {
           session={deleteCandidate}
           onCancel={() => setDeleteCandidate(null)}
           onConfirm={() => void deleteSession(deleteCandidate.id)}
+        />
+      )}
+      {onboardingStep && onboardingBridge && (
+        <OnboardingView
+          bridge={onboardingBridge}
+          step={onboardingStep}
+          onClose={() => setOnboardingStep(null)}
+          onStartConversation={() => openNewSessionDialog()}
         />
       )}
     </div>
