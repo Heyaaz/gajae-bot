@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import {
   parseQuickInputSubmission,
   quickInputProjects,
 } from "../shared/quick-input.js";
-import { QuickInputShortcut, captureScreen, CAPTURE_MAX_BYTES, type GlobalShortcutApi } from "./quick-input.js";
+import { QuickInputShortcut, captureScreen, CAPTURE_MAX_BYTES, removeCaptures, type GlobalShortcutApi } from "./quick-input.js";
 
 function fakeShortcuts(taken: string[] = []) {
   const live = new Map<string, () => void>();
@@ -49,6 +49,19 @@ describe("QuickInputShortcut", () => {
     expect(live.size).toBe(0);
   });
 
+  it("refuses a shortcut without a modifier so it cannot swallow ordinary typing", () => {
+    const { api } = fakeShortcuts();
+    const shortcut = new QuickInputShortcut(api, () => undefined);
+    for (const bare of ["A", "Space", "Shift+K"])
+      expect(shortcut.apply(bare)).toEqual({
+        state: "failed",
+        accelerator: bare,
+        reason: "invalid",
+      });
+    expect(api.register).not.toHaveBeenCalled();
+    expect(shortcut.apply("CommandOrControl+Shift+K").state).toBe("registered");
+  });
+
   it("reports a refused or unparsable accelerator instead of throwing, and retries on the next apply", () => {
     const taken = ["Control+Alt+Space"];
     const { api, live } = fakeShortcuts(taken);
@@ -58,9 +71,9 @@ describe("QuickInputShortcut", () => {
       accelerator: "Control+Alt+Space",
       reason: "unavailable",
     });
-    expect(shortcut.apply("Nope+Foo")).toEqual({
+    expect(shortcut.apply("Control+Nope")).toEqual({
       state: "failed",
-      accelerator: "Nope+Foo",
+      accelerator: "Control+Nope",
       reason: "invalid",
     });
     taken.length = 0;
@@ -115,6 +128,16 @@ describe("captureScreen", () => {
     });
     expect(result).toMatchObject({ outcome: "failed", message: expect.stringContaining("10 MiB") });
     expect(readdirSync(directory)).toEqual([]);
+  });
+
+  it("removes leftover screenshots but nothing else", () => {
+    const directory = captureDirectory();
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(path.join(directory, "capture-2026-01-01T00-00-00-000Z.png"), "x");
+    writeFileSync(path.join(directory, "notes.txt"), "keep");
+    removeCaptures(directory);
+    expect(readdirSync(directory)).toEqual(["notes.txt"]);
+    expect(() => removeCaptures(path.join(directory, "missing"))).not.toThrow();
   });
 
   it("does not run screencapture again once Screen Recording is denied", async () => {

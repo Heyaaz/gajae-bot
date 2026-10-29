@@ -5,7 +5,7 @@ import {
   type QuickInputState,
 } from "../shared/quick-input.js";
 import type { IpcSecurity } from "./ipc-security.js";
-import { captureScreen, type ScreenAccess } from "./quick-input.js";
+import { captureScreen, removeCaptures, type ScreenAccess } from "./quick-input.js";
 
 /** What the quick input hands to the main window: nothing is sent from here. */
 export interface QuickInputHandoff {
@@ -52,6 +52,7 @@ export class QuickInputWindow {
 
   constructor(private readonly options: QuickInputWindowOptions) {
     const { security } = options;
+    removeCaptures(options.captureDirectory);
     ipcMain.handle(
       QUICK_INPUT_IPC.state,
       security.guarded((): QuickInputState => ({ projects: options.projects() })),
@@ -96,6 +97,8 @@ export class QuickInputWindow {
     for (const channel of Object.values(QUICK_INPUT_IPC))
       ipcMain.removeHandler(channel);
     this.options.security.dispose();
+    this.captures.clear();
+    removeCaptures(this.options.captureDirectory);
     if (this.window && !this.window.isDestroyed()) this.window.destroy();
     this.window = undefined;
   }

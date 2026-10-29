@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readdirSync, unlinkSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -36,6 +37,11 @@ export class QuickInputShortcut {
       return this.current;
     this.release();
     if (!accelerator) return this.current;
+    if (!hasModifier(accelerator)) {
+      // A bare key would be taken from every app, typing included.
+      this.current = { state: "failed", accelerator, reason: "invalid" };
+      return this.current;
+    }
     try {
       this.current = this.api.register(accelerator, this.onTrigger)
         ? { state: "registered", accelerator }
@@ -60,6 +66,17 @@ export class QuickInputShortcut {
       this.api.unregister(this.current.accelerator);
     this.current = { state: "off" };
   }
+}
+
+const MODIFIERS = new Set([
+  "command", "cmd", "control", "ctrl", "commandorcontrol", "cmdorctrl",
+  "alt", "option", "altgr", "super", "meta",
+]);
+
+// Shift alone does not count: Shift+A would still capture capital letters.
+function hasModifier(accelerator: string): boolean {
+  const parts = accelerator.split("+").map((part) => part.trim().toLowerCase());
+  return parts.slice(0, -1).some((part) => MODIFIERS.has(part));
 }
 
 export type ScreenAccess =
@@ -194,4 +211,26 @@ async function pruneCaptures(directory: string, now: number): Promise<void> {
           await unlink(file).catch(() => undefined);
       }),
   );
+}
+
+/**
+ * Deletes every screenshot this feature left behind. Attachment tokens live only
+ * in memory, so no capture is referenced before startup or after quit, and the
+ * files may hold whatever was on screen.
+ */
+export function removeCaptures(directory: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!/^capture-.*\.png$/u.test(entry)) continue;
+    try {
+      unlinkSync(path.join(directory, entry));
+    } catch {
+      // Already gone, or not ours to remove; the age-based pruning still runs.
+    }
+  }
 }

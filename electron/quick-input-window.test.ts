@@ -45,7 +45,7 @@ function create() {
     url: "file:///quick.html",
     preload: "/preload.js",
     security: { guarded: (fn: never) => fn, register: vi.fn(), dispose: vi.fn() } as never,
-    captureDirectory: "/tmp/captures",
+    captureDirectory: "/nonexistent/gajae-captures",
     screenAccess: () => "granted",
     projects: () => [],
     onSubmit: async () => undefined,
