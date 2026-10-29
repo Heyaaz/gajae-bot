@@ -93,6 +93,40 @@ describe("Inspector", () => {
     expect(markup).toContain("subagent-card--waiting");
   });
 
+  it("keeps activity sections independently collapsed during updates and reveals searched work", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const transcript = [taskTool("agent-1", "running"), {
+      ...taskTool("shell-1", "completed"), name: "bash", output: "shell result",
+    } as TranscriptItem];
+    try {
+      await act(async () => root.render(createElement(Inspector, props(transcript))));
+      const sections = host.querySelectorAll<HTMLDetailsElement>(".inspector-work-section");
+      expect(sections).toHaveLength(2);
+      expect(sections[0]!.open).toBe(true);
+      expect(sections[1]!.open).toBe(true);
+      sections[0]!.open = false;
+      expect(sections[1]!.open).toBe(true);
+      sections[1]!.open = false;
+      await act(async () => root.render(createElement(Inspector, props([...transcript]))));
+      expect(sections[0]!.open).toBe(false);
+      expect(sections[1]!.open).toBe(false);
+      const card = sections[1]!.querySelector<HTMLDetailsElement>(".subagent-card")!;
+      card.scrollIntoView = vi.fn();
+      await act(async () => root.render(createElement(Inspector, {
+        ...props(transcript), revealToolId: "shell-1",
+      })));
+      expect(sections[0]!.open).toBe(false);
+      expect(sections[1]!.open).toBe(true);
+      expect(card.open).toBe(true);
+      expect(card.textContent).toContain("shell result");
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+    }
+  });
+
   it("clears a commit message only after success and only if it was not edited", () => {
     const submittedRevision = 3;
 

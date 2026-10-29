@@ -69,6 +69,8 @@ const InspectorWorkCard = memo(function InspectorWorkCard({
   useEffect(() => {
     if (!highlighted || !ref.current) return;
     ref.current.open = true;
+    const section = ref.current.parentElement?.closest("details");
+    if (section) section.open = true;
     ref.current.scrollIntoView({ block: "nearest" });
     ref.current.focus();
   }, [highlighted]);
@@ -173,8 +175,10 @@ function InspectorView({
           </button>
         )}
       </section>
-      <section className="inspector-section inspector-subagents">
-        <h3>{t("서브 에이전트")}</h3>
+      <section className="inspector-section">
+        <details className="inspector-work-section" open>
+          <summary><h3>{t("서브 에이전트")}</h3></summary>
+          <div className="inspector-subagents">
         {subagents.length > 0 ? (
           subagents.map((tool) => (
             <InspectorWorkCard key={tool.id} work={tool} highlighted={tool.id === revealToolId} />
@@ -182,15 +186,19 @@ function InspectorView({
         ) : (
           <p>{t("실행된 서브 에이전트가 없습니다.")}</p>
         )}
+          </div>
+        </details>
       </section>
       <section className="inspector-section">
-        <h3>{t("셸 작업")}</h3>
+        <details className="inspector-work-section" open>
+          <summary><h3>{t("셸 작업")}</h3></summary>
         <p>{t("이 대화의 셸 실행 기록입니다.")}</p>
         {shellWork.map((tool) => <InspectorWorkCard key={tool.id} highlighted={tool.id === revealToolId}
           work={{ id: tool.id, label: tool.description,
             status: tool.status === "running" ? "running" : tool.status === "pending" || tool.status === "approval-required" ? "waiting" : tool.status === "failed" || tool.status === "denied" || tool.status === "cancelled" ? "failed" : "completed",
             objective: tool.command, detail: tool.output }} />)}
         {shellWork.length === 0 && <p>{t("보고된 셸 작업이 없습니다.")}</p>}
+        </details>
       </section>
     </aside>
   );

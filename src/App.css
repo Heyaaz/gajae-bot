@@ -871,13 +871,23 @@
 }
 .diff-toolbar > span {
   display: flex;
+  flex: 1 1 0;
+  min-width: 0;
   align-items: center;
   gap: 7px;
 }
+.diff-toolbar > button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
 .diff-toolbar strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 10px;
 }
 .diff-toolbar small {
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: var(--text-tertiary);
   font-size: 10px;
 }
@@ -5311,7 +5321,18 @@ button.diff-line-number:hover {
   white-space: normal;
   overflow-wrap: break-word;
 }
-.inspector-section > p {
+.inspector-work-section > summary {
+  cursor: pointer;
+  color: var(--text-tertiary);
+}
+.inspector-work-section > summary h3 {
+  display: inline;
+}
+.inspector-work-section[open] > summary {
+  margin-bottom: 11px;
+}
+.inspector-section > p,
+.inspector-work-section > p {
   margin: 4px 0 12px;
   color: var(--text-secondary);
   font-size: 11px;
