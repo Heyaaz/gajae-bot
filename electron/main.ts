@@ -4,13 +4,14 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  net,
   Notification,
   powerSaveBlocker,
   shell,
   type MenuItemConstructorOptions,
 } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -29,7 +30,7 @@ import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
 import { SettingsStore, validDirectory } from "./settings-store.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
-import { setHostLanguage } from "./host-text.js";
+import { hostText, setHostLanguage } from "./host-text.js";
 import { ManagementService } from "./desktop-services.js";
 import { registerDesktopServicesIpcHandlers } from "./desktop-services-ipc-handlers.js";
 import { ProductivityService } from "./productivity-service.js";
@@ -56,6 +57,8 @@ import {
 } from "./desktop-integration.js";
 import { desktopStatusRenderer } from "./desktop-status.js";
 import { electronStatusSurface } from "./desktop-status-surface.js";
+import { AppUpdateMonitor, githubRepository } from "./app-update.js";
+import { DesktopStateStore } from "./desktop-state-store.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode, terminalSmokeMode } =
@@ -130,6 +133,34 @@ const desktopIntegration = new DesktopIntegration({
   power: powerSaveBlocker,
   preferences: preferences.desktopIntegration,
   onChange: (state) => renderDesktopStatus?.(state),
+});
+const desktopState = new DesktopStateStore(userDataDirectory);
+const appUpdates = new AppUpdateMonitor({
+  currentVersion: app.getVersion(),
+  repository: githubRepository(
+    (
+      JSON.parse(
+        readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"),
+      ) as { repository?: unknown }
+    ).repository,
+  ),
+  fetch: (url, init) => net.fetch(url, init),
+  announced: {
+    get: () => desktopState.get().announcedAppVersion,
+    set: (version) => desktopState.update({ announcedAppVersion: version }),
+  },
+  notify: (update) => {
+    if (!Notification.isSupported()) return;
+    const notification = new Notification({
+      title: `Gajae ${update.latestVersion}`,
+      body: hostText("새 버전이 나왔습니다. 눌러서 릴리스 페이지를 엽니다."),
+    });
+    notification.on("click", () => void shell.openExternal(update.releaseUrl));
+    notification.on("failed", (_event, error) => {
+      console.error("App update notification failed:", error);
+    });
+    notification.show();
+  },
 });
 
 function broadcastAgentEvent(event: AgentEvent): void {
@@ -319,6 +350,7 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
     else viewedSessions.set(senderId, sessionId);
   },
   (updated) => desktopIntegration.setPreferences(updated),
+  appUpdates,
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
@@ -1180,6 +1212,13 @@ app.whenReady().then(() => {
   );
   renderDesktopStatus(desktopIntegration.state());
   createWindow();
+  // A development build is not a release anyone installed, so it only checks when
+  // asked from settings.
+  if (app.isPackaged)
+    appUpdates.startAutomaticChecks(
+      () => settingsStore.get().desktopIntegration.checkAppUpdates,
+      { firstDelayMs: 15_000, intervalMs: 24 * 60 * 60_000 },
+    );
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -1206,5 +1245,6 @@ app.on("before-quit", () => {
   void remoteAccess?.dispose();
   gjcController.dispose();
   desktopIntegration.dispose();
+  appUpdates.dispose();
   attachmentStore.dispose();
 });

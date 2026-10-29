@@ -20,12 +20,19 @@ export interface DesktopIntegrationPreferences {
   menuBarStatus: boolean;
   /** Sessions waiting on the user, failed ones and unread finished ones on the Dock icon. */
   dockBadge: boolean;
+  /**
+   * Look for a newer Gajae release on GitHub and announce each new version once.
+   *
+   * Only a packaged build checks on its own; nothing is downloaded or replaced.
+   */
+  checkAppUpdates: boolean;
 }
 
 export const DEFAULT_DESKTOP_INTEGRATION: DesktopIntegrationPreferences = {
   preventSleep: true,
   menuBarStatus: true,
   dockBadge: true,
+  checkAppUpdates: true,
 };
 
 /**
@@ -49,6 +56,7 @@ export function parseDesktopIntegration(
     preventSleep: flag("preventSleep"),
     menuBarStatus: flag("menuBarStatus"),
     dockBadge: flag("dockBadge"),
+    checkAppUpdates: flag("checkAppUpdates"),
   };
 }
 

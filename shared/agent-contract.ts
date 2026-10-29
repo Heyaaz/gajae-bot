@@ -1,3 +1,4 @@
+import type { AppUpdateStatus } from "./app-update.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
 
 export type RuntimeKind = "gjc" | "hermes";
@@ -989,6 +990,10 @@ export interface SettingsDesktopBridge {
   }>;
   checkGjcUpdate(): Promise<GjcUpdateStatus>;
   installGjcUpdate(): Promise<GjcUpdateStatus>;
+  /** The last Gajae release check, without asking GitHub again. */
+  getAppUpdateStatus(): Promise<AppUpdateStatus>;
+  /** Asks GitHub for the latest Gajae release now. */
+  checkAppUpdate(): Promise<AppUpdateStatus>;
 }
 
 export interface GjcUpdateStatus {

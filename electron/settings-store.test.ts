@@ -156,8 +156,8 @@ describe('SettingsStore', () => {
     const userData = path.join(root, 'user-data')
     const store = new SettingsStore(userData, root)
     expect(store.get().desktopIntegration.preventSleep).toBe(true)
-    expect(store.setDesktopIntegration({ preventSleep: false, dockBadge: false })).toEqual({ preventSleep: false, menuBarStatus: true, dockBadge: false })
-    expect(new SettingsStore(userData, root).get().desktopIntegration).toEqual({ preventSleep: false, menuBarStatus: true, dockBadge: false })
+    expect(store.setDesktopIntegration({ preventSleep: false, dockBadge: false, checkAppUpdates: false })).toEqual({ preventSleep: false, menuBarStatus: true, dockBadge: false, checkAppUpdates: false })
+    expect(new SettingsStore(userData, root).get().desktopIntegration).toEqual({ preventSleep: false, menuBarStatus: true, dockBadge: false, checkAppUpdates: false })
     expect(() => store.setDesktopIntegration('off')).toThrow('Desktop integration settings must be an object')
   })
 

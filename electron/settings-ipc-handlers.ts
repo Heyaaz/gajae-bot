@@ -10,6 +10,7 @@ import type { SettingsStore } from './settings-store.js'
 import type { AttachmentStore } from './attachment-store.js'
 import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
+import type { AppUpdateMonitor } from './app-update.js'
 import { setHostLanguage } from './host-text.js'
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
@@ -98,6 +99,7 @@ export function registerSettingsIpcHandlers(
   onGjcUpdated?: () => Promise<void>,
   onViewedSession?: (senderId: number, sessionId: string | null) => void,
   onDesktopIntegration?: (preferences: DesktopIntegrationPreferences) => void,
+  appUpdates?: Pick<AppUpdateMonitor, 'status' | 'check'>,
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -210,6 +212,12 @@ export function registerSettingsIpcHandlers(
     await onGjcUpdated?.()
     return status
   }))
+  if (appUpdates) {
+    ipcMain.handle(SETTINGS_IPC.getAppUpdateStatus, security.guarded(() => appUpdates.status()))
+    // The user is looking at the answer, so it is shown in the panel rather than
+    // announced again as a notification.
+    ipcMain.handle(SETTINGS_IPC.checkAppUpdate, security.guarded(() => appUpdates.check({ notify: false })))
+  }
 
   return () => {
     for (const channel of Object.values(SETTINGS_IPC)) ipcMain.removeHandler(channel)

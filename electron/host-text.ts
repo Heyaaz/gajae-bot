@@ -20,6 +20,8 @@ const ENGLISH: Readonly<Record<string, string>> = {
   "실패": "failed",
   "진행 중인 세션 없음": "No active sessions",
   "Gajae 열기": "Open Gajae",
+  "새 버전이 나왔습니다. 눌러서 릴리스 페이지를 엽니다.":
+    "A new version is out. Click to open the release page.",
 };
 
 let language: UiLanguage = "ko";

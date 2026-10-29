@@ -16,6 +16,8 @@ export const SETTINGS_IPC = {
   savePreferences: "agent-control:settings:save-preferences",
   checkGjcUpdate: "agent-control:settings:check-gjc-update",
   installGjcUpdate: "agent-control:settings:install-gjc-update",
+  getAppUpdateStatus: "agent-control:settings:get-app-update-status",
+  checkAppUpdate: "agent-control:settings:check-app-update",
 } as const;
 
 export const DESKTOP_IPC = {

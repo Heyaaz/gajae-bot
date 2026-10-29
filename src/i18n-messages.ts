@@ -667,4 +667,11 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "실행 중인 세션과 확인이 필요한 세션 수를 메뉴바에 표시합니다. 눌러서 세션으로 바로 이동할 수 있습니다.": "Shows how many sessions are working or need you in the menu bar. Click it to jump to a session.",
   "Dock 배지": "Dock badge",
   "승인·질문 대기, 실패, 안 읽은 완료 세션 수를 Dock 아이콘에 표시합니다.": "Shows the number of sessions waiting for approval or an answer, failed, or finished and unread on the Dock icon.",
+  "Gajae 업데이트 확인": "Check for Gajae updates",
+  "배포된 앱은 시작할 때와 하루에 한 번 GitHub 릴리스를 확인하고, 새 버전마다 한 번만 알립니다. 앱을 내려받거나 바꾸지는 않습니다.": "A released app checks GitHub releases at launch and once a day, and announces each new version once. It never downloads or replaces the app.",
+  "Gajae 버전": "Gajae version",
+  "{0} · 아직 확인하지 않았습니다": "{0} · Not checked yet",
+  "{0} · 확인할 수 없음": "{0} · Cannot check",
+  "지금 확인": "Check now",
+  "릴리스 페이지": "Release page",
 };

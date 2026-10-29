@@ -163,10 +163,11 @@ describe("desktop integration preferences", () => {
     expect(parseDesktopIntegration({ preventSleep: false })).toEqual({
       ...DEFAULT_DESKTOP_INTEGRATION,
       preventSleep: false,
+      checkAppUpdates: true,
     });
     expect(
-      parseDesktopIntegration({ menuBarStatus: false, dockBadge: 0 }),
-    ).toEqual({ ...DEFAULT_DESKTOP_INTEGRATION, menuBarStatus: false });
+      parseDesktopIntegration({ menuBarStatus: false, dockBadge: 0, checkAppUpdates: false }),
+    ).toEqual({ ...DEFAULT_DESKTOP_INTEGRATION, menuBarStatus: false, checkAppUpdates: false });
   });
 });
 

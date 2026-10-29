@@ -453,6 +453,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
     ipcRenderer.invoke(SETTINGS_IPC.savePreferences, preferences),
   checkGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkGjcUpdate),
   installGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.installGjcUpdate),
+  getAppUpdateStatus: () => ipcRenderer.invoke(SETTINGS_IPC.getAppUpdateStatus),
+  checkAppUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkAppUpdate),
 });
 const management: ManagementDesktopBridge = Object.freeze({
   getSnapshot: (w: string) =>

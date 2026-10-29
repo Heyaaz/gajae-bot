@@ -24,6 +24,7 @@ import { getLanguage, setLanguageMode, t, useLanguageMode } from "../i18n";
 import { LazyViewBoundary } from "./lazy-boundary";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
+import { AppUpdateRow } from "./app-update-row";
 const RemoteAccessPanel = lazy(() =>
   import("./remote-access-panel").then((mod) => ({ default: mod.RemoteAccessPanel })),
 );
@@ -723,6 +724,11 @@ export function SettingsDialog({
                       label: t("Dock 배지"),
                       detail: t("승인·질문 대기, 실패, 안 읽은 완료 세션 수를 Dock 아이콘에 표시합니다."),
                     },
+                    {
+                      key: "checkAppUpdates",
+                      label: t("Gajae 업데이트 확인"),
+                      detail: t("배포된 앱은 시작할 때와 하루에 한 번 GitHub 릴리스를 확인하고, 새 버전마다 한 번만 알립니다. 앱을 내려받거나 바꾸지는 않습니다."),
+                    },
                   ] as const
                 ).map((row) => (
                   <div className="settings-toggle-row" key={row.key}>
@@ -744,6 +750,7 @@ export function SettingsDialog({
                     />
                   </div>
                 ))}
+                <AppUpdateRow bridge={settingsBridge} />
               </div>
             </div>
           )}
