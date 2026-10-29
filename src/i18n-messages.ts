@@ -649,4 +649,6 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "출력이 없습니다.": "No output.",
   "자동화 실행 결과를 읽지 못했습니다.": "Could not read automation run results.",
   "지금 확인할 세션이 없습니다.": "Nothing needs your attention right now.",
+  "계획 승인": "Plan approval",
+  "계획 승인 요청": "Plan approval requested",
 };

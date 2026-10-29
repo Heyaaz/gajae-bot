@@ -572,6 +572,8 @@ export interface QuestionActivity {
   tag: QuestionGateTag;
   /** Sent back as `expectedSessionId` on `workflow.gate_answer`. */
   expectedSessionId: string;
+  /** A ralplan final-plan approval gate. It is answered like a question. */
+  approval?: true;
   /** Chosen labels or free text, once this window has an answer to show. */
   answerSummary?: string;
   /** Schema rejection. The card stays open. */

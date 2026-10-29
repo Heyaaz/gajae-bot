@@ -154,6 +154,7 @@ export function transcriptItemEqual(
         left.answerable === right.answerable &&
         left.tag === right.tag &&
         left.expectedSessionId === right.expectedSessionId &&
+        left.approval === right.approval &&
         left.answerSummary === right.answerSummary &&
         left.error === right.error &&
         left.runtimeTurnId === right.runtimeTurnId &&

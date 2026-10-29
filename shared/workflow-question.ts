@@ -10,10 +10,14 @@ import type {
  * gjc `workflow.gates.list` rows and `workflow_gate` events, mapped onto the
  * question card.
  *
- * Pending rows (`tag: "pending"`, `kind: "question"`) are the ones a person can
- * answer. Quarantined and accepted rows are diagnostic: they stay visible and
- * cannot be answered. The answer body is one of the three shapes
- * `buildAskGateAnswerSchema` accepts.
+ * Pending rows (`tag: "pending"`) are the ones a person can answer. Quarantined
+ * and accepted rows are diagnostic: they stay visible and cannot be answered.
+ * The answer body is one of the three shapes `buildAskGateAnswerSchema` accepts.
+ *
+ * Two kinds reach the card: `question`, and the ralplan final-plan `approval`.
+ * gjc 0.19.0 opens the approval through the ask tool (`questionToGate`), so it
+ * carries the same ask schema and `stage_state.question_id`. An approval
+ * without that ask shape, and every other kind, is not mapped.
  */
 
 const GATE_TAGS = new Set<QuestionGateTag>(["pending", "quarantined", "accepted"]);
@@ -66,18 +70,23 @@ export function questionFromGateRecord(
   row: unknown,
 ): QuestionActivity | undefined {
   const value = record(row);
-  if (!value || value.kind !== "question") return undefined;
+  if (!value) return undefined;
+  const context = record(value.context) ?? {};
+  const stage = record(context.stage_state) ?? {};
+  const approval =
+    value.kind === "approval" &&
+    value.stage === "ralplan" &&
+    typeof stage.question_id === "string";
+  if (value.kind !== "question" && !approval) return undefined;
   const gateId = typeof value.gate_id === "string" ? value.gate_id.trim() : "";
   if (!gateId) return undefined;
   const tagValue = typeof value.tag === "string" ? value.tag : "pending";
   if (!GATE_TAGS.has(tagValue as QuestionGateTag)) return undefined;
   const tag = tagValue as QuestionGateTag;
-  const context = record(value.context) ?? {};
   const title = typeof context.title === "string" ? context.title : "";
   const prompt = typeof context.prompt === "string" ? context.prompt : "";
   const question = oneLine(title || prompt);
   if (!question) return undefined;
-  const stage = record(context.stage_state) ?? {};
   const options = Array.isArray(value.options)
     ? value.options.flatMap((entry) => {
         const option = optionFrom(entry);
@@ -96,6 +105,7 @@ export function questionFromGateRecord(
     answerable: tag === "pending",
     tag,
     expectedSessionId: sessionId,
+    ...(approval ? { approval: true as const } : {}),
     ...(typeof value.runtime_turn_id === "string"
       ? { runtimeTurnId: value.runtime_turn_id }
       : {}),

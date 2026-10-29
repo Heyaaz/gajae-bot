@@ -52,6 +52,38 @@ function gateRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// The row gjc 0.19.0 lists for the ralplan final-plan ask: `questionToGate`
+// (modes/shared/agent-wire/deep-interview-gate.ts) with
+// `workflowGate: { stage: "ralplan", kind: "approval" }` (tools/ask.ts).
+function ralplanApprovalGate(overrides: Record<string, unknown> = {}) {
+  const labels = ["Refine further", "Approve execution via ultragoal", "Stop here"];
+  return gateRow({
+    gate_id: "interactive-a1",
+    id: "pending:interactive-a1",
+    stage: "ralplan",
+    kind: "approval",
+    options: labels.map((label, index) => ({
+      value: label,
+      label,
+      description: index === 1 ? "recommended" : undefined,
+    })),
+    context: {
+      title: "Approve the final plan .gjc/plans/ralplan-final-2.md?",
+      prompt: "Approve the final plan .gjc/plans/ralplan-final-2.md?",
+      stage_state: {
+        question_id: "final-approval",
+        multi: false,
+        options: labels,
+        other_option: "Other (type your own)",
+        clarification_action: "clarify",
+        allow_empty: false,
+        navigation_label: "Done",
+      },
+    },
+    ...overrides,
+  });
+}
+
 function harness(gates: unknown[] = [gateRow()]) {
   const emit = vi.fn();
   const controller = new GjcSdkController({
@@ -128,12 +160,44 @@ describe("workflow question mapping", () => {
       answerable: false,
     });
     expect(questionFromGateRecord("s1", gateRow({ kind: "approval" }))).toBeUndefined();
+    expect(questionFromGateRecord("s1", gateRow({ kind: "execution" }))).toBeUndefined();
     expect(questionFromGateRecord("s1", gateRow({ gate_id: "  " }))).toBeUndefined();
     expect(questionFromGateRecord("s1", gateRow({ tag: "other" }))).toBeUndefined();
     expect(questionFromGateRecord("s1", gateRow({ context: {} }))).toBeUndefined();
     const untagged = { ...gateRow() } as Record<string, unknown>;
     delete untagged.tag;
     expect(questionFromGateRecord("s1", untagged)?.tag).toBe("pending");
+  });
+
+  it("maps a ralplan approval gate onto an answerable approval card", () => {
+    expect(questionFromGateRecord("s1", ralplanApprovalGate())).toMatchObject({
+      id: "interactive-a1",
+      kind: "question",
+      approval: true,
+      question: "Approve the final plan .gjc/plans/ralplan-final-2.md?",
+      options: [
+        { label: "Refine further" },
+        { label: "Approve execution via ultragoal", recommended: true },
+        { label: "Stop here" },
+      ],
+      multi: false,
+      status: "pending",
+      answerable: true,
+    });
+    expect(questionFromGateRecord("s1", gateRow())).not.toHaveProperty("approval");
+    expect(
+      questionFromGateRecord("s1", ralplanApprovalGate({ stage: "deep-interview" })),
+    ).toBeUndefined();
+    // The decision-schema builder (`approvalGate`) carries no ask stage_state.
+    expect(
+      questionFromGateRecord("s1", ralplanApprovalGate({
+        context: { title: "Approve the plan?" },
+        options: ["approve", "request-changes", "reject"].map((d) => ({ value: d, label: d })),
+      })),
+    ).toBeUndefined();
+    expect(
+      questionFromGateRecord("s1", ralplanApprovalGate({ tag: "accepted" })),
+    ).toMatchObject({ approval: true, status: "answered", answerable: false });
   });
 
   it("accepts a bare gate and a tool-style event wrapper", () => {
@@ -246,6 +310,39 @@ describe("workflow question controller", () => {
         answerSummary: "Yes",
       });
       expect(await controller.listPendingQuestions("s1")).toEqual([]);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("answers a ralplan approval gate through workflow.gate_answer", async () => {
+    const { controller, cli, internals } = harness([ralplanApprovalGate()]);
+    try {
+      const pending = await controller.listPendingQuestions("s1");
+      expect(pending).toEqual([
+        expect.objectContaining({ id: "interactive-a1", approval: true }),
+      ]);
+      expect(internals.sessions.get("s1").status).toBe("waiting");
+      await controller.answerQuestion(
+        "s1",
+        "interactive-a1",
+        { selected: ["Approve execution via ultragoal"] },
+        "gajae-gate-approval-1",
+      );
+      expect(cli.rawControl).toHaveBeenCalledWith(
+        "s1",
+        "workflow.gate_answer",
+        {
+          id: "interactive-a1",
+          response: { selected: ["Approve execution via ultragoal"], action: "answer" },
+          expectedSessionId: "s1",
+        },
+        expect.objectContaining({ idempotencyKey: "gajae-gate-approval-1" }),
+      );
+      expect(internals.questionById("s1", "interactive-a1")).toMatchObject({
+        status: "answered",
+        approval: true,
+      });
     } finally {
       controller.dispose();
     }

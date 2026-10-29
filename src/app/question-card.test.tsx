@@ -185,6 +185,39 @@ describe("question card", () => {
     }
   });
 
+  it("labels a ralplan approval and answers it like a question", async () => {
+    const onAnswer = vi.fn();
+    const approval = question({
+      approval: true,
+      question: "Approve the final plan .gjc/plans/ralplan-final-2.md?",
+      options: [
+        { label: "Refine further" },
+        { label: "Approve execution via ultragoal", recommended: true },
+        { label: "Stop here" },
+      ],
+    });
+    const view = await render(card(approval, onAnswer));
+    expect(view.querySelector(".question-card--approval")).toBeTruthy();
+    expect(view.querySelector(".question-card-kind")?.textContent).toBe("계획 승인");
+    expect(view.querySelector("[aria-live]")?.textContent).toContain("계획 승인 요청");
+    await act(async () => {
+      (view.querySelectorAll(".question-option")[1] as HTMLButtonElement).click();
+    });
+    expect(onAnswer.mock.calls[0]?.slice(0, 2)).toEqual([
+      "g1",
+      { selected: ["Approve execution via ultragoal"] },
+    ]);
+
+    const settled = await render(
+      card({ ...approval, status: "answered", answerable: false, answerSummary: "Stop here" }),
+    );
+    expect(settled.querySelector(".question-card-kind")?.textContent).toBe("계획 승인");
+    expect(settled.textContent).toContain("Stop here");
+
+    const plain = await render(card(question()));
+    expect(plain.querySelector(".question-card-kind")).toBeNull();
+  });
+
   it("focuses the pinned question", async () => {
     const view = await render(
       createElement(QuestionBanner, {

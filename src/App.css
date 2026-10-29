@@ -3265,6 +3265,17 @@
 .question-card-error {
   color: var(--danger, #d4543c);
 }
+.question-card-kind {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.question-card--approval .question-card-line {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .question-card-options {
   display: flex;
   flex-wrap: wrap;

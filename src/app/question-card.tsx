@@ -56,14 +56,20 @@ export function QuestionCard({ item, onAnswer, autoFocus = false }: QuestionCard
     else otherField.current?.focus();
   }, [autoFocus, open, item.id]);
 
+  const kindClass = item.approval ? " question-card--approval" : "";
+  const kindLabel = item.approval ? (
+    <p className="question-card-kind">{t("계획 승인")}</p>
+  ) : null;
+
   if (!open) {
     return (
       <article
-        className={`question-card question-card--${item.status}`}
+        className={`question-card question-card--${item.status}${kindClass}`}
         data-question-id={item.id}
         data-question-status={item.status}
         aria-live="polite"
       >
+        {kindLabel}
         <p className="question-card-line">{item.question}</p>
         <p className="question-card-result">
           {item.answerSummary || statusLabel(item.status)}
@@ -137,14 +143,15 @@ export function QuestionCard({ item, onAnswer, autoFocus = false }: QuestionCard
   const groupRole = item.multi ? "group" : "radiogroup";
   return (
     <article
-      className={`question-card question-card--${item.status}${item.multi ? " question-card--multi" : ""}`}
+      className={`question-card question-card--${item.status}${item.multi ? " question-card--multi" : ""}${kindClass}`}
       data-question-id={item.id}
       data-question-status={item.status}
       onKeyDown={onKeyDown}
     >
       <p className="question-card-live" aria-live="polite">
-        {t("새 질문")}: {item.question}
+        {item.approval ? t("계획 승인 요청") : t("새 질문")}: {item.question}
       </p>
+      {kindLabel}
       <p className="question-card-line" id={labelId}>{item.question}</p>
       {item.options.length > 0 && (
         <div
