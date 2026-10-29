@@ -1,5 +1,6 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import {
+  BUILT_IN_MODEL_PRESETS,
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
   DEFAULT_TOOL_VIEW_MODE,
@@ -12,7 +13,7 @@ import type {
   NotificationPreferences,
 } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Monitor, Palette, Server, ShieldCheck, Smartphone, Sparkles, X } from "lucide-react";
+import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Monitor, Palette, Server, ShieldCheck, Smartphone, Sparkles, Stethoscope, X } from "lucide-react";
 import {
   DEFAULT_DESKTOP_INTEGRATION,
   type DesktopIntegrationPreferences,
@@ -25,6 +26,7 @@ import { LazyViewBoundary } from "./lazy-boundary";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
 import { AppUpdateRow } from "./app-update-row";
+import { EnvironmentCheckPanel } from "./environment-check-panel";
 const RemoteAccessPanel = lazy(() =>
   import("./remote-access-panel").then((mod) => ({ default: mod.RemoteAccessPanel })),
 );
@@ -45,7 +47,22 @@ export interface SettingsDialogProps {
   updateError: string;
   onCheckUpdate: () => void;
   onInstallUpdate: () => void;
+  /** The tab to open on; the launch environment check opens on its own tab. */
+  initialTab?: SettingsTab;
 }
+
+export type SettingsTab =
+  | "gjc"
+  | "appearance"
+  | "workspace"
+  | "remote"
+  | "mcp"
+  | "skills"
+  | "usage"
+  | "notifications"
+  | "desktop"
+  | "environment"
+  | "automations";
 
 /**
  * The preferences to show once the first read lands.
@@ -176,6 +193,7 @@ export function SettingsDialog({
   updateError,
   onCheckUpdate,
   onInstallUpdate,
+  initialTab = "gjc",
 }: SettingsDialogProps) {
   const detectedPreset = connection.modelPreset ?? DEFAULT_MODEL_PRESET;
   const fallbackPreferences: AgentControlPreferences = {
@@ -191,18 +209,7 @@ export function SettingsDialog({
     language: getLanguage(),
     runningSubmission: "queue",
   };
-  const [tab, setTab] = useState<
-    | "gjc"
-    | "appearance"
-    | "workspace"
-    | "remote"
-    | "mcp"
-    | "skills"
-    | "usage"
-    | "notifications"
-    | "desktop"
-    | "automations"
-  >("gjc");
+  const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => readStoredTheme());
   const languageMode = useLanguageMode();
   const [management, setManagement] = useState<ManagementSnapshot | null>(null);
@@ -239,6 +246,7 @@ export function SettingsDialog({
     usage: "Usage",
     notifications: t("알림"),
     desktop: t("데스크톱"),
+    environment: t("환경 점검"),
     automations: "Automations",
   }[tab];
   const tabDescription = {
@@ -252,6 +260,7 @@ export function SettingsDialog({
     notifications:
       t("완료·승인/질문 대기·실패를 이벤트별로 알리고 소리를 고릅니다."),
     desktop: t("창 밖에서 동작하는 기능을 설정합니다."),
+    environment: t("Gajae가 쓰는 도구가 이 Mac에 준비됐는지 확인합니다."),
     automations: t("앱이 닫혀 있어도 GJC 작업을 정해진 시간에 실행합니다."),
   }[tab];
 
@@ -520,6 +529,12 @@ export function SettingsDialog({
             <Monitor size={17} /> {t("데스크톱")} </button>
           <button
             type="button"
+            className={tab === "environment" ? "is-active" : ""}
+            onClick={() => setTab("environment")}
+          >
+            <Stethoscope size={17} /> {t("환경 점검")} </button>
+          <button
+            type="button"
             className={tab === "mcp" ? "is-active" : ""}
             onClick={() => setTab("mcp")}
           >
@@ -755,6 +770,10 @@ export function SettingsDialog({
             </div>
           )}
 
+          {tab === "environment" && (
+            <EnvironmentCheckPanel bridge={settingsBridge} />
+          )}
+
           {tab === "gjc" && (
             <div className="settings-stack">
               <article className="backend-card">
@@ -789,9 +808,9 @@ export function SettingsDialog({
                     placeholder="codex-medium or custom profile ID"
                   />
                   <datalist id="gjc-model-profiles">
-                    <option value="codex-eco" />
-                    <option value="codex-medium" />
-                    <option value="codex-pro" />
+                    {BUILT_IN_MODEL_PRESETS.map((preset) => (
+                      <option key={preset} value={preset} />
+                    ))}
                   </datalist>
                 </label>
                 <label>

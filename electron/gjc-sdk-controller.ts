@@ -15,7 +15,7 @@ import path from "node:path";
 import { execFile as execFileCb } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
-import { constants, realpathSync, watch, type FSWatcher, type Stats } from "node:fs";
+import { realpathSync, watch, type FSWatcher, type Stats } from "node:fs";
 import type {
   AgentEvent,
   AgentSession,
@@ -70,7 +70,7 @@ import {
 import { parseSessionProgress } from "../shared/session-progress.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { ImageDataUrlCache } from "./image-data-cache.js";
-import { gjcPathCandidates, runtimeEnvironment } from "./runtime-path.js";
+import { resolveGjcExecutable, runtimeEnvironment } from "./runtime-path.js";
 import {
   GjcSdkCli,
   SdkCliError,
@@ -5930,25 +5930,7 @@ export class GjcSdkController {
   }
 
   private async resolveExecutable(): Promise<string> {
-    // Resolve the same GJC the user's shell resolves. A fixed preference list
-    // silently disagreed with PATH: `~/.bun/bin` was checked before
-    // `~/.local/bin`, so the app ran an older install than the terminal did
-    // (0.15.2 against 0.15.3) and an upgrade to the PATH-visible one changed
-    // nothing here. An explicit setting or GJC_BIN still wins.
-    const candidates = [
-      this.configuredExecutable,
-      process.env.GJC_BIN,
-      ...gjcPathCandidates(),
-    ].filter((candidate): candidate is string => Boolean(candidate));
-    for (const candidate of candidates) {
-      try {
-        await access(candidate, constants.X_OK);
-        return candidate;
-      } catch {
-        // Try the next installation path.
-      }
-    }
-    return "gjc";
+    return (await resolveGjcExecutable(this.configuredExecutable)) ?? "gjc";
   }
 
   /**

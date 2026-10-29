@@ -1,5 +1,6 @@
 import type { AppUpdateStatus } from "./app-update.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
+import type { EnvironmentReport } from "./environment-check.js";
 
 export type RuntimeKind = "gjc" | "hermes";
 
@@ -157,6 +158,13 @@ export interface AgentControlPreferences {
  * out of `detail`, which is copy the sidebar and the offline strip print.
  */
 export const DEFAULT_MODEL_PRESET = "codex-medium";
+
+/** Profiles GJC ships, which work without an entry in models.yml. */
+export const BUILT_IN_MODEL_PRESETS = [
+  "codex-eco",
+  DEFAULT_MODEL_PRESET,
+  "codex-pro",
+] as const;
 
 export interface BackendConnection {
   state: ConnectionState;
@@ -994,6 +1002,10 @@ export interface SettingsDesktopBridge {
   getAppUpdateStatus(): Promise<AppUpdateStatus>;
   /** Asks GitHub for the latest Gajae release now. */
   checkAppUpdate(): Promise<AppUpdateStatus>;
+  /** Looks for bun, GJC, the model profile, gh and tailscale. Installs nothing. */
+  checkEnvironment(): Promise<EnvironmentReport>;
+  /** Whether the environment check should open at launch. */
+  environmentCheckDue(): Promise<boolean>;
 }
 
 export interface GjcUpdateStatus {

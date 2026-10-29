@@ -11,6 +11,7 @@ import type { AttachmentStore } from './attachment-store.js'
 import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
 import type { AppUpdateMonitor } from './app-update.js'
+import type { EnvironmentReport } from '../shared/environment-check.js'
 import { setHostLanguage } from './host-text.js'
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
@@ -100,6 +101,7 @@ export function registerSettingsIpcHandlers(
   onViewedSession?: (senderId: number, sessionId: string | null) => void,
   onDesktopIntegration?: (preferences: DesktopIntegrationPreferences) => void,
   appUpdates?: Pick<AppUpdateMonitor, 'status' | 'check'>,
+  environment?: { check(): Promise<EnvironmentReport>; due(): boolean },
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -217,6 +219,10 @@ export function registerSettingsIpcHandlers(
     // The user is looking at the answer, so it is shown in the panel rather than
     // announced again as a notification.
     ipcMain.handle(SETTINGS_IPC.checkAppUpdate, security.guarded(() => appUpdates.check({ notify: false })))
+  }
+  if (environment) {
+    ipcMain.handle(SETTINGS_IPC.checkEnvironment, security.guarded(() => environment.check()))
+    ipcMain.handle(SETTINGS_IPC.environmentCheckDue, security.guarded(() => environment.due()))
   }
 
   return () => {

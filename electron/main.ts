@@ -59,6 +59,7 @@ import { desktopStatusRenderer } from "./desktop-status.js";
 import { electronStatusSurface } from "./desktop-status-surface.js";
 import { AppUpdateMonitor, githubRepository } from "./app-update.js";
 import { DesktopStateStore } from "./desktop-state-store.js";
+import { checkEnvironment, hostEnvironmentContext } from "./environment-check.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode, terminalSmokeMode } =
@@ -351,6 +352,26 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
   },
   (updated) => desktopIntegration.setPreferences(updated),
   appUpdates,
+  {
+    async check() {
+      const current = settingsStore.get();
+      const report = await checkEnvironment(
+        hostEnvironmentContext({
+          // The same overrides the runtime controller starts with.
+          gjcExecutable: process.env.GJC_BIN || current.gjcExecutable || undefined,
+          modelPreset:
+            process.env.AGENT_CONTROL_GJC_PRESET?.trim() || current.modelPreset,
+        }),
+      );
+      if (report.ready && !desktopState.get().environmentReady)
+        desktopState.update({ environmentReady: true });
+      return report;
+    },
+    // A scripted smoke drives the shell itself; a launch modal over it would be
+    // in the way of what it checks, and it is nobody's first run.
+    due: () =>
+      !smokeMode && !terminalSmokeMode && !desktopState.get().environmentReady,
+  },
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);

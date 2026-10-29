@@ -396,6 +396,7 @@ export default function App() {
     itemId: string;
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<"gjc" | "environment">("gjc");
   const [updateStatus, setUpdateStatus] = useState<GjcUpdateStatus | null>(
     null,
   );
@@ -936,6 +937,25 @@ export default function App() {
       unsubscribe();
     };
   }, [backend]);
+
+  // Until every required tool has been seen working once, the window opens on the
+  // environment check so a fresh install shows what is missing before a session
+  // fails on it. A host without the channel (an older main, a smoke) just skips it.
+  useEffect(() => {
+    if (!settingsBridge) return;
+    let active = true;
+    void settingsBridge
+      .environmentCheckDue()
+      .then((due) => {
+        if (!active || !due) return;
+        setSettingsTab("environment");
+        setSettingsOpen(true);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [settingsBridge]);
 
   const checkForUpdate = useCallback(async (): Promise<void> => {
     if (!settingsBridge) return;
@@ -3384,7 +3404,10 @@ export default function App() {
         <DeferredSettingsDialog
           connection={connection}
           thoughtsExpanded={preferences.thoughtsExpanded}
-          onClose={() => setSettingsOpen(false)}
+          onClose={() => {
+            setSettingsOpen(false);
+            setSettingsTab("gjc");
+          }}
           onSaved={(saved) => {
             setPreferences(saved);
             setConnection((current) => ({
@@ -3397,6 +3420,7 @@ export default function App() {
           updateError={updateError}
           onCheckUpdate={() => void checkForUpdate()}
           onInstallUpdate={() => void installUpdate()}
+          initialTab={settingsTab}
         />
       )}
       {deleteCandidate && (

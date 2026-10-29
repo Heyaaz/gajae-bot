@@ -12,6 +12,11 @@ import path from 'node:path'
 export interface DesktopState {
   /** The newest Gajae version the user has already been told about. */
   announcedAppVersion?: string
+  /**
+   * Every required environment check has passed once. Until then the check opens
+   * at launch; after that it lives only in settings.
+   */
+  environmentReady?: boolean
 }
 
 export class DesktopStateStore {
@@ -39,9 +44,12 @@ export class DesktopStateStore {
   private read(): DesktopState {
     try {
       const value = JSON.parse(readFileSync(this.filePath, 'utf8')) as Record<string, unknown>
-      return typeof value.announcedAppVersion === 'string'
-        ? { announcedAppVersion: value.announcedAppVersion }
-        : {}
+      return {
+        ...(typeof value.announcedAppVersion === 'string'
+          ? { announcedAppVersion: value.announcedAppVersion }
+          : {}),
+        ...(value.environmentReady === true ? { environmentReady: true } : {}),
+      }
     } catch {
       return {}
     }

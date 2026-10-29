@@ -1,3 +1,5 @@
+import { constants } from 'node:fs'
+import { access } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import path from 'node:path'
 
@@ -56,6 +58,41 @@ export function gjcPathCandidates(
     candidates.push(candidate)
   }
   return candidates
+}
+
+/** The first candidate that exists and is executable. */
+export async function firstExecutable(candidates: readonly string[]): Promise<string | undefined> {
+  for (const candidate of candidates) {
+    try {
+      await access(candidate, constants.X_OK)
+      return candidate
+    } catch {
+      // Try the next location.
+    }
+  }
+  return undefined
+}
+
+/**
+ * Resolves the same GJC the user's shell resolves. A fixed preference list
+ * silently disagreed with PATH: `~/.bun/bin` was checked before `~/.local/bin`, so
+ * the app ran an older install than the terminal did (0.15.2 against 0.15.3) and
+ * an upgrade to the PATH-visible one changed nothing here. An explicit setting or
+ * GJC_BIN still wins.
+ */
+export function resolveGjcExecutable(configured: string | undefined): Promise<string | undefined> {
+  return firstExecutable(
+    [configured, process.env.GJC_BIN, ...gjcPathCandidates()].filter(
+      (candidate): candidate is string => Boolean(candidate),
+    ),
+  )
+}
+
+/** An executable by name in the directories a Finder-launched app searches. */
+export function findExecutable(name: string, basePath?: string): Promise<string | undefined> {
+  return firstExecutable(
+    runtimePath(basePath).split(path.delimiter).map((directory) => path.join(directory, name)),
+  )
 }
 
 export function runtimeEnvironment(extra: Record<string, string> = {}): Record<string, string> {

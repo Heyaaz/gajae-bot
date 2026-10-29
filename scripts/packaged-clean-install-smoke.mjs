@@ -112,7 +112,9 @@ try {
       preferences: await window.agentControlDesktop.settings.getPreferences(),
       connection: await window.agentControlDesktop.gjc.getConnection(),
       location: location.href,
-      hasPathBridge: typeof window.agentControlDesktop.settings.pathForFile !== 'undefined'
+      hasPathBridge: typeof window.agentControlDesktop.settings.pathForFile !== 'undefined',
+      environment: await window.agentControlDesktop.settings.checkEnvironment(),
+      environmentCheckDue: await window.agentControlDesktop.settings.environmentCheckDue()
     }))()`,
     deadline,
   )
@@ -125,6 +127,16 @@ try {
     throw new Error(`Packaged app trusted VITE_DEV_SERVER_URL: ${report.location}`)
   if (report.hasPathBridge)
     throw new Error('Packaged preload still exposes native attachment paths')
+  // The check keeps opening at launch exactly until every required row has been
+  // ok once, and every row the app cannot vouch for carries the command that fixes it.
+  if (report.environmentCheckDue !== !report.environment?.ready)
+    throw new Error(`Environment check due=${report.environmentCheckDue} disagrees with ready=${report.environment?.ready}`)
+  const environmentIds = report.environment?.rows?.map((row) => row.id).join(',')
+  if (environmentIds !== 'bun,gjc,model-preset,gh,tailscale')
+    throw new Error(`Environment check reported unexpected rows: ${environmentIds}`)
+  const unfixable = report.environment.rows.filter((row) => row.status !== 'ok' && !row.fix)
+  if (unfixable.length > 0)
+    throw new Error(`Environment rows without a fix command: ${JSON.stringify(unfixable)}`)
   const runtimeDetail = `${report?.connection?.detail ?? ''}\n${logs.join('')}`
   if (runtimeDetail.includes('ENOTDIR'))
     throw new Error(`Packaged runtime received a non-directory cwd:\n${runtimeDetail}`)
