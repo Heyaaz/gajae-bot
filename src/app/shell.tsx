@@ -3471,6 +3471,7 @@ export default function App() {
         <DeferredSettingsDialog
           connection={connection}
           thoughtsExpanded={preferences.thoughtsExpanded}
+          onToggleThoughtsExpanded={toggleThoughtsExpanded}
           onClose={() => {
             setSettingsOpen(false);
             setSettingsTab("gjc");

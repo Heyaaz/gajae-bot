@@ -146,8 +146,14 @@ export class SettingsStore {
     return preferences
   }
 
+  /**
+   * The runtime settings of a whole-object save. Every other field has its own
+   * field-only channel, and the renderer's copy of it can be older than the store
+   * (another window toggled it since), so the stored value is kept.
+   */
   save(value: unknown): AgentControlPreferences {
-    const preferences = this.validate(value)
+    const { workspace, modelPreset, permissionHandling, gjcExecutable } = this.validate(value)
+    const preferences = { ...this.preferences, workspace, modelPreset, permissionHandling, gjcExecutable }
     this.persist(preferences)
     this.preferences = preferences
     return this.get()

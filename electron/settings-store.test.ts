@@ -114,7 +114,7 @@ describe('SettingsStore', () => {
     expect(preferences.workspace).not.toBe(path.resolve(asarPath))
   })
 
-  it('persists workspace, preset, permission mode, executable, and the reasoning-card preference', () => {
+  it('persists workspace, preset, permission mode and executable, and leaves field-only values to their channels', () => {
     const root = temporaryDirectory()
     const userData = path.join(root, 'user-data')
     const workspace = path.join(root, 'workspace')
@@ -133,10 +133,34 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue' })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Private workspace', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: false, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
+  })
+
+  it('never lets a whole-object save put back a field-only value from a stale copy', () => {
+    // Two windows: one saves a display toggle, the other still holds the copy it
+    // read before and saves a runtime setting. The display toggle must survive on
+    // disk and in memory, or it reverts on the next launch.
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+    const stale = store.get()
+    store.setWorkspaceLabel('Renamed elsewhere')
+    store.setThoughtsExpanded(true)
+    store.setToolViewMode('detailed')
+    store.setNotificationPreferences({ completed: { enabled: false, sound: 'Glass' } })
+    store.setDesktopIntegration({ ...DEFAULT_DESKTOP_INTEGRATION, menuBarStatus: false, dockBadge: false })
+    store.setLanguage('en')
+    store.setRunningSubmission('steer')
+    const fieldOnly = store.get()
+
+    const saved = store.save({ ...stale, modelPreset: 'my-custom-profile' })
+
+    expect(saved).toEqual({ ...fieldOnly, modelPreset: 'my-custom-profile' })
+    expect(store.get()).toEqual(saved)
+    expect(new SettingsStore(userData, root).get()).toEqual(saved)
   })
 
   it('persists notification preferences alone without a whole-object save', () => {

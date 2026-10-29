@@ -41,6 +41,8 @@ export interface SettingsDialogProps {
    * settings is not clobbered by a draft built from an older read.
    */
   thoughtsExpanded: boolean;
+  /** The same toggle the cards use, so the checkbox saves at once through its own channel. */
+  onToggleThoughtsExpanded: () => void;
   onClose: () => void;
   onSaved: (preferences: AgentControlPreferences) => void;
   updateStatus: GjcUpdateStatus | null;
@@ -187,6 +189,7 @@ const NOTIFICATION_SOUND_LABELS: Record<
 export function SettingsDialog({
   connection,
   thoughtsExpanded,
+  onToggleThoughtsExpanded,
   onClose,
   onSaved,
   updateStatus,
@@ -853,13 +856,8 @@ export function SettingsDialog({
                   </span>
                   <input
                     type="checkbox"
-                    checked={preferences.thoughtsExpanded}
-                    onChange={(event) =>
-                      editPreferences((current) => ({
-                        ...current,
-                        thoughtsExpanded: event.target.checked,
-                      }))
-                    }
+                    checked={thoughtsExpanded}
+                    onChange={onToggleThoughtsExpanded}
                   />
                 </label>
                 <label>

@@ -178,6 +178,7 @@ describe("settings dialog language", () => {
           workspace: "/tmp",
         },
         thoughtsExpanded: false,
+        onToggleThoughtsExpanded: () => undefined,
         onClose: () => undefined,
         onSaved: () => undefined,
         updateStatus: null,
@@ -191,6 +192,51 @@ describe("settings dialog language", () => {
     expect(markup).toContain("Notifications");
     expect(markup).toContain("Save");
     expect(markup).not.toContain("모양");
+  });
+});
+
+describe("settings reasoning-card toggle", () => {
+  it("applies the window's preference at once instead of waiting in the runtime save", async () => {
+    // A whole-object save no longer carries display fields, so a checkbox that only
+    // edited the draft would never reach the store.
+    const onToggleThoughtsExpanded = vi.fn();
+    const bridge = window as unknown as { agentControlDesktop?: unknown };
+    bridge.agentControlDesktop = { settings: { getPreferences: async () => loaded } };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const render = (thoughtsExpanded: boolean) =>
+      act(async () => {
+        root.render(
+          createElement(SettingsDialog, {
+            connection: { state: "connected", backend: "gjc", label: "GJC", detail: "", workspace: "/tmp" },
+            thoughtsExpanded,
+            onToggleThoughtsExpanded,
+            onClose: () => undefined,
+            onSaved: () => undefined,
+            updateStatus: null,
+            updateBusy: null,
+            updateError: "",
+            onCheckUpdate: () => undefined,
+            onInstallUpdate: () => undefined,
+          }),
+        );
+      });
+    const checkbox = () =>
+      [...host.querySelectorAll("label")]
+        .find((label) => label.textContent?.includes("추론 카드 펼치기"))
+        ?.querySelector<HTMLInputElement>("input[type=checkbox]");
+    try {
+      await render(false);
+      await act(async () => checkbox()?.click());
+      expect(onToggleThoughtsExpanded).toHaveBeenCalledOnce();
+      await render(true);
+      expect(checkbox()?.checked).toBe(true);
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+      delete bridge.agentControlDesktop;
+    }
   });
 });
 
@@ -233,6 +279,7 @@ describe("settings desktop tab", () => {
               workspace: "/tmp",
             },
             thoughtsExpanded: false,
+            onToggleThoughtsExpanded: () => undefined,
             onClose: () => undefined,
             onSaved: () => undefined,
             updateStatus: null,
@@ -318,6 +365,7 @@ describe("settings desktop tab", () => {
               workspace: "/tmp",
             },
             thoughtsExpanded: false,
+            onToggleThoughtsExpanded: () => undefined,
             onClose: () => undefined,
             onSaved: () => undefined,
             updateStatus: null,
