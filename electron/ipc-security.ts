@@ -157,3 +157,13 @@ export function expectedTopLevelUrl(
   if (mock) url.searchParams.set("backend", "mock");
   return url.toString();
 }
+
+/** The quick input window's top-level URL: the same renderer, asked for its small view. */
+export function quickInputUrl(
+  developmentUrl: string | undefined,
+  appPath: string,
+): string {
+  const url = new URL(expectedTopLevelUrl(developmentUrl, appPath));
+  url.searchParams.set("window", "quick-input");
+  return url.toString();
+}

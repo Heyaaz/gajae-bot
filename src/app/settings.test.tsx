@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../shared/agent-contract";
 import { DEFAULT_DESKTOP_INTEGRATION } from "../../shared/desktop-integration";
+import type { QuickInputShortcutStatus } from "../../shared/quick-input";
 import type { AgentControlPreferences } from "../backend/types";
 import { setLanguageMode } from "../i18n";
 import {
@@ -214,6 +215,7 @@ describe("settings desktop tab", () => {
         setDesktopIntegration,
         getAppUpdateStatus: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
         checkAppUpdate: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
+        quickInputShortcutStatus: async () => ({ state: "registered", accelerator: "Control+Alt+Space" }),
       },
     };
     const host = document.createElement("div");
@@ -269,6 +271,100 @@ describe("settings desktop tab", () => {
         dockBadge: false,
         checkAppUpdates: false,
       });
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+      delete bridge.agentControlDesktop;
+    }
+  });
+
+  it("turns the quick input shortcut off and on, and shows a registration failure", async () => {
+    let status: QuickInputShortcutStatus = {
+      state: "registered",
+      accelerator: "Control+Alt+Space",
+    };
+    const setDesktopIntegration = vi.fn(
+      async (value: AgentControlPreferences["desktopIntegration"]) => {
+        status = !value.quickInputShortcut
+          ? { state: "off" }
+          : value.quickInputShortcut === "Command+Space"
+            ? { state: "failed", accelerator: "Command+Space", reason: "unavailable" }
+            : { state: "registered", accelerator: value.quickInputShortcut };
+        return value;
+      },
+    );
+    const bridge = window as unknown as { agentControlDesktop?: unknown };
+    bridge.agentControlDesktop = {
+      settings: {
+        getPreferences: async () => loaded,
+        setDesktopIntegration,
+        getAppUpdateStatus: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
+        checkAppUpdate: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
+        quickInputShortcutStatus: async () => status,
+      },
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => {
+        root.render(
+          createElement(SettingsDialog, {
+            connection: {
+              state: "connected",
+              backend: "gjc",
+              label: "GJC",
+              detail: "",
+              workspace: "/tmp",
+            },
+            thoughtsExpanded: false,
+            onClose: () => undefined,
+            onSaved: () => undefined,
+            updateStatus: null,
+            updateBusy: null,
+            updateError: "",
+            onCheckUpdate: () => undefined,
+            onInstallUpdate: () => undefined,
+          }),
+        );
+      });
+      const desktopTab = [...host.querySelectorAll("button")].find(
+        (button) => button.textContent?.trim() === "데스크톱",
+      );
+      await act(async () => desktopTab?.click());
+      const row = () => host.querySelector(".quick-input-shortcut-row");
+      const toggle = () =>
+        host.querySelector<HTMLInputElement>('input[aria-label="빠른 입력 단축키"]');
+      const field = () =>
+        host.querySelector<HTMLInputElement>('input[aria-label="단축키"]');
+      expect(toggle()?.checked).toBe(true);
+      expect(field()?.value).toBe("Control+Alt+Space");
+      expect(row()?.textContent).toContain("Control+Alt+Space 등록됨");
+
+      await act(async () => toggle()?.click());
+      expect(setDesktopIntegration).toHaveBeenLastCalledWith({
+        ...DEFAULT_DESKTOP_INTEGRATION,
+        quickInputShortcut: "",
+      });
+      expect(field()).toBeNull();
+      expect(row()?.textContent).toContain("꺼져 있습니다.");
+
+      await act(async () => toggle()?.click());
+      const input = field();
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      await act(async () => {
+        input?.focus();
+        setValue?.call(input, "Command+Space");
+        input?.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => input?.blur());
+      expect(setDesktopIntegration).toHaveBeenLastCalledWith({
+        ...DEFAULT_DESKTOP_INTEGRATION,
+        quickInputShortcut: "Command+Space",
+      });
+      expect(host.querySelector('.quick-input-shortcut-row [role="alert"]')?.textContent).toContain(
+        "Command+Space을(를) 등록하지 못했습니다",
+      );
     } finally {
       act(() => root.unmount());
       host.remove();

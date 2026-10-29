@@ -112,13 +112,13 @@ export function publishComposerDraftRecovery(
   for (const listener of draftRecoveryListeners.get(sessionId) ?? []) listener();
 }
 
-/** Put text into a session's draft without sending it, mounted composer or not. */
-export function prefillComposerDraft(sessionId: string, text: string): void {
-  publishComposerDraftRecovery(
-    sessionId,
-    { text, images: [], files: [] },
-    "prefill",
-  );
+/** Put text and images into a session's draft without sending them, mounted composer or not. */
+export function prefillComposerDraft(
+  sessionId: string,
+  text: string,
+  images: ImageAttachment[] = [],
+): void {
+  publishComposerDraftRecovery(sessionId, { text, images, files: [] }, "prefill");
 }
 
 export function composerDraftRecoveries(

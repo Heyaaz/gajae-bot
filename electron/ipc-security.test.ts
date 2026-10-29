@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   IpcSecurity,
   expectedTopLevelUrl,
+  quickInputUrl,
   rendererLaunchConfig,
   type DestructiveConfirmation,
 } from "./ipc-security.js";
@@ -34,6 +35,20 @@ describe("IpcSecurity", () => {
     expect(expectedTopLevelUrl(undefined, "/app with space", true)).toBe(
       "file:///app%20with%20space/dist/index.html?backend=mock",
     );
+  });
+
+  it("gives the quick input window its own exact URL, which the main window's guard does not accept", () => {
+    expect(quickInputUrl("http://127.0.0.1:5173", "/app")).toBe(
+      "http://127.0.0.1:5173/?window=quick-input",
+    );
+    expect(quickInputUrl(undefined, "/app")).toBe(
+      "file:///app/dist/index.html?window=quick-input",
+    );
+    const security = new IpcSecurity();
+    const { window, webContents } = fakeWindow();
+    security.register(window, expectedTopLevelUrl(undefined, "/app"));
+    webContents.mainFrame.url = quickInputUrl(undefined, "/app");
+    expect(security.isAllowed(eventFor(webContents))).toBe(false);
   });
 
   it("ignores development renderer and smoke switches in packaged mode", () => {

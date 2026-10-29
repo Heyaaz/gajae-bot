@@ -1,6 +1,7 @@
 import type { GlobalSearchResult } from "../../shared/productivity-ipc";
 import type {
   HistorySession,
+  ImageAttachment,
   SessionWorkLink,
 } from "../../shared/agent-contract";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
@@ -28,6 +29,7 @@ export interface NewSessionInput {
   worktreeBranchExisting?: boolean;
   workLink?: SessionWorkLink;
   initialPrompt?: string;
+  initialImages?: ImageAttachment[];
 }
 
 export interface NewSessionDialogProps {
@@ -58,6 +60,16 @@ export function NewSessionDialog({
   const [choosing, setChoosing] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
   const settingsBridge = window.agentControlDesktop?.settings;
+  const images = prefill?.images ?? [];
+
+  function cancel(): void {
+    // The images were issued to this window for the new session; a dismissed
+    // dialog gives them back instead of leaving them to expire.
+    const tokens = images.flatMap((image) => (image.token ? [image.token] : []));
+    if (tokens.length > 0)
+      void settingsBridge?.discardAttachments(tokens).catch(() => undefined);
+    onCancel();
+  }
 
   async function chooseWorkspace(): Promise<void> {
     if (!settingsBridge) return;
@@ -97,11 +109,12 @@ export function NewSessionDialog({
         : {}),
       ...(prefill?.workLink ? { workLink: prefill.workLink } : {}),
       initialPrompt: prompt.trim() || undefined,
+      initialImages: images.length > 0 ? images : undefined,
     });
   }
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onCancel}>
+    <div className="modal-backdrop" role="presentation" onMouseDown={cancel}>
       <form
         className="new-session-dialog"
         aria-label={t("새 GJC 세션")}
@@ -116,7 +129,7 @@ export function NewSessionDialog({
             <h2>{t("새 GJC 세션")}</h2>
             <p>{t("Gajae가 확인하고 수정할 프로젝트를 선택하세요.")}</p>
           </div>
-          <button className="icon-button" type="button" onClick={onCancel}>
+          <button className="icon-button" type="button" onClick={cancel}>
             <X size={18} />
           </button>
         </header>
@@ -180,8 +193,20 @@ export function NewSessionDialog({
             {t("세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.")}
           </small>
         </label>
+        {images.length > 0 && (
+          <div className="composer-images new-session-images">
+            {images.map((image) => (
+              <span key={image.id}>
+                <img
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt={image.name}
+                />
+              </span>
+            ))}
+          </div>
+        )}
         <footer>
-          <button type="button" className="button-secondary" onClick={onCancel}>
+          <button type="button" className="button-secondary" onClick={cancel}>
             {t("취소")} </button>
           <button
             type="submit"

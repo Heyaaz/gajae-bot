@@ -13,9 +13,38 @@ initializeLanguage()
 // English copy is a separate chunk. Wait for it before the first paint so a
 // session that is already set to English does not flash the Korean source.
 if (getLanguage() === 'en') await ensureEnglishDictionary()
-const settingsBridge = window.agentControlDesktop?.settings
-if (settingsBridge) void settingsBridge.setLanguage(getLanguage()).catch(() => undefined)
 initializeTheme()
+
+const mount = document.getElementById('root')
+
+if (!mount) {
+  throw new Error('Application mount is missing')
+}
+
+const quickInputBridge =
+  new URLSearchParams(window.location.search).get('window') === 'quick-input'
+    ? window.agentControlDesktop?.quickInput
+    : undefined
+if (quickInputBridge) {
+  // The quick input window may reach only its own channels, so it skips the
+  // backend and the settings calls the main window makes at startup.
+  const { QuickInput } = await import('./app/quick-input')
+  createRoot(mount).render(
+    <StrictMode>
+      <QuickInput bridge={quickInputBridge} />
+    </StrictMode>,
+  )
+} else {
+  const settingsBridge = window.agentControlDesktop?.settings
+  if (settingsBridge) void settingsBridge.setLanguage(getLanguage()).catch(() => undefined)
+  createRoot(mount).render(
+    <StrictMode>
+      <BackendProvider backend={await selectBackend()}>
+        <App />
+      </BackendProvider>
+    </StrictMode>,
+  )
+}
 
 /**
  * Chooses the backend this window will run on.
@@ -80,18 +109,3 @@ function registerRemoteServiceWorker(): void {
     void navigator.serviceWorker.register('/sw.js').catch(() => undefined)
   })
 }
-
-const backend = await selectBackend()
-const mount = document.getElementById('root')
-
-if (!mount) {
-  throw new Error('Application mount is missing')
-}
-
-createRoot(mount).render(
-  <StrictMode>
-    <BackendProvider backend={backend}>
-      <App />
-    </BackendProvider>
-  </StrictMode>,
-)

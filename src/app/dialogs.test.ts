@@ -200,6 +200,38 @@ describe("NewSessionDialog prefill", () => {
     expect(onCreate.mock.calls[0]![0].workLink).toEqual(workLink);
   });
 
+  it("hands prefilled screenshots to the new session, and gives them back when dismissed", () => {
+    const discardAttachments = vi.fn(async () => undefined);
+    vi.stubGlobal("window", { agentControlDesktop: { settings: { discardAttachments } } });
+    const images = [
+      { id: "image-1", name: "capture.png", mimeType: "image/png", token: "t".repeat(43), data: "AAAA" },
+    ];
+    const onCreate = vi.fn();
+    const onCancel = vi.fn();
+    let tree = renderNewSessionDialog({
+      prefill: { workspace: "/repo", prompt: "이 화면 고쳐 줘", images },
+      onCreate,
+      onCancel,
+    });
+    expect(findElement(tree, (element) => element.type === "img")?.props.alt).toBe("capture.png");
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate.mock.calls[0]![0]).toMatchObject({
+      workspace: "/repo",
+      initialPrompt: "이 화면 고쳐 줘",
+      initialImages: images,
+    });
+    expect(discardAttachments).not.toHaveBeenCalled();
+
+    hookState.slots = [];
+    tree = renderNewSessionDialog({ prefill: { workspace: "/repo", images }, onCreate, onCancel });
+    findElement(
+      tree,
+      (element) => element.type === "button" && String(element.props?.children).startsWith("취소"),
+    ).props.onClick();
+    expect(onCancel).toHaveBeenCalledOnce();
+    expect(discardAttachments).toHaveBeenCalledExactlyOnceWith(["t".repeat(43)]);
+  });
+
   it("keeps today's defaults without a prefill", () => {
     const onCreate = vi.fn();
     const tree = renderNewSessionDialog({ onCreate });

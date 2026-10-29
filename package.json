@@ -38,6 +38,7 @@
     "desktop:clean-install-smoke": "node scripts/packaged-clean-install-smoke.mjs",
     "desktop:remote-smoke": "electron scripts/remote-access-smoke.mjs",
     "desktop:menu-bar-smoke": "electron scripts/menu-bar-smoke.mjs",
+    "desktop:quick-input-smoke": "node scripts/quick-input-smoke.cjs",
     "desktop:terminal-smoke": "electron . --terminal-smoke",
     "desktop:deep-link-smoke": "electron . --deep-link-smoke",
     "rebuild:native": "electron-rebuild --force --only node-pty",

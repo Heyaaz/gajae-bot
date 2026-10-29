@@ -432,7 +432,7 @@ describe("session shortcuts from the main process", () => {
     expect(probe.createSession).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ workspace: "/tmp/other" }),
     );
-    expect(probe.prefillComposerDraft).toHaveBeenCalledExactlyOnceWith("s-created", "이슈 내용");
+    expect(probe.prefillComposerDraft).toHaveBeenCalledExactlyOnceWith("s-created", "이슈 내용", undefined);
     expect(probe.composer?.sessionId).toBe("s-created");
   });
 });

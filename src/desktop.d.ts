@@ -9,6 +9,7 @@ import type { AutomationDesktopBridge } from "../shared/automation-ipc";
 import type { RepoDesktopBridge } from "../shared/repo-ipc";
 import type { TerminalDesktopBridge } from "../shared/terminal-ipc";
 import type { SessionShortcut } from "../shared/settings-ipc";
+import type { QuickInputDesktopBridge } from "../shared/quick-input";
 
 declare global {
   interface AgentControlDesktopBridge {
@@ -25,6 +26,7 @@ declare global {
     readonly automations: AutomationDesktopBridge;
     readonly repo: RepoDesktopBridge;
     readonly terminal: TerminalDesktopBridge;
+    readonly quickInput: QuickInputDesktopBridge;
     onCycleEffort(listener: () => void): () => void;
     onAbortRun(listener: () => void): () => void;
     onSessionShortcut(

@@ -12,6 +12,7 @@ import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
 import type { AppUpdateMonitor } from './app-update.js'
 import type { EnvironmentReport } from '../shared/environment-check.js'
+import type { QuickInputShortcutStatus } from '../shared/quick-input.js'
 import { setHostLanguage } from './host-text.js'
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
@@ -50,7 +51,7 @@ export async function pickerDirectory(candidate: unknown, fallbackDirectory?: st
   return app?.getPath?.('home') ?? homedir()
 }
 
-async function imageAttachment(filePath: string, store: AttachmentStore, senderId: number, index = 0): Promise<ImageAttachment> {
+export async function imageAttachment(filePath: string, store: AttachmentStore, senderId: number, index = 0): Promise<ImageAttachment> {
   const extension = path.extname(filePath).toLowerCase()
   if (!IMAGE_EXTENSIONS.has(extension)) throw new Error(`${path.basename(filePath)}은(는) 지원하는 이미지 형식이 아닙니다`)
   const handle = await open(filePath, 'r')
@@ -102,6 +103,7 @@ export function registerSettingsIpcHandlers(
   onDesktopIntegration?: (preferences: DesktopIntegrationPreferences) => void,
   appUpdates?: Pick<AppUpdateMonitor, 'status' | 'check'>,
   environment?: { check(): Promise<EnvironmentReport>; due(): boolean },
+  quickInputShortcut?: { status(): QuickInputShortcutStatus },
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -220,6 +222,8 @@ export function registerSettingsIpcHandlers(
     // announced again as a notification.
     ipcMain.handle(SETTINGS_IPC.checkAppUpdate, security.guarded(() => appUpdates.check({ notify: false })))
   }
+  if (quickInputShortcut)
+    ipcMain.handle(SETTINGS_IPC.quickInputShortcutStatus, security.guarded(() => quickInputShortcut.status()))
   if (environment) {
     ipcMain.handle(SETTINGS_IPC.checkEnvironment, security.guarded(() => environment.check()))
     ipcMain.handle(SETTINGS_IPC.environmentCheckDue, security.guarded(() => environment.due()))

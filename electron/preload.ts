@@ -42,6 +42,11 @@ import { DESKTOP_SERVICES_IPC as SERVICES_IPC } from "../shared/desktop-services
 import { PRODUCTIVITY_IPC } from "../shared/productivity-ipc.js";
 import { AUTOMATION_IPC } from "../shared/automation-ipc.js";
 import { REPO_IPC } from "../shared/repo-ipc.js";
+import {
+  QUICK_INPUT_IPC,
+  type QuickInputDesktopBridge,
+  type QuickInputSubmission,
+} from "../shared/quick-input.js";
 import type { RepoDesktopBridge } from "../shared/repo-ipc.js";
 import {
   TERMINAL_IPC,
@@ -461,6 +466,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
   checkAppUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkAppUpdate),
   checkEnvironment: () => ipcRenderer.invoke(SETTINGS_IPC.checkEnvironment),
   environmentCheckDue: () => ipcRenderer.invoke(SETTINGS_IPC.environmentCheckDue),
+  quickInputShortcutStatus: () =>
+    ipcRenderer.invoke(SETTINGS_IPC.quickInputShortcutStatus),
 });
 const management: ManagementDesktopBridge = Object.freeze({
   getSnapshot: (w: string) =>
@@ -557,6 +564,20 @@ const terminal: TerminalDesktopBridge = Object.freeze({
     return () => ipcRenderer.removeListener(TERMINAL_IPC.exit, wrapped);
   },
 });
+const quickInput: QuickInputDesktopBridge = Object.freeze({
+  state: () => ipcRenderer.invoke(QUICK_INPUT_IPC.state),
+  capture: () => ipcRenderer.invoke(QUICK_INPUT_IPC.capture),
+  submit: (submission: QuickInputSubmission) =>
+    ipcRenderer.invoke(QUICK_INPUT_IPC.submit, submission),
+  dismiss: () => ipcRenderer.invoke(QUICK_INPUT_IPC.dismiss),
+  openScreenRecordingSettings: () =>
+    ipcRenderer.invoke(QUICK_INPUT_IPC.openScreenRecordingSettings),
+  onShown: (listener: () => void) => {
+    const wrapped = () => listener();
+    ipcRenderer.on(QUICK_INPUT_IPC.shown, wrapped);
+    return () => ipcRenderer.removeListener(QUICK_INPUT_IPC.shown, wrapped);
+  },
+});
 const remote: RemoteDesktopBridge = Object.freeze({
   getState: () => ipcRenderer.invoke(REMOTE_IPC.getState),
   setEnabled: (enabled: boolean) =>
@@ -600,6 +621,7 @@ contextBridge.exposeInMainWorld(
     repo,
     remote,
     terminal,
+    quickInput,
     onCycleEffort: (listener: () => void) => {
       const wrapped = () => listener();
       ipcRenderer.on(DESKTOP_IPC.cycleEffort, wrapped);

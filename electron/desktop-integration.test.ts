@@ -169,6 +169,20 @@ describe("desktop integration preferences", () => {
       parseDesktopIntegration({ menuBarStatus: false, dockBadge: 0, checkAppUpdates: false }),
     ).toEqual({ ...DEFAULT_DESKTOP_INTEGRATION, menuBarStatus: false, checkAppUpdates: false });
   });
+
+  it("keeps an empty quick input shortcut as off and defaults a malformed one", () => {
+    expect(DEFAULT_DESKTOP_INTEGRATION.quickInputShortcut).toBe("Control+Alt+Space");
+    expect(parseDesktopIntegration({ quickInputShortcut: "" }).quickInputShortcut).toBe("");
+    expect(
+      parseDesktopIntegration({ quickInputShortcut: " Command+Shift+K " }).quickInputShortcut,
+    ).toBe("Command+Shift+K");
+    expect(parseDesktopIntegration({ quickInputShortcut: 7 }).quickInputShortcut).toBe(
+      "Control+Alt+Space",
+    );
+    expect(
+      parseDesktopIntegration({ quickInputShortcut: "K".repeat(65) }).quickInputShortcut,
+    ).toBe("Control+Alt+Space");
+  });
 });
 
 describe("summarizeSessionAttention", () => {

@@ -26,13 +26,22 @@ export interface DesktopIntegrationPreferences {
    * Only a packaged build checks on its own; nothing is downloaded or replaced.
    */
   checkAppUpdates: boolean;
+  /**
+   * The Electron accelerator that opens the quick input window from any app, or
+   * "" when the user turned it off.
+   */
+  quickInputShortcut: string;
 }
+
+/** Control+Option+Space: Spotlight and the input sources already own the Command and Control+Space pairs. */
+export const DEFAULT_QUICK_INPUT_SHORTCUT = "Control+Alt+Space";
 
 export const DEFAULT_DESKTOP_INTEGRATION: DesktopIntegrationPreferences = {
   preventSleep: true,
   menuBarStatus: true,
   dockBadge: true,
   checkAppUpdates: true,
+  quickInputShortcut: DEFAULT_QUICK_INPUT_SHORTCUT,
 };
 
 /**
@@ -48,7 +57,9 @@ export function parseDesktopIntegration(
     value && typeof value === "object"
       ? (value as Record<string, unknown>)
       : {};
-  const flag = (key: keyof DesktopIntegrationPreferences): boolean => {
+  const flag = (
+    key: Exclude<keyof DesktopIntegrationPreferences, "quickInputShortcut">,
+  ): boolean => {
     const value = candidate[key];
     return typeof value === "boolean" ? value : DEFAULT_DESKTOP_INTEGRATION[key];
   };
@@ -57,6 +68,11 @@ export function parseDesktopIntegration(
     menuBarStatus: flag("menuBarStatus"),
     dockBadge: flag("dockBadge"),
     checkAppUpdates: flag("checkAppUpdates"),
+    quickInputShortcut:
+      typeof candidate.quickInputShortcut === "string" &&
+      candidate.quickInputShortcut.trim().length <= 64
+        ? candidate.quickInputShortcut.trim()
+        : DEFAULT_QUICK_INPUT_SHORTCUT,
   };
 }
 

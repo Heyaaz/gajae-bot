@@ -14,7 +14,7 @@ export interface PowerSaveApi {
 
 export type TrackedSession = Pick<
   AgentSession,
-  "id" | "title" | "workspace" | "status" | "phase" | "unread" | "updatedAtMs"
+  "id" | "title" | "workspace" | "worktree" | "status" | "phase" | "unread" | "updatedAtMs"
 >;
 
 export interface DesktopIntegrationOptions {
@@ -122,6 +122,7 @@ function track(session: AgentSession): TrackedSession {
     id: session.id,
     title: session.title,
     workspace: session.workspace,
+    worktree: session.worktree,
     status: session.status,
     phase: session.phase,
     unread: session.unread,

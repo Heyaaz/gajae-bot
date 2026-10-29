@@ -1,0 +1,159 @@
+html:has(.quick-input),
+html:has(.quick-input) body,
+html:has(.quick-input) #root {
+  height: 100%;
+}
+
+html:has(.quick-input) body {
+  margin: 0;
+  background: var(--bg-panel);
+}
+
+.quick-input {
+  display: flex;
+  height: 100%;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 14px 10px;
+  /* The frameless window has no title bar, so the panel itself moves it. */
+  -webkit-app-region: drag;
+}
+
+.quick-input textarea,
+.quick-input button,
+.quick-input select,
+.quick-input-captures {
+  -webkit-app-region: no-drag;
+}
+
+.quick-input textarea {
+  flex: 1;
+  min-height: 48px;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1.45;
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+}
+
+.quick-input textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+.quick-input-captures {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 7px;
+  /* Room for the remove buttons, which sit above the thumbnails' top edge. */
+  padding: 5px 5px 0 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.quick-input-captures > span {
+  position: relative;
+  flex: 0 0 auto;
+  width: 64px;
+  height: 46px;
+}
+
+.quick-input-captures img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+}
+
+.quick-input-captures button {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  display: grid;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  place-items: center;
+  color: #fff;
+  background: rgba(20, 20, 22, 0.92);
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+}
+
+.quick-input-notice {
+  display: flex;
+  margin: 0;
+  align-items: center;
+  gap: 8px;
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.quick-input-notice.is-error {
+  color: var(--danger);
+}
+
+.quick-input-notice button {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  color: var(--text-primary);
+  font-size: 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.quick-input footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-input select {
+  max-width: 220px;
+  height: 28px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.quick-input footer small {
+  flex: 1;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-input-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  color: var(--text-secondary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.quick-input-icon.is-primary {
+  color: #fff;
+  background: var(--accent);
+  border-color: transparent;
+}
+
+.quick-input-icon:disabled {
+  cursor: default;
+  opacity: 0.45;
+}

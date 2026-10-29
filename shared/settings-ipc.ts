@@ -1,4 +1,4 @@
-import type { SessionWorkLink } from "./agent-contract.js";
+import type { ImageAttachment, SessionWorkLink } from "./agent-contract.js";
 
 export const SETTINGS_IPC = {
   getPreferences: "agent-control:settings:get-preferences",
@@ -22,6 +22,7 @@ export const SETTINGS_IPC = {
   checkAppUpdate: "agent-control:settings:check-app-update",
   checkEnvironment: "agent-control:settings:check-environment",
   environmentCheckDue: "agent-control:settings:environment-check-due",
+  quickInputShortcutStatus: "agent-control:settings:quick-input-shortcut-status",
 } as const;
 
 export const DESKTOP_IPC = {
@@ -39,6 +40,8 @@ export type NewSessionPrefill = {
   worktreeBranch?: string;
   worktreeBranchExisting?: boolean;
   workLink?: SessionWorkLink;
+  /** Already issued to the receiving window, so its composer can send them as its own. */
+  images?: ImageAttachment[];
 };
 
 /** Why a gajae:// link was refused. `session` also covers an id the window does not know. */

@@ -1,6 +1,7 @@
 import type { AppUpdateStatus } from "./app-update.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
 import type { EnvironmentReport } from "./environment-check.js";
+import type { QuickInputShortcutStatus } from "./quick-input.js";
 
 export type RuntimeKind = "gjc" | "hermes";
 
@@ -281,6 +282,23 @@ export interface AgentSession {
   worktree?: ManagedWorktree;
   workLink?: SessionWorkLink;
   runtimeState?: EffectiveRuntimeState;
+}
+
+/**
+ * The workspace a session counts as a member of.
+ *
+ * A managed worktree is a checkout of the source repository, so it belongs to the
+ * source project instead of becoming a second one: the same repository would
+ * otherwise fill the selector once per worktree, each copy holding only the session
+ * that runs in it.
+ */
+export function projectPathOf(
+  session: Pick<AgentSession, "workspace" | "worktree">,
+): string {
+  const worktree = session.worktree;
+  return worktree?.managed === true
+    ? worktree.sourceWorkspace
+    : session.workspace;
 }
 
 /**
@@ -1070,6 +1088,8 @@ export interface SettingsDesktopBridge {
   checkEnvironment(): Promise<EnvironmentReport>;
   /** Whether the environment check should open at launch. */
   environmentCheckDue(): Promise<boolean>;
+  /** Whether the quick input shortcut is registered right now. */
+  quickInputShortcutStatus(): Promise<QuickInputShortcutStatus>;
 }
 
 export interface GjcUpdateStatus {

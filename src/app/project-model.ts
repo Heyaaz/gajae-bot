@@ -1,4 +1,5 @@
 import type { ProjectPathResolution } from "../../shared/repo-ipc";
+import { projectPathOf } from "../../shared/agent-contract";
 import type { AgentSession } from "../backend/types";
 
 /**
@@ -21,20 +22,7 @@ export interface ProjectGroup {
   sessions: AgentSession[];
 }
 
-/**
- * The workspace a session counts as a member of.
- *
- * A managed worktree is a checkout of the source repository, so it belongs to the
- * source project instead of becoming a second one: the same repository would
- * otherwise fill the selector once per worktree, each copy holding only the session
- * that runs in it.
- */
-export function projectPathOf(session: AgentSession): string {
-  const worktree = session.worktree;
-  return worktree?.managed === true
-    ? worktree.sourceWorkspace
-    : session.workspace;
-}
+export { projectPathOf } from "../../shared/agent-contract";
 
 /**
  * The project a session belongs to, as the desktop service resolved it.

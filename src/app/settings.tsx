@@ -26,6 +26,7 @@ import { LazyViewBoundary } from "./lazy-boundary";
 import { AutomationPanel, ManagementPanel } from "./panels";
 import { Dropdown } from "./primitives";
 import { AppUpdateRow } from "./app-update-row";
+import { QuickInputShortcutRow } from "./quick-input-shortcut-row";
 import { EnvironmentCheckPanel } from "./environment-check-panel";
 const RemoteAccessPanel = lazy(() =>
   import("./remote-access-panel").then((mod) => ({ default: mod.RemoteAccessPanel })),
@@ -765,6 +766,16 @@ export function SettingsDialog({
                     />
                   </div>
                 ))}
+                <QuickInputShortcutRow
+                  bridge={settingsBridge}
+                  value={preferences.desktopIntegration.quickInputShortcut}
+                  onChange={(quickInputShortcut) =>
+                    persistDesktopIntegration({
+                      ...preferencesRef.current.desktopIntegration,
+                      quickInputShortcut,
+                    })
+                  }
+                />
                 <AppUpdateRow bridge={settingsBridge} />
               </div>
             </div>

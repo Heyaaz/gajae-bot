@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  globalShortcut,
   ipcMain,
   Menu,
   nativeImage,
@@ -8,6 +9,7 @@ import {
   Notification,
   powerSaveBlocker,
   shell,
+  systemPreferences,
   type MenuItemConstructorOptions,
   type WebContents,
 } from "electron";
@@ -43,6 +45,7 @@ import {
   IpcSecurity,
   expectedTopLevelUrl,
   nativeDestructiveConfirmation,
+  quickInputUrl,
   rendererLaunchConfig,
 } from "./ipc-security.js";
 import { AttachmentStore } from "./attachment-store.js";
@@ -63,6 +66,10 @@ import { DesktopStateStore } from "./desktop-state-store.js";
 import { checkEnvironment, hostEnvironmentContext } from "./environment-check.js";
 import { deepLinksInArgv, sessionShortcutForDeepLink } from "./deep-link.js";
 import { startDeepLinkSmoke } from "./deep-link-smoke.js";
+import { imageAttachment } from "./settings-ipc-handlers.js";
+import { QuickInputShortcut } from "./quick-input.js";
+import { QuickInputWindow, type QuickInputHandoff } from "./quick-input-window.js";
+import { quickInputProjects } from "../shared/quick-input.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const {
@@ -132,6 +139,8 @@ let productivityService: ProductivityService | undefined;
 // Declared before the controller so the event fan-out below can reach it; the
 // instance itself is created once the controller exists.
 let remoteAccess: RemoteAccessService | undefined;
+// Declared here because the event fan-out and window lookups below run before it exists.
+let quickInput: QuickInputWindow | undefined;
 // The desktop windows read runtime events over this loopback stream now instead of an
 // IPC push. Constructing it only allocates the process secret; the listener starts with
 // the first window.
@@ -189,7 +198,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
   applySearchInvalidation(event, (sessionId) => {
     productivityService?.invalidateSearch(sessionId);
   });
-  const windows = BrowserWindow.getAllWindows();
+  const windows = appWindows();
   // The windows on this machine read the same events from the loopback stream. Nothing
   // is pushed over IPC as well: a second delivery path is how one event becomes two.
   desktopEvents.publish(event);
@@ -222,7 +231,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
     ...(delivery.sound ? { sound: delivery.sound } : {}),
   });
   notification.on("click", () => {
-    const window = BrowserWindow.getAllWindows()[0];
+    const window = appWindows()[0];
     if (!window || window.isDestroyed()) return;
     if (window.isMinimized()) window.restore();
     window.show();
@@ -236,6 +245,25 @@ function broadcastAgentEvent(event: AgentEvent): void {
   });
   notification.show();
   lastNotification = { body: sessionActivityBody(event, settingsStore.get().language), at: Date.now() };
+}
+
+/**
+ * The session windows, without the quick input window.
+ *
+ * That one is hidden rather than closed, so "the first window" or "no window left"
+ * would otherwise count it.
+ */
+function appWindows(): BrowserWindow[] {
+  return BrowserWindow.getAllWindows().filter(
+    (window) => !quickInput?.owns(window),
+  );
+}
+
+/** The focused session window, else the first one, else a new one. */
+function sessionWindow(): BrowserWindow {
+  const focused = BrowserWindow.getFocusedWindow();
+  if (focused && !focused.isDestroyed() && !quickInput?.owns(focused)) return focused;
+  return appWindows()[0] ?? createWindow();
 }
 
 // gajae:// links wait here until a window has loaded: macOS delivers the link of a
@@ -253,10 +281,7 @@ function receiveDeepLink(url: string): void {
 
 function deliverDeepLinks(): void {
   if (!pendingDeepLinks.length || !app.isReady()) return;
-  const window =
-    BrowserWindow.getFocusedWindow() ??
-    BrowserWindow.getAllWindows()[0] ??
-    createWindow();
+  const window = sessionWindow();
   revealWindow(window);
   if (!loadedRenderers.has(window.webContents)) return;
   for (const shortcut of pendingDeepLinks.splice(0))
@@ -281,15 +306,16 @@ app.on("second-instance", (_event, argv) => {
     return;
   }
   if (!app.isReady()) return;
-  revealWindow(BrowserWindow.getAllWindows()[0] ?? createWindow());
+  revealWindow(sessionWindow());
 });
 
 for (const url of deepLinksInArgv(process.argv)) receiveDeepLink(url);
 if (deepLinkSmokeMode) startDeepLinkSmoke();
 
 function sendSessionShortcut(shortcut: SessionShortcut): void {
+  const focused = BrowserWindow.getFocusedWindow();
   const window =
-    BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+    focused && !quickInput?.owns(focused) ? focused : appWindows()[0];
   if (!window || window.isDestroyed()) return;
   window.webContents.send(DESKTOP_IPC.sessionShortcut, shortcut);
 }
@@ -299,6 +325,39 @@ function sendSessionShortcut(shortcut: SessionShortcut): void {
 function openSessionFromMenuBar(sessionId: string): void {
   pendingDeepLinks.push({ type: "open", sessionId });
   deliverDeepLinks();
+}
+
+async function loadedWindow(window: BrowserWindow): Promise<BrowserWindow> {
+  // A window this call had to create has no listener yet.
+  if (window.webContents.isLoading())
+    await new Promise<void>((resolve) =>
+      window.webContents.once("did-finish-load", () => resolve()),
+    );
+  return window;
+}
+
+/**
+ * Opens the new-session dialog in the main window with what the quick input
+ * collected. The screenshots are issued to that window the way a picked image
+ * would be, so its composer sends them through the ordinary attachment path.
+ */
+async function handOffQuickInput(handoff: QuickInputHandoff): Promise<void> {
+  const window = sessionWindow();
+  revealWindow(window);
+  await loadedWindow(window);
+  const images = [];
+  for (const [index, file] of handoff.images.entries())
+    images.push(
+      await imageAttachment(file, attachmentStore, window.webContents.id, index),
+    );
+  window.webContents.send(DESKTOP_IPC.sessionShortcut, {
+    type: "new",
+    prefill: {
+      workspace: handoff.workspace,
+      prompt: handoff.prompt,
+      images,
+    },
+  } satisfies SessionShortcut);
 }
 
 function installApplicationMenu(): void {
@@ -382,6 +441,22 @@ const automationService = new AutomationService({
     );
   },
 });
+quickInput = new QuickInputWindow({
+  url: quickInputUrl(developmentUrl, app.getAppPath()),
+  preload: path.join(currentDirectory, "preload.cjs"),
+  security: new IpcSecurity(),
+  captureDirectory: path.join(userDataDirectory, "quick-input-captures"),
+  screenAccess: () => systemPreferences.getMediaAccessStatus("screen"),
+  projects: () =>
+    quickInputProjects(
+      desktopIntegration.state().sessions,
+      settingsStore.get().workspace,
+    ),
+  onSubmit: handOffQuickInput,
+});
+const quickInputShortcut = new QuickInputShortcut(globalShortcut, () =>
+  quickInput?.toggle(),
+);
 const unregisterSettingsIpc = registerSettingsIpcHandlers(
   settingsStore,
   attachmentStore,
@@ -406,7 +481,10 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
     if (sessionId === null) viewedSessions.delete(senderId);
     else viewedSessions.set(senderId, sessionId);
   },
-  (updated) => desktopIntegration.setPreferences(updated),
+  (updated) => {
+    desktopIntegration.setPreferences(updated);
+    quickInputShortcut.apply(updated.quickInputShortcut);
+  },
   appUpdates,
   {
     async check() {
@@ -428,6 +506,7 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
     due: () =>
       !smokeMode && !terminalSmokeMode && !desktopState.get().environmentReady,
   },
+  quickInputShortcut,
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
@@ -1289,11 +1368,13 @@ app.whenReady().then(() => {
     electronStatusSurface({
       iconPath: menuBarIconPath,
       openSession: openSessionFromMenuBar,
-      openApp: () =>
-        revealWindow(BrowserWindow.getAllWindows()[0] ?? createWindow()),
+      openApp: () => revealWindow(sessionWindow()),
     }),
   );
   renderDesktopStatus(desktopIntegration.state());
+  quickInputShortcut.apply(
+    settingsStore.get().desktopIntegration.quickInputShortcut,
+  );
   createWindow();
   // A development build is not a release anyone installed, so it only checks when
   // asked from settings.
@@ -1304,7 +1385,7 @@ app.whenReady().then(() => {
     );
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (appWindows().length === 0) createWindow();
   });
 });
 
@@ -1328,6 +1409,8 @@ app.on("before-quit", () => {
   void remoteAccess?.dispose();
   gjcController.dispose();
   desktopIntegration.dispose();
+  quickInputShortcut.dispose();
+  quickInput?.dispose();
   appUpdates.dispose();
   attachmentStore.dispose();
 });

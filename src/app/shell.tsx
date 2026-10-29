@@ -2074,8 +2074,12 @@ export default function App() {
         .then((session) => {
           // Only the real id outlives this draft, so the prompt waits for it.
           // It is never sent from here: the user reads it and presses send.
-          if (input.initialPrompt)
-            prefillComposerDraft(session.id, input.initialPrompt);
+          if (input.initialPrompt || input.initialImages)
+            prefillComposerDraft(
+              session.id,
+              input.initialPrompt ?? "",
+              input.initialImages,
+            );
           setSessions((current) => [
             session,
             ...current.filter(
