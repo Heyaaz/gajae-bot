@@ -12,7 +12,11 @@ import type {
   NotificationPreferences,
 } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Palette, Server, ShieldCheck, Smartphone, Sparkles, X } from "lucide-react";
+import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Monitor, Palette, Server, ShieldCheck, Smartphone, Sparkles, X } from "lucide-react";
+import {
+  DEFAULT_DESKTOP_INTEGRATION,
+  type DesktopIntegrationPreferences,
+} from "../../shared/desktop-integration";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { connectionStateLabel } from "./format";
 import { readStoredTheme, setThemeMode, type ThemeMode } from "../theme";
@@ -182,6 +186,7 @@ export function SettingsDialog({
     thoughtsExpanded,
     toolViewMode: DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+    desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
     language: getLanguage(),
     runningSubmission: "queue",
   };
@@ -194,6 +199,7 @@ export function SettingsDialog({
     | "skills"
     | "usage"
     | "notifications"
+    | "desktop"
     | "automations"
   >("gjc");
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => readStoredTheme());
@@ -231,6 +237,7 @@ export function SettingsDialog({
     skills: "Skills & Plugins",
     usage: "Usage",
     notifications: t("알림"),
+    desktop: t("데스크톱"),
     automations: "Automations",
   }[tab];
   const tabDescription = {
@@ -243,6 +250,7 @@ export function SettingsDialog({
     usage: t("모델별 토큰, 캐시율, 비용을 확인합니다."),
     notifications:
       t("완료·승인/질문 대기·실패를 이벤트별로 알리고 소리를 고릅니다."),
+    desktop: t("창 밖에서 동작하는 기능을 설정합니다."),
     automations: t("앱이 닫혀 있어도 GJC 작업을 정해진 시간에 실행합니다."),
   }[tab];
 
@@ -301,6 +309,32 @@ export function SettingsDialog({
       const restored = {
         ...preferencesRef.current,
         runningSubmission: previous,
+      };
+      preferencesRef.current = restored;
+      setPreferences(restored);
+      setSaveError(settingsErrorMessage(error));
+    }
+  }
+
+  async function persistDesktopIntegration(
+    next: DesktopIntegrationPreferences,
+  ): Promise<void> {
+    if (!settingsBridge) return;
+    const previous = preferencesRef.current.desktopIntegration;
+    const optimistic = { ...preferencesRef.current, desktopIntegration: next };
+    preferencesRef.current = optimistic;
+    setPreferences(optimistic);
+    setSaveError("");
+    try {
+      const saved = await settingsBridge.setDesktopIntegration(next);
+      const current = { ...preferencesRef.current, desktopIntegration: saved };
+      preferencesRef.current = current;
+      setPreferences(current);
+      setOriginal((value) => ({ ...value, desktopIntegration: saved }));
+    } catch (error) {
+      const restored = {
+        ...preferencesRef.current,
+        desktopIntegration: previous,
       };
       preferencesRef.current = restored;
       setPreferences(restored);
@@ -477,6 +511,12 @@ export function SettingsDialog({
             onClick={() => setTab("notifications")}
           >
             <Bell size={17} /> {t("알림")} </button>
+          <button
+            type="button"
+            className={tab === "desktop" ? "is-active" : ""}
+            onClick={() => setTab("desktop")}
+          >
+            <Monitor size={17} /> {t("데스크톱")} </button>
           <button
             type="button"
             className={tab === "mcp" ? "is-active" : ""}
@@ -659,6 +699,33 @@ export function SettingsDialog({
                     </div>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {tab === "desktop" && (
+            <div className="settings-stack">
+              <div className="settings-panel">
+                <div className="settings-toggle-row">
+                  <span>
+                    <strong>{t("실행 중 잠자기 방지")}</strong>
+                    <small>
+                      {t("세션이 작업 중일 때만 Mac이 잠들지 않게 합니다. 모든 작업이 끝나면 해제합니다.")}
+                    </small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    aria-label={t("실행 중 잠자기 방지")}
+                    checked={preferences.desktopIntegration.preventSleep}
+                    disabled={!settingsBridge}
+                    onChange={(event) =>
+                      void persistDesktopIntegration({
+                        ...preferencesRef.current.desktopIntegration,
+                        preventSleep: event.target.checked,
+                      })
+                    }
+                  />
+                </div>
               </div>
             </div>
           )}

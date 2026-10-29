@@ -5,6 +5,7 @@ import {
   Menu,
   nativeImage,
   Notification,
+  powerSaveBlocker,
   shell,
   type MenuItemConstructorOptions,
 } from "electron";
@@ -49,6 +50,7 @@ import { RepoService } from "./repo-service.js";
 import { registerRepoIpcHandlers } from "./repo-ipc-handlers.js";
 import { registerTerminalIpcHandlers } from "./terminal-ipc-handlers.js";
 import { attachTerminalSmoke } from "./terminal-smoke.js";
+import { DesktopIntegration } from "./desktop-integration.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const { developmentUrl, mockSmokeMode, gjcSmokeMode, smokeMode, terminalSmokeMode } =
@@ -109,6 +111,12 @@ let lastNotification: { body: string; at: number } | undefined;
 // notification for a turn the user is already watching, which window focus
 // alone cannot tell: a focused window may be showing a different session.
 const viewedSessions = new Map<number, string>();
+// Power management (and the menu bar and Dock) follow the same events the windows
+// do, so they agree with the rail about which sessions are working.
+const desktopIntegration = new DesktopIntegration({
+  power: powerSaveBlocker,
+  preferences: preferences.desktopIntegration,
+});
 
 function broadcastAgentEvent(event: AgentEvent): void {
   applySearchInvalidation(event, (sessionId) => {
@@ -118,6 +126,7 @@ function broadcastAgentEvent(event: AgentEvent): void {
   // The windows on this machine read the same events from the loopback stream. Nothing
   // is pushed over IPC as well: a second delivery path is how one event becomes two.
   desktopEvents.publish(event);
+  desktopIntegration.observe(event);
   // The remote devices watch the same runtime, so they see the same events the
   // desktop windows do rather than a separately polled view.
   remoteAccess?.publish(event);
@@ -274,6 +283,7 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
     if (sessionId === null) viewedSessions.delete(senderId);
     else viewedSessions.set(senderId, sessionId);
   },
+  (updated) => desktopIntegration.setPreferences(updated),
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
@@ -1117,6 +1127,13 @@ app.whenReady().then(() => {
       console.error("Automation scheduler initialization failed", error),
     );
   installApplicationMenu();
+  // Sessions the runtime reported before the first event still count as working.
+  void gjcController
+    .listSessions()
+    .then((sessions) => desktopIntegration.seed(sessions))
+    .catch((error) =>
+      console.error("Desktop integration could not read sessions", error),
+    );
   if (process.platform === "darwin")
     app.dock?.setIcon(nativeImage.createFromPath(appIconPath));
   createWindow();
@@ -1145,5 +1162,6 @@ app.on("before-quit", () => {
   void desktopEvents.close();
   void remoteAccess?.dispose();
   gjcController.dispose();
+  desktopIntegration.dispose();
   attachmentStore.dispose();
 });

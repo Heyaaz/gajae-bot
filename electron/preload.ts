@@ -22,6 +22,7 @@ import type {
   UiLanguage,
 } from "../shared/agent-contract.js";
 import type { ProductivityDesktopBridge } from "../shared/productivity-ipc.js";
+import type { DesktopIntegrationPreferences } from "../shared/desktop-integration.js";
 import type {
   RemoteDesktopBridge,
   RemotePermission,
@@ -440,6 +441,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
       SETTINGS_IPC.setNotificationPreferences,
       preferences,
     ),
+  setDesktopIntegration: (preferences: DesktopIntegrationPreferences) =>
+    ipcRenderer.invoke(SETTINGS_IPC.setDesktopIntegration, preferences),
   setLanguage: (language: UiLanguage) =>
     ipcRenderer.invoke(SETTINGS_IPC.setLanguage, language),
   setViewedSession: (sessionId: string | null) =>

@@ -1,5 +1,9 @@
 /** English copy for every translated source string. */
 export const MESSAGES: Readonly<Record<string, string>> = {
+  "데스크톱": "Desktop",
+  "창 밖에서 동작하는 기능을 설정합니다.": "Configure what the app does outside its window.",
+  "실행 중 잠자기 방지": "Prevent sleep while running",
+  "세션이 작업 중일 때만 Mac이 잠들지 않게 합니다. 모든 작업이 끝나면 해제합니다.": "Keeps the Mac awake only while a session is working, and releases it when all work ends.",
   "상태 확인 필요": "Needs verification",
   "상태 확인 불가": "Status unknown",
   "백그라운드 작업 상태를 확인할 수 없습니다": "Background work status could not be verified",

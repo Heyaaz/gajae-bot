@@ -2,6 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { DEFAULT_DESKTOP_INTEGRATION } from '../shared/desktop-integration.js'
 import {
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
@@ -80,6 +81,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: false,
       toolViewMode: 'reasoning',
       notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+      desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
       language: 'ko',
       runningSubmission: 'queue',
     })
@@ -131,7 +133,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, language: 'ko', runningSubmission: 'queue' })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Client projects', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: true, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')
@@ -147,6 +149,16 @@ describe('SettingsStore', () => {
     expect(saved.completed).toEqual({ enabled: false, sound: 'Glass' })
     expect(saved.failed).toEqual(DEFAULT_NOTIFICATION_PREFERENCES.failed)
     expect(new SettingsStore(userData, root).get().notificationPreferences).toEqual(saved)
+  })
+
+  it('persists desktop integration alone and refuses a non-object', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+    expect(store.get().desktopIntegration.preventSleep).toBe(true)
+    expect(store.setDesktopIntegration({ preventSleep: false })).toEqual({ preventSleep: false })
+    expect(new SettingsStore(userData, root).get().desktopIntegration.preventSleep).toBe(false)
+    expect(() => store.setDesktopIntegration('off')).toThrow('Desktop integration settings must be an object')
   })
 
   it('persists the resolved UI language alone', () => {

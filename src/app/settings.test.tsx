@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { DEFAULT_NOTIFICATION_PREFERENCES } from "../../shared/agent-contract";
+import { DEFAULT_DESKTOP_INTEGRATION } from "../../shared/desktop-integration";
 import type { AgentControlPreferences } from "../backend/types";
 import { setLanguageMode } from "../i18n";
 import {
@@ -26,6 +27,7 @@ const fallback: AgentControlPreferences = {
   thoughtsExpanded: false,
   toolViewMode: "reasoning",
   notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+  desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
   language: "ko",
   runningSubmission: "queue",
 };

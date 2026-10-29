@@ -104,6 +104,7 @@ import {
   DEFAULT_NOTIFICATION_PREFERENCES,
   DEFAULT_TOOL_VIEW_MODE,
 } from "../../shared/agent-contract";
+import { DEFAULT_DESKTOP_INTEGRATION } from "../../shared/desktop-integration";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
 
 interface ShellSendOptions {
@@ -579,6 +580,7 @@ export default function App() {
     thoughtsExpanded: false,
     toolViewMode: DEFAULT_TOOL_VIEW_MODE,
     notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES,
+    desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
     language: getLanguage(),
     runningSubmission: "queue",
   });

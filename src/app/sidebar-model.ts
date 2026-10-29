@@ -1,4 +1,5 @@
 import type { AgentSession } from "../backend/types";
+import { sessionAttentionGroup } from "../../shared/desktop-integration";
 
 /**
  * The list is split by what the session is doing for the user rather than by
@@ -33,20 +34,11 @@ export const SESSION_SHORTCUT_LIMIT = 9;
  */
 const FAMILY_DEPTH_LIMIT = 32;
 
+/** The rail's grouping is the shared attention rule, so the Dock badge agrees with it. */
 export function sessionGroupOf(
   session: Pick<AgentSession, "status" | "phase">,
 ): SessionGroupId {
-  // Compaction outlives the turn that started it, so a session reported idle
-  // while its context is still being compacted is doing work. Ranking it done put
-  // the row in a finished group a moment before it moved back out.
-  if (session.phase === "compacting") return "working";
-  // There is no "it failed" group: a failure is something the user has to look
-  // at, which is the same job as an approval request.
-  if (session.status === "failed" || session.status === "waiting")
-    return "needs-input";
-  if (session.status === "running" || session.status === "starting")
-    return "working";
-  return "completed";
+  return sessionAttentionGroup(session);
 }
 
 /**

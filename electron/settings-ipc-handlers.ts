@@ -5,6 +5,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import type { AgentControlPreferences, FileAttachment, ImageAttachment } from '../shared/agent-contract.js'
 import { SETTINGS_IPC } from '../shared/settings-ipc.js'
+import type { DesktopIntegrationPreferences } from '../shared/desktop-integration.js'
 import type { SettingsStore } from './settings-store.js'
 import type { AttachmentStore } from './attachment-store.js'
 import type { IpcSecurity } from './ipc-security.js'
@@ -96,6 +97,7 @@ export function registerSettingsIpcHandlers(
   onPreferencesSaved?: (preferences: AgentControlPreferences) => Promise<boolean>,
   onGjcUpdated?: () => Promise<void>,
   onViewedSession?: (senderId: number, sessionId: string | null) => void,
+  onDesktopIntegration?: (preferences: DesktopIntegrationPreferences) => void,
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -173,6 +175,11 @@ export function registerSettingsIpcHandlers(
     store.setToolViewMode(mode)))
   ipcMain.handle(SETTINGS_IPC.setNotificationPreferences, security.guarded((_event, value: unknown) =>
     store.setNotificationPreferences(value)))
+  ipcMain.handle(SETTINGS_IPC.setDesktopIntegration, security.guarded((_event, value: unknown) => {
+    const saved = store.setDesktopIntegration(value)
+    onDesktopIntegration?.(saved)
+    return saved
+  }))
   ipcMain.handle(SETTINGS_IPC.setLanguage, security.guarded((_event, value: unknown) => {
     const saved = store.setLanguage(value)
     setHostLanguage(saved)

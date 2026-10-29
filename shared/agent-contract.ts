@@ -1,3 +1,5 @@
+import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
+
 export type RuntimeKind = "gjc" | "hermes";
 
 export type SessionStatus =
@@ -118,6 +120,8 @@ export interface AgentControlPreferences {
   permissionHandling: GjcPermissionHandling;
   gjcExecutable: string;
   notificationPreferences: NotificationPreferences;
+  /** Power, menu bar, Dock and global input behavior. */
+  desktopIntegration: DesktopIntegrationPreferences;
   /** Resolved language the desktop host uses for native dialogs and notifications. */
   language: UiLanguage;
   /**
@@ -909,6 +913,10 @@ export interface SettingsDesktopBridge {
   setNotificationPreferences(
     preferences: NotificationPreferences,
   ): Promise<NotificationPreferences>;
+  /** Desktop integration settings, saved without the runtime confirmation. */
+  setDesktopIntegration(
+    preferences: DesktopIntegrationPreferences,
+  ): Promise<DesktopIntegrationPreferences>;
   /** Persists the resolved UI language used by the desktop host. */
   setLanguage(language: UiLanguage): Promise<UiLanguage>;
   /** Persists the running-turn Enter behavior alone. */

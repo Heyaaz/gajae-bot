@@ -9,6 +9,7 @@ export const SETTINGS_IPC = {
   setToolViewMode: "agent-control:settings:set-tool-view-mode",
   setNotificationPreferences:
     "agent-control:settings:set-notification-preferences",
+  setDesktopIntegration: "agent-control:settings:set-desktop-integration",
   setLanguage: "agent-control:settings:set-language",
   setRunningSubmission: "agent-control:settings:set-running-submission",
   setViewedSession: "agent-control:settings:set-viewed-session",

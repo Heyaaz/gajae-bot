@@ -23,6 +23,10 @@ import {
   isToolViewMode,
   parseNotificationPreferences,
 } from '../shared/agent-contract.js'
+import {
+  parseDesktopIntegration,
+  type DesktopIntegrationPreferences,
+} from '../shared/desktop-integration.js'
 
 const PERMISSION_MODES = new Set<GjcPermissionHandling>(['prompt', 'auto', 'always-allow'])
 
@@ -88,6 +92,7 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
     notificationPreferences: parseNotificationPreferences(
       candidate.notificationPreferences,
     ),
+    desktopIntegration: parseDesktopIntegration(candidate.desktopIntegration),
     language: candidate.language === 'en' ? 'en' : 'ko',
     runningSubmission:
       candidate.runningSubmission === "steer" ? "steer" : "queue",
@@ -204,6 +209,19 @@ export class SettingsStore {
     this.persist(preferences)
     this.preferences = preferences
     return this.preferences.notificationPreferences
+  }
+
+  /** Desktop integration settings, saved without the runtime confirmation. */
+  setDesktopIntegration(value: unknown): DesktopIntegrationPreferences {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      throw new Error('Desktop integration settings must be an object')
+    const preferences = {
+      ...this.preferences,
+      desktopIntegration: parseDesktopIntegration(value),
+    }
+    this.persist(preferences)
+    this.preferences = preferences
+    return this.preferences.desktopIntegration
   }
 
   private persist(preferences: AgentControlPreferences): void {
