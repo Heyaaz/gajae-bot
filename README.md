@@ -484,6 +484,9 @@ the card's own title in a UI whose body text is 9–12px.
 
 ## GJC SDK session CLI compatibility
 
+<!-- gjc-matrix:start -->
+<!-- gjc-matrix:end -->
+
 Gajae targets installed `gajae-code` version `0.18.12` or newer. The live
 checks below distinguish confirmed behavior from remaining runtime limitations;
 the versions marked **verified on 0.19.0** were re-run against the installed
