@@ -291,6 +291,35 @@ describe("session.progress reads", () => {
     }
   });
 
+  it("leaves a session nobody polls out of event-driven reads", async () => {
+    // A background session's tool, gate and turn events each queued a
+    // session.progress read whose answer nothing would ever show.
+    vi.useFakeTimers();
+    const { controller, internals, progressReads } = harness(["session.progress"]);
+    const events = (call: string) => {
+      internals.projectToolStream("s1", "tool_execution_end", {
+        event: { type: "tool_execution_end", toolCallId: `t-${call}`, toolName: "bash", result: {} },
+      });
+      internals.projectToolStream("s1", "workflow_gate", { type: "workflow_gate", gate_id: `g-${call}` });
+      internals.projectTailItems("s1", [{ kind: "turn_end", generation: 1, seq: Number(call), payload: {} }]);
+    };
+    try {
+      events("1");
+      await vi.advanceTimersByTimeAsync(PROGRESS_REFRESH_MIN_MS * 3);
+      expect(progressReads()).toBe(0);
+
+      await controller.getGoal("s1");
+      expect(progressReads()).toBe(1);
+      // The goal row stops polling once the user selects another session.
+      await vi.advanceTimersByTimeAsync(PROGRESS_STALE_MS * 3);
+      events("2");
+      await vi.advanceTimersByTimeAsync(PROGRESS_REFRESH_MIN_MS * 3);
+      expect(progressReads()).toBe(1);
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("refreshes a stale snapshot in the background and keeps it through a failed read", async () => {
     vi.useFakeTimers();
     const { controller, queryItems, progressReads } = harness(["session.progress"]);

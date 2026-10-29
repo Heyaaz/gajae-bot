@@ -254,6 +254,11 @@ export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
 export const PROGRESS_REFRESH_MIN_MS = 4_000;
 export const PROGRESS_STALE_MS = 30_000;
 /**
+ * How long after its last goal read a session still counts as watched. The
+ * slowest goal poll is 30s, so a watched session never lapses between polls.
+ */
+export const PROGRESS_WATCH_MS = 60_000;
+/**
  * How long a loaded command/todo context is reused before it is read again.
  *
  * Opening the palette is a user gesture, not a poll; a refresh costs two or more
@@ -592,6 +597,8 @@ export class GjcSdkController {
     { progress: SessionProgress | undefined; readAt: number }
   >();
   private readonly progressReads = new Map<string, Promise<void>>();
+  /** When a goal row last asked for each session's progress. */
+  private readonly progressWatchedAt = new Map<string, number>();
   private readonly progressTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -5073,6 +5080,7 @@ export class GjcSdkController {
   ): Promise<SessionProgress | undefined> {
     if (!this.sessionSdkOperations.get(sessionId)?.has("session.progress"))
       return undefined;
+    this.progressWatchedAt.set(sessionId, Date.now());
     const cached = this.sessionProgress.get(sessionId);
     if (!cached) {
       await this.readProgress(sessionId);
@@ -5083,12 +5091,18 @@ export class GjcSdkController {
     return cached.progress;
   }
 
-  /** Coalesces refresh requests into at most one read per interval. */
+  /**
+   * Coalesces refresh requests into at most one read per interval. Only a session
+   * a goal row is polling is read: the answer reaches the screen through that
+   * poll, so for any other session the read would be wasted.
+   */
   private requestProgressRefresh(sessionId: string): void {
     if (
       this.disposed ||
       this.progressTimers.has(sessionId) ||
-      !this.sessionSdkOperations.get(sessionId)?.has("session.progress")
+      !this.sessionSdkOperations.get(sessionId)?.has("session.progress") ||
+      Date.now() - (this.progressWatchedAt.get(sessionId) ?? -Infinity) >
+        PROGRESS_WATCH_MS
     )
       return;
     const readAt = this.sessionProgress.get(sessionId)?.readAt ?? 0;
@@ -5139,6 +5153,7 @@ export class GjcSdkController {
     this.progressTimers.delete(sessionId);
     this.sessionProgress.delete(sessionId);
     this.progressReads.delete(sessionId);
+    this.progressWatchedAt.delete(sessionId);
   }
 
   async operateGoal(
@@ -5671,6 +5686,7 @@ export class GjcSdkController {
     this.progressTimers.clear();
     this.sessionProgress.clear();
     this.progressReads.clear();
+    this.progressWatchedAt.clear();
     this.publishedCommandKeys.clear();
     this.transcriptAttachments.clear();
     this.permissionModeApplied.clear();
