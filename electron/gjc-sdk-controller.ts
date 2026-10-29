@@ -25,7 +25,6 @@ import type {
   QuestionSubmission,
   ToolActivity,
   ToolDecision,
-  ThoughtActivity,
   TranscriptItem,
   TranscriptChange,
   ArtifactContent,
@@ -51,7 +50,6 @@ import { ImageDataUrlCache } from "./image-data-cache.js";
 import { resolveGjcExecutable, runtimeEnvironment } from "./runtime-path.js";
 import {
   GjcSdkCli,
-  SdkCliError,
   brokerExec,
   isSessionMissing,
   type SdkSessionRow,
@@ -91,13 +89,10 @@ import {
   SessionUpdate,
   TAIL_RETRY_BASE_MS,
   TAIL_RETRY_MAX_MS,
-  TAIL_WINDOW_MS,
   TERMINAL_STOP_REASONS,
   TodoSnapshotState,
   ToolCallFields,
   ToolCallStatus,
-  agentCommands,
-  artifactReferences,
   canonicalWorkspace,
   cloneTranscriptItem,
   comparableRowText,
@@ -107,26 +102,16 @@ import {
   hasLivePrefix,
   historySessionSummary,
   imageFromContent,
-  inferToolName,
   markUpdated,
   normalizeQueuedRequestText,
   nowLabel,
   persistedTranscriptRunning,
   readableSessionTitle,
-  receiptSubagentStatus,
   sanitizeLocalAttachmentBlocks,
   sharedContentText,
-  tailReadPause,
-  tailRetryPause,
-  taskStatus,
-  taskSubagents,
   textFromContent,
   timestampMs,
   todoSnapshotTask,
-  toolDiffText,
-  toolImageRefs,
-  toolResultText,
-  toolStatus,
 } from "./gjc-sdk-foundation.js";
 
 import { previewGeneratedFile } from "./gjc-sdk-file-preview.js";
@@ -134,7 +119,21 @@ import {
   resolveWorkspaceFile,
   WorkspaceFileLister,
 } from "./workspace-files.js";
-import { fullToolText } from "./gjc-sdk-commands.js";
+import {
+  finalizeThought,
+  handleSessionUpdate,
+  patchSessionInfo,
+  patchTool,
+  projectTailItems,
+  projectThoughtChunk,
+  projectToolStream,
+  reconcileTailTerminalState,
+  startTailFollower,
+  startToolObserver,
+  stopTailFollower,
+  type StreamHost,
+  upsertTool,
+} from "./gjc-sdk-stream.js";
 import {
   appendCancelledNotice,
   awaitPromptSettlement,
@@ -301,19 +300,6 @@ export * from "./gjc-sdk-foundation.js";
  * CLI round trips, so a reopen seconds later must not repeat them.
  */
 export const SESSION_CONTEXT_REFRESH_TTL_MS = 15_000;
-
-/** The id of the newest transcript row a tail read returned. */
-function lastTailTranscriptId(
-  items: ReadonlyArray<{ kind: string; payload: unknown }>,
-): string | undefined {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index]!;
-    if (item.kind !== "transcript") continue;
-    const id = (item.payload as { id?: unknown } | null)?.id;
-    if (typeof id === "string" && id) return id;
-  }
-  return undefined;
-}
 
 
 export class GjcSdkController {
@@ -1631,6 +1617,147 @@ export class GjcSdkController {
     },
     get transcripts() {
       return controller.transcripts;
+    },
+  }))(this);
+
+  private readonly streamHost: StreamHost = ((controller: GjcSdkController): StreamHost => ({
+    get disposed() {
+      return controller.disposed;
+    },
+    get tailReads() {
+      return controller.tailReads;
+    },
+    get attachedSessions() {
+      return controller.attachedSessions;
+    },
+    get tailControllers() {
+      return controller.tailControllers;
+    },
+    clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
+    get toolObservers() {
+      return controller.toolObservers;
+    },
+    get toolSnapshots() {
+      return controller.toolSnapshots;
+    },
+    get tailCheckpoints() {
+      return controller.tailCheckpoints;
+    },
+    get tailEventPositions() {
+      return controller.tailEventPositions;
+    },
+    refreshWorkflowQuestions: (sessionId) => controller.refreshWorkflowQuestions(sessionId),
+    requireCli: () => controller.requireCli(),
+    projectToolStream: (sessionId, kind, payload) => controller.projectToolStream(sessionId, kind, payload),
+    repoFor: (sessionId) => controller.repoFor(sessionId),
+    projectMessageChunk: (sessionId, role, update) => controller.projectMessageChunk(sessionId, role, update),
+    finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
+    refreshTranscriptFromFile: (sessionId) => controller.refreshTranscriptFromFile(sessionId),
+    get transcripts() {
+      return controller.transcripts;
+    },
+    noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
+    get emitEvent() {
+      return controller.emitEvent;
+    },
+    appendTranscript: (item) => controller.appendTranscript(item),
+    projectWorkflowGate: (sessionId, payload) => controller.projectWorkflowGate(sessionId, payload),
+    requestProgressRefresh: (sessionId) => controller.requestProgressRefresh(sessionId),
+    upsertTool: (sessionId, update) => controller.upsertTool(sessionId, update),
+    settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
+    handleSessionUpdate: (notification) => controller.handleSessionUpdate(notification),
+    updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
+    get generation() {
+      return controller.generation;
+    },
+    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
+    discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
+    refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
+    captureSessionState: (sessionId, options, mode) => controller.captureSessionState(sessionId, options, mode),
+    get sessionConfig() {
+      return controller.sessionConfig;
+    },
+    get modelProfiles() {
+      return controller.modelProfiles;
+    },
+    refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
+    refreshModelCapabilities: (sessionId) => controller.refreshModelCapabilities(sessionId),
+    patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
+    get contextUsageObservedAt() {
+      return controller.contextUsageObservedAt;
+    },
+    get activeThoughts() {
+      return controller.activeThoughts;
+    },
+    get nextLocalId() {
+      return controller.nextLocalId;
+    },
+    set nextLocalId(value) {
+      controller.nextLocalId = value;
+    },
+    get sessionPlans() {
+      return controller.sessionPlans;
+    },
+    markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
+    get toolRowIndices() {
+      return controller.toolRowIndices;
+    },
+    get locallyAbortedSessions() {
+      return controller.locallyAbortedSessions;
+    },
+    persistArtifact: (sessionId, artifactId, value) => controller.persistArtifact(sessionId, artifactId, value),
+    readTodoRecords: (sessionId) => controller.readTodoRecords(sessionId),
+    resolveToolImages: (items) => controller.resolveToolImages(items),
+    emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
+    get pendingPermissions() {
+      return controller.pendingPermissions;
+    },
+    get sessions() {
+      return controller.sessions;
+    },
+    get sessionMetadata() {
+      return controller.sessionMetadata;
+    },
+    get compactionRecordWatermark() {
+      return controller.compactionRecordWatermark;
+    },
+    get compactingSessions() {
+      return controller.compactingSessions;
+    },
+    get compactionStartedAt() {
+      return controller.compactionStartedAt;
+    },
+    get compactionRecordBaseline() {
+      return controller.compactionRecordBaseline;
+    },
+    get cancellationWatermarks() {
+      return controller.cancellationWatermarks;
+    },
+    recordLiveEvidence: (sessionId) => controller.recordLiveEvidence(sessionId),
+    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
+    get workingPhaseSessions() {
+      return controller.workingPhaseSessions;
+    },
+    get runtimeIdleSessions() {
+      return controller.runtimeIdleSessions;
+    },
+    readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
+    get liveRunningSessions() {
+      return controller.liveRunningSessions;
+    },
+    rememberLiveRunningTranscriptSize: (sessionId) => controller.rememberLiveRunningTranscriptSize(sessionId),
+    get activePromptSessions() {
+      return controller.activePromptSessions;
+    },
+    get transcriptRunningSessions() {
+      return controller.transcriptRunningSessions;
+    },
+    get pendingAsyncWorkSessions() {
+      return controller.pendingAsyncWorkSessions;
+    },
+    clearRunningLatches: (sessionId) => controller.clearRunningLatches(sessionId),
+    get cancellingSessions() {
+      return controller.cancellingSessions;
     },
   }))(this);
 
@@ -2955,79 +3082,16 @@ export class GjcSdkController {
     return ensureAttached(this.attachHost, sessionId, replay);
   }
 
-  /**
-   * Starts the bounded `sdk session tail --all-events` catch-up loop.
-   *
-   * In gjc/0.18.11 tail is a batch command, not NDJSON: it returns one JSON envelope
-   * when an observed turn becomes idle or the wait window elapses, and an elapsed
-   * window reports `terminal:false` with the frames it had collected. The session-file
-   * watcher stays the durable transcript account; this loop is supplemental
-   * lifecycle evidence. Each invocation is short-lived, resumes from the last
-   * checkpoint claim, and is abortable so detach, close, delete, and app shutdown
-   * cannot leak a `gjc` reader process.
-   */
   private startTailFollower(sessionId: string): void {
-    if (
-      this.disposed ||
-      this.tailReads.has(sessionId) ||
-      !this.attachedSessions.has(sessionId)
-    )
-      return;
-    const abortController = new AbortController();
-    this.tailControllers.set(sessionId, abortController);
-    const follow = this.followSessionTail(sessionId, abortController).finally(
-      () => {
-        if (this.tailReads.get(sessionId) === follow)
-          this.tailReads.delete(sessionId);
-        if (this.tailControllers.get(sessionId) === abortController)
-          this.tailControllers.delete(sessionId);
-      },
-    );
-    this.tailReads.set(sessionId, follow);
-    void follow.catch(() => undefined);
-    this.clearTodoPoll(sessionId);
-    this.startToolObserver(sessionId);
+    return startTailFollower(this.streamHost, sessionId);
   }
 
   private stopTailFollower(sessionId: string): void {
-    this.toolObservers.get(sessionId)?.abort();
-    this.toolObservers.delete(sessionId);
-    this.toolSnapshots.delete(sessionId);
-    this.tailControllers.get(sessionId)?.abort();
-    this.tailControllers.delete(sessionId);
-    // Ownership of the slot ends synchronously. The old promise's `finally`
-    // checks identity before cleanup, so it cannot remove a replacement follower.
-    this.tailReads.delete(sessionId);
-    this.tailCheckpoints.delete(sessionId);
-    this.tailEventPositions.delete(sessionId);
+    return stopTailFollower(this.streamHost, sessionId);
   }
 
   private startToolObserver(sessionId: string): void {
-    if (this.toolObservers.has(sessionId) || this.disposed) return;
-    const controller = new AbortController();
-    this.toolObservers.set(sessionId, controller);
-    void this.refreshWorkflowQuestions(sessionId);
-    const detached = new Promise<void>((resolve) => {
-      controller.signal.addEventListener("abort", () => resolve(), { once: true });
-    });
-    void (async () => {
-      while (!this.disposed && !controller.signal.aborted && this.attachedSessions.has(sessionId)) {
-        try {
-          const cli = await this.requireCli();
-          if (controller.signal.aborted) return;
-          await cli.observeTools(sessionId, (kind, payload) => {
-            if (!controller.signal.aborted && !this.disposed)
-              this.projectToolStream(sessionId, kind, payload);
-          }, controller.signal, this.repoFor(sessionId));
-        } catch {
-          // The observer has no lifecycle authority. Durable tail/file reads still
-          // work during relay failure, and a fresh connection accepts snapshots.
-        }
-        if (!controller.signal.aborted) await tailReadPause(detached);
-      }
-    })().finally(() => {
-      if (this.toolObservers.get(sessionId) === controller) this.toolObservers.delete(sessionId);
-    });
+    return startToolObserver(this.streamHost, sessionId);
   }
 
   private questionKey(sessionId: string, gateId: string): string {
@@ -3073,186 +3137,7 @@ export class GjcSdkController {
   }
 
   private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
-    if (kind === "message_update" || kind === "message_end") {
-      const event = payload.event as Record<string, unknown> | undefined;
-      const message = event?.message as Record<string, unknown> | undefined;
-      if (event?.type !== kind || message?.role !== "assistant" || !Array.isArray(message.content)) return;
-      const delta = event.assistantMessageEvent as Record<string, unknown> | undefined;
-      if (kind === "message_update") {
-        if (delta?.type === "thinking_delta" && typeof delta.delta === "string")
-          this.projectThoughtChunk(sessionId, { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: delta.delta } });
-        if (delta?.type === "text_delta" && typeof delta.delta === "string") {
-          this.finalizeThought(sessionId);
-          this.projectMessageChunk(sessionId, "assistant", { sessionUpdate: "agent_message_chunk", content: { type: "text", text: delta.delta } });
-        }
-      } else {
-        this.finalizeThought(sessionId);
-        this.finalizeAssistantMessage(sessionId);
-        void this.refreshTranscriptFromFile(sessionId);
-      }
-      return;
-    }
-    // The installed SDK publishes reply snapshots as turn_stream, not ACP
-    // agent_message_chunk. They are cumulative text, never append-only deltas.
-    if (kind === "turn_stream") {
-      if (payload.sessionId !== sessionId || typeof payload.text !== "string" ||
-        typeof payload.messageRef !== "string" ||
-        (payload.phase !== "live" && payload.phase !== "finalized")) return;
-      // A finalized snapshot can arrive after the durable watcher has already
-      // published this reply. It is not a second assistant message.
-      const recorded = [...(this.transcripts.get(sessionId) ?? [])].reverse().find((item) =>
-        item.kind === "message" && item.role === "assistant" &&
-        item.content === payload.text &&
-        (item.id.startsWith("shared-message-") || item.id.startsWith("gjc-message-")),
-      );
-      const id = recorded?.id ?? `gjc-message-stream-${payload.messageRef}`;
-      const existing = this.transcripts.get(sessionId)?.find((item) => item.id === id);
-      if (existing?.kind === "message" && existing.streaming === false && payload.phase === "live") return;
-      const message: ChatMessage = {
-        id, kind: "message", sessionId, role: "assistant", content: payload.text,
-        createdAt: existing?.createdAt ?? nowLabel(), streaming: payload.phase === "live",
-      };
-      if (existing?.kind === "message") {
-        Object.assign(existing, message);
-        this.noteTranscriptEpoch(sessionId);
-        this.emitEvent({ type: "message.updated", message: { ...message } });
-      } else this.appendTranscript(message);
-      return;
-    }
-    if (kind === "workflow_gate") {
-      this.projectWorkflowGate(sessionId, payload);
-      this.requestProgressRefresh(sessionId);
-      return;
-    }
-    const event = payload.event;
-    if (!event || typeof event !== "object" || Array.isArray(event)) return;
-    const value = event as Record<string, unknown>;
-    if (value.type !== kind || typeof value.toolCallId !== "string" || typeof value.toolName !== "string") return;
-    if (!["tool_execution_start", "tool_execution_update", "tool_execution_end"].includes(kind)) return;
-    const existing = this.transcripts.get(sessionId)?.find((item) => item.kind === "tool" && item.id === value.toolCallId);
-    if (existing?.kind === "tool" && !LIVE_TOOL_STATUSES.has(existing.status)) return;
-    const ended = kind === "tool_execution_end";
-    if (ended) this.requestProgressRefresh(sessionId);
-    const result = ended ? value.result : value.partialResult;
-    const record = result && typeof result === "object" && !Array.isArray(result)
-      ? result as Record<string, unknown> : undefined;
-    const text = record ? toolResultText(record) ?? "" : undefined;
-    this.upsertTool(sessionId, {
-      sessionUpdate: kind === "tool_execution_start" ? "tool_call" : "tool_call_update",
-      toolCallId: value.toolCallId,
-      title: value.toolName,
-      rawInput: value.args,
-      status: ended ? value.isError === true ? "failed" : "completed" : "in_progress",
-      ...(record ? {
-        rawOutput: !ended && value.toolName === "bash"
-          ? `[실시간 출력 스냅샷 · 앞부분이 생략될 수 있음]\n${text}` : text,
-        content: Array.isArray(record.content) ? record.content : undefined,
-      } : {}),
-    });
-    const tool = this.transcripts.get(sessionId)?.find((item): item is ToolActivity => item.kind === "tool" && item.id === value.toolCallId);
-    if (!tool) return;
-    let snapshots = this.toolSnapshots.get(sessionId);
-    if (!snapshots) this.toolSnapshots.set(sessionId, snapshots = new Map());
-    snapshots.set(tool.id, { ...tool });
-    if (snapshots.size > 256) snapshots.delete(snapshots.keys().next().value!);
-    if (
-      ended &&
-      value.isError === true &&
-      value.toolName === "ask" &&
-      (text ?? "").includes("gjc.ask.timeout")
-    )
-      this.settleOpenQuestions(sessionId, "timeout");
-  }
-
-  private async followSessionTail(
-    sessionId: string,
-    controller: AbortController,
-  ): Promise<void> {
-    const detached = new Promise<void>((resolve) => {
-      if (controller.signal.aborted) resolve();
-      else
-        controller.signal.addEventListener("abort", () => resolve(), {
-          once: true,
-        });
-    });
-    let transientFailures = 0;
-    while (
-      !this.disposed &&
-      !controller.signal.aborted &&
-      this.attachedSessions.has(sessionId)
-    ) {
-      try {
-        const cli = await this.requireCli();
-        const tail = await cli.tail(sessionId, {
-          repo: this.repoFor(sessionId),
-          ...this.tailCheckpoints.get(sessionId),
-          untilIdle: true,
-          timeoutMs: TAIL_WINDOW_MS,
-          signal: controller.signal,
-        });
-        transientFailures = 0;
-        if (tail.gap) {
-          this.tailCheckpoints.delete(sessionId);
-          await this.refreshTranscriptFromFile(sessionId);
-          await tailReadPause(detached);
-          continue;
-        }
-        // A read with no new transcript row resumes at the row the last one ended at.
-        const afterTranscriptId =
-          lastTailTranscriptId(tail.items) ??
-          this.tailCheckpoints.get(sessionId)?.afterTranscriptId;
-        if (tail.checkpointToken && afterTranscriptId)
-          this.tailCheckpoints.set(sessionId, {
-            cursor: tail.checkpointToken,
-            afterTranscriptId,
-          });
-        else this.tailCheckpoints.delete(sessionId);
-        this.projectTailItems(sessionId, tail.items);
-        if (tail.source === "offline") return;
-        // Pace every read, including one that returned frames. An active stream
-        // returns as soon as it has data, so pausing only on an empty answer tied
-        // process spawns to the frame rate: a live turn re-launched a ~400MB tail
-        // reader more than once a second. The file watcher already delivers rows;
-        // one window between reads is the cost of keeping stream events ordered.
-        await tailReadPause(detached);
-      } catch (error) {
-        if (controller.signal.aborted || this.disposed) return;
-        if (error instanceof SdkCliError) {
-          if (error.code === "aborted") return;
-          // A timeout means only that no terminal turn event arrived inside this
-          // bounded window. It is not a failed run and never clears the spinner.
-          if (error.code === "tail_timeout") {
-            await tailReadPause(detached);
-            continue;
-          }
-          // A checkpoint the reader refuses -- one without its transcript boundary,
-          // or one past its expiry -- is refused on every retry. Keeping it is what
-          // left a session with no live follower at all: each pass failed with
-          // `usage`, and only the file watcher still reported the turn.
-          if (
-            error.code === "retention_gap" ||
-            (error.code === "usage" && this.tailCheckpoints.has(sessionId))
-          ) {
-            this.tailCheckpoints.delete(sessionId);
-            await this.refreshTranscriptFromFile(sessionId);
-            await tailReadPause(detached);
-            continue;
-          }
-          if (
-            error.code === "session_deleted" ||
-            error.code === "session_unavailable"
-          )
-            return;
-        }
-        // The session is still attached, so a transport failure is not a reason to
-        // stop following it forever. Retry with a capped backoff, preserving the
-        // checkpoint, instead of leaving the early-returning attach path with no
-        // follower and no way to notice.
-        transientFailures += 1;
-        await tailRetryPause(detached, transientFailures);
-        continue;
-      }
-    }
+    return projectToolStream(this.streamHost, sessionId, kind, payload);
   }
 
   private projectTailItems(
@@ -3264,276 +3149,30 @@ export class GjcSdkController {
       seq?: number;
     }>,
   ): void {
-    let transcriptEvidence = false;
-    // Compare every frame in this response to the prior response's watermark.
-    // Advancing it frame-by-frame would mistake later frames in an initial
-    // catch-up batch for fresh work merely because an earlier frame seeded it.
-    const priorPosition = this.tailEventPositions.get(sessionId);
-    let newestPosition = priorPosition;
-    for (const item of items) {
-      const payload =
-        item.payload &&
-        typeof item.payload === "object" &&
-        !Array.isArray(item.payload)
-          ? (item.payload as Record<string, unknown>)
-          : undefined;
-      const directUpdate = payload?.sessionUpdate;
-      const nested =
-        payload?.update &&
-        typeof payload.update === "object" &&
-        !Array.isArray(payload.update)
-          ? (payload.update as Record<string, unknown>)
-          : undefined;
-      const positioned =
-        typeof item.generation === "number" && typeof item.seq === "number";
-      const isNewTailEvent =
-        positioned &&
-        priorPosition !== undefined &&
-        (item.generation! > priorPosition.generation ||
-          (item.generation === priorPosition.generation &&
-            item.seq! > priorPosition.seq));
-      const projectUpdate = (source: Record<string, unknown>) => {
-        if (typeof source.sessionUpdate !== "string") return;
-        let update = source;
-        if (!isNewTailEvent) {
-          const meta = source._meta;
-          if (meta && typeof meta === "object" && !Array.isArray(meta)) {
-            const otherMeta = { ...(meta as Record<string, unknown>) };
-            delete otherMeta.gjcRunning;
-            delete otherMeta.gjcPhase;
-            delete otherMeta.gjcCompactionState;
-            update = { ...source, _meta: otherMeta };
-          }
-        }
-        this.handleSessionUpdate({
-          sessionId,
-          update: update as unknown as SessionUpdate,
-        });
-      };
-      if (typeof directUpdate === "string") projectUpdate(payload!);
-      else if (typeof nested?.sessionUpdate === "string") projectUpdate(nested);
-      if (item.kind === "transcript") transcriptEvidence = true;
-      if (
-        positioned &&
-        (!newestPosition || item.generation! > newestPosition.generation ||
-          (item.generation === newestPosition.generation &&
-            item.seq! > newestPosition.seq))
-      )
-        newestPosition = { generation: item.generation!, seq: item.seq! };
-      // The first tail read is a catch-up snapshot: its start events may describe
-      // already-finished work. Only a start beyond a sequence position we've
-      // observed before this frame (including a newer generation) can reopen an
-      // idle session. Missing sequence metadata is insufficient evidence.
-      if (
-        (item.kind === "turn_start" || item.kind === "agent_start") &&
-        isNewTailEvent
-      )
-        this.updateSessionStatus(sessionId, "running");
-      if (item.kind === "agent_failed" && isNewTailEvent)
-        this.updateSessionStatus(sessionId, "failed", { announce: false });
-      if (
-        isNewTailEvent &&
-        (item.kind === "turn_end" || item.kind === "agent_end")
-      ) {
-        void this.reconcileTailTerminalState(sessionId);
-        this.requestProgressRefresh(sessionId);
-      }
-      if (item.kind === "session_closed" || item.kind === "session_terminated")
-        this.stopTailFollower(sessionId);
-    }
-    if (newestPosition) this.tailEventPositions.set(sessionId, newestPosition);
-    if (transcriptEvidence) void this.refreshTranscriptFromFile(sessionId);
+    return projectTailItems(this.streamHost, sessionId, items);
   }
 
   private refreshTranscriptFromFile(sessionId: string): Promise<void> {
     return refreshTranscriptFromFile(this.transcriptStoreHost, sessionId);
   }
 
-  private async reconcileTailTerminalState(sessionId: string): Promise<void> {
-    const generation = this.generation;
-    const revision = this.currentRunRevision(sessionId);
-    const state = await this.discoveredRunState(sessionId);
-    if (state !== undefined && state !== "running" && generation === this.generation && revision === this.currentRunRevision(sessionId))
-      this.updateSessionStatus(sessionId, state);
+  private reconcileTailTerminalState(sessionId: string): Promise<void> {
+    return reconcileTailTerminalState(this.streamHost, sessionId);
   }
 
-  /**
-   * Projects one session update into the transcript.
-   *
-   * These come from `gjc sdk session tail` frames and from rows read
-   * out of the session file, both of which carry the same shapes. Keeping this
-   * switch as the single projection point is what lets the renderer stay unchanged.
-   */
   private handleSessionUpdate(notification: SessionNotification): void {
-    const { sessionId, update } = notification;
-    switch (update.sessionUpdate) {
-      case "user_message_chunk":
-        this.projectMessageChunk(sessionId, "user", update);
-        break;
-      case "agent_message_chunk":
-        this.finalizeThought(sessionId);
-        this.projectMessageChunk(sessionId, "assistant", update);
-        break;
-      case "agent_thought_chunk":
-        this.projectThoughtChunk(sessionId, update);
-        break;
-      case "tool_call":
-        this.finalizeThought(sessionId);
-        this.upsertTool(sessionId, update);
-        break;
-      case "tool_call_update":
-        this.upsertTool(sessionId, update);
-        break;
-      case "session_info_update":
-        this.patchSessionInfo(sessionId, update);
-        break;
-      case "plan":
-        this.upsertPlan(sessionId, update.entries);
-        break;
-      case "available_commands_update": {
-        // GJC's own command list for this session. An empty update is authoritative
-        // too -- it says the session has no dynamic commands, so the synthesized
-        // skill entries must not be merged back over it.
-        void this.refreshSdkCommands(
-          sessionId,
-          agentCommands(update.availableCommands),
-        );
-        break;
-      }
-      case "config_option_update": {
-        this.captureSessionState(sessionId, update.configOptions);
-        if (this.attachedSessions.has(sessionId)) {
-          const selected = this.sessionConfig
-            .get(sessionId)
-            ?.find(
-              (option) => option.category === "model" || option.id === "model",
-            )?.currentValue;
-          const known =
-            typeof selected === "string" &&
-            (this.modelProfiles.get(sessionId) ?? []).some(
-              (profile) => profile.value === selected,
-            );
-          // A selection already in the cached catalog needs only its display and
-          // thinking details. A selection outside it may be a profile added since
-          // the last read, so that one still re-lists the catalog.
-          if (typeof selected === "string" && !known)
-            void this.refreshSessionConfigOptions(sessionId);
-          else void this.refreshModelCapabilities(sessionId);
-        }
-        break;
-      }
-      case "current_mode_update":
-        this.patchSessionRuntime(sessionId, { mode: update.currentModeId });
-        break;
-      case "usage_update":
-        this.contextUsageObservedAt.set(sessionId, Date.now());
-        if (update.size > 0)
-          this.patchSessionRuntime(sessionId, {
-            usagePercent: Math.min(
-              100,
-              Math.max(0, (update.used / update.size) * 100),
-            ),
-            usagePending: false,
-          });
-        break;
-      default:
-        break;
-    }
+    return handleSessionUpdate(this.streamHost, notification);
   }
 
   private projectThoughtChunk(
     sessionId: string,
     update: Extract<SessionUpdate, { sessionUpdate: "agent_thought_chunk" }>,
   ): void {
-    const text = textFromContent(update.content);
-    if (!text) return;
-    const existingId = this.activeThoughts.get(sessionId);
-    if (existingId) {
-      const thought = (this.transcripts.get(sessionId) ?? []).find(
-        (item): item is ThoughtActivity =>
-          item.kind === "thought" && item.id === existingId,
-      );
-      if (!thought) return;
-      thought.content += text;
-      this.noteTranscriptEpoch(sessionId);
-      this.emitEvent({
-        type: "thought.delta",
-        sessionId,
-        thoughtId: thought.id,
-        delta: text,
-        streaming: true,
-      });
-      return;
-    }
-    const thought: ThoughtActivity = {
-      id: update.messageId
-        ? `gjc-thought-${update.messageId}`
-        : `gjc-thought-${this.nextLocalId++}`,
-      kind: "thought",
-      sessionId,
-      content: text,
-      createdAt: nowLabel(),
-      streaming: true,
-    };
-    this.activeThoughts.set(sessionId, thought.id);
-    this.appendTranscript(thought);
+    return projectThoughtChunk(this.streamHost, sessionId, update);
   }
 
   private finalizeThought(sessionId: string): void {
-    const thoughtId = this.activeThoughts.get(sessionId);
-    if (!thoughtId) return;
-    const thought = (this.transcripts.get(sessionId) ?? []).find(
-      (item): item is ThoughtActivity =>
-        item.kind === "thought" && item.id === thoughtId,
-    );
-    if (thought) {
-      thought.streaming = false;
-      this.noteTranscriptEpoch(sessionId);
-      this.emitEvent({
-        type: "thought.delta",
-        sessionId,
-        thoughtId,
-        delta: "",
-        streaming: false,
-      });
-    }
-    this.activeThoughts.delete(sessionId);
-  }
-
-  private upsertPlan(
-    sessionId: string,
-    entries: Extract<SessionUpdate, { sessionUpdate: "plan" }>["entries"],
-  ): void {
-    const items = this.transcripts.get(sessionId) ?? [];
-    const existing = items.find(
-      (item): item is PlanActivity => item.kind === "plan",
-    );
-    const plan: PlanActivity = {
-      id: existing?.id ?? `gjc-plan-${this.nextLocalId++}`,
-      kind: "plan",
-      sessionId,
-      entries: entries.map((entry) => ({
-        content: entry.content,
-        status:
-          entry.status === "in_progress" || entry.status === "completed"
-            ? entry.status
-            : "pending",
-      })),
-      createdAt: existing?.createdAt ?? nowLabel(),
-    };
-    if (existing) {
-      Object.assign(existing, plan);
-      this.noteTranscriptEpoch(sessionId);
-    } else this.appendTranscript(plan);
-    // The row the session actually carries is the retained one, so a later durable
-    // rebuild composes the same plan state instead of an earlier copy of it. An
-    // update with no entries is still an update: it clears them.
-    this.sessionPlans.set(sessionId, existing ?? plan);
-    this.markTranscriptRowDirty(sessionId, plan.id);
-    this.emitEvent({
-      type: "plan.updated",
-      plan: { ...plan, entries: plan.entries.map((entry) => ({ ...entry })) },
-    });
+    return finalizeThought(this.streamHost, sessionId);
   }
 
   private installTranscript(
@@ -3701,142 +3340,7 @@ export class GjcSdkController {
       { sessionUpdate: "tool_call" | "tool_call_update" }
     >,
   ): void {
-    this.markTranscriptRowDirty(sessionId, update.toolCallId);
-    const items = this.transcripts.get(sessionId) ?? [];
-    let indices = this.toolRowIndices.get(sessionId);
-    if (!indices) {
-      indices = new Map();
-      this.toolRowIndices.set(sessionId, indices);
-    }
-    let existingIndex = indices.get(update.toolCallId);
-    const indexed =
-      existingIndex === undefined ? undefined : items[existingIndex];
-    let existing: ToolActivity | undefined =
-      indexed?.kind === "tool" && indexed.id === update.toolCallId
-        ? indexed
-        : undefined;
-    if (!existing) {
-      existingIndex = items.findIndex(
-        (item): item is ToolActivity =>
-          item.kind === "tool" && item.id === update.toolCallId,
-      );
-      const found = existingIndex >= 0 ? items[existingIndex] : undefined;
-      existing = found?.kind === "tool" ? found : undefined;
-      if (existingIndex >= 0) indices.set(update.toolCallId, existingIndex);
-      else indices.delete(update.toolCallId);
-    }
-    if (
-      this.locallyAbortedSessions.has(sessionId) &&
-      update.sessionUpdate === "tool_call" &&
-      !existing
-    )
-      return;
-    if (update.sessionUpdate === "tool_call" && !existing)
-      this.finalizeAssistantMessage(sessionId);
-    const name = inferToolName(update, existing);
-    const input =
-      update.rawInput &&
-      typeof update.rawInput === "object" &&
-      !Array.isArray(update.rawInput)
-        ? (update.rawInput as Record<string, unknown>)
-        : undefined;
-    const diff =
-      toolDiffText(update.rawOutput, update.content) ?? existing?.diff;
-    const images = [
-      ...toolImageRefs(update.content),
-      ...toolImageRefs(update.rawOutput),
-    ];
-    const projectedStatus = update.status
-      ? toolStatus(update.status)
-      : (existing?.status ?? "running");
-    const rawOutput = update.rawOutput ?? update.content;
-    const outputText = fullToolText(rawOutput);
-    const subagents =
-      name === "task"
-        ? input
-          ? taskSubagents(input, projectedStatus, outputText)
-          : existing?.subagents?.map((agent) => ({
-              ...agent,
-              status:
-                receiptSubagentStatus(outputText, agent.id) ??
-                taskStatus(projectedStatus),
-            }))
-        : undefined;
-    const patch: ToolActivity = {
-      id: update.toolCallId,
-      kind: "tool",
-      sessionId,
-      name,
-      description: update.title ?? existing?.description ?? name,
-      command: fullToolText(update.rawInput) ?? existing?.command,
-      status: projectedStatus,
-      createdAt: existing?.createdAt ?? nowLabel(),
-      output: fullToolText(update.rawOutput ?? update.content) ?? existing?.output,
-      artifactRefs: [
-        ...new Set([
-          ...(existing?.artifactRefs ?? []),
-          ...artifactReferences(update.rawInput),
-          ...artifactReferences(update.rawOutput ?? update.content),
-        ]),
-      ],
-      ...(diff ? { diff } : {}),
-      ...(typeof input?.path === "string" && input.path
-        ? { targetPath: input.path }
-        : existing?.targetPath
-          ? { targetPath: existing.targetPath }
-          : {}),
-      ...(images.length > 0
-        ? { images }
-        : existing?.images
-          ? { images: existing.images }
-          : {}),
-      ...(subagents && subagents.length > 0 ? { subagents } : {}),
-    };
-    if (update.rawInput !== undefined) {
-      const id = `${sessionId}-${update.toolCallId}-input`.replace(
-        /[^A-Za-z0-9._-]/g,
-        "_",
-      );
-      patch.inputArtifactId = id;
-      void this.persistArtifact(sessionId, id, update.rawInput).catch((error) =>
-        console.error(`Failed to persist tool input artifact ${id}`, error),
-      );
-    }
-    if (update.rawOutput !== undefined || update.content !== undefined) {
-      const id = `${sessionId}-${update.toolCallId}-output`.replace(
-        /[^A-Za-z0-9._-]/g,
-        "_",
-      );
-      patch.outputArtifactId = id;
-      void this.persistArtifact(
-        sessionId,
-        id,
-        update.rawOutput ?? update.content,
-      ).catch((error) =>
-        console.error(`Failed to persist tool output artifact ${id}`, error),
-      );
-    }
-    if (existing) {
-      Object.assign(existing, patch);
-      this.noteTranscriptEpoch(sessionId);
-      this.emitEvent({ type: "tool.updated", tool: { ...existing } });
-    } else {
-      this.appendTranscript(patch);
-    }
-    // A todo tool that finished is the only live signal that the store may have
-    // changed, and it is not a todo record: it is a request. The store itself is
-    // read back so what is shown is what the runtime recorded, not the input op.
-    if (name === "todo_write" && patch.status === "completed")
-      void this.readTodoRecords(sessionId);
-    if (patch.images?.some((image) => image.blobId && !image.dataUrl)) {
-      const settled = existing ?? patch;
-      void this.resolveToolImages([settled])
-        .then(() => {
-          this.noteTranscriptEpoch(sessionId);
-          this.emitEvent({ type: "tool.updated", tool: { ...settled } });
-        })
-        .catch(() => undefined);
-    }
+    return upsertTool(this.streamHost, sessionId, update);
   }
 
   private persistArtifact(
@@ -3847,232 +3351,15 @@ export class GjcSdkController {
     return persistArtifact(this.filesHost, sessionId, artifactId, value);
   }
 
-  /**
-   * Records a tool call that is waiting on an approval decision.
-   *
-   * A broker-hosted session host cannot ask an external controller for a decision,
-   * so nothing calls this over a live channel any more; the session's permission
-   * mode is set instead (see `applyPermissionMode`). It stays because a transcript
-   * row can still report a tool as awaiting approval, and the window has to show
-   * that state and be able to clear it on cancel.
-   */
-  private requestPermission(
-    request: PendingPermission["request"],
-  ): Promise<{ outcome: { outcome: string; optionId?: string } }> {
-    const { toolCall } = request;
-    this.upsertTool(request.sessionId, {
-      sessionUpdate: "tool_call_update",
-      ...toolCall,
-      status: "pending",
-    });
-    this.patchTool(toolCall.toolCallId, { status: "approval-required" });
-    this.patchTool(toolCall.toolCallId, {
-      permissionOptions: request.options.map((option) => ({
-        optionId: option.optionId,
-        kind: option.kind,
-        name: option.name,
-      })),
-    });
-    return new Promise((resolve) => {
-      this.pendingPermissions.set(toolCall.toolCallId, { request, resolve });
-    });
-  }
-
   private patchTool(toolId: string, patch: Partial<ToolActivity>): void {
-    for (const items of this.transcripts.values()) {
-      const tool = items.find(
-        (item): item is ToolActivity =>
-          item.kind === "tool" && item.id === toolId,
-      );
-      if (!tool) continue;
-      const waiting =
-        tool.status !== "approval-required" &&
-        patch.status === "approval-required";
-      Object.assign(tool, patch);
-      this.noteTranscriptEpoch(tool.sessionId);
-      this.emitEvent({ type: "tool.updated", tool: { ...tool } });
-      if (waiting) this.emitActivity(tool.sessionId, "permission");
-      return;
-    }
+    return patchTool(this.streamHost, toolId, patch);
   }
 
   private patchSessionInfo(
     sessionId: string,
     update: Extract<SessionUpdate, { sessionUpdate: "session_info_update" }>,
   ): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    if (update.title?.trim() && !this.sessionMetadata?.getAlias(sessionId)) {
-      session.title = readableSessionTitle(sessionId, update.title);
-    }
-    if (update.updatedAt) markUpdated(session, update.updatedAt);
-    const phase =
-      typeof update._meta?.gjcPhase === "string"
-        ? update._meta.gjcPhase
-        : undefined;
-    const running = update._meta?.gjcRunning;
-    const compactionState =
-      update._meta?.gjcCompactionState === "start" ||
-      update._meta?.gjcCompactionState === "end"
-        ? update._meta.gjcCompactionState
-        : undefined;
-    const phaseTimestamp =
-      typeof update.updatedAt === "string" ? Date.parse(update.updatedAt) : NaN;
-    const staleOrderedPhase =
-      (phase === "compacting" || phase === "working") &&
-      Number.isFinite(phaseTimestamp) &&
-      (this.compactionRecordWatermark.get(sessionId) ?? -Infinity) >=
-        phaseTimestamp;
-    if (phase === "compacting" && !staleOrderedPhase) {
-      session.phase = "compacting";
-      this.compactingSessions.add(sessionId);
-      if (Number.isFinite(phaseTimestamp))
-        this.compactionStartedAt.set(sessionId, phaseTimestamp);
-      if (!this.locallyAbortedSessions.has(sessionId))
-        session.status = "running";
-    } else if (phase && !staleOrderedPhase) {
-      // GJC reporting any other phase is the authority that compaction ended, so
-      // this is where a locally started compaction is released. Returning from the
-      // control call only meant the request was accepted.
-      if (
-        (phase === "working" && update.updatedAt !== undefined) ||
-        phase === "responding" ||
-        phase === "idle"
-      ) {
-        this.compactingSessions.delete(sessionId);
-        this.compactionRecordBaseline.delete(sessionId);
-        this.compactionStartedAt.delete(sessionId);
-      }
-      session.phase =
-        phase === "responding" || phase === "idle" ? undefined : phase;
-    }
-    // A report carrying `updatedAt` is describing an actual change of state; GJC's
-    // explicit compaction start/end events are ordered lifecycle evidence too, even
-    // though current releases omit updatedAt on those two notifications.
-    const lifecycleChanged =
-      update.updatedAt !== undefined || compactionState !== undefined;
-    const runtimeConfirmedWorkingCycle =
-      lifecycleChanged &&
-      !staleOrderedPhase &&
-      (running === true || (phase !== undefined && phase !== "idle"));
-    if (runtimeConfirmedWorkingCycle) {
-      // A new ordered runtime cycle supersedes the app's cancellation fence; the
-      // fence only suppresses stale evidence from the cancelled run.
-      const cancelledAt = this.cancellationWatermarks.get(sessionId);
-      if (cancelledAt !== undefined && Number.isFinite(phaseTimestamp) && phaseTimestamp > cancelledAt) {
-        this.locallyAbortedSessions.delete(sessionId);
-        this.cancellationWatermarks.delete(sessionId);
-      }
-      // A non-idle phase with a timestamp is a state change the runtime just
-      // reported, which is live evidence of work like any other.
-      this.recordLiveEvidence(sessionId);
-      this.advanceRunRevision(sessionId);
-      this.workingPhaseSessions.add(sessionId);
-      this.runtimeIdleSessions.delete(sessionId);
-    }
-    const runtimeFinishedWorkingCycle =
-      lifecycleChanged &&
-      (phase === "idle" || (phase === undefined && running === false)) &&
-      this.workingPhaseSessions.has(sessionId);
-    if (runtimeFinishedWorkingCycle) {
-      this.runtimeIdleSessions.add(sessionId);
-      // The transcript may already contain the final assistant row. If it does not,
-      // its watcher will call this again when that row arrives.
-      void this.readPersistedTranscript(sessionId);
-    }
-    if (
-      running === true &&
-      !staleOrderedPhase &&
-      !this.locallyAbortedSessions.has(sessionId)
-    ) {
-      if (session.status !== "running" && !runtimeConfirmedWorkingCycle)
-        this.advanceRunRevision(sessionId);
-      // The report is the runtime asserting this session is working right now -- the
-      // bootstrap pair an attach delivers is the same report -- so the aging clock
-      // runs from here rather than from when the latch was first armed.
-      this.recordLiveEvidence(sessionId);
-      session.status = "running";
-      if (!this.liveRunningSessions.has(sessionId)) {
-        this.liveRunningSessions.add(sessionId);
-        // Record how much transcript existed when the work was reported, so a later
-        // read can tell an unchanged stale snapshot from one that watched it end.
-        void this.rememberLiveRunningTranscriptSize(sessionId);
-      }
-    }
-    if (phase === "compacting" && !staleOrderedPhase) {
-      // Capture the revision only after this event has advanced it. Starting this
-      // read earlier made it stale itself synchronously, so a completion record
-      // already on disk could never clear the newly armed working marker.
-      void this.readPersistedTranscript(sessionId).catch(() => undefined);
-    }
-    // A prompt this window sent owns the status until its own round trip settles,
-    // because GJC reports gjcRunning:false for the state *before* the prompt was
-    // accepted. Telling the two apart needs one bit of history: a stale report
-    // arrives without GJC ever having confirmed the turn started, while a genuine
-    // completion always follows a gjcRunning:true for that same turn. Ignoring
-    // every report instead left the row running forever whenever the prompt never
-    // got its reply.
-    //
-    // The same reasoning covers a turn nobody here started. Attaching to a session
-    // makes GJC publish a bootstrap `gjcRunning:false` describing *this connection's*
-    // prompt state, which says nothing about work another process is driving. Reading
-    // it as a completion is what flipped a working session to 완료 the moment it was
-    // clicked. Only a report that follows a confirmed start closes a turn.
-    const neverConfirmedRunning = !this.liveRunningSessions.has(sessionId);
-    const staleForActivePrompt =
-      this.activePromptSessions.has(sessionId) && neverConfirmedRunning;
-    // Which report to discard depends on where the row's running state came from. A
-    // status this window set for its own command is answered by that command's own
-    // live report. A status read out of the transcript belongs to work in another
-    // process, and the bootstrap report carries no information about it.
-    const bootstrapForForeignTurn =
-      !this.activePromptSessions.has(sessionId) &&
-      neverConfirmedRunning &&
-      this.transcriptRunningSessions.has(sessionId);
-    // Attaching delivers two reports 0.1s apart, captured from the running app:
-    //   {updatedAt, _meta:{gjcPhase:"working", gjcRunning:true}}
-    //   {           _meta:{gjcPhase:"idle",    gjcRunning:false}}
-    // The second is the bootstrap restatement of this connection's prompt slot, and it
-    // has no `updatedAt` because nothing changed. The guard below already ignored it, but
-    // only while nothing had confirmed the session running -- and the report 0.1s earlier
-    // had just done exactly that, so the idle won and the row read 완료 while a tool was
-    // still working.
-    //
-    // A real runtime transition states when it happened, so requiring `updatedAt`
-    // rejects the restatement. It still does not finish the row by itself: the
-    // transcript must also contain the cycle's terminal assistant response.
-    const bootstrapIdleAfterWorking =
-      update.updatedAt === undefined &&
-      this.workingPhaseSessions.has(sessionId);
-    if (
-      running === false &&
-      session.status !== "failed" &&
-      !staleForActivePrompt &&
-      !bootstrapForForeignTurn &&
-      !bootstrapIdleAfterWorking &&
-      !this.workingPhaseSessions.has(sessionId) &&
-      !this.pendingAsyncWorkSessions.has(sessionId) &&
-      !this.compactingSessions.has(sessionId)
-    ) {
-      // A turn this window did not start -- a steer, or work driven from the
-      // terminal -- ends here rather than in sendMessage, so this is where its
-      // completion is announced. A cancel is excluded: the user performed it and
-      // is already watching, so announcing it is noise.
-      const wasRunning = session.status === "running";
-      if (session.status !== "idle") this.advanceRunRevision(sessionId);
-      session.status = "idle";
-      this.clearRunningLatches(sessionId);
-      if (session.phase === "compacting") session.phase = undefined;
-      if (
-        wasRunning &&
-        !this.cancellingSessions.has(sessionId) &&
-        !this.locallyAbortedSessions.has(sessionId)
-      )
-        this.emitActivity(sessionId, "completed");
-    }
-    if (typeof update._meta?.gjcThinkingLevel === "string")
-      session.thinking = update._meta.gjcThinkingLevel;
-    this.emitEvent({ type: "session.updated", session: { ...session } });
+    return patchSessionInfo(this.streamHost, sessionId, update);
   }
 
   forkSession(input: {
