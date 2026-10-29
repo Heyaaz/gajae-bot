@@ -1,5 +1,6 @@
 import type { GlobalSearchResult } from "../../shared/productivity-ipc";
 import type { HistorySession } from "../../shared/agent-contract";
+import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import type { AgentSession } from "../backend/types";
 import {
   FileSearch,
@@ -16,29 +17,39 @@ import { t } from "../i18n";
 import { sessionTitleText } from "./format";
 
 
+export interface NewSessionInput {
+  title: string;
+  workspace: string;
+  isolation?: "workspace" | "worktree";
+  worktreeBranch?: string;
+  initialPrompt?: string;
+}
+
 export interface NewSessionDialogProps {
   defaultWorkspace: string;
+  prefill?: NewSessionPrefill;
   onCancel: () => void;
-  onCreate: (input: {
-    title: string;
-    workspace: string;
-    isolation: "workspace" | "worktree";
-    worktreeBranch?: string;
-  }) => void;
+  onCreate: (input: NewSessionInput) => void;
 }
 
 export function NewSessionDialog({
   defaultWorkspace,
+  prefill,
   onCancel,
   onCreate,
 }: NewSessionDialogProps) {
   const defaultTitle = t("새 Gajae 세션");
-  const [title, setTitle] = useState(defaultTitle);
-  const [workspace, setWorkspace] = useState(defaultWorkspace);
-  const [isolation, setIsolation] = useState<"workspace" | "worktree">(
-    "workspace",
+  const [title, setTitle] = useState(prefill?.title || defaultTitle);
+  const [workspace, setWorkspace] = useState(
+    prefill?.workspace || defaultWorkspace,
   );
-  const [worktreeBranch, setWorktreeBranch] = useState("");
+  const [isolation, setIsolation] = useState<"workspace" | "worktree">(
+    prefill?.isolation ?? "workspace",
+  );
+  const [worktreeBranch, setWorktreeBranch] = useState(
+    prefill?.worktreeBranch ?? "",
+  );
+  const [prompt, setPrompt] = useState(prefill?.prompt ?? "");
   const [choosing, setChoosing] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
   const settingsBridge = window.agentControlDesktop?.settings;
@@ -71,6 +82,7 @@ export function NewSessionDialog({
       workspace,
       isolation,
       worktreeBranch: worktreeBranch.trim() || undefined,
+      initialPrompt: prompt.trim() || undefined,
     });
   }
 
@@ -144,6 +156,16 @@ export function NewSessionDialog({
           </div>
         </label>
         {workspaceError && <p role="alert">{workspaceError}</p>}
+        <label>
+          <span>{t("첫 요청")}</span>
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+          />
+          <small>
+            {t("세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.")}
+          </small>
+        </label>
         <footer>
           <button type="button" className="button-secondary" onClick={onCancel}>
             {t("취소")} </button>

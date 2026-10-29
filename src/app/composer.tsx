@@ -62,10 +62,15 @@ export type ComposerSnapshot = ComposerDraft & { pendingQueue: PendingRequest[] 
 // its local-only work outside the component lifetime, keyed by session identity.
 const composerSnapshots = new Map<string, ComposerSnapshot>();
 
-/** A rejected send that still has to reach whichever composer is active for its session. */
+/**
+ * Text that still has to reach whichever composer is active for its session: a
+ * rejected send, whose outcome is unknown and says so, or a prefill the user has
+ * not sent yet, which arrives without a notice.
+ */
 export type ComposerDraftRecovery = {
   revision: number;
   input: MessageInput;
+  origin: "rejected-send" | "prefill";
 };
 
 let recoveryRevision = 0;
@@ -80,11 +85,21 @@ const draftRecoveryListeners = new Map<string, Set<() => void>>();
 export function publishComposerDraftRecovery(
   sessionId: string,
   input: MessageInput,
+  origin: ComposerDraftRecovery["origin"] = "rejected-send",
 ): void {
   const entries = draftRecoveries.get(sessionId) ?? [];
-  entries.push({ revision: ++recoveryRevision, input });
+  entries.push({ revision: ++recoveryRevision, input, origin });
   draftRecoveries.set(sessionId, entries.slice(-50));
   for (const listener of draftRecoveryListeners.get(sessionId) ?? []) listener();
+}
+
+/** Put text into a session's draft without sending it, mounted composer or not. */
+export function prefillComposerDraft(sessionId: string, text: string): void {
+  publishComposerDraftRecovery(
+    sessionId,
+    { text, images: [], files: [] },
+    "prefill",
+  );
 }
 
 export function composerDraftRecoveries(
@@ -963,6 +978,7 @@ export const Composer = memo(function Composer({
       if (entries.length === 0) return;
       const recovered: MessageInput[] = [];
       let throughRevision = 0;
+      let rejectedSend = false;
       for (const entry of entries) {
         const draft = restoreRejectedDraft(
           draftSessionRef.current,
@@ -977,6 +993,7 @@ export const Composer = memo(function Composer({
           files: draft.files,
         });
         throughRevision = entry.revision;
+        if (entry.origin === "rejected-send") rejectedSend = true;
       }
       if (recovered.length === 0) return;
       const merged = mergeRecoveredDraft(
@@ -998,9 +1015,10 @@ export const Composer = memo(function Composer({
       setValue(merged.value);
       setImages(merged.images);
       setFiles(merged.files);
-      setAttachmentError(
-        t("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요."),
-      );
+      if (rejectedSend)
+        setAttachmentError(
+          t("전송 결과를 확인할 수 없습니다. 대화 기록을 확인한 뒤 다시 전송하세요."),
+        );
     };
     const unsubscribe = subscribeComposerDraftRecovery(
       sessionId,

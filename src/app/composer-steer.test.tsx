@@ -2,7 +2,14 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import { Composer, composerQueue, saveComposerQueue, type ComposerProps } from "./composer";
+import {
+  Composer,
+  composerQueue,
+  prefillComposerDraft,
+  publishComposerDraftRecovery,
+  saveComposerQueue,
+  type ComposerProps,
+} from "./composer";
 
 async function mount(overrides: Partial<ComposerProps> = {}) {
   const sessionId = crypto.randomUUID();
@@ -102,6 +109,52 @@ describe("queued message Send now", () => {
       await act(async () => (test.node.querySelector(".composer-queue-send") as HTMLButtonElement).click());
       expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "change direction", images: [], files: [] });
       expect(test.flush).not.toHaveBeenCalled();
+    } finally { await test.close(); }
+  });
+});
+
+describe("composer draft prefill", () => {
+  const notice = "전송 결과를 확인할 수 없습니다";
+
+  async function type(node: HTMLElement, text: string): Promise<HTMLTextAreaElement> {
+    const input = node.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    return input;
+  }
+
+  it("merges a prefill into the mounted draft without sending it or warning", async () => {
+    const test = await mount({ running: false });
+    try {
+      const input = await type(test.node, "already typed");
+      await act(async () => prefillComposerDraft(test.sessionId, "issue body"));
+      expect(input.value).toBe("issue body\nalready typed");
+      expect(test.node.querySelector(".composer-error")).toBeNull();
+      expect(test.send).not.toHaveBeenCalled();
+    } finally { await test.close(); }
+  });
+
+  it("waits for a composer that mounts after the prefill", async () => {
+    const sessionId = crypto.randomUUID();
+    prefillComposerDraft(sessionId, "deep link prompt");
+    const test = await mount({ sessionId, running: false });
+    try {
+      expect(test.node.querySelector("textarea")!.value).toBe("deep link prompt");
+      expect(test.node.querySelector(".composer-error")).toBeNull();
+      expect(test.send).not.toHaveBeenCalled();
+    } finally { await test.close(); }
+  });
+
+  it("still warns when the recovered text is a rejected send", async () => {
+    const test = await mount({ running: false });
+    try {
+      await act(async () =>
+        publishComposerDraftRecovery(test.sessionId, { text: "lost request", images: [], files: [] }),
+      );
+      expect(test.node.querySelector("textarea")!.value).toBe("lost request");
+      expect(test.node.querySelector(".composer-error")?.textContent).toContain(notice);
     } finally { await test.close(); }
   });
 });

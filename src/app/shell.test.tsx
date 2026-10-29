@@ -432,7 +432,7 @@ describe("Escape keyboard routing", () => {
     expect(gate).toBeTruthy();
     for (const surface of [
       "searchOpen",
-      "newSessionOpen",
+      "newSessionRequest",
       "resumeOpen",
       "settingsOpen",
       "deleteCandidate",

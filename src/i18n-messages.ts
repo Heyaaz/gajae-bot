@@ -640,4 +640,6 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "파일이 올바르지 않습니다": "The file is incorrect",
   "현재 SDK는 사용 중인 세션의 기록 삭제를 지원하지 않습니다. 해당 CLI의 세션 선택 화면에서 삭제하세요. 앱은 기록 삭제를 위해 CLI를 종료하지 않습니다.": "Currently, the SDK does not support deleting the history of sessions in use. Delete it from the session selection screen of the relevant CLI. The app does not exit the CLI to delete history.",
   "앱 전체에 표시할 언어를 선택합니다.": "Choose the language used across the app.",
+  "첫 요청": "First request",
+  "세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.": "Placed in the message box once the session is created. You can edit it before sending.",
 };

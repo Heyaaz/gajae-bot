@@ -3,8 +3,9 @@
  */
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptPageRequest } from "../../shared/agent-contract";
+import type { SessionShortcut } from "../../shared/settings-ipc";
 import { selectTranscriptPage } from "../../shared/transcript-page";
 import type { AgentEvent, AgentSession, TranscriptItem } from "../backend/types";
 
@@ -16,6 +17,9 @@ const probe = vi.hoisted(() => ({
   listeners: new Set<(event: AgentEvent) => void>(),
   sessions: [] as AgentSession[],
   initialSession: null as AgentSession | null,
+  newSessionDialog: null as null | Record<string, unknown>,
+  createSession: vi.fn(),
+  prefillComposerDraft: vi.fn(),
 }));
 
 vi.mock("../backend/use-agent-backend", () => {
@@ -79,6 +83,10 @@ vi.mock("../backend/use-agent-backend", () => {
         return () => probe.listeners.delete(listener);
       },
       markSessionRead: async () => undefined,
+      createSession: (input: { title: string; workspace: string }) => {
+        probe.createSession(input);
+        return Promise.resolve({ ...session, id: "s-created", title: input.title, status: "idle" });
+      },
       getGoal: async () => ({ enabled: false, completed: 0, total: 0 }),
     },
     {
@@ -105,6 +113,7 @@ vi.mock("./composer", () => ({
   },
   subscribeComposerReleaseRetry: () => () => undefined,
   releaseQueuedSession: async () => undefined,
+  prefillComposerDraft: probe.prefillComposerDraft,
 }));
 vi.mock("./transcript", () => ({
   ApprovalBanner: () => null,
@@ -118,7 +127,10 @@ vi.mock("./transcript", () => ({
 vi.mock("./dialogs", () => ({
   DeleteSessionDialog: () => null,
   GlobalSearchDialog: () => null,
-  NewSessionDialog: () => null,
+  NewSessionDialog: (props: Record<string, unknown>) => {
+    probe.newSessionDialog = props;
+    return null;
+  },
   ResumeSessionDialog: () => null,
 }));
 vi.mock("./inspector", () => ({
@@ -294,5 +306,100 @@ describe("streaming does not rebuild sidebar or composer props", () => {
         }),
       ]),
     );
+  });
+});
+
+describe("session shortcuts from the main process", () => {
+  let root: Root | undefined;
+  let host: HTMLDivElement | undefined;
+  let shortcut: ((value: SessionShortcut) => void) | undefined;
+
+  beforeEach(() => {
+    probe.sessions = [
+      probe.initialSession!,
+      { ...probe.initialSession!, id: "s-2", title: "두 번째", status: "idle" },
+    ];
+    // Every settings call stays pending: these tests only drive the shortcut
+    // channel, and a resolved undefined would replace the shell's preferences.
+    const pending = new Proxy({}, { get: () => () => new Promise(() => undefined) });
+    Object.assign(window, {
+      agentControlDesktop: {
+        settings: pending,
+        onAbortRun: () => () => undefined,
+        onSessionShortcut: (listener: (value: SessionShortcut) => void) => {
+          shortcut = listener;
+          return () => undefined;
+        },
+      },
+    });
+  });
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    host?.remove();
+    delete (window as { agentControlDesktop?: unknown }).agentControlDesktop;
+    shortcut = undefined;
+    probe.sidebar = null;
+    probe.composer = null;
+    probe.newSessionDialog = null;
+    probe.createSession.mockClear();
+    probe.prefillComposerDraft.mockClear();
+    probe.listeners.clear();
+    probe.sessions = probe.initialSession ? [probe.initialSession] : [];
+  });
+
+  async function mountApp(): Promise<void> {
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => root!.render(createElement(App)));
+    await vi.waitFor(() => {
+      expect(probe.composer?.sessionId).toBe("s-1");
+      expect(shortcut).toBeDefined();
+    });
+  }
+
+  // A function read, so the null written below does not narrow the probe for the checks after it.
+  const shownSession = () => probe.composer?.sessionId;
+
+  it("opens a known session from another screen and ignores an unknown id", async () => {
+    await mountApp();
+    await act(async () => (probe.sidebar!.onOpenProjects as () => void)());
+    probe.composer = null;
+
+    await act(async () => shortcut!({ type: "open", sessionId: "missing" }));
+    expect(shownSession()).toBeUndefined();
+    expect(host!.querySelector(".workspace--empty")).toBeNull();
+
+    await act(async () => shortcut!({ type: "open", sessionId: "s-2" }));
+    expect(shownSession()).toBe("s-2");
+  });
+
+  it("creates at once for a plain new and waits for confirmation with a prefill", async () => {
+    await mountApp();
+    await act(async () => shortcut!({ type: "new" }));
+    expect(probe.createSession).toHaveBeenCalledOnce();
+    expect(probe.newSessionDialog).toBeNull();
+    probe.createSession.mockClear();
+
+    const prefill = { workspace: "/tmp/other", prompt: "이슈 내용" };
+    await act(async () => shortcut!({ type: "new", prefill }));
+    expect(probe.newSessionDialog?.prefill).toEqual(prefill);
+    expect(probe.createSession).not.toHaveBeenCalled();
+    expect(probe.prefillComposerDraft).not.toHaveBeenCalled();
+
+    await act(async () =>
+      (probe.newSessionDialog!.onCreate as (input: unknown) => void)({
+        title: "새 Gajae 세션",
+        workspace: "/tmp/other",
+        isolation: "workspace",
+        initialPrompt: "이슈 내용",
+      }),
+    );
+    expect(probe.createSession).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ workspace: "/tmp/other" }),
+    );
+    expect(probe.prefillComposerDraft).toHaveBeenCalledExactlyOnceWith("s-created", "이슈 내용");
+    expect(probe.composer?.sessionId).toBe("s-created");
   });
 });

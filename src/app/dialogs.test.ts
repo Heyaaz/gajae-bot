@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
-import { NewSessionDialog, sessionSummaryLine, workspaceLabelFor } from "./dialogs";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  NewSessionDialog,
+  sessionSummaryLine,
+  workspaceLabelFor,
+  type NewSessionDialogProps,
+} from "./dialogs";
 
 const hookState = vi.hoisted(() => ({
   slots: [] as unknown[],
@@ -23,12 +28,13 @@ vi.mock("react", async (importOriginal) => {
   };
 });
 
-function renderNewSessionDialog() {
+function renderNewSessionDialog(overrides: Partial<NewSessionDialogProps> = {}) {
   hookState.cursor = 0;
   return NewSessionDialog({
     defaultWorkspace: "/original/project",
     onCancel: () => undefined,
     onCreate: () => undefined,
+    ...overrides,
   });
 }
 
@@ -108,6 +114,78 @@ describe("NewSessionDialog workspace picker", () => {
     );
     expect(findElement(tree, (element) => element.props?.role === "alert")).toBeUndefined();
     vi.unstubAllGlobals();
+  });
+});
+
+describe("NewSessionDialog prefill", () => {
+  const prefill = {
+    workspace: "/linked/project",
+    title: "이슈 172 처리",
+    prompt: "  딥링크를 구현해 줘\n완료 기준을 확인해 줘  ",
+    isolation: "worktree" as const,
+    worktreeBranch: "issue-172-deep-links",
+  };
+  const submitEvent = { preventDefault: () => undefined };
+  beforeEach(() => {
+    hookState.slots = [];
+    vi.stubGlobal("window", {});
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("opens with the prefilled values and hands the trimmed prompt to onCreate", () => {
+    const onCreate = vi.fn();
+    const tree = renderNewSessionDialog({ prefill, onCreate });
+
+    const titleInput = findElement(
+      tree,
+      (element) => element.type === "input" && element.props?.autoFocus,
+    );
+    expect(titleInput.props.value).toBe("이슈 172 처리");
+    expect(findElement(tree, (element) => element.type === "code").props.children).toBe(
+      "/linked/project",
+    );
+    const branch = findElement(
+      tree,
+      (element) => element.type === "input" && element.props?.placeholder === "안전한 브랜치 (선택)",
+    );
+    expect(branch.props.value).toBe("issue-172-deep-links");
+    const prompt = findElement(tree, (element) => element.type === "textarea");
+    expect(prompt.props.value).toBe(prefill.prompt);
+
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate).toHaveBeenCalledExactlyOnceWith({
+      title: "이슈 172 처리",
+      workspace: "/linked/project",
+      isolation: "worktree",
+      worktreeBranch: "issue-172-deep-links",
+      initialPrompt: "딥링크를 구현해 줘\n완료 기준을 확인해 줘",
+    });
+  });
+
+  it("leaves initialPrompt out when the user clears the field", () => {
+    const onCreate = vi.fn();
+    let tree = renderNewSessionDialog({ prefill, onCreate });
+    findElement(tree, (element) => element.type === "textarea").props.onChange({
+      target: { value: "  \n " },
+    });
+    tree = renderNewSessionDialog({ prefill, onCreate });
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate).toHaveBeenCalledOnce();
+    expect(onCreate.mock.calls[0]![0].initialPrompt).toBeUndefined();
+  });
+
+  it("keeps today's defaults without a prefill", () => {
+    const onCreate = vi.fn();
+    const tree = renderNewSessionDialog({ onCreate });
+    expect(findElement(tree, (element) => element.type === "textarea").props.value).toBe("");
+    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
+    expect(onCreate).toHaveBeenCalledExactlyOnceWith({
+      title: "새 Gajae 세션",
+      workspace: "/original/project",
+      isolation: "workspace",
+      worktreeBranch: undefined,
+      initialPrompt: undefined,
+    });
   });
 });
 

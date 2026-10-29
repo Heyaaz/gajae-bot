@@ -24,8 +24,24 @@ export const DESKTOP_IPC = {
   sessionShortcut: "gajae:shortcut:session",
 } as const;
 
+/** Values the new-session dialog opens with. The prompt is only ever placed in the composer, never sent. */
+export type NewSessionPrefill = {
+  workspace?: string;
+  title?: string;
+  prompt?: string;
+  isolation?: "workspace" | "worktree";
+  worktreeBranch?: string;
+};
+
+/**
+ * `new` without a prefill creates a session at once (⌘T). With a prefill it opens
+ * the dialog instead, so text that arrived from outside waits for the user.
+ */
 export type SessionShortcut =
-  { type: "new" } | { type: "select"; index: number } | { type: "abort" };
+  | { type: "new"; prefill?: NewSessionPrefill }
+  | { type: "open"; sessionId: string }
+  | { type: "select"; index: number }
+  | { type: "abort" };
 
 export function sessionShortcutForInput(input: {
   type: string;

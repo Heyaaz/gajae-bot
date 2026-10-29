@@ -5197,8 +5197,25 @@
   border-radius: 8px;
   outline: 0;
 }
-.new-session-dialog > label > input:focus {
+.new-session-dialog > label > input:focus,
+.new-session-dialog > label > textarea:focus {
   border-color: rgba(240, 100, 22, 0.58);
+}
+.new-session-dialog > label > textarea {
+  width: 100%;
+  min-height: 88px;
+  max-height: 240px;
+  padding: 8px 10px;
+  color: var(--text-primary);
+  background: var(--bg-input-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  outline: 0;
+  resize: vertical;
+}
+.new-session-dialog > label > small {
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 .project-location-field {
   display: grid;

@@ -55,6 +55,7 @@ import { TerminalView } from "./terminal-view";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
+  prefillComposerDraft,
   releaseQueuedSession,
   subscribeComposerReleaseRetry,
 } from "./composer";
@@ -63,6 +64,7 @@ import {
   GlobalSearchDialog,
   NewSessionDialog,
   ResumeSessionDialog,
+  type NewSessionInput,
 } from "./dialogs";
 import {
   BUNDLED_GJC_COMMANDS,
@@ -106,6 +108,7 @@ import {
 } from "../../shared/agent-contract";
 import { DEFAULT_DESKTOP_INTEGRATION } from "../../shared/desktop-integration";
 import type { RemoteClientStatus } from "../../shared/remote-protocol";
+import type { NewSessionPrefill } from "../../shared/settings-ipc";
 
 interface ShellSendOptions {
   quiet?: boolean;
@@ -532,7 +535,12 @@ export default function App() {
   const [deleteCandidate, setDeleteCandidate] = useState<AgentSession | null>(
     null,
   );
-  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  // Each open is its own request: a second prefill while the dialog is up
+  // remounts it with the new values instead of being dropped.
+  const [newSessionRequest, setNewSessionRequest] = useState<{
+    prefill?: NewSessionPrefill;
+    serial: number;
+  } | null>(null);
   // Bumped for every request this window sends into the open session. The transcript
   // reads it as "the reader asked for this" and takes the view to the newest content,
   // which is the one append that may move a view someone had scrolled away from.
@@ -1951,13 +1959,18 @@ export default function App() {
     );
   }, []);
 
+  const openNewSessionDialog = useCallback(
+    (prefill?: NewSessionPrefill): void => {
+      setNewSessionRequest((current) => ({
+        prefill,
+        serial: (current?.serial ?? 0) + 1,
+      }));
+    },
+    [],
+  );
+
   const createSession = useCallback(
-    (input: {
-      title: string;
-      workspace: string;
-      isolation?: "workspace" | "worktree";
-      worktreeBranch?: string;
-    }): void => {
+    (input: NewSessionInput): void => {
       const draftId = `draft-${crypto.randomUUID()}`;
       const draft: AgentSession = {
         id: draftId,
@@ -1977,7 +1990,7 @@ export default function App() {
       setSessions((current) => [draft, ...current]);
       setSelectedId(draftId);
       setTranscripts((current) => cacheTranscript(current, draftId, []));
-      setNewSessionOpen(false);
+      setNewSessionRequest(null);
       setAppError("");
 
       const creation = backend.createSession({
@@ -1990,6 +2003,10 @@ export default function App() {
       pendingSessions.current.set(draftId, creation);
       void creation
         .then((session) => {
+          // Only the real id outlives this draft, so the prompt waits for it.
+          // It is never sent from here: the user reads it and presses send.
+          if (input.initialPrompt)
+            prefillComposerDraft(session.id, input.initialPrompt);
           setSessions((current) => [
             session,
             ...current.filter(
@@ -2042,7 +2059,7 @@ export default function App() {
   // with focus anywhere else in the dialog the key used to reach the abort shortcut.
   const dismissibleSurfaceOpen =
     searchOpen ||
-    newSessionOpen ||
+    newSessionRequest !== null ||
     resumeOpen ||
     settingsOpen ||
     findOpen ||
@@ -2058,9 +2075,22 @@ export default function App() {
           return;
         }
         if (shortcut.type === "new") {
+          if (shortcut.prefill) {
+            openNewSessionDialog(shortcut.prefill);
+            return;
+          }
           const workspace = selectedSession?.workspace || connection.workspace;
           if (workspace) createSession({ title: "새 Gajae 세션", workspace });
-          else setNewSessionOpen(true);
+          else openNewSessionDialog();
+          return;
+        }
+        if (shortcut.type === "open") {
+          if (
+            sessionsRef.current.some(
+              (session) => session.id === shortcut.sessionId,
+            )
+          )
+            selectSession(shortcut.sessionId);
           return;
         }
         const session = shortcutSessions[shortcut.index];
@@ -2104,6 +2134,7 @@ export default function App() {
     connection.workspace,
     createSession,
     dismissibleSurfaceOpen,
+    openNewSessionDialog,
     selectSession,
     selectedSession?.workspace,
     shortcutSessions,
@@ -2675,7 +2706,10 @@ export default function App() {
   handlersRef.current = handlers;
 
   const openSearch = useCallback(() => setSearchOpen(true), []);
-  const openNewSession = useCallback(() => setNewSessionOpen(true), []);
+  const openNewSession = useCallback(
+    () => openNewSessionDialog(),
+    [openNewSessionDialog],
+  );
   const openSettings = useCallback(() => {
     // Remote clients do not edit host preferences; the panel that does lives in
     // the desktop app, where the runtime and workspace it changes also live.
@@ -3234,7 +3268,7 @@ export default function App() {
           <button
             className="button-primary"
             type="button"
-            onClick={() => setNewSessionOpen(true)}
+            onClick={openNewSession}
           >
             <Plus size={16} /> {t("새 세션")} </button>
         </main>
@@ -3264,10 +3298,12 @@ export default function App() {
           }}
         />
       )}
-      {newSessionOpen && (
+      {newSessionRequest && (
         <NewSessionDialog
+          key={newSessionRequest.serial}
           defaultWorkspace={connection.workspace}
-          onCancel={() => setNewSessionOpen(false)}
+          prefill={newSessionRequest.prefill}
+          onCancel={() => setNewSessionRequest(null)}
           onCreate={createSession}
         />
       )}
