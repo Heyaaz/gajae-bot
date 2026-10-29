@@ -163,26 +163,31 @@ function withParallelHeads(
       const session = sessionId ? byId.get(sessionId) : undefined;
       return session ? [session] : [];
     });
-    if (members.length === 0) continue;
+    // A group whose attempts all failed at creation has no session to hang a row
+    // on, but it can still own worktrees that only its comparison view cleans up.
+    const ownsLeftovers =
+      group.attempts.every((attempt) => !attemptSessionId(attempt)) &&
+      group.attempts.some((attempt) => attempt.state.kind !== "removed");
+    if (members.length === 0 && !ownsLeftovers) continue;
     const id = parallelHeadId(group.id);
     heads.set(id, group);
     for (const member of members) headOf.set(member.id, id);
-    const newest = [...members].sort(byRecency)[0]!;
+    const newest = [...members].sort(byRecency)[0];
     headRows.push({
       id,
       title: group.title,
-      subtitle: newest.subtitle,
+      subtitle: newest?.subtitle ?? group.workspace.split("/").filter(Boolean).at(-1) ?? "",
       workspace: group.workspace,
       runtime: "gjc",
       status: "idle",
-      updatedAt: newest.updatedAt,
+      updatedAt: newest?.updatedAt ?? "",
       updatedAtMs: Math.max(
         group.createdAt,
         ...members.map((member) => member.updatedAtMs ?? 0),
       ),
       pinned: false,
       unread: false,
-      accent: newest.accent,
+      accent: newest?.accent ?? "#ff8a34",
       ownership: "gajae",
       attachment: "attached",
     });

@@ -551,6 +551,24 @@ describe("parallel groups", () => {
     });
   });
 
+  it("keeps a row for a group whose attempts all failed to be created, until they are cleaned up", () => {
+    const failed: ParallelGroup = {
+      ...group,
+      attempts: group.attempts.map((attempt) => ({
+        ...attempt,
+        state: { kind: "failed" as const, reason: "x" },
+      })),
+    };
+    const model = sessionListModel([session({ id: "solo" })], { parallelGroups: [failed] });
+    expect(rowsOf(model)).toContain(parallelHeadId("g1"));
+    const removed: ParallelGroup = {
+      ...failed,
+      state: { kind: "discarded" },
+      attempts: failed.attempts.map((attempt) => ({ ...attempt, state: { kind: "removed" as const } })),
+    };
+    expect(rowsOf(sessionListModel([session({ id: "solo" })], { parallelGroups: [removed] }))).toEqual(["solo"]);
+  });
+
   it("draws no group row once none of its attempts is listed", () => {
     const model = sessionListModel([session({ id: "solo" })], { parallelGroups: [group] });
     expect(rowsOf(model)).toEqual(["solo"]);
