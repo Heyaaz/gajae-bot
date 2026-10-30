@@ -88,8 +88,18 @@ export interface SessionRowNode {
   parallelGroup?: ParallelGroup;
 }
 
+/** How the rail sections its unpinned rows. */
+export type SessionGrouping = "status" | "project";
+
+/** The project a row belongs to: the main working tree of its repository, or its folder. */
+export interface SessionProjectRef {
+  id: string;
+  name: string;
+}
+
 export interface SessionGroupBlock {
-  id: SessionGroupId;
+  /** A `SessionGroupId`, or `project:<root>` for a project section. */
+  id: string;
   label: string;
   /**
    * The rows to render, in order: family heads followed by the members they are
@@ -101,6 +111,12 @@ export interface SessionGroupBlock {
    * past the cap, so the control that closes it again stays reachable.
    */
   overflow: number;
+  /** Set on a project section, whose header folds it. */
+  project?: {
+    collapsed: boolean;
+    /** Families with a working member, shown on the header while it is folded. */
+    working: number;
+  };
 }
 
 export interface SessionListModel {
@@ -113,7 +129,7 @@ export interface SessionListModel {
 
 export interface SessionListOptions {
   /** Groups the user opened with 더 보기. */
-  expanded?: ReadonlySet<SessionGroupId>;
+  expanded?: ReadonlySet<string>;
   /**
    * Families the user closed. A fork is shown under the session it came from until
    * it is closed, which is what the nesting is for; closing is the exception.
@@ -124,6 +140,17 @@ export interface SessionListOptions {
   selectedId?: string | null;
   /** Best-of-N groups; their attempts nest under one row per group. */
   parallelGroups?: readonly ParallelGroup[];
+  /**
+   * Sections rows by project instead of by state. Rows waiting on the user still
+   * lead the rail in their own section, so a folded project cannot hide them.
+   */
+  projectOf?: (session: AgentSession) => SessionProjectRef | undefined;
+  /** Project sections the user folded, by project id. */
+  collapsedProjects?: ReadonlySet<string>;
+}
+
+export function projectSectionId(projectId: string): string {
+  return `project:${projectId}`;
 }
 
 const PARALLEL_HEAD_PREFIX = "parallel-group:";
@@ -316,6 +343,8 @@ export function sessionListModel(
     limit = SESSION_GROUP_LIMIT,
     selectedId,
     parallelGroups = [],
+    projectOf,
+    collapsedProjects,
   }: SessionListOptions = {},
 ): SessionListModel {
   const { rows: sessions, heads: parallelHeads } = withParallelHeads(
@@ -443,29 +472,27 @@ export function sessionListModel(
     return familyGroup.get(head) ?? sessionGroupOf(session);
   };
 
+  const familyOf = (root: AgentSession): AgentSession[] =>
+    (members.get(root.id) ?? []).filter(
+      (member) => !member.pinned && !claimedByPinnedBranch(member.id),
+    );
   const groups: SessionGroupBlock[] = [];
-  for (const id of SESSION_GROUP_ORDER) {
-    const roots = sessions
-      .filter(
-        (session) =>
-          !session.pinned &&
-          !claimedByPinnedBranch(session.id) &&
-          !headOf.has(session.id) &&
-          groupOf(session) === id,
-      )
-      .slice()
-      .sort(byRecency);
-    if (roots.length === 0) continue;
+  const pushBlock = (
+    id: string,
+    label: string,
+    roots: readonly AgentSession[],
+    project?: SessionGroupBlock["project"],
+  ): void => {
+    if (project?.collapsed) {
+      groups.push({ id, label, rows: [], overflow: 0, project });
+      return;
+    }
     // Digits are assigned from the collapsed list: a group opened with 더 보기 adds
     // rows to the rail without renumbering the ones already numbered, so ⌘3 keeps
     // opening the row the user learned. A family is one digit, wherever it is open.
     const capped = roots.slice(0, limit);
     shortcuts.push(...capped);
     const opened = expanded?.has(id) ?? false;
-    const familyOf = (root: AgentSession): AgentSession[] =>
-      (members.get(root.id) ?? []).filter(
-        (member) => !member.pinned && !claimedByPinnedBranch(member.id),
-      );
     // The row the user is reading is never behind 더 보기: the cap decides which
     // families the group leads with, not whether the open session is on the rail.
     // The kept family renders after the capped roots, so the rows the digits point
@@ -485,13 +512,67 @@ export function sessionListModel(
     for (const root of shown) nodes.push(...familyNodes(root, familyOf(root)));
     groups.push({
       id,
-      label: SESSION_GROUP_LABELS[id],
+      label,
       rows: nodes,
       // An opened group keeps the cap's count so the 접기 control stays reachable.
       overflow: opened
         ? Math.max(0, roots.length - limit)
         : roots.length - shown.length,
+      ...(project ? { project } : {}),
     });
+  };
+  const unpinnedRoots = sessions.filter(
+    (session) =>
+      !session.pinned &&
+      !claimedByPinnedBranch(session.id) &&
+      !headOf.has(session.id),
+  );
+  const rootsIn = (id: SessionGroupId): AgentSession[] =>
+    unpinnedRoots.filter((session) => groupOf(session) === id).sort(byRecency);
+
+  if (!projectOf) {
+    for (const id of SESSION_GROUP_ORDER) {
+      const roots = rootsIn(id);
+      if (roots.length > 0) pushBlock(id, SESSION_GROUP_LABELS[id], roots);
+    }
+  } else {
+    const waiting = rootsIn("needs-input");
+    if (waiting.length > 0)
+      pushBlock("needs-input", SESSION_GROUP_LABELS["needs-input"], waiting);
+    // A Best-of-N head is not a session the projects list knows, so a family answers
+    // with the first member that has a project.
+    const projectOfFamily = (root: AgentSession): SessionProjectRef =>
+      projectOf(root) ??
+      familyOf(root).map(projectOf).find((ref) => ref !== undefined) ?? {
+        id: root.workspace,
+        name: root.workspace.split("/").filter(Boolean).at(-1) ?? root.workspace,
+      };
+    const byProject = new Map<string, { ref: SessionProjectRef; roots: AgentSession[] }>();
+    for (const root of unpinnedRoots) {
+      if (groupOf(root) === "needs-input") continue;
+      const ref = projectOfFamily(root);
+      const entry = byProject.get(ref.id) ?? { ref, roots: [] };
+      entry.roots.push(root);
+      byProject.set(ref.id, entry);
+    }
+    // Sections keep a fixed place, ordered like the project selector, so a row
+    // updating in one project does not move the others.
+    const sections = [...byProject.values()].sort(
+      (left, right) =>
+        left.ref.name.localeCompare(right.ref.name) ||
+        left.ref.id.localeCompare(right.ref.id),
+    );
+    for (const { ref, roots } of sections) {
+      roots.sort(
+        (left, right) =>
+          SESSION_GROUP_ORDER.indexOf(groupOf(left)) -
+            SESSION_GROUP_ORDER.indexOf(groupOf(right)) || byRecency(left, right),
+      );
+      pushBlock(projectSectionId(ref.id), ref.name, roots, {
+        collapsed: collapsedProjects?.has(ref.id) ?? false,
+        working: roots.filter((root) => groupOf(root) === "working").length,
+      });
+    }
   }
   return {
     pinned,

@@ -574,3 +574,45 @@ describe("parallel groups", () => {
     expect(rowsOf(model)).toEqual(["solo"]);
   });
 });
+
+describe("sessionListModel by project", () => {
+  const projects: Record<string, { id: string; name: string }> = {
+    "/work/zeta": { id: "/work/zeta", name: "zeta" },
+    "/work/alpha": { id: "/work/alpha", name: "alpha" },
+  };
+  const projectOf = (row: AgentSession) => projects[row.workspace];
+
+  it("keeps waiting rows on top and sections the rest by project, working first", () => {
+    const model = sessionListModel(
+      [
+        session({ id: "z-done", workspace: "/work/zeta", updatedAtMs: 5 }),
+        session({ id: "z-run", workspace: "/work/zeta", status: "running", updatedAtMs: 1 }),
+        session({ id: "a-wait", workspace: "/work/alpha", status: "waiting" }),
+        session({ id: "a-done", workspace: "/work/alpha" }),
+      ],
+      { projectOf },
+    );
+    expect(model.groups.map((group) => [group.label, group.rows.map((row) => row.session.id)])).toEqual([
+      [SESSION_GROUP_LABELS["needs-input"], ["a-wait"]],
+      ["alpha", ["a-done"]],
+      ["zeta", ["z-run", "z-done"]],
+    ]);
+    expect(model.shortcuts.map((row) => row.id)).toEqual(["a-wait", "a-done", "z-run", "z-done"]);
+  });
+
+  it("folds a project to its header and keeps its working count", () => {
+    const model = sessionListModel(
+      [
+        session({ id: "z-run", workspace: "/work/zeta", status: "running" }),
+        session({ id: "z-done", workspace: "/work/zeta" }),
+        session({ id: "a-done", workspace: "/work/alpha" }),
+      ],
+      { projectOf, collapsedProjects: new Set(["/work/zeta"]) },
+    );
+    const zeta = model.groups.find((group) => group.label === "zeta")!;
+    expect(zeta.rows).toEqual([]);
+    expect(zeta.project).toEqual({ collapsed: true, working: 1 });
+    // A folded project's rows take no ⌘ digit: the digit would open a row nobody sees.
+    expect(model.shortcuts.map((row) => row.id)).toEqual(["a-done"]);
+  });
+});

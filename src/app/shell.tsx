@@ -75,6 +75,7 @@ import { useComposerModel } from "./use-composer-model";
 import { useCreateSession } from "./use-create-session";
 import { useSessionRemoval } from "./use-session-removal";
 import { useProjectModel } from "./use-project-model";
+import { useSessionGrouping } from "./session-grouping";
 import { createBackendEventHandler, type BackendEventContext } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
@@ -744,13 +745,22 @@ export default function App() {
       unsubscribe();
     };
   }, [parallelBridge]);
+  const sessionGrouping = useSessionGrouping();
   const {
     projectGroups,
     activeProjectId,
     activeProject,
     filteredSessions,
     shortcutSessions,
-  } = useProjectModel(sessions, parallelGroups, repoBridge, selectedProjectId);
+    projectOf,
+  } = useProjectModel(
+    sessions,
+    parallelGroups,
+    repoBridge,
+    selectedProjectId,
+    sessionGrouping.grouping,
+    sessionGrouping.collapsedProjects,
+  );
 
   // Nothing is hidden any more: a request the composer is still holding was never
   // sent, so it cannot appear here, and anything that did reach GJC is an ordinary
@@ -1675,6 +1685,11 @@ export default function App() {
         projects={projectGroups}
         projectId={activeProjectId}
         onProjectChange={changeProject}
+        grouping={sessionGrouping.grouping}
+        onGroupingChange={sessionGrouping.setGrouping}
+        projectOf={projectOf}
+        collapsedProjects={sessionGrouping.collapsedProjects}
+        onToggleProject={sessionGrouping.toggleProject}
         onOpenRepository={openRepository}
         onOpenProjects={openProjects}
         inboxCount={inboxCount}
