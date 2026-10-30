@@ -34,8 +34,8 @@ to about 250 MB, or 116 MB zipped.
 For a public release, first store notarization credentials in the login
 Keychain, then provide the Developer ID identity, Keychain profile, and an
 explicit confirmation that the bundled artwork is cleared for redistribution.
-The release script refuses to create an ad-hoc or unnotarized artifact when any
-gate is missing:
+Without `--adhoc`, the release script refuses to create an ad-hoc or
+unnotarized artifact when any gate is missing:
 
 ```bash
 xcrun notarytool store-credentials gajae-notary \
@@ -60,6 +60,26 @@ different build; the release script refuses to overwrite a same-version ZIP.
 
 The local ad-hoc development package remains at
 `release/Gajae-darwin-arm64/Gajae.app` and is not a public distribution artifact.
+
+### Releasing without a Developer ID
+
+Without a Developer ID, publish an ad-hoc signed release for the installers.
+`install.sh` and the `gajae` npm package (`packages/npm`) download it with
+`curl`. Files downloaded that way carry no quarantine flag, so Gatekeeper never
+assesses the app. A browser download of the same ZIP is blocked, so the README
+points only at the installers.
+
+```bash
+GAJAE_ASSET_RIGHTS_CONFIRMED=1 npm run package:mac -- --public-release --adhoc
+gh release create v0.1.0 release/Gajae-0.1.0-darwin-arm64/Gajae-0.1.0-darwin-arm64.zip*
+(cd packages/npm && npm publish)
+```
+
+The release tag is `v` plus the `package.json` version. The installers resolve
+`releases/latest` and fetch `Gajae-<version>-darwin-arm64.zip` with its
+`.sha256`, so both assets must be attached. The npm package only wraps
+`install.sh`, so publish a new version of it only when the script changes.
+The repository has to be public for either installer to reach the release.
 
 ## Checks and layout
 

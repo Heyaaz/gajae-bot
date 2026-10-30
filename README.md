@@ -65,14 +65,18 @@ goal above the composer ticks to 3/3. Full quality:
 Gajae needs an Apple-silicon Mac. The [`gh` CLI](https://cli.github.com), signed
 in with `gh auth login`, is optional and powers the repository screen.
 
-Copy a notarized release into `/Applications`:
+Run the installer in Terminal:
 
 ```bash
-cd Gajae-0.1.0-darwin-arm64
-shasum -a 256 -c Gajae-0.1.0-darwin-arm64.zip.sha256
-ditto -x -k Gajae-0.1.0-darwin-arm64.zip .
-cp -R Gajae.app /Applications/Gajae.app
+curl -fsSL https://raw.githubusercontent.com/Heyaaz/gajae-bot/main/install.sh | sh
 ```
+
+With Node.js installed, `npx gajae` does the same. Either one downloads the
+latest release, checks its SHA-256, puts `Gajae.app` in `/Applications` (or
+`~/Applications` if that is not writable) and opens it. Run it again to update.
+
+The app is not notarized yet. macOS blocks a copy downloaded in a browser, so
+use the installer rather than the ZIP on the releases page.
 
 On first launch, a Mac without GJC is walked through setup:
 
