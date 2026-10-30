@@ -83,6 +83,39 @@ describe("deleteSessionThroughCli", () => {
     expect(gjc.kills).toEqual(["SIGTERM"]);
   });
 
+  it("starts over in a new GJC when GJC refuses because a migration is still running", async () => {
+    let transcript = true;
+    let runs = 0;
+    const gjc = fakeGjc((keys, screen) => {
+      if (keys === "/session delete") screen(COMPLETION);
+      else if (keys === "\r" && gjc.sent.at(-2) === "/session delete") screen(prompt("Yes"));
+      else if (keys === "\r" && runs === 1)
+        screen("Error: Another session migration is still active. Wait for it to finish, then retry.");
+      else if (keys === "\r") {
+        transcript = false;
+        screen("Current session transcript and artifacts deleted");
+      }
+    });
+    const spawn = vi.fn((...args: Parameters<typeof gjc.spawn>) => {
+      runs += 1;
+      return gjc.spawn(...args);
+    });
+    const deletion = deleteSessionThroughCli({
+      executable: "/bin/gjc",
+      cwd: "/repo",
+      sessionPath: "/s1.jsonl",
+      env: {},
+      spawn,
+      transcriptExists: async () => transcript,
+    });
+    await vi.advanceTimersByTimeAsync(40_000);
+    await expect(deletion).resolves.toBeUndefined();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    // The first GJC is stopped before the second starts; no key reaches it again.
+    expect(gjc.kills).toEqual(["SIGTERM", "SIGTERM"]);
+    expect(gjc.sent).toEqual(["/session delete", "\r", "\r", "/session delete", "\r", "\r"]);
+  });
+
   it("never answers a deletion prompt that does not have Yes selected", async () => {
     const gjc = fakeGjc((keys, screen) => {
       if (keys === "/session delete") screen(COMPLETION);

@@ -26,6 +26,7 @@ import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
 import { fileAttachment } from "./settings-ipc-handlers.js";
 import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
+import { hostText } from "./host-text.js";
 import type { IpcSecurity } from "./ipc-security.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 
@@ -247,34 +248,53 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.openHistorySession, (_event, sessionId: unknown) =>
     controller.openHistorySession(requiredId(sessionId, "Session ID")),
   );
-  const removalConfirmation = (id: string, action: SessionRemoval) => {
+  // Delete names the other GJC it would stop, and the answer is bound to that
+  // pid: if another process holds the session by the time the delete runs, the
+  // grant does not match and the user is asked again about that one.
+  const removalConfirmation = async (id: string, action: SessionRemoval) => {
     const title = controller.sessionTitle(id);
-    return action === "delete"
-      ? {
-          message: "세션을 삭제할까요?",
-          detail: [title, "GJC 프로세스를 종료하고 대화 기록까지 삭제합니다. 목록에서만 숨기지 않습니다."]
-            .filter(Boolean)
-            .join("\n\n"),
-          confirmLabel: "삭제",
-          danger: true,
-        }
-      : {
+    if (action === "hide")
+      return {
+        grant: `hide:${id}`,
+        content: {
           message: "이 세션을 목록에서 숨길까요? GJC의 기록은 삭제되지 않습니다.",
           detail: title,
           confirmLabel: "숨기기",
-        };
+        },
+      };
+    const holder = await controller.sessionHostElsewhere(id).catch(() => undefined);
+    return {
+      grant: `delete:${id}:${holder?.pid ?? "none"}`,
+      holder,
+      content: {
+        message: "세션을 삭제할까요?",
+        detail: [
+          title,
+          holder
+            ? `${hostText(
+                "다른 곳에서 실행 중인 GJC가 이 세션을 열고 있습니다. 삭제하면 그 GJC를 종료하고 대화 기록까지 삭제합니다. 그 GJC가 하던 작업은 중단됩니다.",
+              )}\n${holder.terminal ? `${holder.terminal} · ` : ""}pid ${holder.pid}`
+            : hostText("GJC 프로세스를 종료하고 대화 기록까지 삭제합니다. 목록에서만 숨기지 않습니다."),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        confirmLabel: holder ? "GJC 종료 후 삭제" : "삭제",
+        danger: true,
+      },
+    };
   };
   // The window asks first and drops the row the moment the user agrees; the
   // delete or hide that follows uses that answer instead of asking twice.
-  handle(GJC_IPC.confirmSessionRemoval, (event, sessionId: unknown, action: unknown) => {
+  handle(GJC_IPC.confirmSessionRemoval, async (event, sessionId: unknown, action: unknown) => {
     const id = requiredId(sessionId, "Session ID");
-    const removal = sessionRemoval(action);
-    return security.preauthorize(event, `${removal}:${id}`, removalConfirmation(id, removal));
+    const { grant, content } = await removalConfirmation(id, sessionRemoval(action));
+    return security.preauthorize(event, grant, content);
   });
   handle(GJC_IPC.deleteSession, async (event, sessionId: unknown) => {
     const id = requiredId(sessionId, "Session ID");
-    await security.authorizeDestructive(event, removalConfirmation(id, "delete"), `delete:${id}`);
-    return controller.deleteSession(id);
+    const { grant, content, holder } = await removalConfirmation(id, "delete");
+    await security.authorizeDestructive(event, content, grant);
+    return controller.deleteSession(id, holder ? { stopHost: holder.pid } : undefined);
   });
   // Deleting GJC's own saved history is not available through the public SDK on
   // gjc/0.18.12: `session.delete` answers operation_failed with an unknown outcome
@@ -284,7 +304,8 @@ export function registerGjcIpcHandlers(
   // is destroyed, and the transcript stays readable on disk.
   handle(GJC_IPC.hideSession, async (event, sessionId: unknown) => {
     const id = requiredId(sessionId, "Session ID");
-    await security.authorizeDestructive(event, removalConfirmation(id, "hide"), `hide:${id}`);
+    const { grant, content } = await removalConfirmation(id, "hide");
+    await security.authorizeDestructive(event, content, grant);
     return controller.hideSession(id);
   });
   handle(GJC_IPC.getTranscript, async (_event, sessionId: unknown) =>

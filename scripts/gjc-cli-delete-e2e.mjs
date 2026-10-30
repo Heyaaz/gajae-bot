@@ -1,11 +1,13 @@
 // A saved session whose broker delete GJC fences with legacy lifecycle history is
-// deleted from the app through GJC's own `/session delete`, against the GJC at
-// GJC_BIN (default `gjc`). Credential-free and isolated: HOME and the agent dir
+// deleted from the app through GJC's own `/session delete`, and so is one an
+// interactive GJC in a terminal holds open, after the app stops that GJC. Runs
+// against the GJC at GJC_BIN (default `gjc`). Credential-free and isolated: HOME and the agent dir
 // are throwaway, so the interactive GJC imports no credentials from this Mac.
 // Run after a build: `node scripts/gjc-cli-delete-e2e.mjs`.
 import { execFile as execFileCallback, execFileSync } from 'node:child_process'
 import { randomBytes, randomUUID } from 'node:crypto'
 import { appendFile, mkdir, mkdtemp, readdir, realpath, rm } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
@@ -19,6 +21,7 @@ process.env.HOME = path.join(root, 'home')
 process.env.GJC_CODING_AGENT_DIR = agentDir
 for (const name of Object.keys(process.env)) if (/^(AGENT_CONTROL_|GAJAE_)/u.test(name)) delete process.env[name]
 const { GjcSdkController } = await import('../dist-electron/electron/gjc-sdk-controller.js')
+const { spawn: spawnPty } = createRequire(import.meta.url)('node-pty')
 
 const assert = (condition, message) => {
   if (!condition) throw new Error(message)
@@ -61,8 +64,11 @@ try {
   assert(created.ok === true, `session.create: ${JSON.stringify(created.error)}`)
   const sessionId = created.result.sessionId
   assert((await lifecycle('session.close', { sessionId, cwd: workspace })).ok === true, 'session closed')
-  const [transcript] = await transcripts()
-  assert(transcript?.endsWith(`${sessionId}.jsonl`), 'one saved transcript')
+  const second = await lifecycle('session.create', { cwd: workspace })
+  assert(second.ok === true, `second session.create: ${JSON.stringify(second.error)}`)
+  assert((await lifecycle('session.close', { sessionId: second.result.sessionId, cwd: workspace })).ok === true, 'second session closed')
+  const transcript = (await transcripts()).find((file) => file.endsWith(`${sessionId}.jsonl`))
+  assert(transcript, 'saved transcript')
 
   // A legacy row (no operationKey) is what fences deletes on a long-used agent
   // dir. The broker reads it when it starts.
@@ -79,10 +85,43 @@ try {
   await controller.deleteSession(sessionId)
   const elapsedMs = Date.now() - startedAt
 
-  assert((await transcripts()).length === 0, 'no transcript left, including for the session GJC opened after deleting')
+  assert(!(await transcripts()).some((file) => !file.endsWith(`${second.result.sessionId}.jsonl`)),
+    'no transcript left but the second session, including for the session GJC opened after deleting')
   const after = await rows()
   assert(after.every((row) => row.live !== true), `no live session left: ${JSON.stringify(after)}`)
-  console.log(JSON.stringify({ version, deletedThroughCli: true, sessionId, elapsedMs, brokerRows: after.length }, null, 2))
+
+  // A terminal's GJC holding a session: the app names it, stops only that pid
+  // once the user agreed, and deletes.
+  const secondTranscript = (await transcripts()).find((file) => file.endsWith(`${second.result.sessionId}.jsonl`))
+  assert(secondTranscript, 'second saved transcript')
+  const terminal = spawnPty(executable, ['--resume', secondTranscript, '--no-mcp', '--no-lsp'], {
+    name: 'xterm-256color', cols: 120, rows: 40, cwd: workspace,
+    env: { ...process.env, TERM: 'xterm-256color', GJC_AUTOMATION: '1' },
+  })
+  let screen = ''
+  let terminalExit
+  terminal.onData((data) => { screen += data })
+  terminal.onExit((event) => { terminalExit = event })
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  for (let attempt = 0; attempt < 150 && !screen.includes('Type your message'); attempt++) await wait(200)
+  let held
+  for (let attempt = 0; attempt < 100 && !held; attempt++) {
+    held = (await rows()).find((row) => row.sessionId === second.result.sessionId && row.live === true)
+    if (!held) await wait(200)
+  }
+  assert(held, 'the terminal GJC hosts a live session')
+  const holder = await controller.sessionHostElsewhere(held.sessionId)
+  assert(holder?.pid === terminal.pid, `the app names the terminal GJC: ${JSON.stringify(holder)}`)
+  const heldStartedAt = Date.now()
+  await controller.deleteSession(held.sessionId, { stopHost: holder.pid })
+  const heldElapsedMs = Date.now() - heldStartedAt
+  assert(terminalExit !== undefined, 'the terminal GJC exited')
+  assert(!(await transcripts()).some((file) => file.endsWith(`${held.sessionId}.jsonl`)), 'the held session transcript is gone')
+
+  console.log(JSON.stringify({
+    version, deletedThroughCli: true, sessionId, elapsedMs, brokerRows: after.length,
+    heldSession: { sessionId: held.sessionId, terminal: holder.terminal, terminalExit, elapsedMs: heldElapsedMs },
+  }, null, 2))
 } finally {
   controller?.dispose()
   // The broker and session hosts run from this root and write into it while they

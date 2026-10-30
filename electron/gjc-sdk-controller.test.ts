@@ -606,17 +606,84 @@ describe("0.18.12 lifecycle refusal", () => {
     } finally { controller.dispose(); }
   });
 
-  it("sends the user to the terminal that holds a fenced session instead of resuming it", async () => {
+  it("does not resume a fenced session another GJC still holds when the user did not agree to stop it", async () => {
     const { controller, cli, internals } = harness();
     try {
       internals.sessions.set("s1", session());
       internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
       internals.deleteThroughGjcCli = vi.fn();
-      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo" }] as never);
+      internals.gjcHostProcess = vi.fn(async (pid: number) => ({ pid, terminal: "ttys002" }));
+      internals.stopGjcHostProcess = vi.fn();
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", pid: 4242 }] as never);
       cli.rawGlobal.mockRejectedValue(legacyRefusal());
-      await expect(controller.deleteSession("s1")).rejects.toThrow(/그 터미널에서 \/session delete/u);
+      await expect(controller.deleteSession("s1")).rejects.toThrow(/다시 삭제하면 그 GJC를 종료하고 지울지 확인/u);
       expect(internals.deleteThroughGjcCli).not.toHaveBeenCalled();
+      expect(internals.stopGjcHostProcess).not.toHaveBeenCalled();
       expect(internals.sessions.has("s1")).toBe(true);
+    } finally { controller.dispose(); }
+  });
+
+  it("stops the GJC the user agreed to stop, then deletes once the broker lets go", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      let running = true;
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
+      internals.deleteThroughGjcCli = vi.fn(async () => undefined);
+      internals.gjcHostProcess = vi.fn(async (pid: number) => (running ? { pid, terminal: "ttys002" } : undefined));
+      internals.stopGjcHostProcess = vi.fn(async () => {
+        running = false;
+        return true;
+      });
+      cli.listSessions.mockImplementation(async () =>
+        [{ sessionId: "s1", live: running, deleted: false, repo: "/repo", pid: 4242 }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
+      await controller.deleteSession("s1", { stopHost: 4242 });
+      expect(internals.stopGjcHostProcess).toHaveBeenCalledExactlyOnceWith(4242);
+      expect(internals.deleteThroughGjcCli).toHaveBeenCalledExactlyOnceWith("/repo", "/agent/sessions/x/s1.jsonl");
+      expect(internals.sessions.has("s1")).toBe(false);
+    } finally { controller.dispose(); }
+  });
+
+  it("stops nothing when a different GJC holds the session than the one confirmed", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.gjcHostProcess = vi.fn(async (pid: number) => ({ pid }));
+      internals.stopGjcHostProcess = vi.fn();
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", pid: 999 }] as never);
+      await expect(controller.deleteSession("s1", { stopHost: 4242 })).rejects.toThrow(/확인 창에서 보여 준 프로세스와 달라/u);
+      expect(internals.stopGjcHostProcess).not.toHaveBeenCalled();
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
+      expect(internals.sessions.has("s1")).toBe(true);
+    } finally { controller.dispose(); }
+  });
+
+  it("deletes nothing when the confirmed GJC does not exit", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.gjcHostProcess = vi.fn(async (pid: number) => ({ pid }));
+      internals.stopGjcHostProcess = vi.fn(async () => false);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", pid: 4242 }] as never);
+      await expect(controller.deleteSession("s1", { stopHost: 4242 })).rejects.toThrow(/10초 안에 종료되지 않아/u);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
+      expect(internals.sessions.has("s1")).toBe(true);
+    } finally { controller.dispose(); }
+  });
+
+  it("treats a row left live by a GJC that already exited as free to delete", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
+      internals.deleteThroughGjcCli = vi.fn(async () => undefined);
+      internals.gjcHostProcess = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", pid: 4242 }] as never);
+      cli.rawGlobal.mockRejectedValue(new SdkCliError("live_session", "Refusing to delete a live session; close it first."));
+      await controller.deleteSession("s1");
+      expect(internals.deleteThroughGjcCli).toHaveBeenCalledOnce();
+      expect(internals.sessions.has("s1")).toBe(false);
     } finally { controller.dispose(); }
   });
 
@@ -1730,7 +1797,7 @@ describe("GjcSdkController CLI seam", () => {
       { sessionId: "s1", repo: "/repo", live: true, deleted: false, endpointGeneration },
     ]);
     cli.rawGlobal.mockRejectedValue(new SdkCliError("live_session", "Refusing to delete a live session; close it first."));
-    await expect(controller.deleteSession("s1")).rejects.toThrow(/CLI를 종료/u);
+    await expect(controller.deleteSession("s1")).rejects.toThrow(/다시 삭제하면 그 GJC를 종료하고 지울지 확인/u);
     expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
     expect((cli.rawGlobal as any).mock.calls[0][0]).toBe("session.delete");
     expect(cli.rawControl).not.toHaveBeenCalled();

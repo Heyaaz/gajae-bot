@@ -45,11 +45,12 @@ export interface CliDeleteOptions {
   transcriptExists?: (sessionPath: string) => Promise<boolean>;
   timeoutMs?: number;
   quietMs?: number;
+  busyRetryMs?: number;
 }
 
 export class CliDeleteError extends Error {
   constructor(
-    readonly reason: "timeout" | "exited" | "unexpected-dialog",
+    readonly reason: "timeout" | "exited" | "unexpected-dialog" | "busy",
     message: string,
   ) {
     super(message);
@@ -63,6 +64,15 @@ const SELECTION_POINTER = /❯\s*(\S+)/gu;
 const YES_SELECTED = /❯\s*Yes/u;
 const EDITOR_READY = "Type your message";
 const DIALOG_HINT = "Esc cancel";
+// GJC refuses the delete while another process holds a session-store lock. A
+// host stopped with SIGTERM can exit before releasing its lock, and GJC reclaims
+// a dead owner's lock only once its 60s lease runs out (gjc/0.19.2). By then GJC
+// has left the resumed session for a fresh unsaved one, so typing the command
+// again would aim at that one: the whole run starts over in a new GJC, spaced so
+// the retries outlast the lease.
+const MIGRATION_BUSY = "Another session migration is still active";
+const MAX_BUSY_ATTEMPTS = 6;
+const BUSY_RETRY_MS = 10_000;
 const MAX_DIALOG_DISMISSALS = 3;
 const MAX_SUBMITS = 2;
 const POLL_MS = 100;
@@ -102,7 +112,19 @@ function terminalEnvironment(source: NodeJS.ProcessEnv): Record<string, string> 
   return env;
 }
 
-export function deleteSessionThroughCli(options: CliDeleteOptions): Promise<void> {
+export async function deleteSessionThroughCli(options: CliDeleteOptions): Promise<void> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await deleteOnce(options);
+    } catch (error) {
+      if (!(error instanceof CliDeleteError) || error.reason !== "busy" || attempt >= MAX_BUSY_ATTEMPTS)
+        throw error;
+      await new Promise((resolve) => setTimeout(resolve, options.busyRetryMs ?? BUSY_RETRY_MS));
+    }
+  }
+}
+
+function deleteOnce(options: CliDeleteOptions): Promise<void> {
   const spawn = options.spawn ?? spawnNative;
   const transcriptExists = options.transcriptExists ?? fileExists;
   const timeoutMs = options.timeoutMs ?? 45_000;
@@ -131,20 +153,31 @@ export function deleteSessionThroughCli(options: CliDeleteOptions): Promise<void
       fresh = "";
       terminal.write(keys);
     };
+    // Settles only once this GJC is gone, so a retry never overlaps it.
+    let afterExit: (() => void) | undefined;
     const finish = (error?: Error): void => {
       if (settled) return;
       settled = true;
       clearInterval(poll);
       output.dispose();
-      if (!exited) {
-        terminal.kill("SIGTERM");
-        const force = setTimeout(() => {
-          if (!exited) terminal.kill("SIGKILL");
-        }, KILL_GRACE_MS);
-        force.unref?.();
+      let done = false;
+      const settle = (): void => {
+        if (done) return;
+        done = true;
+        if (error) reject(error);
+        else resolve();
+      };
+      if (exited) {
+        settle();
+        return;
       }
-      if (error) reject(error);
-      else resolve();
+      afterExit = settle;
+      terminal.kill("SIGTERM");
+      const force = setTimeout(() => {
+        if (!exited) terminal.kill("SIGKILL");
+        settle();
+      }, KILL_GRACE_MS);
+      force.unref?.();
     };
 
     const output = terminal.onData((data) => {
@@ -154,6 +187,7 @@ export function deleteSessionThroughCli(options: CliDeleteOptions): Promise<void
     const exit = terminal.onExit(() => {
       exited = true;
       exit.dispose();
+      afterExit?.();
       if (!settled)
         void transcriptExists(options.sessionPath).then((present) =>
           finish(
@@ -168,6 +202,10 @@ export function deleteSessionThroughCli(options: CliDeleteOptions): Promise<void
       if (settled || checking) return;
       if (Date.now() - startedAt > timeoutMs) {
         finish(new CliDeleteError("timeout", `GJC가 ${Math.round(timeoutMs / 1000)}초 안에 세션 삭제를 끝내지 못했습니다.`));
+        return;
+      }
+      if (stage === "confirmed" && stripTerminalControls(fresh).includes(MIGRATION_BUSY)) {
+        finish(new CliDeleteError("busy", "GJC가 다른 세션 저장소 작업이 끝나지 않아 삭제를 거부했습니다."));
         return;
       }
       if (stage === "confirmed") {
