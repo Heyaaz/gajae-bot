@@ -282,7 +282,7 @@ describe("NewSessionDialog prefill", () => {
 
 describe("workspaceLabelFor", () => {
   it("shortens a deep path to its project folder", () => {
-    expect(workspaceLabelFor("/Users/byeonheejae/pro/agent-control")).toBe(
+    expect(workspaceLabelFor("/Users/demo/pro/agent-control")).toBe(
       "…/pro/agent-control",
     );
   });
