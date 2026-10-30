@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { promisify } from 'node:util';
-import { access, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { packager } from '@electron/packager';
@@ -29,6 +29,7 @@ const releaseDirectory = path.join(root, 'release');
 const releaseBaseName = `${packageJson.productName}-${packageJson.version}-darwin-arm64`;
 const publicDirectory = path.join(releaseDirectory, releaseBaseName);
 const stagingDirectory = path.join(releaseDirectory, `.gajae-${packageJson.version}-${process.pid}`);
+const keptLocales = new Set(['en.lproj', 'en_GB.lproj', 'ko.lproj']);
 
 async function exists(file) {
   try { await access(file); return true; }
@@ -110,7 +111,23 @@ const [outputDirectory] = await packager({
     /^\/(?:tsconfig|vite\.config|vite\.web\.config|vitest\.config)(?:\.[^/]+)?$/,
     /\/(?:test|tests|__tests__)(?:\/|$)/,
     /\/(?:[^/]+)\.(?:test|spec)\.[^/]+$/,
-    /\/node_modules\/\.cache(?:\/|$)/,
+    /^\/node_modules\/(?:\.[^/]+|node-addon-api)(?:\/|$)/,
+    // node-pty loads build/Release first, which electron-rebuild just produced.
+    // The Node prebuilds, sources and build intermediates are dead weight.
+    /^\/node_modules\/node-pty\/(?:prebuilds|bin|deps|third_party|src|scripts|node-addon-api|typings|binding\.gyp)(?:\/|$)/,
+    /^\/node_modules\/node-pty\/build\/(?!Release(?:\/(?:pty\.node|spawn-helper))?$)/,
+    /\.map$/,
+  ],
+  // Chromium falls back to English for a missing locale. The app ships Korean
+  // and English, so the other UI string packs only add size.
+  afterExtract: [
+    async ({ buildPath }) => {
+      const resources = path.join(buildPath, 'Electron.app/Contents/Frameworks/Electron Framework.framework/Versions/A/Resources');
+      for (const entry of await readdir(resources)) {
+        if (entry.endsWith('.lproj') && !keptLocales.has(entry))
+          await rm(path.join(resources, entry), { recursive: true, force: true });
+      }
+    },
   ],
 });
 const appPath = path.join(outputDirectory, `${packageJson.productName}.app`);
