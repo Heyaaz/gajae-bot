@@ -45,6 +45,7 @@ export interface DiscoveryHost {
   brokerSessions(options?: {
     scope?: "repo" | "cwd" | "worktree" | "all";
     initialDiscovery?: boolean;
+    reuseUnchangedIndex?: boolean;
   }): Promise<SdkSessionRow[] | undefined>;
   lastDiscovered: AgentSession[];
   readonly sessionMetadata: SessionMetadataStore | undefined;
@@ -466,6 +467,7 @@ export async function liveRouteReachable(host: DiscoveryHost, row: SdkSessionRow
 export async function brokerSessions(host: DiscoveryHost, options?: {
   scope?: "repo" | "cwd" | "worktree" | "all";
   initialDiscovery?: boolean;
+  reuseUnchangedIndex?: boolean;
 }): Promise<SdkSessionRow[] | undefined> {
   try {
     const cli = await host.requireCli();
@@ -476,7 +478,11 @@ export async function brokerSessions(host: DiscoveryHost, options?: {
     }
     // Lifecycle reads (delete, fork recovery, create) always ask the broker.
     // Discovery is the 15s poll: an unchanged index file has nothing new to list.
-    if (options?.initialDiscovery && (await brokerIndexUnchanged(host)))
+    // A read that only words a prompt may reuse it too; the action re-reads.
+    if (
+      (options?.initialDiscovery || options?.reuseUnchangedIndex) &&
+      (await brokerIndexUnchanged(host))
+    )
       return host.cachedBrokerRows!.map((row) => ({ ...row }));
     const before = options?.initialDiscovery
       ? await brokerIndexRevision()

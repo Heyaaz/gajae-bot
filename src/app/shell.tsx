@@ -238,6 +238,9 @@ export default function App() {
   const workspaceLabel = preferences.workspaceLabel;
   const pendingSessions = useRef(new Map<string, Promise<AgentSession>>());
   const selectedIdRef = useRef<string | null>(null);
+  // Rows the user removed while the backend still works on it; a list refresh
+  // in that window must not bring them back.
+  const removingSessionIdsRef = useRef(new Set<string>());
   const navigationGenerationRef = useRef(0);
   const revealRequestGenerationRef = useRef(0);
 
@@ -454,18 +457,16 @@ export default function App() {
         .listSessions()
         .then((loadedSessions) => {
           if (!active) return;
-          listed = loadedSessions;
-          for (const session of loadedSessions) observeSessionRun(session);
+          listed = loadedSessions.filter(
+            (session) => !removingSessionIdsRef.current.has(session.id),
+          );
+          for (const session of listed) observeSessionRun(session);
           setSessions((current) =>
-            mergeDiscoveredSessions(
-              current,
-              loadedSessions,
-              selectedIdRef.current,
-            ),
+            mergeDiscoveredSessions(current, listed, selectedIdRef.current),
           );
           if (initial)
             setSelectedId((selected) =>
-              initialSessionId(loadedSessions, selected),
+              initialSessionId(listed, selected),
             );
         })
         .catch(() => undefined)
@@ -1412,6 +1413,7 @@ export default function App() {
 
   const { onHideSession, onDeleteSession } = useSessionRemoval(
     backend,
+    removingSessionIdsRef,
     sessions,
     selectedId,
     forgetSession,

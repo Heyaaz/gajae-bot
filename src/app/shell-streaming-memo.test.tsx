@@ -20,6 +20,7 @@ const probe = vi.hoisted(() => ({
   newSessionDialog: null as null | Record<string, unknown>,
   parallelView: null as null | Record<string, unknown>,
   createSession: vi.fn(),
+  deleteSession: vi.fn(),
   prefillComposerDraft: vi.fn(),
 }));
 
@@ -89,6 +90,8 @@ vi.mock("../backend/use-agent-backend", () => {
         return Promise.resolve({ ...session, id: "s-created", title: input.title, status: "idle" });
       },
       getGoal: async () => ({ enabled: false, completed: 0, total: 0 }),
+      confirmSessionRemoval: async () => true,
+      deleteSession: (sessionId: string) => probe.deleteSession(sessionId),
     },
     {
       get(target, prop, receiver) {
@@ -462,5 +465,60 @@ describe("session shortcuts from the main process", () => {
     );
     expect(probe.prefillComposerDraft).toHaveBeenCalledExactlyOnceWith("s-created", "이슈 내용", undefined);
     expect(probe.composer?.sessionId).toBe("s-created");
+  });
+});
+
+describe("a deleted row stays gone while the backend works", () => {
+  let root: Root | undefined;
+  let host: HTMLDivElement | undefined;
+
+  afterEach(() => {
+    act(() => root?.unmount());
+    host?.remove();
+    probe.sidebar = null;
+    probe.listeners.clear();
+    probe.deleteSession.mockReset();
+    probe.sessions = probe.initialSession ? [probe.initialSession] : [];
+  });
+
+  it("does not bring the row back when the window refocuses mid-delete", async () => {
+    let finish!: () => void;
+    probe.deleteSession.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+    );
+    host = document.createElement("div");
+    document.body.append(host);
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(App));
+    });
+    const rowIds = () =>
+      (probe.sidebar!.sessions as AgentSession[]).map((session) => session.id);
+    await vi.waitFor(() => expect(rowIds()).toEqual(["s-1"]));
+
+    await act(async () => {
+      (probe.sidebar!.onDelete as (session: AgentSession) => void)(
+        probe.initialSession!,
+      );
+    });
+    await vi.waitFor(() => expect(probe.deleteSession).toHaveBeenCalledWith("s-1"));
+    expect(rowIds()).toEqual([]);
+
+    // Closing the host's confirm window refocuses this one, and the broker still
+    // lists the session until its delete lands.
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await act(async () => undefined);
+    expect(rowIds()).toEqual([]);
+
+    probe.sessions = [];
+    await act(async () => finish());
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(rowIds()).toEqual([]);
   });
 });

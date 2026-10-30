@@ -1,10 +1,11 @@
 import { useCallback } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession } from "../backend/types";
 
 export function useSessionRemoval(
   backend: AgentBackend,
+  removingSessionIds: RefObject<Set<string>>,
   sessions: AgentSession[],
   selectedId: string | null,
   forgetSession: (sessionId: string) => void,
@@ -36,6 +37,7 @@ export function useSessionRemoval(
    */
   const hideSession = useCallback((sessionId: string): void => {
     const removed = sessions.find((candidate) => candidate.id === sessionId);
+    removingSessionIds.current.add(sessionId);
     forgetSession(sessionId);
     void backend.hideSession(sessionId).catch((error: unknown) => {
       // Hiding is local bookkeeping, so a failure leaves the rail unchanged and
@@ -47,8 +49,8 @@ export function useSessionRemoval(
             : [removed, ...current],
         );
       setAppError(error instanceof Error ? error.message : String(error));
-    });
-  }, [backend, forgetSession, sessions]);
+    }).finally(() => removingSessionIds.current.delete(sessionId));
+  }, [backend, forgetSession, removingSessionIds, sessions]);
 
   const onHideSession = useCallback(
     (session: AgentSession) => {
@@ -81,6 +83,7 @@ export function useSessionRemoval(
       selectionBefore === sessionId
         ? (sessions.find((session) => session.id !== sessionId)?.id ?? null)
         : selectionBefore;
+    removingSessionIds.current.add(sessionId);
     forgetSession(sessionId);
     try {
       await backend.deleteSession(backendId);
@@ -98,8 +101,10 @@ export function useSessionRemoval(
         current === selectionAfter ? selectionBefore : current,
       );
       setAppError(error instanceof Error ? error.message : String(error));
+    } finally {
+      removingSessionIds.current.delete(sessionId);
     }
-  }, [backend, confirmed, forgetSession, resolveSessionId, selectedId, sessions, setAppError, setSelectedId, setSessions]);
+  }, [backend, confirmed, forgetSession, removingSessionIds, resolveSessionId, selectedId, sessions, setAppError, setSelectedId, setSessions]);
 
   const onDeleteSession = useCallback((session: AgentSession) => {
     void deleteSession(session.id);
