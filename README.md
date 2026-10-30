@@ -270,8 +270,9 @@ about 15 s, or about 70 s when that GJC left its lock behind (6 of 6 runs passed
 
 ### CLI sessions
 
-The new-session dialog asks whether the session runs in the **app** (a GJC
-chat) or on the **CLI** (a terminal). A CLI session opens a login shell in the
+`새 세션 종류` in Settings > GJC decides whether 새 세션 opens a GJC chat in the
+**app** (the default) or a terminal on the **CLI**. A request handed over with
+the dialog, from quick input or a link, always opens the app. A CLI session opens a login shell in the
 chosen folder, so `claude`, `codex`, or any other CLI runs there directly. The
 app keeps the list in `terminal-sessions.json` under its user data, since GJC
 does not know about these sessions.
@@ -420,8 +421,9 @@ An empty issue or pull list is none of those: it is reported as an empty list.
 
 ### Parallel runs (Best-of-N)
 
-`병렬 실행` in the new-session dialog runs one request as 2-4 attempts. Each
-attempt gets its own managed worktree, a new branch (`<branch>-1`, `-2`, … or
+The new-session dialog no longer starts parallel runs. Existing groups still
+open in the comparison described here. A run of 2-4 attempts gives each
+attempt its own managed worktree, a new branch (`<branch>-1`, `-2`, … or
 `gajae/best-of-<id>-N` without a name) and its own model preset, and the first
 request is sent to each attempt once. More than one attempt always uses worktrees.
 A CI fix does not offer the option, because its attempts would start from `HEAD`
