@@ -10,6 +10,7 @@ import type {
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
 import { ChevronRight, Copy, RotateCcw, Target, X } from "lucide-react";
+import { todoStatusView } from "./todo-status";
 import type { ReactNode } from "react";
 import {
   Fragment,
@@ -215,10 +216,31 @@ export function GoalProgressRow({
   busy: boolean;
   onOperate: (operation: GoalOperation) => void;
 }) {
-  const [storiesOpen, setStoriesOpen] = useState(false);
-  const storyListId = useId();
+  const [listOpen, setListOpen] = useState(false);
+  const listId = useId();
   if (!goal.enabled || !goal.objective) return null;
   const ultragoal = goal.progress?.ultragoal ?? null;
+  const tasks = goal.tasks ?? [];
+  const stories = ultragoal?.stories ?? [];
+  const hasList = tasks.length > 0 || stories.length > 0;
+  const copy = (
+    <>
+      <strong>{goal.objective}</strong>
+      {goal.total > 0 && (
+        <small>
+          {goal.completed}/{goal.total}
+        </small>
+      )}
+      {ultragoal && (
+        <small className="goal-progress-stories">
+          {t`스토리 ${ultragoal.counts.complete}/${ultragoal.counts.total}`}
+        </small>
+      )}
+      {ultragoal?.current && (
+        <span className="goal-progress-current">{ultragoal.current.title}</span>
+      )}
+    </>
+  );
   return (
     <div
       className={`goal-progress-row goal-progress-row--${goal.mode ?? "active"}`}
@@ -226,33 +248,22 @@ export function GoalProgressRow({
       <span className="goal-progress-icon">
         <Target size={13} />
       </span>
-      <span className="goal-progress-copy">
-        <strong>{goal.objective}</strong>
-        {goal.total > 0 && (
-          <small>
-            {goal.completed}/{goal.total}
-          </small>
-        )}
-        {ultragoal && (
-          <small className="goal-progress-stories">
-            {t`스토리 ${ultragoal.counts.complete}/${ultragoal.counts.total}`}
-          </small>
-        )}
-        {ultragoal?.current && (
-          <span className="goal-progress-current">{ultragoal.current.title}</span>
-        )}
-      </span>
+      {hasList ? (
+        <button
+          type="button"
+          className="goal-progress-copy goal-progress-toggle"
+          aria-expanded={listOpen}
+          aria-controls={listId}
+          title={listOpen ? t("목록 접기") : t("목록 펼치기")}
+          onClick={() => setListOpen((open) => !open)}
+        >
+          {copy}
+          <ChevronRight className="goal-progress-chevron" size={12} aria-hidden />
+        </button>
+      ) : (
+        <span className="goal-progress-copy">{copy}</span>
+      )}
       <span className="goal-progress-actions">
-        {ultragoal && ultragoal.stories.length > 0 && (
-          <button
-            type="button"
-            aria-expanded={storiesOpen}
-            aria-controls={storyListId}
-            onClick={() => setStoriesOpen((open) => !open)}
-          >
-            {storiesOpen ? t("스토리 접기") : t("스토리 보기")}
-          </button>
-        )}
         {goal.mode === "paused" ? (
           <button
             type="button"
@@ -281,27 +292,47 @@ export function GoalProgressRow({
         <button type="button" disabled={busy} onClick={() => onOperate("drop")}>
           {t("해제")} </button>
       </span>
-      {ultragoal && storiesOpen && (
-        <ol className="goal-story-list" id={storyListId}>
-          {ultragoal.stories.map((story) => (
-            <li
-              key={story.id}
-              className={`goal-story goal-story--${story.status}`}
-              data-story-id={story.id}
-            >
-              <span className="goal-story-status">{storyStatusLabel(story.status)}</span>
-              <span className="goal-story-title">{story.title}</span>
-              {story.verificationReceipt && (
-                <span className="goal-story-receipt">{t("검증 기록")}</span>
-              )}
-            </li>
-          ))}
-          {ultragoal.omittedStories > 0 && (
-            <li className="goal-story goal-story--omitted">
-              {t`스토리 ${ultragoal.omittedStories}개 더 있음`}
-            </li>
+      {hasList && listOpen && (
+        <div className="goal-progress-list" id={listId}>
+          {tasks.length > 0 && (
+            <ol className="goal-task-list">
+              {tasks.map((task, index) => {
+                const status = todoStatusView(task.status);
+                return (
+                  <li
+                    key={`${index}:${task.content}`}
+                    className={`goal-task goal-task--${status.key}`}
+                  >
+                    <span className="goal-task-marker" aria-hidden>{status.marker}</span>
+                    <span className="goal-task-title">{task.content}</span>
+                  </li>
+                );
+              })}
+            </ol>
           )}
-        </ol>
+          {stories.length > 0 && (
+            <ol className="goal-story-list">
+              {stories.map((story) => (
+                <li
+                  key={story.id}
+                  className={`goal-story goal-story--${story.status}`}
+                  data-story-id={story.id}
+                >
+                  <span className="goal-story-status">{storyStatusLabel(story.status)}</span>
+                  <span className="goal-story-title">{story.title}</span>
+                  {story.verificationReceipt && (
+                    <span className="goal-story-receipt">{t("검증 기록")}</span>
+                  )}
+                </li>
+              ))}
+              {ultragoal!.omittedStories > 0 && (
+                <li className="goal-story goal-story--omitted">
+                  {t`스토리 ${ultragoal!.omittedStories}개 더 있음`}
+                </li>
+              )}
+            </ol>
+          )}
+        </div>
       )}
     </div>
   );

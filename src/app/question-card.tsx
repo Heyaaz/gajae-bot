@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
+import { Check, CircleHelp, ClipboardCheck } from "lucide-react";
 import type { QuestionActivity, QuestionSubmission } from "../backend/types";
 import { t, useLanguage } from "../i18n";
 
@@ -12,6 +13,11 @@ export interface QuestionCardProps {
   ) => void;
   /** The copy pinned above the composer takes focus. The transcript copy does not. */
   autoFocus?: boolean;
+  /**
+   * The transcript copy of an open question. The pinned copy above the composer
+   * is the one to answer, so this one only marks where the question was asked.
+   */
+  answeredAbove?: boolean;
 }
 
 function questionIdempotencyKey(gateId: string): string {
@@ -36,7 +42,12 @@ function statusLabel(status: QuestionActivity["status"]): string {
  * Number keys 1–9 select, Enter submits, and Escape clears the free-text
  * field. A settled card keeps only the result.
  */
-export function QuestionCard({ item, onAnswer, autoFocus = false }: QuestionCardProps) {
+export function QuestionCard({
+  item,
+  onAnswer,
+  autoFocus = false,
+  answeredAbove = false,
+}: QuestionCardProps) {
   useLanguage();
   const open = item.answerable && (item.status === "pending" || item.status === "rejected");
   const [selected, setSelected] = useState<string[]>([]);
@@ -57,22 +68,35 @@ export function QuestionCard({ item, onAnswer, autoFocus = false }: QuestionCard
   }, [autoFocus, open, item.id]);
 
   const kindClass = item.approval ? " question-card--approval" : "";
-  const kindLabel = item.approval ? (
-    <p className="question-card-kind">{t("계획 승인")}</p>
-  ) : null;
+  const head = (hint?: string) => (
+    <header className="question-card-head">
+      {item.approval ? <ClipboardCheck size={13} aria-hidden /> : <CircleHelp size={13} aria-hidden />}
+      {item.approval ? (
+        <p className="question-card-kind">{t("계획 승인")}</p>
+      ) : (
+        <span>{t("질문")}</span>
+      )}
+      {hint && <small>{hint}</small>}
+    </header>
+  );
 
-  if (!open) {
+  const elsewhere = open && answeredAbove;
+  if (!open || elsewhere) {
+    const answered = item.status === "answered";
     return (
       <article
-        className={`question-card question-card--${item.status}${kindClass}`}
+        className={`question-card question-card--${elsewhere ? "elsewhere" : item.status} question-card--settled${kindClass}`}
         data-question-id={item.id}
         data-question-status={item.status}
         aria-live="polite"
       >
-        {kindLabel}
+        {head()}
         <p className="question-card-line">{item.question}</p>
         <p className="question-card-result">
-          {item.answerSummary || statusLabel(item.status)}
+          {answered && <Check size={12} aria-hidden />}
+          {elsewhere
+            ? t("입력창 위에서 답해 주세요")
+            : item.answerSummary || statusLabel(item.status)}
         </p>
       </article>
     );
@@ -151,7 +175,7 @@ export function QuestionCard({ item, onAnswer, autoFocus = false }: QuestionCard
       <p className="question-card-live" aria-live="polite">
         {item.approval ? t("계획 승인 요청") : t("새 질문")}: {item.question}
       </p>
-      {kindLabel}
+      {head(item.multi ? t("여러 개 고를 수 있어요") : undefined)}
       <p className="question-card-line" id={labelId}>{item.question}</p>
       {item.options.length > 0 && (
         <div
@@ -173,35 +197,41 @@ export function QuestionCard({ item, onAnswer, autoFocus = false }: QuestionCard
                 onClick={() => toggle(option.label)}
               >
                 <span className="question-option-index" aria-hidden>{index + 1}</span>
-                <span>{option.label}</span>
+                <span className="question-option-label">{option.label}</span>
                 {option.recommended && <small>{t("권장")}</small>}
+                {item.multi && checked && <Check size={13} aria-hidden />}
               </button>
             );
           })}
         </div>
       )}
-      <label className="question-other">
-        <span>{t("직접 입력")}</span>
+      <div className="question-other">
         <input
           ref={otherField}
           value={custom}
           disabled={submitting}
           aria-label={t("직접 입력")}
+          placeholder={t("직접 입력")}
           onChange={(event) => {
             setCustom(event.target.value);
             if (event.target.value.trim()) setSelected([]);
           }}
         />
-      </label>
-      {(item.multi || item.options.length === 0 || custom.trim()) && (
-        <button
-          type="button"
-          className="question-submit"
-          disabled={submitting || (selected.length === 0 && !custom.trim())}
-          onClick={() => submit(selected, custom)}
-        >
-          {item.multi ? t("선택 완료") : t("보내기")}
-        </button>
+        {(item.multi || item.options.length === 0 || custom.trim()) && (
+          <button
+            type="button"
+            className="question-submit"
+            disabled={submitting || (selected.length === 0 && !custom.trim())}
+            onClick={() => submit(selected, custom)}
+          >
+            {item.multi && !custom.trim() ? t("선택 완료") : t("보내기")}
+          </button>
+        )}
+      </div>
+      {item.options.length > 0 && (
+        <p className="question-card-keys" aria-hidden>
+          {t`1–${String(Math.min(item.options.length, 9))} 선택 · Enter 보내기`}
+        </p>
       )}
       {item.error && (
         <p className="question-card-error" role="alert">{t(item.error)}</p>

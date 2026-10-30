@@ -218,6 +218,26 @@ describe("question card", () => {
     expect(plain.querySelector(".question-card-kind")).toBeNull();
   });
 
+  it("leaves only a marker in the transcript while the pinned copy is open", async () => {
+    const open = await render(
+      createElement(QuestionCard, { item: question(), onAnswer: vi.fn(), answeredAbove: true }),
+    );
+    expect(open.querySelector(".question-option")).toBeNull();
+    expect(open.querySelector("input")).toBeNull();
+    expect(open.textContent).toContain("Ship it?");
+    expect(open.textContent).toContain("입력창 위에서 답해 주세요");
+
+    const answered = await render(
+      createElement(QuestionCard, {
+        item: question({ status: "answered", answerable: false, answerSummary: "Yes" }),
+        onAnswer: vi.fn(),
+        answeredAbove: true,
+      }),
+    );
+    expect(answered.textContent).toContain("Yes");
+    expect(answered.textContent).not.toContain("입력창 위에서 답해 주세요");
+  });
+
   it("focuses the pinned question", async () => {
     const view = await render(
       createElement(QuestionBanner, {

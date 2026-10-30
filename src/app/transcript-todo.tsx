@@ -4,6 +4,14 @@ import { ChevronRight, ListChecks } from "lucide-react";
 import { useState } from "react";
 import { t } from "../i18n";
 import { MarkdownBody } from "./transcript-markdown";
+import {
+  TODO_COUNT_KEYS,
+  TODO_STATUS_LABELS,
+  TODO_STATUS_MARKERS,
+  TODO_UNKNOWN_MARKER,
+  todoStatusKey,
+  type TodoStatus,
+} from "./todo-status";
 
 // Constructing a DateTimeFormat costs more than formatting with one, and every todo
 // snapshot carries the observation time it was read at. Same 24-hour shape the
@@ -13,48 +21,6 @@ const TODO_CLOCK_LABEL = new Intl.DateTimeFormat("en", {
   minute: "2-digit",
   hour12: false,
 });
-
-// The todo card prints the runtime's own status vocabulary, so a status outside it is
-// rendered as itself (and counted as other) rather than mapped onto one of these.
-const TODO_STATUS_MARKERS = {
-  in_progress: "◐",
-  pending: "○",
-  completed: "✓",
-  abandoned: "⊘",
-} as const;
-
-const TODO_STATUS_LABELS = {
-  in_progress: "in progress",
-  pending: "pending",
-  completed: "completed",
-  abandoned: "abandoned",
-} as const;
-
-type TodoStatus = keyof typeof TODO_STATUS_MARKERS;
-
-const TODO_STATUS_ORDER: readonly TodoStatus[] = [
-  "in_progress",
-  "pending",
-  "completed",
-  "abandoned",
-];
-const TODO_UNKNOWN_MARKER = "•";
-
-// What the counts line can name, in the order it lists them. A status outside this list
-// is counted at the end, as other.
-const TODO_COUNT_KEYS: readonly (TodoStatus | "other")[] = [
-  ...TODO_STATUS_ORDER,
-  "other",
-];
-
-// A set rather than `in`: a status is data from the runtime, and `"constructor" in {}` is
-// true, which would have classified a task named after a prototype key as a known status.
-const TODO_STATUS_KEYS: ReadonlySet<string> = new Set(TODO_STATUS_ORDER);
-
-function todoStatusKey(status: string | undefined): TodoStatus | undefined {
-  const value = status?.trim().toLowerCase();
-  return value && TODO_STATUS_KEYS.has(value) ? (value as TodoStatus) : undefined;
-}
 
 /**
  * The compact counts line: only the statuses the runtime actually reported, and a status

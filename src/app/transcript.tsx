@@ -1590,6 +1590,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
       <QuestionCard
         item={item}
         onAnswer={onAnswerQuestion ?? (() => undefined)}
+        answeredAbove
       />
     );
   }

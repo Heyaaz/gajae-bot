@@ -965,6 +965,12 @@ export class MockAgentBackend implements AgentBackend {
       objective: "Gajae 데스크톱 경험 완성",
       completed: 2,
       total: 4,
+      tasks: [
+        { content: "세션 목록과 사이드바 정리", status: "completed" },
+        { content: "질문 카드 다듬기", status: "completed" },
+        { content: "goal 목록 펼치기", status: "in_progress" },
+        { content: "패키징 후 실제 앱 확인", status: "pending" },
+      ],
     };
   }
 

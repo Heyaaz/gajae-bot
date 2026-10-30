@@ -211,7 +211,7 @@ describe("GoalProgressRow", () => {
       expect(rows[1]!.querySelector(".goal-story-receipt")).toBeNull();
       expect(rows[3]!.textContent).toBe("스토리 2개 더 있음");
       expect(toggle.getAttribute("aria-controls")).toBe(
-        host.querySelector(".goal-story-list")?.id,
+        host.querySelector(".goal-progress-list")?.id,
       );
     } finally {
       cleanup();
@@ -238,6 +238,34 @@ describe("GoalProgressRow", () => {
       expect(paused.onOperate).toHaveBeenCalledWith("resume");
     } finally {
       paused.cleanup();
+    }
+  });
+
+  it("lists the todo tasks behind the count and folds them again", async () => {
+    const { host, cleanup } = await mount(
+      ultragoalGoal({
+        progress: undefined,
+        tasks: [
+          { content: "Parse the snapshot", status: "completed" },
+          { content: "Render the cards", status: "in_progress" },
+        ],
+      }),
+    );
+    try {
+      const toggle = host.querySelector<HTMLButtonElement>("[aria-expanded]")!;
+      expect(toggle.textContent).toContain("Ship workflow cards");
+      expect(host.querySelector(".goal-task-list")).toBeNull();
+      await act(async () => toggle.click());
+      const rows = [...host.querySelectorAll(".goal-task")];
+      expect(rows.map((row) => row.textContent)).toEqual([
+        "✓Parse the snapshot",
+        "◐Render the cards",
+      ]);
+      expect(rows[1]!.classList.contains("goal-task--in_progress")).toBe(true);
+      await act(async () => toggle.click());
+      expect(host.querySelector(".goal-task-list")).toBeNull();
+    } finally {
+      cleanup();
     }
   });
 
