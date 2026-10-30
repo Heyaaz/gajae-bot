@@ -244,13 +244,29 @@ types the command, chooses Yes only on GJC's own deletion prompt with Yes
 already selected, presses Esc on any other dialog, and stops GJC once the
 transcript is gone. That also discards the empty session GJC opens after
 deleting. It never edits the ledger. It does this only for a saved transcript
-that no host is running. For a session another terminal's GJC holds open, the
-error says to type `/session delete` in that terminal. If GJC exits, times out
-(45 s) or shows a prompt it does not expect, the session stays recovering and
-nothing local is removed. `node scripts/gjc-cli-delete-e2e.mjs` (also the
-`cli-delete-e2e` step of `npm run gjc:matrix`) reproduces the fence with a
-legacy ledger row in a throwaway HOME and agent dir, and deletes through the
-real GJC. It passed on 0.19.2 in about 14 s per delete.
+that no host is running.
+
+A session another GJC holds open (usually an interactive `gjc` in a terminal) is
+deleted from the app too. The delete confirmation names that GJC (its terminal
+and pid, read from the broker row's `pid` and checked with `ps`) and offers
+`GJC 종료 후 삭제`; the answer is bound to that pid, so if a different process
+holds the session when the delete runs, nothing is stopped and the user is asked
+again. Gajae sends that GJC SIGTERM, waits up to 10 s for it to exit (it is
+never SIGKILLed), waits for the broker to drop `live`, then deletes as above. A
+row still marked `live` whose process is gone holds nothing and is deleted
+without asking to stop anything. A GJC stopped this way can exit before
+releasing its session-store lock, and gjc/0.19.2 reclaims a dead owner's lock
+only after its 60 s lease, answering `/session delete` with "Another session
+migration is still active" until then; the hidden terminal starts over in a new
+GJC every 10 s, up to six runs. If GJC exits, times out (45 s per run) or shows a
+prompt it does not expect, the session stays recovering and nothing local is
+removed.
+
+`node scripts/gjc-cli-delete-e2e.mjs` (also the `cli-delete-e2e` step of
+`npm run gjc:matrix`) reproduces the fence with a legacy ledger row in a
+throwaway HOME and agent dir and deletes through the real GJC: a saved session
+in about 14 s, and a session held by an interactive `gjc --resume` in a pty in
+about 15 s, or about 70 s when that GJC left its lock behind (6 of 6 runs passed on 0.19.2, two of them slow).
 
 ### Resume a session
 
