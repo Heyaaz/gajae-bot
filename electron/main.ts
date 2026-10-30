@@ -125,7 +125,7 @@ if (!smokeMode && !terminalSmokeMode && !app.requestSingleInstanceLock()) {
   app.exit(0);
 }
 const appIconPath = app.isPackaged
-  ? path.join(process.resourcesPath, "electron.icns")
+  ? path.join(process.resourcesPath, "gajae-icon.png")
   : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
 const menuBarIconPath = app.isPackaged
   ? path.join(process.resourcesPath, "gajae-menubar-Template.png")
