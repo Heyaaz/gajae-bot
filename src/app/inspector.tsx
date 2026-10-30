@@ -9,7 +9,7 @@ import type {
 } from "../../shared/agent-contract";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession, ToolActivity, TranscriptItem } from "../backend/types";
-import { Copy, RotateCcw, Target, X } from "lucide-react";
+import { ChevronRight, Copy, RotateCcw, Target, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
   Fragment,
@@ -177,7 +177,7 @@ function InspectorView({
       </section>
       <section className="inspector-section">
         <details className="inspector-work-section" open>
-          <summary><h3>{t("서브 에이전트")}</h3></summary>
+          <summary><h3>{t("서브 에이전트")}</h3><ChevronRight size={12} aria-hidden /></summary>
           <div className="inspector-subagents">
         {subagents.length > 0 ? (
           subagents.map((tool) => (
@@ -191,7 +191,7 @@ function InspectorView({
       </section>
       <section className="inspector-section">
         <details className="inspector-work-section" open>
-          <summary><h3>{t("셸 작업")}</h3></summary>
+          <summary><h3>{t("셸 작업")}</h3><ChevronRight size={12} aria-hidden /></summary>
         <p>{t("이 대화의 셸 실행 기록입니다.")}</p>
         {shellWork.map((tool) => <InspectorWorkCard key={tool.id} highlighted={tool.id === revealToolId}
           work={{ id: tool.id, label: tool.description,

@@ -4582,6 +4582,9 @@ button.diff-line-number:hover {
 }
 .inspector-identity {
   display: grid;
+  /* A title with no break opportunity (a file path) would otherwise size the
+     column past the panel and scroll the whole inspector sideways. */
+  grid-template-columns: minmax(0, 1fr);
   justify-items: center;
   padding: 26px 18px 22px;
   text-align: center;
@@ -4595,9 +4598,11 @@ button.diff-line-number:hover {
   border-radius: 16px;
 }
 .inspector-identity h2 {
+  max-width: 100%;
   margin: 0;
   font-size: 14px;
   font-weight: 620;
+  overflow-wrap: anywhere;
 }
 .inspector-identity p {
   margin: 6px 0 11px;
@@ -5331,11 +5336,29 @@ button.diff-line-number:hover {
   overflow-wrap: break-word;
 }
 .inspector-work-section > summary {
-  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   color: var(--text-tertiary);
+  cursor: pointer;
+  list-style: none;
+}
+.inspector-work-section > summary::-webkit-details-marker {
+  display: none;
 }
 .inspector-work-section > summary h3 {
-  display: inline;
+  margin: 0;
+  color: inherit;
+}
+.inspector-work-section > summary svg {
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+.inspector-work-section[open] > summary svg {
+  transform: rotate(90deg);
+}
+.inspector-work-section > summary:hover {
+  color: var(--text-secondary);
 }
 .inspector-work-section[open] > summary {
   margin-bottom: 11px;
