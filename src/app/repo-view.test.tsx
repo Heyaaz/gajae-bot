@@ -139,7 +139,7 @@ function issue(overrides: Partial<GithubIssueSummary> = {}): GithubIssueSummary 
     title: "저장소 화면",
     state: "open",
     url: "https://github.com/Heyaaz/gajae-bot/issues/12",
-    author: "byeonheejae",
+    author: "octocat",
     labels: [{ name: "enhancement", color: "a2eeef" }],
     comments: 2,
     updatedAt: "2h",
@@ -154,7 +154,7 @@ function issueDetail(
     ...issue(),
     body: "본문입니다.",
     createdAt: "2026-10-15T01:00:00.000Z",
-    assignees: ["byeonheejae"],
+    assignees: ["octocat"],
     ...overrides,
   };
 }
@@ -166,7 +166,7 @@ function pull(overrides: Partial<GithubPullSummary> = {}): GithubPullSummary {
     state: "open",
     draft: false,
     url: "https://github.com/Heyaaz/gajae-bot/pull/34",
-    author: "byeonheejae",
+    author: "octocat",
     headRefName: "feat/issue-3-project-repo-view",
     baseRefName: "main",
     review: "changes-requested",
@@ -423,7 +423,7 @@ describe("RepoIssuesPanel lists", () => {
     expect(markup).toContain("#12");
     expect(markup).toContain("저장소 화면");
     expect(markup).toContain("enhancement");
-    expect(markup).toContain("byeonheejae");
+    expect(markup).toContain("octocat");
     expect(markup).toContain("2h");
     expect(markup).toContain(issueStateLabel("open"));
   });
