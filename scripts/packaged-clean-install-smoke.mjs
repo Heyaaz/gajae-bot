@@ -131,8 +131,9 @@ try {
   // ok once, and every row the app cannot vouch for carries the command that fixes it.
   if (report.environmentCheckDue !== !report.environment?.ready)
     throw new Error(`Environment check due=${report.environmentCheckDue} disagrees with ready=${report.environment?.ready}`)
+  // The bun row appears only when the located GJC is a `#!/usr/bin/env bun` script.
   const environmentIds = report.environment?.rows?.map((row) => row.id).join(',')
-  if (environmentIds !== 'bun,gjc,model-preset,gh,tailscale')
+  if (!['bun,gjc,model-preset,gh,tailscale', 'gjc,model-preset,gh,tailscale'].includes(environmentIds))
     throw new Error(`Environment check reported unexpected rows: ${environmentIds}`)
   const unfixable = report.environment.rows.filter((row) => row.status !== 'ok' && !row.fix)
   if (unfixable.length > 0)
