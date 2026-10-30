@@ -1392,6 +1392,7 @@ export class GjcSdkController {
   private brokerSessions(options?: {
     scope?: "repo" | "cwd" | "worktree" | "all";
     initialDiscovery?: boolean;
+    reuseUnchangedIndex?: boolean;
   }): Promise<SdkSessionRow[] | undefined> {
     return brokerSessions(this.discoveryHost, options);
   }
@@ -2136,8 +2137,11 @@ export class GjcSdkController {
   }
 
   /** Another GJC holding the session open, which deleting it would have to stop. */
-  sessionHostElsewhere(sessionId: string): Promise<GjcHostProcess | undefined> {
-    return sessionHostElsewhere(this.lifecycleHost, sessionId);
+  sessionHostElsewhere(
+    sessionId: string,
+    options?: { reuseUnchangedIndex?: boolean },
+  ): Promise<GjcHostProcess | undefined> {
+    return sessionHostElsewhere(this.lifecycleHost, sessionId, options);
   }
 
   private removeSessionArtifacts(sessionId: string): Promise<void> {

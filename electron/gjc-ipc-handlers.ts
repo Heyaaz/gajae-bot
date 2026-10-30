@@ -251,7 +251,14 @@ export function registerGjcIpcHandlers(
   // Delete names the other GJC it would stop, and the answer is bound to that
   // pid: if another process holds the session by the time the delete runs, the
   // grant does not match and the user is asked again about that one.
-  const removalConfirmation = async (id: string, action: SessionRemoval) => {
+  // The prompt shows as soon as the user clicks, so it may word itself from an
+  // unchanged broker index; the delete re-reads, and a holder that differs from
+  // the one the user agreed to changes the grant and asks again.
+  const removalConfirmation = async (
+    id: string,
+    action: SessionRemoval,
+    reuseUnchangedIndex = false,
+  ) => {
     const title = controller.sessionTitle(id);
     if (action === "hide")
       return {
@@ -262,7 +269,9 @@ export function registerGjcIpcHandlers(
           confirmLabel: "숨기기",
         },
       };
-    const holder = await controller.sessionHostElsewhere(id).catch(() => undefined);
+    const holder = await controller
+      .sessionHostElsewhere(id, { reuseUnchangedIndex })
+      .catch(() => undefined);
     return {
       grant: `delete:${id}:${holder?.pid ?? "none"}`,
       holder,
@@ -287,7 +296,7 @@ export function registerGjcIpcHandlers(
   // delete or hide that follows uses that answer instead of asking twice.
   handle(GJC_IPC.confirmSessionRemoval, async (event, sessionId: unknown, action: unknown) => {
     const id = requiredId(sessionId, "Session ID");
-    const { grant, content } = await removalConfirmation(id, sessionRemoval(action));
+    const { grant, content } = await removalConfirmation(id, sessionRemoval(action), true);
     return security.preauthorize(event, grant, content);
   });
   handle(GJC_IPC.deleteSession, async (event, sessionId: unknown) => {

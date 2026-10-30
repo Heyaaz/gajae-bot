@@ -23,6 +23,7 @@ export interface AttachHost {
   brokerSessions(options?: {
     scope?: "repo" | "cwd" | "worktree" | "all";
     initialDiscovery?: boolean;
+    reuseUnchangedIndex?: boolean;
   }): Promise<SdkSessionRow[] | undefined>;
   readonly historySummaryCache: Map<string, { mtimeMs: number; size: number; summary: NonNullable<ReturnType<typeof historySessionSummary>>; parentId?: string; }>;
   readonly sessions: Map<string, AgentSession>;

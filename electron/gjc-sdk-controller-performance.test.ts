@@ -227,6 +227,29 @@ describe("session read performance", () => {
         expect.objectContaining({ sessionId: "s1" }),
       ]);
       expect(list).toHaveBeenCalledTimes(4);
+      // The delete prompt words itself from the unchanged index; the delete
+      // that follows asks the broker again.
+      state.gjcHostProcess = vi.fn(async (pid: number) => ({ pid }));
+      list.mockResolvedValue([
+        { sessionId: "s1", repo: "/repo", live: true, deleted: false, endpointGeneration: 1, pid: 41 },
+      ]);
+      await writeFile(index, "{\"sessionId\":\"s1\",\"pid\":41}\n");
+      await controller.listSessions();
+      expect(list).toHaveBeenCalledTimes(5);
+      expect(
+        await controller.sessionHostElsewhere("s1", { reuseUnchangedIndex: true }),
+      ).toEqual({ pid: 41 });
+      expect(list).toHaveBeenCalledTimes(5);
+      expect(await controller.sessionHostElsewhere("s1")).toEqual({ pid: 41 });
+      expect(list).toHaveBeenCalledTimes(6);
+      await writeFile(index, "{\"sessionId\":\"s1\"}\n");
+      list.mockResolvedValue([
+        { sessionId: "s1", repo: "/repo", live: false, deleted: false, endpointGeneration: 1 },
+      ]);
+      expect(
+        await controller.sessionHostElsewhere("s1", { reuseUnchangedIndex: true }),
+      ).toBeUndefined();
+      expect(list).toHaveBeenCalledTimes(7);
     } finally {
       controller.dispose();
       list.mockRestore();

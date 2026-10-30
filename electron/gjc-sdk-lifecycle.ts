@@ -33,6 +33,7 @@ export interface LifecycleHost {
   brokerSessions(options?: {
     scope?: "repo" | "cwd" | "worktree" | "all";
     initialDiscovery?: boolean;
+    reuseUnchangedIndex?: boolean;
   }): Promise<SdkSessionRow[] | undefined>;
   readonly modelPreset: AgentControlPreferences["modelPreset"];
   readonly sessionCwds: Map<string, string>;
@@ -571,14 +572,16 @@ export interface DeleteSessionOptions {
 
 /**
  * The GJC outside this window that holds the session open, if any. A row still
- * marked live whose process is gone holds nothing.
+ * marked live whose process is gone holds nothing. `reuseUnchangedIndex` is for
+ * wording a prompt only: the delete itself asks the broker again.
  */
 export async function sessionHostElsewhere(
   host: LifecycleHost,
   sessionId: string,
+  options?: { reuseUnchangedIndex?: boolean },
 ): Promise<GjcHostProcess | undefined> {
   if (host.windowHostedSessions.has(sessionId)) return undefined;
-  const row = await sessionBrokerRow(host, sessionId);
+  const row = await sessionBrokerRow(host, sessionId, options);
   if (row?.live !== true || row.pid === undefined) return undefined;
   return host.gjcHostProcess(row.pid);
 }
@@ -840,8 +843,9 @@ async function deleteThroughGjcCliFallback(
 async function sessionBrokerRow(
   host: LifecycleHost,
   sessionId: string,
+  options?: { reuseUnchangedIndex?: boolean },
 ): Promise<SdkSessionRow | null | undefined> {
-  const listed = await host.brokerSessions();
+  const listed = await host.brokerSessions(options);
   if (!listed) return undefined;
   return listed.find((session) => session.sessionId === sessionId) ?? null;
 }
