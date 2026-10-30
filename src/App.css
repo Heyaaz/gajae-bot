@@ -6937,8 +6937,12 @@ button.diff-line-number:hover {
   font-size: 10px;
   white-space: nowrap;
 }
+/* One column that never grows past the card: the raw snapshot under 더 보기 holds
+   a JSON line with no break opportunity, and an `auto` track sized to it widened
+   every task row along with it. */
 .todo-card .todo-card-body {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 9px;
   padding: 7px 11px 0;
 }
@@ -6999,6 +7003,41 @@ button.diff-line-number:hover {
 .todo-card .todo-task-content {
   overflow-wrap: anywhere;
 }
+.todo-card details.todo-task-body > summary {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+  cursor: pointer;
+  list-style: none;
+}
+.todo-card details.todo-task-body > summary::-webkit-details-marker {
+  display: none;
+}
+.todo-card .todo-task-note-count {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 1px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+}
+.todo-card .todo-task-note-count svg {
+  transition: transform 120ms ease;
+}
+.todo-card details[open] .todo-task-note-count svg {
+  transform: rotate(90deg);
+}
+/* A <details> lays its content out in its own slot, not in the body's grid, and a
+   grid <details> does not hide that content on every engine: each note is a line of
+   its own, and a closed row hides them itself. */
+.todo-card details.todo-task-body > .todo-task-note {
+  display: block;
+  margin-top: 1px;
+}
+.todo-card details.todo-task-body:not([open]) > .todo-task-note {
+  display: none;
+}
 .todo-card .todo-task-note {
   color: var(--text-tertiary);
   font-size: 10px;
@@ -7010,6 +7049,7 @@ button.diff-line-number:hover {
   font-size: 11px;
 }
 .todo-card .todo-card-raw {
+  min-width: 0;
   margin: 0;
   font-size: 12px;
 }

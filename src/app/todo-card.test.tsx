@@ -77,6 +77,27 @@ describe("todo snapshot card", () => {
     expect(markup).toContain(">이번 릴리스에서 뺐습니다</span>");
   });
 
+  it("shows only each task's title and keeps its notes folded until it is opened", () => {
+    const markup = render(
+      todoItem({
+        todoPhases: [
+          {
+            tasks: [
+              { content: "채팅 리팩토링", status: "in_progress", notes: ["첫 메모", "둘째 메모", "  "] },
+              { content: "메모 없는 작업", status: "pending" },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(markup).toMatch(
+      /<details class="todo-task-body"><summary><span class="todo-task-content">채팅 리팩토링<\/span><span class="todo-task-note-count">.*?2<\/span><\/summary>/,
+    );
+    expect(markup).not.toMatch(/<details[^>]* open/);
+    expect(markup).toContain('<div class="todo-task-body"><span class="todo-task-content">메모 없는 작업</span></div>');
+  });
+
   it("shows one dim empty line instead of the snapshot's report", () => {
     // Rendered from a local time so the clock label is the same in every zone.
     const observedAt = new Date(2026, 9, 16, 7, 5).toISOString();

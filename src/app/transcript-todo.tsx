@@ -1,6 +1,6 @@
 import type { TodoSnapshotTask } from "../../shared/agent-contract";
 import type { TranscriptItem } from "../backend/types";
-import { ListChecks } from "lucide-react";
+import { ChevronRight, ListChecks } from "lucide-react";
 import { useState } from "react";
 import { t } from "../i18n";
 import { MarkdownBody } from "./transcript-markdown";
@@ -88,7 +88,9 @@ function todoObservedLabel(observedAt: string | undefined): string {
  * The row used to render the controller's report of itself -- source, observation time,
  * how many records came back -- plus the snapshot's JSON, which said nothing about the
  * work. Each item is a row here, marked by the status the runtime gave it, and the
- * snapshot text stays behind 더 보기 so the record itself is not hidden.
+ * snapshot text stays behind 더 보기 so the record itself is not hidden. A task's
+ * notes are a running log the agent appends to, so a row shows only the task and
+ * opens its notes on demand.
  */
 export function TodoCard({
   item,
@@ -131,6 +133,9 @@ export function TodoCard({
                 <ul className="todo-tasks">
                   {phase.tasks.map((task, taskIndex) => {
                     const status = todoStatusKey(task.status);
+                    const notes = (task.notes ?? []).filter(
+                      (note) => note.trim().length > 0,
+                    );
                     return (
                       <li
                         className={`todo-task ${
@@ -143,11 +148,20 @@ export function TodoCard({
                         <span className="todo-task-marker" aria-hidden>
                           {status ? TODO_STATUS_MARKERS[status] : TODO_UNKNOWN_MARKER}
                         </span>
-                        <div className="todo-task-body">
-                          <span className="todo-task-content">{task.content}</span>
-                          {(task.notes ?? [])
-                            .filter((note) => note.trim().length > 0)
-                            .map((note, noteIndex) => (
+                        {notes.length === 0 ? (
+                          <div className="todo-task-body">
+                            <span className="todo-task-content">{task.content}</span>
+                          </div>
+                        ) : (
+                          <details className="todo-task-body">
+                            <summary>
+                              <span className="todo-task-content">{task.content}</span>
+                              <span className="todo-task-note-count">
+                                <ChevronRight size={11} aria-hidden />
+                                {notes.length}
+                              </span>
+                            </summary>
+                            {notes.map((note, noteIndex) => (
                               <span
                                 className="todo-task-note"
                                 key={noteIndex}
@@ -156,7 +170,8 @@ export function TodoCard({
                                 {note.split("\n")[0]}
                               </span>
                             ))}
-                        </div>
+                          </details>
+                        )}
                       </li>
                     );
                   })}
