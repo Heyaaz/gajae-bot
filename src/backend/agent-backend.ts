@@ -42,6 +42,8 @@ export interface AgentBackend {
   listHistorySessions(): Promise<HistorySession[]>;
   openHistorySession(sessionId: string): Promise<AgentSession>;
   renameSession(sessionId: string, title: string): Promise<void>;
+  /** Whether the user agrees to delete or hide the session; asked before either starts. */
+  confirmSessionRemoval(sessionId: string, action: "delete" | "hide"): Promise<boolean>;
   deleteSession(sessionId: string): Promise<void>;
   hideSession(sessionId: string): Promise<void>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;

@@ -106,6 +106,11 @@ export async function fileAttachment(filePath: string, store: AttachmentStore, s
   return { id: `file-${randomUUID()}`, name, mimeType, size: info.size, token: record.token }
 }
 
+function confirmationText(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > maximum) throw new Error(`${label} is invalid`)
+  return value
+}
+
 export function registerSettingsIpcHandlers(
   store: SettingsStore,
   attachments: AttachmentStore,
@@ -183,6 +188,11 @@ export function registerSettingsIpcHandlers(
     ) throw new Error('첨부 권한이 올바르지 않습니다')
     attachments.revoke(event.sender.id, [...new Set(tokens)])
   }))
+  ipcMain.handle(SETTINGS_IPC.confirm, security.guarded((event, message: unknown, detail: unknown) =>
+    security.confirm(event, {
+      message: confirmationText(message, 'Confirmation message', 500),
+      detail: detail === undefined ? undefined : confirmationText(detail, 'Confirmation detail', 2000),
+    })))
   ipcMain.handle(SETTINGS_IPC.setWorkspaceLabel, security.guarded((_event, label: unknown) => store.setWorkspaceLabel(label)))
   // A reading preference, not a runtime change: it is saved on its own so toggling a
   // reasoning card never raises the whole-settings confirmation a savePreferences
@@ -216,8 +226,9 @@ export function registerSettingsIpcHandlers(
   ipcMain.handle(SETTINGS_IPC.savePreferences, security.guarded(async (event, preferences: AgentControlPreferences) => {
     const validated = store.validate(preferences)
     await security.authorizeDestructive(event, {
-      message: 'Apply runtime settings?',
+      message: '런타임 설정을 적용할까요? GJC 연결이 다시 시작될 수 있습니다.',
       detail: `${validated.workspace} · ${validated.modelPreset} · ${validated.permissionHandling}`,
+      confirmLabel: '적용',
     })
     const saved = store.save(validated)
     const runtimeReconnected = await onPreferencesSaved?.(saved) ?? false
@@ -226,7 +237,10 @@ export function registerSettingsIpcHandlers(
   const executable = () => store.get().gjcExecutable || process.env.GJC_BIN || 'gjc'
   ipcMain.handle(SETTINGS_IPC.checkGjcUpdate, security.guarded(() => checkGjcUpdate(executable())))
   ipcMain.handle(SETTINGS_IPC.installGjcUpdate, security.guarded(async (event) => {
-    await security.authorizeDestructive(event, { message: 'Install GJC update?' })
+    await security.authorizeDestructive(event, {
+      message: 'GJC를 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.',
+      confirmLabel: '업데이트',
+    })
     const status = await installGjcUpdate(executable())
     await onGjcUpdated?.()
     return status

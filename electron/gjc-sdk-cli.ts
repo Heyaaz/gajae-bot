@@ -401,6 +401,15 @@ export class GjcSdkCli {
 
   constructor(private readonly options: SdkCliOptions) {}
 
+  /** The resolved `gjc`, for a command this class does not wrap. */
+  get executable(): string {
+    return this.options.executable;
+  }
+
+  get env(): NodeJS.ProcessEnv {
+    return this.options.env;
+  }
+
   /**
    * A credential-free observer of non-replayable tool snapshots and workflow
    * gates. Ask questions arrive as `workflow_gate` on this same relay.

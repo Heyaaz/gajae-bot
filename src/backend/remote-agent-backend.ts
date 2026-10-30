@@ -319,6 +319,10 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.desktopOnly();
   }
 
+  confirmSessionRemoval(_sessionId: string, _action: "delete" | "hide"): Promise<boolean> {
+    return this.desktopOnly();
+  }
+
   deleteSession(_sessionId: string): Promise<void> {
     return this.desktopOnly();
   }

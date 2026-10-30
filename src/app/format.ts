@@ -63,6 +63,11 @@ function translateHostError(message: string): string {
   return message;
 }
 
+/** The user declined the host's confirmation: their answer, not a failure to report. */
+export function isDeclinedConfirmation(error: unknown): boolean {
+  return /Operation cancelled/u.test(error instanceof Error ? error.message : String(error));
+}
+
 export function humanErrorMessage(error: unknown): string {
   const message = redactCredentials(
     error instanceof Error ? error.message : String(error),

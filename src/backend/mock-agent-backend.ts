@@ -502,6 +502,11 @@ export class MockAgentBackend implements AgentBackend {
     this.emit({ type: "session.updated", session: cloneSession(session) });
   }
 
+  // The mock has no host to ask; the desktop smoke drives removals without a dialog.
+  async confirmSessionRemoval(_sessionId: string, _action: "delete" | "hide"): Promise<boolean> {
+    return true;
+  }
+
   async hideSession(sessionId: string): Promise<void> {
     await this.deleteSession(sessionId);
   }

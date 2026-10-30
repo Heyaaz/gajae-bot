@@ -26,6 +26,7 @@ import {
   todoSnapshotPhases,
 } from "./gjc-sdk-controller.js";
 import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
+import { CliDeleteError } from "./gjc-cli-session-delete.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 import {
@@ -570,21 +571,83 @@ describe("0.18.12 lifecycle refusal", () => {
     controller.dispose();
   });
 
-  it.each([true, false])("preserves ambiguous legacy history when the broker row live=%s", async (live) => {
+  const legacyRefusal = () => new SdkCliError("operation_failed", "localized refusal", undefined,
+    [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown");
+
+  it("preserves ambiguous legacy history when no transcript is left for the CLI to delete", async () => {
     const { controller, cli, internals } = harness();
     try {
       internals.sessions.set("s1", session());
-      internals.locateSharedTranscriptFile = vi.fn(async () => "/repo/s1.jsonl");
-      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live, deleted: false, repo: "/repo" }] as never);
-      cli.rawGlobal.mockRejectedValue(new SdkCliError("operation_failed", "localized refusal", undefined,
-        [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown"));
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.deleteThroughGjcCli = vi.fn();
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
       const remove = vi.spyOn(internals, "removeSessionArtifacts");
       await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_legacy_history_ambiguous");
       expect(internals.sessions.get("s1").attachment).toBe("recovering");
       expect(remove).not.toHaveBeenCalled();
-      expect(cli.rawGlobal).toHaveBeenCalledTimes(1);
-      expect(cli.rawGlobal).toHaveBeenCalledWith("session.delete",
+      expect(internals.deleteThroughGjcCli).not.toHaveBeenCalled();
+      expect(cli.rawGlobal).toHaveBeenCalledExactlyOnceWith("session.delete",
         expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+    } finally { controller.dispose(); }
+  });
+
+  it("deletes through GJC's /session delete when legacy history fences the broker", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
+      internals.deleteThroughGjcCli = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
+      await controller.deleteSession("s1");
+      expect(internals.deleteThroughGjcCli).toHaveBeenCalledExactlyOnceWith("/repo", "/agent/sessions/x/s1.jsonl");
+      expect(internals.sessions.has("s1")).toBe(false);
+    } finally { controller.dispose(); }
+  });
+
+  it("sends the user to the terminal that holds a fenced session instead of resuming it", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
+      internals.deleteThroughGjcCli = vi.fn();
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
+      await expect(controller.deleteSession("s1")).rejects.toThrow(/그 터미널에서 \/session delete/u);
+      expect(internals.deleteThroughGjcCli).not.toHaveBeenCalled();
+      expect(internals.sessions.has("s1")).toBe(true);
+    } finally { controller.dispose(); }
+  });
+
+  it("keeps the session recovering when the CLI deletion does not finish", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
+      internals.deleteThroughGjcCli = vi.fn(async () => {
+        throw new CliDeleteError("unexpected-dialog", "dialog");
+      });
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
+      const remove = vi.spyOn(internals, "removeSessionArtifacts");
+      await expect(controller.deleteSession("s1")).rejects.toThrow(/예상하지 못한 확인 창/u);
+      expect(internals.sessions.get("s1").attachment).toBe("recovering");
+      expect(remove).not.toHaveBeenCalled();
+    } finally { controller.dispose(); }
+  });
+
+  it("falls back to the CLI when an uncertain delete leaves the broker row in place", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
+      internals.deleteThroughGjcCli = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
+      cli.rawGlobal.mockRejectedValue(new SdkCliError("terminal_uncertain", "retained artifacts require reconciliation"));
+      await controller.deleteSession("s1");
+      expect(internals.deleteThroughGjcCli).toHaveBeenCalledOnce();
+      expect(internals.sessions.has("s1")).toBe(false);
     } finally { controller.dispose(); }
   });
 

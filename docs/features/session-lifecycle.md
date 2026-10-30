@@ -44,8 +44,10 @@ the GJC CLI uses, so a session that has no live broker row is still reachable.
   working.
 - Fork, rename, delete, hide: right-click a rail row to open its context menu, then
   choose `현재 상태에서 포크`, `이름 변경`, `삭제`, or `목록에서 숨기기`.
-- Delete confirmation: the in-app `세션 삭제` dialog titled `세션을 삭제할까요?` with
-  `취소` and `삭제`.
+- Delete and hide confirmation: Gajae's host confirmation, drawn over the window in the
+  app's style (a separate window, not part of the page). Delete asks `세션을 삭제할까요?`
+  with `취소` and `삭제`; hide asks `이 세션을 목록에서 숨길까요? …` with `취소` and
+  `숨기기`. The row leaves the rail only after the user agrees.
 
 ## Driving it with Codex Computer Use
 
@@ -183,7 +185,7 @@ at least one completed turn for the history/search journeys; no modal is open;
   ```bash
   cu "In Gajae, right-click the sidebar row MAP-RENAMED and choose '목록에서 숨기기'. Save $MAP_ROOT/evidence/SESSION-HIDE-01.png and report whether the row disappeared, whether a dialog appeared, and whether the transcript opened elsewhere."
   ```
-  Observable: the row disappears immediately with no confirmation dialog; the session's
+  Observable: a confirmation asks before hiding; after `숨기기` the row disappears; the session's
   saved transcript remains on disk and the app shows no deletion claim. Relaunching the
   app keeps the row hidden.
   Cross-check: `agent-control-sessions.json` `hidden` contains the ID, and the matching
@@ -195,7 +197,7 @@ at least one completed turn for the history/search journeys; no modal is open;
 - **SESSION-DELETE — delete a fresh session.**
   Action: create `MAP-DELETE` with no turns, right-click it, choose `삭제`, confirm.
   ```bash
-  cu "In Gajae, create a new empty session named MAP-DELETE in $MAP_ROOT/workspace. Right-click its row, choose '삭제', and confirm in the dialog labeled '세션 삭제' by clicking '삭제'. Save $MAP_ROOT/evidence/SESSION-DELETE-01.png immediately and $MAP_ROOT/evidence/SESSION-DELETE-02.png after five seconds. Report the row state and any error text."
+  cu "In Gajae, create a new empty session named MAP-DELETE in $MAP_ROOT/workspace. Right-click its row, choose '삭제', and confirm in the dialog titled '세션을 삭제할까요?' by clicking '삭제'. Save $MAP_ROOT/evidence/SESSION-DELETE-01.png immediately and $MAP_ROOT/evidence/SESSION-DELETE-02.png after five seconds. Report the row state and any error text."
   ```
   Observable on success: the row disappears and stays gone; no confirmation dialog
   reopens. On GJC refusal: the row is restored, an error explains that deletion was not
@@ -243,8 +245,9 @@ at least one completed turn for the history/search journeys; no modal is open;
   stable token or the 12-character ID instead of the full display title.
 - The history list renders 100 rows at a time; use the search field or `더 보기 (N)` for
   older sessions.
-- The delete dialog is in-app, not a native macOS confirmation. A native dialog in a
-  screenshot belongs to a different action.
+- Every host confirmation (delete, hide, commit, settings save, and the rest) uses the same
+  app-styled dialog, never a native macOS alert. It is its own scriptless window, so the
+  page's DOM does not contain it; read it from a screenshot.
 - Relaunch with the explicit environment, never `open -a Gajae`. The macOS app launcher
   does not carry `GAJAE_USER_DATA_DIR`, `GJC_CODING_AGENT_DIR`, or `GJC_BIN`, so the
   relaunched app silently uses the real profile and the history journey becomes invalid.

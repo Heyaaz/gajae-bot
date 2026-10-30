@@ -22,7 +22,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { sessionTitleText, statusLabel, storyStatusLabel, subagentLabel } from "./format";
+import { isDeclinedConfirmation, sessionTitleText, statusLabel, storyStatusLabel, subagentLabel } from "./format";
 import { t, useLanguage } from "../i18n";
 import {
   anchorLineKeys,
@@ -594,7 +594,11 @@ export function DiffPanel({
       onRefresh();
       return true;
     } catch (error) {
-      if (gitRequestRef.current === request && sessionIdRef.current === sessionId)
+      if (
+        !isDeclinedConfirmation(error) &&
+        gitRequestRef.current === request &&
+        sessionIdRef.current === sessionId
+      )
         setErrorState({
           sessionId,
           value: error instanceof Error ? error.message : String(error),
@@ -733,12 +737,6 @@ export function DiffPanel({
               type="button"
               disabled={gitBusy || staged.length === 0 || !commitMessage.trim()}
               onClick={() => {
-                if (
-                  !window.confirm(
-                    t`스테이징된 ${staged.length}개 파일을 커밋할까요?`,
-                  )
-                )
-                  return;
                 const submittedRevision = commitMessageRevision.current;
                 void mutate(() =>
                   backend.commitChanges(session.id, commitMessage),
@@ -762,15 +760,7 @@ export function DiffPanel({
               className="button-primary"
               type="button"
               disabled={gitBusy || !git?.upstream || git.ahead === 0}
-              onClick={() => {
-                if (
-                  !window.confirm(
-                    t`${git?.upstream ?? "upstream"}으로 ${git?.ahead ?? 0}개 커밋을 push할까요?`,
-                  )
-                )
-                  return;
-                void mutate(() => backend.pushChanges(session.id));
-              }}
+              onClick={() => void mutate(() => backend.pushChanges(session.id))}
             >
               Push
             </button>

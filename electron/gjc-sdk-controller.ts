@@ -268,6 +268,7 @@ import {
   submitQuestionAnswer,
 } from "./gjc-sdk-questions.js";
 import { executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
+import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
 import {
   commitChanges,
   getGitStatus,
@@ -819,6 +820,7 @@ export class GjcSdkController {
     get workspace() { return controller.workspace; },
     stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
     removeSessionArtifacts: (sessionId) => controller.removeSessionArtifacts(sessionId),
+    deleteThroughGjcCli: (cwd, sessionPath) => controller.deleteThroughGjcCli(cwd, sessionPath),
     removeLocalSession: (sessionId, hide) => controller.removeLocalSession(sessionId, hide),
     get transcriptAttachments() { return controller.transcriptAttachments; },
     get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
@@ -1250,6 +1252,13 @@ export class GjcSdkController {
     this.sessionSdkOperations.clear();
     await this.ensureStarted();
     return true;
+  }
+
+  /** The title the session list shows, cut to one readable line. */
+  sessionTitle(sessionId: string): string | undefined {
+    const title = this.sessions.get(sessionId)?.title.replace(/\s+/gu, " ").trim();
+    if (!title) return undefined;
+    return title.length > 72 ? `${title.slice(0, 71).trimEnd()}\u2026` : title;
   }
 
   async listSessions(): Promise<AgentSession[]> {
@@ -2123,6 +2132,11 @@ export class GjcSdkController {
 
   private removeSessionArtifacts(sessionId: string): Promise<void> {
     return removeSessionArtifacts(this.filesHost, sessionId);
+  }
+
+  private async deleteThroughGjcCli(cwd: string, sessionPath: string): Promise<void> {
+    const cli = await this.requireCli();
+    await deleteSessionThroughCli({ executable: cli.executable, env: cli.env, cwd, sessionPath });
   }
 
   private locateSharedTranscriptFile(

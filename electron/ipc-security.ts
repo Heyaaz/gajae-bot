@@ -1,7 +1,7 @@
-import { BrowserWindow, dialog, type IpcMainInvokeEvent } from "electron";
+import type { BrowserWindow, IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { hostText } from "./host-text.js";
+import { confirmOverWindow, type ConfirmContent } from "./confirm-overlay.js";
 
 export interface RendererLaunchConfig {
   developmentUrl?: string;
@@ -43,33 +43,22 @@ export function rendererLaunchConfig(
   };
 }
 
-export type DestructiveConfirmation = (options: {
-  window: BrowserWindow;
-  message: string;
-  detail?: string;
-}) => Promise<boolean>;
+export type DestructiveConfirmation = (
+  options: ConfirmContent & { window: BrowserWindow },
+) => Promise<boolean>;
 
-export const nativeDestructiveConfirmation: DestructiveConfirmation = async ({
-  window,
-  message,
-  detail,
-}) => {
-  const result = await dialog.showMessageBox(window, {
-    type: "warning",
-    buttons: ["Cancel", "Continue"],
-    defaultId: 0,
-    cancelId: 0,
-    message: hostText(message),
-    detail: detail ? hostText(detail) : undefined,
-  });
-  return result.response === 1;
-};
+export const overlayDestructiveConfirmation: DestructiveConfirmation = ({ window, ...content }) =>
+  confirmOverWindow(window, content);
+
+/** How long a confirmation answered ahead of its operation stays usable. */
+const GRANT_TTL_MS = 30_000;
 
 export class IpcSecurity {
   private readonly windows = new Map<number, { window: BrowserWindow; url: string; cleanup: () => void }>();
   private readonly pendingAuthorizations = new Set<number>();
+  private readonly grants = new Map<string, number>();
   private disposed = false;
-  constructor(private readonly confirm: DestructiveConfirmation = nativeDestructiveConfirmation) {}
+  constructor(private readonly prompt: DestructiveConfirmation = overlayDestructiveConfirmation) {}
 
   register(window: BrowserWindow, expectedUrl: string): () => void {
     if (this.disposed || window.isDestroyed() || window.webContents.isDestroyed()) return () => undefined;
@@ -93,6 +82,7 @@ export class IpcSecurity {
     for (const entry of this.windows.values()) entry.cleanup();
     this.windows.clear();
     this.pendingAuthorizations.clear();
+    this.grants.clear();
   }
 
   isAllowed(event: IpcMainInvokeEvent): boolean {
@@ -117,22 +107,56 @@ export class IpcSecurity {
     }) as T;
   }
 
-  async authorizeDestructive(
-    event: IpcMainInvokeEvent,
-    options: { message: string; detail?: string },
-  ): Promise<void> {
+  /** Asks the user through the host's own dialog; false when they decline. */
+  async confirm(event: IpcMainInvokeEvent, content: ConfirmContent): Promise<boolean> {
     const window = this.owner(event);
     const senderId = event.sender.id;
     if (this.pendingAuthorizations.has(senderId))
       throw new Error("Another confirmation is already in progress");
     this.pendingAuthorizations.add(senderId);
     try {
-      const confirmed = await this.confirm({ ...options, window });
-      if (!confirmed) throw new Error("Operation cancelled");
+      const confirmed = await this.prompt({ ...content, window });
       if (!this.isAllowed(event)) throw new Error("Unauthorized IPC sender");
+      return confirmed;
     } finally {
       this.pendingAuthorizations.delete(senderId);
     }
+  }
+
+  /**
+   * Throws unless the user confirms. A `grant` the same window earned through
+   * `preauthorize` stands in for the prompt once.
+   */
+  async authorizeDestructive(
+    event: IpcMainInvokeEvent,
+    content: ConfirmContent,
+    grant?: string,
+  ): Promise<void> {
+    if (grant !== undefined && this.consumeGrant(event, grant)) return;
+    if (!(await this.confirm(event, content))) throw new Error("Operation cancelled");
+  }
+
+  /**
+   * Confirms an operation before the window starts it, so the window can show the
+   * outcome (a row leaving a list) the moment the user says yes. The operation's
+   * own `authorizeDestructive` with the same grant then does not ask again.
+   */
+  async preauthorize(
+    event: IpcMainInvokeEvent,
+    grant: string,
+    content: ConfirmContent,
+  ): Promise<boolean> {
+    const confirmed = await this.confirm(event, content);
+    if (confirmed) this.grants.set(`${event.sender.id}:${grant}`, Date.now() + GRANT_TTL_MS);
+    return confirmed;
+  }
+
+  private consumeGrant(event: IpcMainInvokeEvent, grant: string): boolean {
+    if (!this.isAllowed(event)) throw new Error("Unauthorized IPC sender");
+    const key = `${event.sender.id}:${grant}`;
+    const expiresAt = this.grants.get(key);
+    this.grants.delete(key);
+    return expiresAt !== undefined && expiresAt >= Date.now();
   }
 
   owner(event: IpcMainInvokeEvent): BrowserWindow {

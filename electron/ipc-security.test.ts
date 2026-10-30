@@ -167,4 +167,50 @@ describe("IpcSecurity", () => {
     resolveConfirmation(true);
     await expect(first).resolves.toBeUndefined();
   });
+
+  it("lets one confirmation answered ahead stand in for its operation's prompt, once", async () => {
+    const confirm = vi.fn<DestructiveConfirmation>().mockResolvedValue(true);
+    const security = new IpcSecurity(confirm);
+    const { window, webContents } = fakeWindow();
+    security.register(window, webContents.mainFrame.url);
+    const event = eventFor(webContents);
+    await expect(security.preauthorize(event, "delete:s1", { message: "delete" })).resolves.toBe(true);
+    await security.authorizeDestructive(event, { message: "delete" }, "delete:s1");
+    expect(confirm).toHaveBeenCalledTimes(1);
+    // Used up: the next delete asks again, and another session's grant never matches.
+    await security.authorizeDestructive(event, { message: "delete" }, "delete:s1");
+    expect(confirm).toHaveBeenCalledTimes(2);
+    await security.preauthorize(event, "delete:s1", { message: "delete" });
+    await security.authorizeDestructive(event, { message: "delete" }, "delete:s2");
+    expect(confirm).toHaveBeenCalledTimes(4);
+  });
+
+  it("grants nothing when the user declines, or to another window, or after it expires", async () => {
+    vi.useFakeTimers();
+    try {
+      const confirm = vi.fn<DestructiveConfirmation>().mockResolvedValueOnce(false).mockResolvedValue(true);
+      const security = new IpcSecurity(confirm);
+      const first = fakeWindow(1);
+      const second = fakeWindow(2);
+      security.register(first.window, first.webContents.mainFrame.url);
+      security.register(second.window, second.webContents.mainFrame.url);
+      const event = eventFor(first.webContents);
+      await expect(security.preauthorize(event, "delete:s1", { message: "delete" })).resolves.toBe(false);
+      confirm.mockResolvedValueOnce(false);
+      await expect(
+        security.authorizeDestructive(event, { message: "delete" }, "delete:s1"),
+      ).rejects.toThrow("Operation cancelled");
+
+      await security.preauthorize(event, "delete:s1", { message: "delete" });
+      const calls = confirm.mock.calls.length;
+      await security.authorizeDestructive(eventFor(second.webContents), { message: "delete" }, "delete:s1");
+      expect(confirm).toHaveBeenCalledTimes(calls + 1);
+
+      vi.advanceTimersByTime(31_000);
+      await security.authorizeDestructive(event, { message: "delete" }, "delete:s1");
+      expect(confirm).toHaveBeenCalledTimes(calls + 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

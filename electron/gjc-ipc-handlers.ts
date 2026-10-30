@@ -29,6 +29,13 @@ import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
 import type { IpcSecurity } from "./ipc-security.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 
+type SessionRemoval = "delete" | "hide";
+
+function sessionRemoval(value: unknown): SessionRemoval {
+  if (value === "delete" || value === "hide") return value;
+  throw new Error("Session removal must be delete or hide");
+}
+
 function transcriptPageRequest(
   value: unknown,
 ): TranscriptPageRequest | undefined {
@@ -187,6 +194,8 @@ export function registerGjcIpcHandlers(
           if (action)
             await security.authorizeDestructive(event, {
               message: destructiveSlashMessage(action),
+              confirmLabel: action === "goal-complete" ? "완료" : action === "compact" ? "압축" : "삭제",
+              danger: action === "session-delete" || action === "goal-drop",
             });
           return controller.sendMessage(id, input, {
             allowDestructive: action !== undefined,
@@ -238,11 +247,33 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.openHistorySession, (_event, sessionId: unknown) =>
     controller.openHistorySession(requiredId(sessionId, "Session ID")),
   );
+  const removalConfirmation = (id: string, action: SessionRemoval) => {
+    const title = controller.sessionTitle(id);
+    return action === "delete"
+      ? {
+          message: "세션을 삭제할까요?",
+          detail: [title, "GJC 프로세스를 종료하고 대화 기록까지 삭제합니다. 목록에서만 숨기지 않습니다."]
+            .filter(Boolean)
+            .join("\n\n"),
+          confirmLabel: "삭제",
+          danger: true,
+        }
+      : {
+          message: "이 세션을 목록에서 숨길까요? GJC의 기록은 삭제되지 않습니다.",
+          detail: title,
+          confirmLabel: "숨기기",
+        };
+  };
+  // The window asks first and drops the row the moment the user agrees; the
+  // delete or hide that follows uses that answer instead of asking twice.
+  handle(GJC_IPC.confirmSessionRemoval, (event, sessionId: unknown, action: unknown) => {
+    const id = requiredId(sessionId, "Session ID");
+    const removal = sessionRemoval(action);
+    return security.preauthorize(event, `${removal}:${id}`, removalConfirmation(id, removal));
+  });
   handle(GJC_IPC.deleteSession, async (event, sessionId: unknown) => {
     const id = requiredId(sessionId, "Session ID");
-    await security.authorizeDestructive(event, {
-      message: "세션을 삭제할까요?",
-    });
+    await security.authorizeDestructive(event, removalConfirmation(id, "delete"), `delete:${id}`);
     return controller.deleteSession(id);
   });
   // Deleting GJC's own saved history is not available through the public SDK on
@@ -253,9 +284,7 @@ export function registerGjcIpcHandlers(
   // is destroyed, and the transcript stays readable on disk.
   handle(GJC_IPC.hideSession, async (event, sessionId: unknown) => {
     const id = requiredId(sessionId, "Session ID");
-    await security.authorizeDestructive(event, {
-      message: "이 세션을 목록에서 숨길까요? GJC의 기록은 삭제되지 않습니다.",
-    });
+    await security.authorizeDestructive(event, removalConfirmation(id, "hide"), `hide:${id}`);
     return controller.hideSession(id);
   });
   handle(GJC_IPC.getTranscript, async (_event, sessionId: unknown) =>
@@ -353,8 +382,9 @@ export function registerGjcIpcHandlers(
     const info = controller.toolDecisionInfo(id, selected);
     if (info.requiresConfirmation)
       await security.authorizeDestructive(event, {
-        message: "Allow this tool action?",
+        message: "이 도구 실행을 허용할까요?",
         detail: info.name,
+        confirmLabel: "허용",
       });
     return controller.resolveToolCall(id, selected);
   });
@@ -429,8 +459,10 @@ export function registerGjcIpcHandlers(
       const id = requiredId(sessionId, "Session ID");
       if (operation === "complete" || operation === "drop")
         await security.authorizeDestructive(event, {
-          message: operation === "drop" ? "Drop this goal?" : "Mark this goal complete?",
-          detail: `Session ${id}`,
+          message: destructiveSlashMessage(operation === "drop" ? "goal-drop" : "goal-complete"),
+          detail: controller.sessionTitle(id),
+          confirmLabel: operation === "drop" ? "삭제" : "완료",
+          danger: operation === "drop",
         });
       return controller.operateGoal(
         id,
@@ -470,17 +502,20 @@ export function registerGjcIpcHandlers(
       const id = requiredId(sessionId, "Session ID");
       const commitMessage = requiredString(message, "Commit message");
       await security.authorizeDestructive(event, {
-        message: "Commit staged changes?",
+        message: "스테이징된 변경을 커밋할까요?",
         detail: commitMessage,
+        confirmLabel: "커밋",
       });
       return controller.commitChanges(id, commitMessage);
     },
   );
   handle(GJC_IPC.pushChanges, async (event, sessionId: unknown) => {
     const id = requiredId(sessionId, "Session ID");
+    const upstream = await controller.getGitStatus(id).then((git) => git.upstream, () => undefined);
     await security.authorizeDestructive(event, {
-      message: "Push committed changes?",
-      detail: `Session ${id}`,
+      message: "커밋을 push할까요?",
+      detail: upstream,
+      confirmLabel: "Push",
     });
     return controller.pushChanges(id);
   });

@@ -18,6 +18,7 @@ const STEPS = [
   { id: 'tool-stream-e2e', command: process.execPath, args: ['scripts/gjc-tool-stream-e2e.mjs'], timeoutMs: 10 * 60_000 },
   { id: 'gjc-smoke', command: 'npx', args: ['electron', '.', '--gjc-smoke'], timeoutMs: 5 * 60_000 },
   { id: 'sign-in-contract', command: process.execPath, args: ['scripts/gjc-sign-in-contract.mjs'], timeoutMs: 3 * 60_000 },
+  { id: 'cli-delete-e2e', command: process.execPath, args: ['scripts/gjc-cli-delete-e2e.mjs'], timeoutMs: 5 * 60_000 },
 ]
 
 const USAGE = `Usage:

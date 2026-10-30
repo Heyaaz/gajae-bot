@@ -130,27 +130,3 @@ export function desktopStatusRenderer(
     }
   };
 }
-
-/**
- * A macOS template mask: dark, opaque pixels become solid black, the rest clear.
- *
- * The app icon is a full-colour square, so its alpha alone is a rounded square;
- * the line art is what still reads as Gajae at menu bar size. Run again after
- * downscaling with a lower `opaqueAbove`, it turns the half-transparent thin lines
- * solid, which macOS would otherwise draw faintly. Channel order does not matter
- * (Electron bitmaps are BGRA): only the brightest colour channel and alpha are read.
- */
-export function templateMask(
-  bitmap: Buffer,
-  { darkBelow = 90, opaqueAbove = 128 } = {},
-): Buffer {
-  const mask = Buffer.alloc(bitmap.length);
-  for (let offset = 0; offset + 3 < bitmap.length; offset += 4) {
-    const opaque = bitmap[offset + 3] > opaqueAbove;
-    const dark =
-      Math.max(bitmap[offset], bitmap[offset + 1], bitmap[offset + 2]) <
-      darkBelow;
-    mask[offset + 3] = opaque && dark ? 255 : 0;
-  }
-  return mask;
-}

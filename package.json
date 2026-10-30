@@ -49,6 +49,7 @@
     "test": "vitest run",
     "verify": "npm run lint && npm test && npm run build && npm run desktop:smoke && npm run desktop:offline-smoke && npm run desktop:attachment-smoke && npm run desktop:inspector-smoke && npm run desktop:session-read-smoke && npm run desktop:message-delivery-smoke && npm run desktop:transcript-page-smoke && npm run desktop:skill-ui-smoke && npm run desktop:queued-send-smoke && npm run desktop:remote-smoke && npm run desktop:menu-bar-smoke && npm run desktop:terminal-smoke && npm run desktop:deep-link-smoke && npm run desktop:onboarding-smoke && npm run desktop:gjc-smoke",
     "gjc:matrix": "node scripts/gjc-matrix.mjs",
+    "gjc:cli-delete-e2e": "node scripts/gjc-cli-delete-e2e.mjs",
     "verify:gjc": "npm run build && npm run desktop:gjc-smoke && node scripts/gjc-sdk-e2e.mjs",
     "preview": "vite preview"
   },
