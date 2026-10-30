@@ -7044,9 +7044,10 @@ button.diff-line-number:hover {
   font-size: 10px;
 }
 
-/* The GJC tab's reasoning-card row holds a switch, not one of the panel's text fields:
-   the shared `.settings-panel input` box would draw it 170px wide and 30px tall. */
-.settings-panel > label.settings-toggle-row input[type="checkbox"] {
+/* A checkbox is not one of the panel's text fields: the shared `.settings-panel input`
+   box would draw it 170px wide and 30px tall, in the system's blue. */
+.settings-panel input[type="checkbox"],
+.settings-panel label:first-child input[type="checkbox"] {
   flex: 0 0 auto;
   min-width: 0;
   width: 16px;
@@ -7577,7 +7578,7 @@ button.diff-line-number:hover {
   justify-content: space-between;
   gap: 16px;
 }
-.settings-panel > div.settings-toggle-row > span {
+.settings-panel > div.settings-toggle-row > span:first-child {
   display: grid;
   gap: 3px;
 }
@@ -7617,16 +7618,11 @@ button.diff-line-number:hover {
   align-items: center;
   gap: 10px;
 }
-.settings-panel .notification-controls input[type="checkbox"] {
-  flex: 0 0 auto;
-  width: 16px;
-  min-width: 0;
-  height: 16px;
-  padding: 0;
-  accent-color: var(--accent-bright);
-}
-.settings-panel .notification-controls .dropdown-trigger {
-  min-width: 92px;
+/* The longest sound name is "Submarine"; the panel's 200px field width only
+   pushed the checkbox onto its own line. */
+.settings-panel .notification-controls .dropdown {
+  width: 112px;
+  flex: 0 0 112px;
 }
 
 /* The inbox spans every project, so its entry sits beside search rather than in
