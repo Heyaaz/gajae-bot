@@ -9,7 +9,6 @@ import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
 import type { ParallelGroup } from "../../shared/parallel-run";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { AgentSession } from "../backend/types";
-import { NewSessionDialog, type NewSessionInput } from "./dialogs";
 import { ParallelView } from "./parallel-view";
 import { Sidebar } from "./sidebar";
 
@@ -30,12 +29,6 @@ async function mount(element: ReturnType<typeof createElement>): Promise<HTMLDiv
   root = createRoot(host);
   await act(async () => root!.render(element));
   return host;
-}
-
-function setValue(element: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement, value: string, event: "input" | "change"): void {
-  const prototype = Object.getPrototypeOf(element) as object;
-  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(element, value);
-  element.dispatchEvent(new Event(event, { bubbles: true }));
 }
 
 const button = (node: ParentNode, label: string) =>
@@ -76,76 +69,6 @@ function group(state: ParallelGroup["state"] = { kind: "comparing" }): ParallelG
     ],
   };
 }
-
-describe("the new-session dialog", () => {
-  it("starts three attempts on their own presets in worktrees, with the request to send", async () => {
-    const onCreate = vi.fn<(input: NewSessionInput) => void>();
-    const node = await mount(
-      createElement(NewSessionDialog, {
-        defaultWorkspace: "/repo",
-        parallel: { presets: ["codex-medium", "codex-eco", "codex-pro"], defaultPreset: "codex-medium" },
-        onCancel: () => undefined,
-        onCreate,
-      }),
-    );
-    const count = node.querySelector<HTMLSelectElement>('select[aria-label="병렬 실행 시도 수"]')!;
-    await act(async () => setValue(count, "3", "change"));
-
-    const presets = [...node.querySelectorAll<HTMLInputElement>('input[aria-label$="모델 프리셋"]')];
-    expect(presets.map((input) => input.value)).toEqual(["codex-medium", "codex-eco", "codex-pro"]);
-    await act(async () => setValue(presets[1]!, "codex-pro", "input"));
-    const radios = [...node.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
-    expect(radios.map((radio) => [radio.checked, radio.disabled])).toEqual([
-      [false, true],
-      [true, false],
-    ]);
-    const submit = node.querySelector<HTMLButtonElement>('button[type="submit"]')!;
-    expect(submit.textContent).toContain("시도 3개 시작");
-    // Nothing to send yet: a parallel run without a request would create idle sessions.
-    expect(submit.disabled).toBe(true);
-
-    await act(async () => setValue(node.querySelector("textarea")!, "  로그인 버그를 고쳐 줘 ", "input"));
-    await act(async () => setValue(node.querySelector<HTMLInputElement>("fieldset.isolation-options input:not([type])")!, "feat/login", "input"));
-    await act(async () => node.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-
-    expect(onCreate).toHaveBeenCalledExactlyOnceWith({
-      title: "새 Gajae 세션",
-      workspace: "/repo",
-      isolation: "worktree",
-      worktreeBranch: "feat/login",
-      initialPrompt: "로그인 버그를 고쳐 줘",
-      parallelPresets: ["codex-medium", "codex-pro", "codex-pro"],
-    });
-  });
-
-  it("keeps today's single session when the count stays at 1, and offers no parallel run for a CI fix", async () => {
-    const onCreate = vi.fn<(input: NewSessionInput) => void>();
-    const node = await mount(
-      createElement(NewSessionDialog, {
-        defaultWorkspace: "/repo",
-        parallel: { presets: ["codex-medium"], defaultPreset: "codex-medium" },
-        onCancel: () => undefined,
-        onCreate,
-      }),
-    );
-    await act(async () => node.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
-    expect(onCreate.mock.calls[0]![0]).not.toHaveProperty("parallelPresets");
-    expect(onCreate.mock.calls[0]![0].isolation).toBe("workspace");
-
-    act(() => root!.unmount());
-    host!.remove();
-    const ci = await mount(
-      createElement(NewSessionDialog, {
-        defaultWorkspace: "/repo",
-        prefill: { isolation: "worktree", worktreeBranch: "feat/ci", worktreeBranchExisting: true },
-        parallel: { presets: ["codex-medium"], defaultPreset: "codex-medium" },
-        onCancel: () => undefined,
-        onCreate,
-      }),
-    );
-    expect(ci.querySelector('select[aria-label="병렬 실행 시도 수"]')).toBeNull();
-  });
-});
 
 describe("the rail", () => {
   it("draws the attempts under one group row that opens the comparison", async () => {

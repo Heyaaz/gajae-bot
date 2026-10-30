@@ -95,7 +95,6 @@ import {
   Transcript,
 } from "./transcript";
 import {
-  BUILT_IN_MODEL_PRESETS,
   DEFAULT_MODEL_PRESET,
   DEFAULT_NOTIFICATION_PREFERENCES,
   DEFAULT_TOOL_VIEW_MODE,
@@ -227,6 +226,7 @@ export default function App() {
     desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
     language: getLanguage(),
     runningSubmission: "queue",
+    newSessionKind: "app",
   });
   const preferencesRef = useRef(preferences);
   // The card toggle is a stable callback so the memo'd transcript rows keep their
@@ -743,23 +743,6 @@ export default function App() {
       unsubscribe();
     };
   }, [parallelBridge]);
-  // The dialog offers the presets it can name without a session: the configured
-  // default, the built-in presets and any profile a loaded session's picker listed.
-  const parallelPresetChoices = useMemo(
-    () => [
-      ...new Set([
-        preferences.modelPreset,
-        ...BUILT_IN_MODEL_PRESETS,
-        ...Object.values(configOptions).flatMap(
-          (options) =>
-            options
-              .find((option) => option.category === "model" || option.id === "model")
-              ?.options?.map((option) => option.value) ?? [],
-        ),
-      ]),
-    ],
-    [preferences.modelPreset, configOptions],
-  );
   const {
     projectGroups,
     activeProjectId,
@@ -923,11 +906,8 @@ export default function App() {
 
   const createSession = useCreateSession(
     backend,
-    parallelBridge,
-    openParallelGroup,
     pendingSessions,
     setAppError,
-    setParallelGroups,
     setNewSessionRequest,
     setSessions,
     setSelectedId,
@@ -1997,15 +1977,11 @@ export default function App() {
           key={newSessionRequest.serial}
           defaultWorkspace={connection.workspace}
           prefill={newSessionRequest.prefill}
-          parallel={
-            parallelBridge
-              ? {
-                  presets: parallelPresetChoices,
-                  defaultPreset: preferences.modelPreset,
-                }
-              : undefined
+          kind={
+            backend.terminalSessions === true && preferences.newSessionKind === "cli"
+              ? "terminal"
+              : "gjc"
           }
-          terminals={backend.terminalSessions === true}
           onCancel={() => setNewSessionRequest(null)}
           onCreate={createSession}
         />
@@ -2028,6 +2004,12 @@ export default function App() {
           onClose={() => {
             setSettingsOpen(false);
             setSettingsTab("gjc");
+            // Choices the dialog saves on change, such as the new-session kind,
+            // never pass through onSaved.
+            void window.agentControlDesktop?.settings
+              .getPreferences()
+              .then(setPreferences)
+              .catch(() => undefined);
           }}
           onSaved={(saved) => {
             setPreferences(saved);

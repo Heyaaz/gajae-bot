@@ -9,6 +9,7 @@ import {
 import type {
   GjcUpdateStatus,
   ManagementSnapshot,
+  NewSessionKind,
   NotificationCategory,
   NotificationPreferences,
 } from "../../shared/agent-contract";
@@ -212,6 +213,7 @@ export function SettingsDialog({
     desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
     language: getLanguage(),
     runningSubmission: "queue",
+    newSessionKind: "app",
   };
   const [tab, setTab] = useState<SettingsTab>(initialTab);
   const [themeMode, setThemeModeState] = useState<ThemeMode>(() => readStoredTheme());
@@ -324,6 +326,27 @@ export function SettingsDialog({
         ...preferencesRef.current,
         runningSubmission: previous,
       };
+      preferencesRef.current = restored;
+      setPreferences(restored);
+      setSaveError(settingsErrorMessage(error));
+    }
+  }
+
+  async function persistNewSessionKind(value: NewSessionKind): Promise<void> {
+    if (!settingsBridge) return;
+    const previous = preferencesRef.current.newSessionKind;
+    const optimistic = { ...preferencesRef.current, newSessionKind: value };
+    preferencesRef.current = optimistic;
+    setPreferences(optimistic);
+    setSaveError("");
+    try {
+      const saved = await settingsBridge.setNewSessionKind(value);
+      const current = { ...preferencesRef.current, newSessionKind: saved };
+      preferencesRef.current = current;
+      setPreferences(current);
+      setOriginal((original) => ({ ...original, newSessionKind: saved }));
+    } catch (error) {
+      const restored = { ...preferencesRef.current, newSessionKind: previous };
       preferencesRef.current = restored;
       setPreferences(restored);
       setSaveError(settingsErrorMessage(error));
@@ -876,6 +899,23 @@ export function SettingsDialog({
                     onChange={(value) =>
                       void persistRunningSubmission(value as "queue" | "steer")
                     }
+                  />
+                </label>
+                <label>
+                  <span>
+                    <strong>{t("새 세션 종류")}</strong>
+                    <small>
+                      {t("새 세션을 앱 화면의 GJC 채팅으로 열지, 그 폴더의 터미널(CLI)로 열지 고릅니다.")}
+                    </small>
+                  </span>
+                  <Dropdown
+                    value={preferences.newSessionKind}
+                    ariaLabel={t("새 세션 종류")}
+                    options={[
+                      { value: "app", label: t("앱") },
+                      { value: "cli", label: t("CLI") },
+                    ]}
+                    onChange={(value) => void persistNewSessionKind(value as NewSessionKind)}
                   />
                 </label>
                 <label className="settings-field-wide">

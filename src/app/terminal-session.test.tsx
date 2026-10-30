@@ -47,30 +47,48 @@ function row(id: string, overrides: Partial<AgentSession> = {}): AgentSession {
   };
 }
 
-describe("new terminal session", () => {
-  it("creates a CLI session named after its folder", async () => {
+describe("new session dialog", () => {
+  const submit = (node: HTMLElement) =>
+    act(async () =>
+      node.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
+    );
+
+  it("asks only for the name, isolation, and folder of a GJC session", async () => {
+    const onCreate = vi.fn<(input: NewSessionInput) => void>();
+    const node = await mount(
+      createElement(NewSessionDialog, { defaultWorkspace: "/repo", onCancel: noop, onCreate }),
+    );
+    expect(node.querySelector("h2")?.textContent).toBe("새 GJC 세션");
+    expect(node.querySelector("fieldset.isolation-options")).not.toBeNull();
+    expect(node.querySelector("textarea")).toBeNull();
+    expect(node.querySelector("fieldset.parallel-options")).toBeNull();
+    expect(node.querySelector('input[name="session-kind"]')).toBeNull();
+
+    await submit(node);
+    expect(onCreate).toHaveBeenCalledExactlyOnceWith({
+      title: "새 Gajae 세션",
+      workspace: "/repo",
+      isolation: "workspace",
+      worktreeBranch: undefined,
+      initialPrompt: undefined,
+      initialImages: undefined,
+    });
+  });
+
+  it("opens a CLI session, named after its folder, when the settings choose CLI", async () => {
     const onCreate = vi.fn<(input: NewSessionInput) => Promise<void>>().mockResolvedValue();
     const node = await mount(
       createElement(NewSessionDialog, {
         defaultWorkspace: "/work/repo",
-        terminals: true,
+        kind: "terminal",
         onCancel: noop,
         onCreate,
       }),
     );
-    const kind = (label: string) =>
-      [...node.querySelectorAll<HTMLLabelElement>("fieldset.session-kind-options label")]
-        .find((element) => element.textContent?.includes(label))!
-        .querySelector("input")!;
-
-    expect(node.querySelector("fieldset.isolation-options")).not.toBeNull();
-    await act(async () => kind("CLI").click());
+    expect(node.querySelector("h2")?.textContent).toBe("새 터미널 세션");
     expect(node.querySelector("fieldset.isolation-options")).toBeNull();
-    expect(node.querySelector("textarea")).toBeNull();
 
-    await act(async () =>
-      node.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })),
-    );
+    await submit(node);
     expect(onCreate).toHaveBeenCalledExactlyOnceWith({
       title: "repo",
       workspace: "/work/repo",
@@ -78,11 +96,22 @@ describe("new terminal session", () => {
     });
   });
 
-  it("offers no terminal kinds where a terminal cannot run", async () => {
+  it("keeps a handed-over request on a GJC session even when the settings choose CLI", async () => {
+    const onCreate = vi.fn<(input: NewSessionInput) => void>();
     const node = await mount(
-      createElement(NewSessionDialog, { defaultWorkspace: "/repo", onCancel: noop, onCreate: noop }),
+      createElement(NewSessionDialog, {
+        defaultWorkspace: "/repo",
+        kind: "terminal",
+        prefill: { prompt: "  CI를 고쳐 줘 " },
+        onCancel: noop,
+        onCreate,
+      }),
     );
-    expect(node.querySelector("fieldset.session-kind-options")).toBeNull();
+    expect(node.querySelector("h2")?.textContent).toBe("새 GJC 세션");
+
+    await submit(node);
+    expect(onCreate.mock.calls[0]![0]).toMatchObject({ initialPrompt: "CI를 고쳐 줘" });
+    expect(onCreate.mock.calls[0]![0]).not.toHaveProperty("kind");
   });
 });
 

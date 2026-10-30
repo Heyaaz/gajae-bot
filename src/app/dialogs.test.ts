@@ -132,7 +132,7 @@ describe("NewSessionDialog prefill", () => {
   });
   afterEach(() => vi.unstubAllGlobals());
 
-  it("opens with the prefilled values and hands the trimmed prompt to onCreate", () => {
+  it("opens with the prefilled values and hands the trimmed request to onCreate", () => {
     const onCreate = vi.fn();
     const tree = renderNewSessionDialog({ prefill, onCreate });
 
@@ -149,8 +149,7 @@ describe("NewSessionDialog prefill", () => {
       (element) => element.type === "input" && element.props?.placeholder === "안전한 브랜치 (선택)",
     );
     expect(branch.props.value).toBe("issue-172-deep-links");
-    const prompt = findElement(tree, (element) => element.type === "textarea");
-    expect(prompt.props.value).toBe(prefill.prompt);
+    expect(findElement(tree, (element) => element.type === "textarea")).toBeUndefined();
 
     findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
     expect(onCreate).toHaveBeenCalledExactlyOnceWith({
@@ -160,18 +159,6 @@ describe("NewSessionDialog prefill", () => {
       worktreeBranch: "issue-172-deep-links",
       initialPrompt: "딥링크를 구현해 줘\n완료 기준을 확인해 줘",
     });
-  });
-
-  it("leaves initialPrompt out when the user clears the field", () => {
-    const onCreate = vi.fn();
-    let tree = renderNewSessionDialog({ prefill, onCreate });
-    findElement(tree, (element) => element.type === "textarea").props.onChange({
-      target: { value: "  \n " },
-    });
-    tree = renderNewSessionDialog({ prefill, onCreate });
-    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
-    expect(onCreate).toHaveBeenCalledOnce();
-    expect(onCreate.mock.calls[0]![0].initialPrompt).toBeUndefined();
   });
 
   it("carries the work link, and requires the suggested branch to exist only while it is unchanged", () => {
@@ -281,7 +268,6 @@ describe("NewSessionDialog prefill", () => {
   it("keeps today's defaults without a prefill", () => {
     const onCreate = vi.fn();
     const tree = renderNewSessionDialog({ onCreate });
-    expect(findElement(tree, (element) => element.type === "textarea").props.value).toBe("");
     findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
     expect(onCreate).toHaveBeenCalledExactlyOnceWith({
       title: "새 Gajae 세션",
@@ -289,6 +275,7 @@ describe("NewSessionDialog prefill", () => {
       isolation: "workspace",
       worktreeBranch: undefined,
       initialPrompt: undefined,
+      initialImages: undefined,
     });
   });
 });
@@ -309,35 +296,3 @@ describe("workspaceLabelFor", () => {
   });
 });
 
-describe("NewSessionDialog parallel start", () => {
-  const submitEvent = { preventDefault: () => undefined };
-  const parallel = { presets: ["codex-pro", "codex-eco"], defaultPreset: "codex-pro" };
-  beforeEach(() => {
-    hookState.slots = [];
-    vi.stubGlobal("window", {});
-  });
-  afterEach(() => vi.unstubAllGlobals());
-
-  it("shows a failed start in the dialog and keeps the request for another try", async () => {
-    const onCreate = vi.fn().mockRejectedValueOnce(new Error("이름 충돌"));
-    const props = { parallel, onCreate, prefill: { workspace: "/p", prompt: "긴 요청" } };
-    let tree = renderNewSessionDialog(props);
-    findElement(tree, (element) => element.type === "select").props.onChange({
-      target: { value: "2" },
-    });
-    tree = renderNewSessionDialog(props);
-    findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    tree = renderNewSessionDialog(props);
-    expect(
-      findElement(tree, (element) => element.type === "p" && element.props?.role === "alert")
-        .props.children,
-    ).toBe("이름 충돌");
-    expect(findElement(tree, (element) => element.type === "textarea").props.value).toBe(
-      "긴 요청",
-    );
-    expect(onCreate).toHaveBeenCalledOnce();
-    expect(onCreate.mock.calls[0]![0].parallelPresets).toHaveLength(2);
-  });
-});

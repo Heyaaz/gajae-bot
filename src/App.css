@@ -2293,8 +2293,7 @@
 .button-danger:hover {
   background: #bd535c;
 }
-.isolation-options,
-.session-kind-options {
+.isolation-options {
   display: grid;
   gap: 8px;
   margin: 16px 0 0;
@@ -2304,22 +2303,7 @@
   border: 1px solid var(--border);
   border-radius: 8px;
 }
-.session-kind-options label {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  align-items: start;
-  gap: 6px;
-  color: var(--text-primary);
-}
-.session-kind-options label small {
-  display: block;
-  margin-top: 2px;
-  color: var(--text-tertiary);
-  font-size: 10px;
-  line-height: 1.45;
-}
-.isolation-options legend,
-.session-kind-options legend {
+.isolation-options legend {
   padding: 0 4px;
   color: var(--text-tertiary);
   font-size: 10px;
@@ -7782,43 +7766,7 @@ button.diff-line-number:hover {
   }
 }
 
-/* Best-of-N: the dialog's attempt options, the rail's group row, the comparison. */
-.parallel-options {
-  display: grid;
-  gap: 8px;
-  margin: 16px 0 0;
-  padding: 12px 10px 10px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-}
-.parallel-options legend {
-  padding: 0 4px;
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
-.parallel-options__count,
-.parallel-options__preset {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-}
-.parallel-options select,
-.parallel-options input {
-  padding: 6px 7px;
-  color: var(--text-primary);
-  font-size: 11px;
-  background: var(--bg-app);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-}
-.parallel-options small {
-  color: var(--text-tertiary);
-  font-size: 10px;
-}
+/* Best-of-N: the rail's group row and the comparison. */
 .session-row--parallel .session-row__subtitle svg {
   color: var(--accent-bright);
 }

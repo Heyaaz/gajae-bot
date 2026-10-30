@@ -18,10 +18,6 @@ import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { t } from "../i18n";
 import { directoryName, sessionTitleText } from "./format";
-import {
-  PARALLEL_ATTEMPT_MAX,
-  PARALLEL_ATTEMPT_MIN,
-} from "../../shared/parallel-run";
 
 
 /** What a new session opens: GJC in the app, or a terminal for any CLI. */
@@ -39,48 +35,30 @@ export interface NewSessionInput {
   workLink?: SessionWorkLink;
   initialPrompt?: string;
   initialImages?: ImageAttachment[];
-  /**
-   * Set for a Best-of-N run: one model preset per attempt. The request is then
-   * sent to every attempt instead of waiting in a composer.
-   */
-  parallelPresets?: string[];
 }
 
 export interface NewSessionDialogProps {
   defaultWorkspace: string;
   prefill?: NewSessionPrefill;
-  /** Offered only where attempts can be run, which is the desktop window. */
-  parallel?: { presets: readonly string[]; defaultPreset: string };
-  /** Offered only where a terminal can run, which is the desktop window. */
-  terminals?: boolean;
+  /**
+   * The kind the settings choose for new sessions. A prefilled request, such as
+   * a CI fix or a quick-input prompt, is GJC work and always opens the app.
+   */
+  kind?: NewSessionKind;
   onCancel: () => void;
   /** A promise keeps the dialog open until it settles; a rejection is shown in it. */
   onCreate: (input: NewSessionInput) => void | Promise<void>;
 }
 
-/** Different presets by default: comparing one model with itself is the rarer intent. */
-function defaultAttemptPresets(
-  presets: readonly string[],
-  defaultPreset: string,
-): string[] {
-  const order = [defaultPreset, ...presets.filter((preset) => preset !== defaultPreset)];
-  return Array.from(
-    { length: PARALLEL_ATTEMPT_MAX },
-    (_, index) => order[index % order.length]!,
-  );
-}
-
 export function NewSessionDialog({
   defaultWorkspace,
   prefill,
-  parallel,
-  terminals = false,
+  kind = "gjc",
   onCancel,
   onCreate,
 }: NewSessionDialogProps) {
   const defaultTitle = t("새 Gajae 세션");
-  const [kind, setKind] = useState<NewSessionKind>("gjc");
-  const terminal = kind !== "gjc";
+  const terminal = kind === "terminal" && !prefill;
   const [title, setTitle] = useState(prefill?.title || defaultTitle);
   const [workspace, setWorkspace] = useState(
     prefill?.workspace || defaultWorkspace,
@@ -91,18 +69,6 @@ export function NewSessionDialog({
   const [worktreeBranch, setWorktreeBranch] = useState(
     prefill?.worktreeBranch ?? "",
   );
-  const [prompt, setPrompt] = useState(prefill?.prompt ?? "");
-  const [attemptCount, setAttemptCount] = useState(1);
-  const [attemptPresets, setAttemptPresets] = useState(
-    parallel ? defaultAttemptPresets(parallel.presets, parallel.defaultPreset) : [],
-  );
-  // A CI fix has to start from the failing branch; attempts start from HEAD.
-  const parallelOffered =
-    Boolean(parallel) && !prefill?.worktreeBranchExisting && !terminal;
-  const parallelRun = parallelOffered && attemptCount >= PARALLEL_ATTEMPT_MIN;
-  const presetsComplete = attemptPresets
-    .slice(0, attemptCount)
-    .every((preset) => preset.trim());
   const [choosing, setChoosing] = useState(false);
   const [workspaceError, setWorkspaceError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -150,7 +116,7 @@ export function NewSessionDialog({
               ? directoryName(workspace)
               : trimmedTitle,
           workspace,
-          kind,
+          kind: "terminal",
         }),
       )
         .catch((error: unknown) =>
@@ -162,26 +128,6 @@ export function NewSessionDialog({
     const branch = worktreeBranch.trim() || undefined;
     const suggestedBranch =
       isolation === "worktree" && branch === prefill?.worktreeBranch;
-    if (parallelRun) {
-      if (!prompt.trim() || !presetsComplete || submitting) return;
-      setSubmitError("");
-      setSubmitting(true);
-      void Promise.resolve(onCreate({
-        title: trimmedTitle && trimmedTitle !== defaultTitle ? trimmedTitle : "새 Gajae 세션",
-        workspace,
-        isolation: "worktree",
-        worktreeBranch: branch,
-        initialPrompt: prompt.trim(),
-        parallelPresets: attemptPresets
-          .slice(0, attemptCount)
-          .map((preset) => preset.trim()),
-      }))
-        .catch((error: unknown) =>
-          setSubmitError(error instanceof Error ? error.message : String(error)),
-        )
-        .finally(() => setSubmitting(false));
-      return;
-    }
     onCreate({
       title:
         !trimmedTitle || trimmedTitle === defaultTitle
@@ -199,7 +145,9 @@ export function NewSessionDialog({
         ? { worktreePull: prefill.worktreePull }
         : {}),
       ...(prefill?.workLink ? { workLink: prefill.workLink } : {}),
-      initialPrompt: prompt.trim() || undefined,
+      // A request handed over with the dialog, from quick input or a link, still
+      // waits in the new session's composer.
+      initialPrompt: prefill?.prompt?.trim() || undefined,
       initialImages: images.length > 0 ? images : undefined,
     });
   }
@@ -208,7 +156,7 @@ export function NewSessionDialog({
     <div className="modal-backdrop" role="presentation" onMouseDown={cancel}>
       <form
         className="new-session-dialog"
-        aria-label={t("새 GJC 세션")}
+        aria-label={terminal ? t("새 터미널 세션") : t("새 GJC 세션")}
         onSubmit={submit}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -236,119 +184,38 @@ export function NewSessionDialog({
             onChange={(event) => setTitle(event.target.value)}
           />
         </label>
-        {terminals && !prefill && (
-          <fieldset className="session-kind-options">
-            <legend>{t("세션 종류")}</legend>
-            {(
-              [
-                ["gjc", t("앱"), t("앱 화면에서 GJC와 대화합니다.")],
-                ["terminal", t("CLI"), t("이 폴더에서 터미널을 엽니다. claude, codex 같은 CLI를 바로 실행할 수 있습니다.")],
-              ] as const
-            ).map(([value, label, description]) => (
-              <label key={value}>
-                <input
-                  type="radio"
-                  name="session-kind"
-                  checked={kind === value}
-                  onChange={() => setKind(value)}
-                />{" "}
-                <span>
-                  {label}
-                  <small>{description}</small>
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        )}
-        {parallelOffered && parallel && (
-          <fieldset className="parallel-options">
-            <legend>{t("병렬 실행")}</legend>
-            <label className="parallel-options__count">
-              <span>{t("시도 수")}</span>
-              <select
-                aria-label={t("병렬 실행 시도 수")}
-                value={attemptCount}
-                onChange={(event) => setAttemptCount(Number(event.target.value))}
-              >
-                <option value={1}>{t("1 (병렬 실행 안 함)")}</option>
-                {Array.from(
-                  { length: PARALLEL_ATTEMPT_MAX - PARALLEL_ATTEMPT_MIN + 1 },
-                  (_, index) => PARALLEL_ATTEMPT_MIN + index,
-                ).map((count) => (
-                  <option key={count} value={count}>
-                    {count}
-                  </option>
-                ))}
-              </select>
-            </label>
-            {parallelRun && (
-              <>
-                <datalist id="parallel-model-presets">
-                  {parallel.presets.map((preset) => (
-                    <option key={preset} value={preset} />
-                  ))}
-                </datalist>
-                {attemptPresets.slice(0, attemptCount).map((preset, index) => (
-                  <label key={index} className="parallel-options__preset">
-                    <span>{t`시도 #${index + 1}`}</span>
-                    <input
-                      list="parallel-model-presets"
-                      aria-label={t`시도 #${index + 1} 모델 프리셋`}
-                      value={preset}
-                      onChange={(event) =>
-                        setAttemptPresets((current) =>
-                          current.map((value, at) =>
-                            at === index ? event.target.value : value,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                ))}
-                <small>
-                  {t("시도마다 별도 worktree와 브랜치를 만들고, 첫 요청을 모든 시도에 바로 보냅니다.")}
-                </small>
-              </>
-            )}
-          </fieldset>
-        )}
         {!terminal && (
-        <fieldset className="isolation-options">
-          <legend>{t("작업 격리")}</legend>
-          <label>
-            <input
-              type="radio"
-              checked={!parallelRun && isolation === "workspace"}
-              disabled={parallelRun}
-              onChange={() => setIsolation("workspace")}
-            />{" "}
-            {t("현재 workspace에서 작업")} </label>
-          <label>
-            <input
-              type="radio"
-              checked={parallelRun || isolation === "worktree"}
-              onChange={() => setIsolation("worktree")}
-            />{" "}
-            {t("별도 worktree 생성")} </label>
-          {(parallelRun || isolation === "worktree") && (
-            <input
-              placeholder={
-                parallelRun
-                  ? t("브랜치 이름 (선택) · 시도마다 -1, -2…가 붙습니다")
-                  : t("안전한 브랜치 (선택)")
-              }
-              value={worktreeBranch}
-              onChange={(e) => setWorktreeBranch(e.target.value)}
-            />
-          )}
-          {prefill?.mainCheckout &&
-            isolation === "workspace" &&
-            workspace === prefill.workspace && (
-              <p className="isolation-options__note">
-                {t("이 폴더는 저장소의 기본 작업 폴더입니다. 커밋하지 않은 변경이 있으면 세션의 수정과 섞입니다. 따로 두려면 별도 worktree를 고르세요.")}
-              </p>
+          <fieldset className="isolation-options">
+            <legend>{t("작업 격리")}</legend>
+            <label>
+              <input
+                type="radio"
+                checked={isolation === "workspace"}
+                onChange={() => setIsolation("workspace")}
+              />{" "}
+              {t("현재 workspace에서 작업")} </label>
+            <label>
+              <input
+                type="radio"
+                checked={isolation === "worktree"}
+                onChange={() => setIsolation("worktree")}
+              />{" "}
+              {t("별도 worktree 생성")} </label>
+            {isolation === "worktree" && (
+              <input
+                placeholder={t("안전한 브랜치 (선택)")}
+                value={worktreeBranch}
+                onChange={(e) => setWorktreeBranch(e.target.value)}
+              />
             )}
-        </fieldset>
+            {prefill?.mainCheckout &&
+              isolation === "workspace" &&
+              workspace === prefill.workspace && (
+                <p className="isolation-options__note">
+                  {t("이 폴더는 저장소의 기본 작업 폴더입니다. 커밋하지 않은 변경이 있으면 세션의 수정과 섞입니다. 따로 두려면 별도 worktree를 고르세요.")}
+                </p>
+              )}
+          </fieldset>
         )}
         <label>
           <span>{t("프로젝트 위치")}</span>
@@ -369,20 +236,6 @@ export function NewSessionDialog({
         </label>
         {workspaceError && <p role="alert">{workspaceError}</p>}
         {submitError && <p role="alert">{submitError}</p>}
-        {!terminal && (
-        <label>
-          <span>{t("첫 요청")}</span>
-          <textarea
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-          />
-          <small>
-            {parallelRun
-              ? t("모든 시도에 이 요청을 한 번씩 보냅니다.")
-              : t("세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.")}
-          </small>
-        </label>
-        )}
         {images.length > 0 && (
           <div className="composer-images new-session-images">
             {images.map((image) => (
@@ -401,14 +254,9 @@ export function NewSessionDialog({
           <button
             type="submit"
             className="button-primary"
-            disabled={
-              !workspace ||
-              submitting ||
-              (parallelRun && (!prompt.trim() || !presetsComplete))
-            }
+            disabled={!workspace || submitting}
           >
-            <Plus size={15} />{" "}
-            {parallelRun ? t`시도 ${attemptCount}개 시작` : t("세션 만들기")}{" "}
+            <Plus size={15} /> {t("세션 만들기")}{" "}
           </button>
         </footer>
       </form>
