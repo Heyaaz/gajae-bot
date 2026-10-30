@@ -1,0 +1,32 @@
+{
+  "name": "gajae",
+  "version": "0.1.0",
+  "description": "Installs or updates Gajae, the macOS desktop app for GJC coding-agent sessions.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Heyaaz/gajae-bot.git",
+    "directory": "packages/npm"
+  },
+  "homepage": "https://github.com/Heyaaz/gajae-bot#readme",
+  "type": "module",
+  "bin": {
+    "gajae": "bin/gajae.mjs"
+  },
+  "files": [
+    "bin",
+    "install.sh"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepack": "cp ../../install.sh install.sh"
+  }
+}

@@ -45,3 +45,6 @@ docs/*
 *.njsproj
 *.sln
 *.sw?
+
+# Copied from the root install.sh when the npm installer is packed.
+packages/npm/install.sh
