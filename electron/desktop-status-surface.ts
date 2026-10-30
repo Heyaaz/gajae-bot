@@ -59,8 +59,9 @@ function menuItem(
 }
 
 /**
- * The menu bar image: Gajae's figure (antennae, straw hat, goggles, cloak) drawn
- * as an 18pt silhouette. Derived from the app icon it read as noise at this size.
+ * The menu bar image: Gajae's antennae, straw hat and goggles on an 18px grid,
+ * with the `@2x` file the same pixels doubled, so a Retina screen and a 1x monitor
+ * show the same figure. Derived from the app icon it read as noise at this size.
  * The `Template` file name makes macOS tint it for the menu bar's appearance.
  */
 export function menuBarIcon(iconPath: string): NativeImage {
