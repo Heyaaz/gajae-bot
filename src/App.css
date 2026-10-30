@@ -3366,15 +3366,22 @@ button.diff-line-number:hover {
   display: grid;
   gap: 8px;
   margin: 0 0 14px;
-  padding: 12px;
-  background: color-mix(in srgb, var(--overlay) 3%, transparent);
+  padding: 11px 12px 10px;
+  background: color-mix(in srgb, var(--overlay) 2.5%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
 }
 .question-card--pending,
 .question-card--rejected {
-  border-color: rgba(240, 100, 22, 0.4);
-  background: rgba(240, 100, 22, 0.06);
+  background: var(--bg-panel);
+  border-color: rgba(240, 100, 22, 0.32);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+}
+/* The transcript keeps a quiet record; the pinned copy is the one to answer. */
+.question-card--settled {
+  gap: 4px;
+  margin-left: 31px;
+  padding: 9px 11px;
 }
 .question-card-live {
   position: absolute;
@@ -3387,56 +3394,99 @@ button.diff-line-number:hover {
   white-space: nowrap;
   border: 0;
 }
-.question-card-line,
-.question-card-result {
+.question-card-head {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent-bright);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+.question-card--settled .question-card-head {
+  color: var(--text-tertiary);
+}
+.question-card-head small {
+  margin-left: auto;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 400;
+}
+.question-card-kind {
   margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .question-card-line {
+  margin: 0;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.question-card--settled .question-card-line {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
 }
 .question-card-result,
 .question-card-error {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   margin: 0;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: 12px;
+}
+.question-card--answered .question-card-result {
+  color: var(--text-primary);
+}
+.question-card--answered .question-card-result svg {
+  flex: 0 0 auto;
+  color: var(--success);
+}
+.question-card--elsewhere .question-card-result,
+.question-card--cancelled .question-card-result,
+.question-card--timeout .question-card-result {
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
 .question-card-error {
   color: var(--danger, #d4543c);
 }
-.question-card-kind {
-  margin: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-.question-card--approval .question-card-line {
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
 .question-card-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  display: grid;
+  gap: 4px;
 }
-.question-option,
-.question-submit {
-  display: inline-flex;
+.question-option {
+  display: flex;
+  width: 100%;
+  min-width: 0;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   min-height: 32px;
-  padding: 4px 10px;
+  padding: 6px 10px;
   color: var(--text-primary);
-  font-size: 13px;
-  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+  font-size: 12px;
+  text-align: left;
+  background: transparent;
   border: 1px solid var(--border);
   border-radius: 8px;
   cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.question-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--overlay) 6%, transparent);
+  border-color: var(--border-strong);
+}
+.question-option-label {
+  min-width: 0;
+  flex: 1 1 auto;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.question-option > svg {
+  flex: 0 0 auto;
+  color: var(--accent-bright);
 }
 .question-option:focus-visible,
 .question-submit:focus-visible,
@@ -3446,17 +3496,32 @@ button.diff-line-number:hover {
 }
 .question-option.is-selected,
 .question-option[aria-checked="true"] {
-  border-color: rgba(240, 100, 22, 0.7);
-  background: rgba(240, 100, 22, 0.14);
+  border-color: rgba(240, 100, 22, 0.6);
+  background: rgba(240, 100, 22, 0.1);
 }
 .question-option.is-recommended small {
+  flex: 0 0 auto;
+  padding: 1px 6px;
   color: var(--warning, #e3b36a);
-  font-size: 11px;
+  font-size: 10px;
+  background: rgba(227, 179, 106, 0.1);
+  border-radius: 999px;
 }
 .question-option-index {
+  display: inline-grid;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  place-items: center;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: 10.5px;
   font-variant-numeric: tabular-nums;
+  background: color-mix(in srgb, var(--overlay) 6%, transparent);
+  border-radius: 5px;
+}
+.question-option.is-selected .question-option-index {
+  color: var(--accent-bright);
+  background: rgba(240, 100, 22, 0.14);
 }
 .question-option:disabled,
 .question-submit:disabled {
@@ -3464,24 +3529,43 @@ button.diff-line-number:hover {
   opacity: 0.55;
 }
 .question-other {
-  display: grid;
-  gap: 4px;
-  color: var(--text-secondary);
-  font-size: 12px;
+  display: flex;
+  min-width: 0;
+  gap: 6px;
 }
 .question-other input {
-  width: 100%;
-  min-height: 32px;
-  padding: 4px 8px;
+  min-width: 0;
+  flex: 1 1 auto;
+  height: 32px;
+  padding: 0 10px;
   color: var(--text-primary);
-  font-size: 13px;
+  font-size: 12px;
   background: transparent;
-  border: 1px solid var(--border);
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
 }
+.question-other input:not(:placeholder-shown) {
+  border-style: solid;
+}
+.question-other input::placeholder {
+  color: var(--text-tertiary);
+}
 .question-submit {
-  justify-self: start;
+  flex: 0 0 auto;
+  height: 32px;
+  padding: 0 12px;
+  color: #fff;
+  font-size: 12px;
   font-weight: 600;
+  background: var(--accent);
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.question-card-keys {
+  margin: 0;
+  color: var(--text-tertiary);
+  font-size: 10px;
 }
 .gajae-progress {
   display: grid;
