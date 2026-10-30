@@ -84,9 +84,7 @@ const [outputDirectory] = await packager({
   appVersion: packageJson.version,
   icon: path.join(root, 'src/assets/gajae-icon'),
   // The menu bar image is derived from this at runtime; see menuBarIconPath.
-  // The Dock icon is set from the PNG because nativeImage cannot read .icns.
   extraResource: [
-    path.join(root, 'src/assets/gajae-icon.png'),
     path.join(root, 'src/assets/gajae-menubar-Template.png'),
     path.join(root, 'src/assets/gajae-menubar-Template@2x.png'),
   ],
