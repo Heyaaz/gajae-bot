@@ -24,6 +24,13 @@ Packaging rebuilds `node-pty` against Electron and unpacks that module from the
 asar archive, including its `spawn-helper`. The chat header can switch the
 open session between the conversation and a login-shell terminal.
 
+Only packages the Electron main process loads at runtime belong in
+`dependencies`; today that is `node-pty` alone. Vite bundles everything the
+renderer imports, so renderer packages go in `devDependencies`, where packaging
+prunes them. The package also drops `node-pty`'s Node prebuilds and sources,
+source maps, and Chromium locales other than English and Korean. The app comes
+to about 250 MB, or 116 MB zipped.
+
 For a public release, first store notarization credentials in the login
 Keychain, then provide the Developer ID identity, Keychain profile, and an
 explicit confirmation that the bundled artwork is cleared for redistribution.
