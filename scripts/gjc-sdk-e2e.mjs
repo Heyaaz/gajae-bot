@@ -238,7 +238,7 @@ try {
   //
   // gjc/0.18.11 cannot confirm one over the broker route: it answers
   // `{turn:"no_active_turn", terminal:"terminal_no_effect"}` while the turn is
-  // verifiably running and the run continues (see README, "Known limitation on
+  // verifiably running and the run continues (see docs/development.md, "Known limitation on
   // 0.18.11"). That is recorded as a failure, but only after the remaining
   // lifecycle checks have run, so one unavailable surface does not hide the rest.
   const failures = [];
