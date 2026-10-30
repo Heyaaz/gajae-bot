@@ -64,6 +64,7 @@ import {
   type TerminalDesktopBridge,
   type TerminalExitEvent,
   type TerminalOutputEvent,
+  type TerminalSessionCreateInput,
   type TerminalStartRequest,
 } from "../shared/terminal-ipc.js";
 
@@ -543,17 +544,26 @@ const automations: AutomationDesktopBridge = Object.freeze({
 const terminal: TerminalDesktopBridge = Object.freeze({
   start: (request: TerminalStartRequest) =>
     ipcRenderer.invoke(TERMINAL_IPC.start, request),
-  write: (data: string) => {
+  write: (id: string, data: string) => {
     if (typeof data !== "string" || data.length === 0) return;
-    ipcRenderer.send(TERMINAL_IPC.input, data);
+    ipcRenderer.send(TERMINAL_IPC.input, id, data);
   },
-  resize: (cols: number, rows: number) => {
-    ipcRenderer.send(TERMINAL_IPC.resize, cols, rows);
+  resize: (id: string, cols: number, rows: number) => {
+    ipcRenderer.send(TERMINAL_IPC.resize, id, cols, rows);
   },
-  setPaused: (paused: boolean) => {
-    ipcRenderer.send(TERMINAL_IPC.pause, paused);
+  setPaused: (id: string, paused: boolean) => {
+    ipcRenderer.send(TERMINAL_IPC.pause, id, paused);
   },
   dispose: (token: number) => ipcRenderer.invoke(TERMINAL_IPC.dispose, token),
+  listSessions: () => ipcRenderer.invoke(TERMINAL_IPC.listSessions),
+  createSession: (input: TerminalSessionCreateInput) =>
+    ipcRenderer.invoke(TERMINAL_IPC.createSession, input),
+  renameSession: (sessionId: string, title: string) =>
+    ipcRenderer.invoke(TERMINAL_IPC.renameSession, sessionId, title),
+  confirmSessionRemoval: (sessionId: string) =>
+    ipcRenderer.invoke(TERMINAL_IPC.confirmSessionRemoval, sessionId),
+  deleteSession: (sessionId: string) =>
+    ipcRenderer.invoke(TERMINAL_IPC.deleteSession, sessionId),
   onOutput: (listener: (event: TerminalOutputEvent) => void) => {
     const wrapped = (
       _event: Electron.IpcRendererEvent,

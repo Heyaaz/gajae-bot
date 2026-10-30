@@ -675,6 +675,37 @@ describe("session delete optimism", () => {
   });
 });
 
+describe("terminal sessions", () => {
+  beforeEach(() => {
+    vi.stubGlobal("window", {});
+    actionProbe.reset();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("shows a selected terminal session as a terminal instead of a conversation", async () => {
+    const row = session("terminal-1", {
+      title: "빌드 셸",
+      runtime: "terminal",
+    });
+    actionProbe.forkSession.mockResolvedValueOnce(row);
+    renderApp();
+    actionProbe.sidebar!.onFork(session("source-1"));
+    await settle();
+    renderApp();
+    actionProbe.sidebar!.onSelect(row.id);
+    const markup = renderApp();
+
+    expect(actionProbe.sidebar!.selectedId).toBe(row.id);
+    expect(markup).toContain('data-surface="terminal"');
+    expect(markup).toContain("CLI");
+    expect(markup).toContain("빌드 셸");
+    expect(markup).not.toContain("conversation--");
+  });
+});
+
 describe("project scope", () => {
   beforeEach(() => {
     vi.stubGlobal("window", {});

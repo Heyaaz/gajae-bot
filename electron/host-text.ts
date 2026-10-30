@@ -9,6 +9,9 @@ import type { UiLanguage } from "../shared/agent-contract.js";
  */
 const ENGLISH: Readonly<Record<string, string>> = {
   "세션을 삭제할까요?": "Delete this session?",
+  "터미널 세션을 삭제할까요?": "Delete this terminal session?",
+  "이 세션에서 실행 중인 셸과 프로그램을 종료합니다.":
+    "Ends the shell and any program running in this session.",
   "이 세션을 목록에서 숨길까요? GJC의 기록은 삭제되지 않습니다.":
     "Hide this session from the list? GJC's history is not deleted.",
   "이 세션을 압축할까요? 대화 기록이 다시 작성됩니다.":

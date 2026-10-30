@@ -3,7 +3,7 @@ import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
 import type { EnvironmentReport } from "./environment-check.js";
 import type { QuickInputShortcutStatus } from "./quick-input.js";
 
-export type RuntimeKind = "gjc" | "hermes";
+export type RuntimeKind = "gjc" | "hermes" | "terminal";
 
 export type SessionStatus =
   "starting" | "idle" | "running" | "waiting" | "failed" | "unknown";

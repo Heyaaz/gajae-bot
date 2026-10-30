@@ -88,7 +88,7 @@ async function selectBackend(): Promise<AgentBackend> {
     }
     throw new Error('Mock backend is not included in this build')
   }
-  if (desktop) return new GjcAgentBackend(desktop)
+  if (desktop) return new GjcAgentBackend(desktop, window.agentControlDesktop?.terminal)
   const remote = new RemoteAgentBackend()
   registerRemoteServiceWorker()
   return remote

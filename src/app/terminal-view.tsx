@@ -20,13 +20,18 @@ interface TerminalViewProps {
   cwd: string;
   active: boolean;
   hidden: boolean;
+  /**
+   * A terminal session to show. Its shell keeps running when this view goes
+   * away, and a view that comes back replays what it printed meanwhile.
+   */
+  session?: string;
 }
 
 type TerminalPhase = "starting" | "running" | "exited" | "error";
 
 let nextTerminalToken = 1;
 
-export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
+export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<(() => void) | null>(null);
@@ -35,6 +40,8 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
   const [detail, setDetail] = useState("");
   const [shellCwd, setShellCwd] = useState(cwd);
   const [epoch, setEpoch] = useState(0);
+  const restartRef = useRef(false);
+  const [shellId, setShellId] = useState("");
 
   useLayoutEffect(() => {
     const host = hostRef.current;
@@ -48,7 +55,11 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
     setPhase("starting");
     setDetail("");
     setShellCwd(cwd);
+    setShellId("");
     const token = nextTerminalToken++;
+    const restart = restartRef.current;
+    restartRef.current = false;
+    let liveId: string | undefined;
     let disposed = false;
     let removeOutput = (): void => undefined;
     let removeExit = (): void => undefined;
@@ -56,7 +67,9 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
     const gate = createOutputGate({
       highWater: TERMINAL_OUTPUT_HIGH_WATER,
       lowWater: TERMINAL_OUTPUT_LOW_WATER,
-      setPaused: (paused) => bridge.setPaused(paused),
+      setPaused: (paused) => {
+        if (liveId) bridge.setPaused(liveId, paused);
+      },
     });
 
     let fitAddon: { fit(): void } | null = null;
@@ -71,7 +84,7 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       } catch {
         return;
       }
-      bridge.resize(term.cols, term.rows);
+      if (liveId) bridge.resize(liveId, term.cols, term.rows);
     };
     fontsLoaded = document.fonts.load('14px "Gajae Terminal Symbols"', "󰆍").then(() => document.fonts.ready).then((loadedFonts) => {
       fontsReady = true;
@@ -108,7 +121,9 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
         }),
       );
       term.open(host);
-      term.onData((data) => bridge.write(data));
+      term.onData((data) => {
+        if (liveId) bridge.write(liveId, data);
+      });
       termRef.current = term;
       resizeObserver = new ResizeObserver(() => applySize());
       resizeObserver.observe(host);
@@ -119,9 +134,14 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
           cwd,
           cols: term.cols,
           rows: term.rows,
+          ...(session ? { session } : {}),
+          ...(session && restart ? { restart: true } : {}),
         });
         if (disposed) return;
+        liveId = started.id;
+        setShellId(started.id);
         if (started.cwd) setShellCwd(started.cwd);
+        if (started.replay) term.write(started.replay);
         const accept = (event: { id: string }): boolean => event.id === started.id;
         removeOutput = bridge.onOutput((event: TerminalOutputEvent) => {
           if (!accept(event)) return;
@@ -133,8 +153,13 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
           setPhase("exited");
           setDetail(String(event.exitCode));
         });
-        setPhase("running");
-        setDetail("");
+        if (started.exitCode === undefined) {
+          setPhase("running");
+          setDetail("");
+        } else {
+          setPhase("exited");
+          setDetail(String(started.exitCode));
+        }
         if (activeRef.current) {
           await fontsLoaded;
           if (!disposed && activeRef.current) {
@@ -162,9 +187,11 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
-      void bridge.dispose(token);
+      // A session's shell keeps running for the next view; only the chat
+      // surface's shell ends with its view.
+      if (!session) void bridge.dispose(token);
     };
-  }, [cwd, epoch]);
+  }, [cwd, epoch, session]);
 
   useEffect(() => {
     activeRef.current = active;
@@ -190,6 +217,7 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
       className="terminal-pane"
       hidden={hidden}
       data-terminal-state={phase}
+      data-terminal-id={shellId || undefined}
       aria-label={t("터미널")}
     >
       <div className="terminal-pane__host" ref={hostRef} />
@@ -199,7 +227,13 @@ export function TerminalView({ cwd, active, hidden }: TerminalViewProps) {
           {phase === "exited" && detail ? ` (${detail})` : ""}
         </span>
         {phase === "error" || phase === "exited" ? (
-          <button type="button" onClick={() => setEpoch((value) => value + 1)}>
+          <button
+            type="button"
+            onClick={() => {
+              restartRef.current = true;
+              setEpoch((value) => value + 1);
+            }}
+          >
             {t("터미널 다시 시작")}
           </button>
         ) : null}

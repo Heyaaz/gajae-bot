@@ -34,6 +34,7 @@ import {
 import { getLanguage, t, useLanguage } from "../i18n";
 import { Menu, Plus, X } from "lucide-react";
 import { TerminalView } from "./terminal-view";
+import { TerminalSessionPane } from "./terminal-session-pane";
 import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import {
   Composer,
@@ -211,9 +212,6 @@ export default function App() {
   const [surface, setSurface] = useState<"chat" | "terminal">("chat");
   const [terminalMounted, setTerminalMounted] = useState(false);
   const surfaceRef = useRef(surface);
-  useEffect(() => {
-    surfaceRef.current = surface;
-  }, [surface]);
   // The whole object the store answered with is kept, not only the label the sidebar
   // renders: the reasoning-card preference is a field of it, and a card toggles that
   // one field through the bridge without touching the rest.
@@ -562,20 +560,30 @@ export default function App() {
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? null;
-  const selectedSessionId = selectedSession?.id;
+  // A terminal session has no conversation, so nothing below that reads one
+  // from GJC runs for it; `chatId` is the selection those reads follow.
+  const terminalSession = selectedSession?.runtime === "terminal" ? selectedSession : null;
+  const chatId = terminalSession ? null : selectedId;
+  const selectedSessionId = terminalSession ? undefined : selectedSession?.id;
   const selectedSessionStatus = selectedSession?.status;
   const selectedSessionRef = useRef(selectedSession);
   selectedSessionRef.current = selectedSession;
   selectedIdRef.current = selectedId;
-  const cachedSelectedTranscript = selectedId ? transcripts[selectedId] : undefined;
+  // Shortcuts that would steal keys from a terminal check this.
+  const shownSurface = terminalSession ? "terminal" : surface;
+  useEffect(() => {
+    surfaceRef.current = shownSurface;
+  }, [shownSurface]);
+  const cachedSelectedTranscript = chatId ? transcripts[chatId] : undefined;
 
   useEffect(() => {
     const ids = Object.keys(transcripts);
-    if (selectedId && !ids.includes(selectedId)) ids.push(selectedId);
+    if (chatId && !ids.includes(chatId)) ids.push(chatId);
     backend.watchTranscripts?.(ids);
-  }, [backend, transcripts, selectedId]);
+  }, [backend, transcripts, chatId]);
 
   useEffect(() => {
+    const selectedId = chatId;
     if (!selectedId || cachedSelectedTranscript) return;
     let active = true;
     updateTranscriptPageState(selectedId, (current) => ({
@@ -611,7 +619,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [backend, selectedId, cachedSelectedTranscript]);
+  }, [backend, chatId, cachedSelectedTranscript]);
 
   const { goal, setGoal, goalRescheduleRef, goalBusySessionId, setGoalBusySessionId } = useGoal(
     backend,
@@ -653,9 +661,9 @@ export default function App() {
   }, [backend, inspectorOpen, selectedSessionId]);
 
   useEffect(() => {
-    if (!selectedId) return;
-    void backend.markSessionRead(selectedId);
-  }, [backend, selectedId]);
+    if (!chatId) return;
+    void backend.markSessionRead(chatId);
+  }, [backend, chatId]);
 
   // The main process cannot infer which session a focused window is showing from
   // focus alone. Naming it lets notifications skip the turn being watched instead
@@ -663,8 +671,8 @@ export default function App() {
   useEffect(() => {
     const bridge = window.agentControlDesktop?.settings;
     if (!bridge) return;
-    void bridge.setViewedSession(selectedId).catch(() => undefined);
-  }, [selectedId]);
+    void bridge.setViewedSession(chatId).catch(() => undefined);
+  }, [chatId]);
 
   useEffect(
     () => () => {
@@ -685,7 +693,7 @@ export default function App() {
   const { diff, diffLoading, refreshDiff } = useDiff(
     backend,
     diffOpen,
-    selectedId,
+    chatId,
     selectedIdRef,
     selectedSession?.workspace,
   );
@@ -846,8 +854,8 @@ export default function App() {
     backend,
     commands,
     configOptions,
-    selectedId,
-    selectedSession,
+    chatId,
+    terminalSession ? null : selectedSession,
     connection,
     language,
   );
@@ -1781,6 +1789,8 @@ export default function App() {
           onError={setAppError}
           onSubmitReview={remoteViewOnly ? undefined : submitReview}
         />
+      ) : terminalSession ? (
+        <TerminalSessionPane session={terminalSession} />
       ) : selectedSession ? (
         <main className="workspace" data-surface={surface}>
           <ChatHeader
@@ -1995,6 +2005,7 @@ export default function App() {
                 }
               : undefined
           }
+          terminals={backend.terminalSessions === true}
           onCancel={() => setNewSessionRequest(null)}
           onCreate={createSession}
         />
