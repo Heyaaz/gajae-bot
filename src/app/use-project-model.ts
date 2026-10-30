@@ -6,18 +6,22 @@ import type {
   RepoDesktopBridge,
 } from "../../shared/repo-ipc";
 import {
+  ALL_PROJECTS_ID,
   buildProjectGroups,
   projectPathOf,
   resolveProjectSelection,
   sessionsOfProject,
 } from "./project-model";
 import { sessionListModel } from "./sidebar-model";
+import type { SessionGrouping, SessionProjectRef } from "./sidebar-model";
 
 export function useProjectModel(
   sessions: AgentSession[],
   parallelGroups: ParallelGroup[],
   repoBridge: RepoDesktopBridge | null,
   selectedProjectId: string,
+  grouping: SessionGrouping,
+  collapsedProjects: ReadonlySet<string>,
 ) {
   // Git project roots, as the main process resolved them. Empty until that answer
   // arrives, and empty forever in a renderer with no desktop bridge; the grouping
@@ -69,11 +73,24 @@ export function useProjectModel(
     () => sessionsOfProject(sessions, projectGroups, activeProjectId),
     [sessions, projectGroups, activeProjectId],
   );
+  // One chosen project has nothing to section by project, so the rail reads by state.
+  const projectOf = useMemo(() => {
+    if (grouping !== "project" || activeProjectId !== ALL_PROJECTS_ID) return undefined;
+    const refs = new Map<string, SessionProjectRef>();
+    for (const project of projectGroups)
+      for (const session of project.sessions)
+        refs.set(session.id, { id: project.id, name: project.name });
+    return (session: AgentSession) => refs.get(session.id);
+  }, [grouping, activeProjectId, projectGroups]);
   // The digits the main process sends for ⌘1-⌘9 index this list, so it has to be the
-  // rail's own order: pinned first, then the state groups, newest first inside each.
+  // rail's own order: the same rows the rail lists, sectioned the same way.
   const shortcutSessions = useMemo(
-    () => sessionListModel(filteredSessions, { parallelGroups }).shortcuts,
-    [filteredSessions, parallelGroups],
+    () =>
+      sessionListModel(
+        filteredSessions.filter((session) => session.status !== "unknown"),
+        { parallelGroups, projectOf, collapsedProjects },
+      ).shortcuts,
+    [filteredSessions, parallelGroups, projectOf, collapsedProjects],
   );
 
   return {
@@ -82,5 +99,6 @@ export function useProjectModel(
     activeProject,
     filteredSessions,
     shortcutSessions,
+    projectOf,
   };
 }

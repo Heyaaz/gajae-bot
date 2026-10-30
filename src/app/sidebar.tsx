@@ -3,6 +3,7 @@ import type { GjcUpdateStatus } from "../../shared/agent-contract";
 import type { AgentSession, BackendConnection } from "../backend/types";
 import {
   ArrowDown,
+  ChevronRight,
   ExternalLink,
   EyeOff,
   FolderGit2,
@@ -36,7 +37,8 @@ import type { ProjectGroup } from "./project-model";
 import { sessionListModel } from "./sidebar-model";
 import type {
   SessionFamilySummary,
-  SessionGroupId,
+  SessionGrouping,
+  SessionProjectRef,
   SessionRowNode,
 } from "./sidebar-model";
 import { t, useLanguage } from "../i18n";
@@ -365,6 +367,12 @@ export interface SidebarProps {
   /** The group the comparison view is showing, so its row reads as selected. */
   openParallelGroupId?: string | null;
   onOpenParallelGroup?: (groupId: string) => void;
+  grouping: SessionGrouping;
+  onGroupingChange: (grouping: SessionGrouping) => void;
+  /** Set when the rail sections by project; the shell numbers ⌘ digits from it too. */
+  projectOf?: (session: AgentSession) => SessionProjectRef | undefined;
+  collapsedProjects: ReadonlySet<string>;
+  onToggleProject: (projectId: string) => void;
 }
 
 /**
@@ -409,6 +417,11 @@ function SidebarView({
   parallelGroups,
   openParallelGroupId,
   onOpenParallelGroup,
+  grouping,
+  onGroupingChange,
+  projectOf,
+  collapsedProjects,
+  onToggleProject,
 }: SidebarProps) {
   useLanguage();
   const versionWarning = gjcVersionWarning(connection.version);
@@ -421,9 +434,10 @@ function SidebarView({
   const [renameValue, setRenameValue] = useState("");
   const [editingWorkspace, setEditingWorkspace] = useState(false);
   const [workspaceValue, setWorkspaceValue] = useState(workspaceLabel);
-  const [expandedGroups, setExpandedGroups] = useState<
-    ReadonlySet<SessionGroupId>
-  >(() => new Set());
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
   // Forks are nested until the user closes them, so this holds the closed ones.
   const [collapsedFamilies, setCollapsedFamilies] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -435,8 +449,10 @@ function SidebarView({
         collapsedFamilies,
         selectedId,
         parallelGroups,
+        projectOf,
+        collapsedProjects,
       }),
-    [sessions, expandedGroups, collapsedFamilies, selectedId, parallelGroups],
+    [sessions, expandedGroups, collapsedFamilies, selectedId, parallelGroups, projectOf, collapsedProjects],
   );
   // The digits the main process sends for ⌘1-⌘9 index the same list, so the numbers on
   // the rows have to come from the model rather than from a second reading of the
@@ -445,7 +461,7 @@ function SidebarView({
     model.shortcuts.map((session, index) => [session.id, index + 1]),
   );
 
-  function toggleGroup(id: SessionGroupId): void {
+  function toggleGroup(id: string): void {
     setExpandedGroups((current) => {
       const next = new Set(current);
       if (next.has(id)) next.delete(id);
@@ -635,6 +651,28 @@ function SidebarView({
       </div>
 
       <div className="sidebar-scroll">
+        {projectId === ALL_PROJECTS_ID && sessions.length > 0 && (
+          <div className="session-grouping" role="radiogroup" aria-label={t("세션 묶기")}>
+            {(
+              [
+                ["project", t("프로젝트")],
+                ["status", t("상태")],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={grouping === value}
+                className={grouping === value ? "is-selected" : undefined}
+                onClick={() => onGroupingChange(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {model.pinned.length > 0 && (
           <section className="session-section">
             <header>
@@ -646,10 +684,33 @@ function SidebarView({
         )}
 
         {model.groups.map((group) => (
-          <section className="session-section" key={group.id}>
-            <header>
-              <span>{group.label}</span>
-            </header>
+          <section
+            className={`session-section${group.project ? " session-section--project" : ""}`}
+            key={group.id}
+          >
+            {group.project ? (
+              <header>
+                <button
+                  type="button"
+                  className="session-project-toggle"
+                  aria-expanded={!group.project.collapsed}
+                  title={group.id.slice("project:".length)}
+                  onClick={() => onToggleProject(group.id.slice("project:".length))}
+                >
+                  <ChevronRight size={12} aria-hidden />
+                  <span>{group.label}</span>
+                </button>
+                {group.project.collapsed && group.project.working > 0 && (
+                  <small className="session-project-working">
+                    {t`작업 중 ${group.project.working}`}
+                  </small>
+                )}
+              </header>
+            ) : (
+              <header>
+                <span>{group.label}</span>
+              </header>
+            )}
             {group.rows.map(renderNode)}
             {group.overflow > 0 && (
               <button

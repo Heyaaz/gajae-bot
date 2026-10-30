@@ -518,6 +518,69 @@
   text-transform: uppercase;
 }
 
+.session-grouping {
+  display: inline-flex;
+  gap: 2px;
+  margin: 0 0 6px 6px;
+  padding: 2px;
+  background: color-mix(in srgb, var(--overlay) 4%, transparent);
+  border-radius: 7px;
+}
+.session-grouping button {
+  padding: 3px 9px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.session-grouping button:hover {
+  color: var(--text-secondary);
+}
+.session-grouping button.is-selected {
+  color: var(--text-primary);
+  background: var(--bg-selected);
+}
+/* Project names are folder names, so the section caps would rewrite them. */
+.session-section--project > header {
+  letter-spacing: 0;
+  text-transform: none;
+}
+.session-project-toggle {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.session-project-toggle:hover {
+  color: var(--text-secondary);
+}
+.session-project-toggle > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-project-toggle > svg {
+  flex: 0 0 auto;
+  transition: transform 120ms ease;
+}
+.session-project-toggle[aria-expanded="true"] > svg {
+  transform: rotate(90deg);
+}
+.session-project-working {
+  flex: 0 0 auto;
+  color: var(--success);
+  font-size: 10px;
+  font-weight: 500;
+}
+
 .session-more {
   width: 100%;
   padding: 6px 8px;

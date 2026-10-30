@@ -66,6 +66,10 @@ function props(
     selectedId: sessions[0]?.id ?? null,
     projects: [project("project", "/tmp/project", sessions)],
     projectId: ALL_PROJECTS_ID,
+    grouping: "status",
+    onGroupingChange: noop,
+    collapsedProjects: new Set<string>(),
+    onToggleProject: noop,
     onProjectChange: noop,
     onOpenRepository: noop,
     onOpenProjects: noop,
@@ -228,6 +232,42 @@ describe("Sidebar session groups", () => {
     const markup = renderToStaticMarkup(createElement(Sidebar, props(sessions)));
     expect(markup).not.toContain("더 보기");
     expect(markup).not.toContain("접기");
+  });
+});
+
+describe("Sidebar project sections", () => {
+  it("sections rows by project, with a toggle back to states", () => {
+    const zeta = [
+      session(0, { workspace: "/work/zeta", status: "running" }),
+      session(1, { workspace: "/work/zeta", status: "waiting" }),
+    ];
+    const alpha = [session(2, { workspace: "/work/alpha" })];
+    const markup = renderToStaticMarkup(
+      createElement(
+        Sidebar,
+        props([...zeta, ...alpha], {
+          projects: [project("zeta", "/work/zeta", zeta), project("alpha", "/work/alpha", alpha)],
+          grouping: "project",
+          projectOf: (row: AgentSession) =>
+            row.workspace === "/work/zeta"
+              ? { id: "/work/zeta", name: "zeta" }
+              : { id: "/work/alpha", name: "alpha" },
+        }),
+      ),
+    );
+    expect(headings(markup)).toEqual(["Needs input"]);
+    const projectHeaders = [
+      ...markup.matchAll(/class="session-project-toggle"[^>]*>.*?<span>([^<]*)<\/span>/gu),
+    ].map((match) => match[1]);
+    expect(projectHeaders).toEqual(["alpha", "zeta"]);
+    expect(markup).toContain('role="radio" aria-checked="true" class="is-selected">프로젝트');
+  });
+
+  it("offers no grouping toggle once one project is chosen", () => {
+    const markup = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)], { projectId: "/tmp/project", grouping: "project" })),
+    );
+    expect(markup).not.toContain("session-grouping");
   });
 });
 
