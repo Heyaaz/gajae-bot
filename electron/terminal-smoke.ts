@@ -1,5 +1,6 @@
 import { app, type BrowserWindow } from "electron";
 import { mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { ipcMain } from "electron";
 import { TERMINAL_IPC } from "../shared/terminal-ipc.js";
@@ -33,7 +34,8 @@ export function attachTerminalSmoke(window: BrowserWindow): void {
               await wait(100);
             }
             const bridge = window.agentControlDesktop && window.agentControlDesktop.terminal;
-            if (bridge) bridge.write(${JSON.stringify("echo gajae-pty-ok\r")});
+            const shellId = document.querySelector("[data-terminal-id]")?.getAttribute("data-terminal-id");
+            if (bridge && shellId) bridge.write(shellId, ${JSON.stringify("echo gajae-pty-ok\r")});
             while (Date.now() < deadline && !text().includes("gajae-pty-ok")) await wait(100);
             const sample = text().slice(-500);
             return {
@@ -54,7 +56,7 @@ export function attachTerminalSmoke(window: BrowserWindow): void {
           sample: string;
         };
         const terminalWrites: string[] = [];
-        const observeWrite = (event: Electron.IpcMainEvent, data: unknown): void => {
+        const observeWrite = (event: Electron.IpcMainEvent, _id: unknown, data: unknown): void => {
           if (event.sender.id === window.webContents.id && typeof data === "string") terminalWrites.push(data);
         };
         ipcMain.on(TERMINAL_IPC.input, observeWrite);
@@ -76,6 +78,51 @@ export function attachTerminalSmoke(window: BrowserWindow): void {
         if (!keyReport.terminalFocused || !terminalWrites.includes('\x1b[Z'))
           throw new Error("Native Shift+Tab did not reach the focused PTY: " + JSON.stringify(keyReport));
         console.log("Native terminal Shift+Tab isolation passed", JSON.stringify(keyReport));
+        const sessionReport = await window.webContents.executeJavaScript(`(async () => {
+          const bridge = window.agentControlDesktop.terminal;
+          const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+          const output = new Map();
+          const offOutput = bridge.onOutput((event) => output.set(event.id, (output.get(event.id) ?? "") + event.data));
+          const created = await bridge.createSession({ title: "smoke shell", workspace: ${JSON.stringify(tmpdir())}, launch: "shell" });
+          const first = await bridge.start({ token: 900001, session: created.id, cols: 80, rows: 24 });
+          bridge.write(first.id, "echo gajae-session-ok $$\\r");
+          const deadline = Date.now() + 10_000;
+          const pid = () => /gajae-session-ok (\\d+)/.exec(output.get(first.id) ?? "")?.[1];
+          while (Date.now() < deadline && !pid()) await wait(100);
+          const again = await bridge.start({ token: 900002, session: created.id, cols: 80, rows: 24 });
+          const listed = (await bridge.listSessions()).find((session) => session.id === created.id);
+          await bridge.deleteSession(created.id);
+          const remaining = (await bridge.listSessions()).some((session) => session.id === created.id);
+          offOutput();
+          return {
+            runtime: listed?.runtime ?? null,
+            sameShell: again.id === first.id,
+            replayed: (again.replay ?? "").includes("gajae-session-ok"),
+            pid: Number(pid()),
+            remaining,
+          };
+        })()`);
+        const shellAlive = (): boolean => {
+          try {
+            process.kill(sessionReport.pid, 0);
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        for (let attempt = 0; attempt < 30 && shellAlive(); attempt += 1)
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        sessionReport.exitedOnDelete = !shellAlive();
+        if (
+          !(sessionReport.pid > 1) ||
+          sessionReport.runtime !== "terminal" ||
+          !sessionReport.sameShell ||
+          !sessionReport.replayed ||
+          !sessionReport.exitedOnDelete ||
+          sessionReport.remaining
+        )
+          throw new Error("Terminal session lifecycle failed: " + JSON.stringify(sessionReport));
+        console.log("Terminal session lifecycle passed", JSON.stringify(sessionReport));
         const overflow = await window.webContents.executeJavaScript(`(async () => {
           await document.fonts.load('14px "Gajae Terminal Symbols"', '');
           const panel = document.createElement('aside');

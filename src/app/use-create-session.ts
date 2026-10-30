@@ -51,6 +51,27 @@ export function useCreateSession(
             throw new Error(humanErrorMessage(error));
           });
       }
+      if (input.kind === "terminal") {
+        setAppError("");
+        return backend
+          .createSession({
+            runtime: "terminal",
+            title: input.title,
+            workspace: input.workspace,
+            isolation: "workspace",
+          })
+          .then((session) => {
+            setSessions((current) => [
+              session,
+              ...current.filter((item) => item.id !== session.id),
+            ]);
+            setSelectedId(session.id);
+            setNewSessionRequest(null);
+          })
+          .catch((error: unknown) => {
+            throw new Error(humanErrorMessage(error));
+          });
+      }
       const draftId = `draft-${crypto.randomUUID()}`;
       const draft: AgentSession = {
         id: draftId,

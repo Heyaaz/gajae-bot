@@ -17,6 +17,7 @@ import {
   RotateCcw,
   Search,
   Settings,
+  SquareTerminal,
   Trash2,
 } from "lucide-react";
 import { memo, useEffect, useMemo, useState } from "react";
@@ -295,12 +296,21 @@ export function SessionRow({
         )}
         {/* The state used to sit between the title and the clock as a word, which
             pushed the title aside for something the group header already says. */}
-        <span
-          className={`session-state-dot session-state-dot--${session.phase === "compacting" ? "compacting" : session.status}`}
-          role="img"
-          aria-label={stateLabel}
-          title={stateLabel}
-        />
+        {session.runtime === "terminal" ? (
+          <SquareTerminal
+            className="session-row__terminal"
+            size={13}
+            role="img"
+            aria-label={t("터미널 세션")}
+          />
+        ) : (
+          <span
+            className={`session-state-dot session-state-dot--${session.phase === "compacting" ? "compacting" : session.status}`}
+            role="img"
+            aria-label={stateLabel}
+            title={stateLabel}
+          />
+        )}
         {shortcutNumber !== undefined && <kbd>⌘{shortcutNumber}</kbd>}
         {/* The row being read is not news, and the main process clears the flag on
             selection anyway: without this the dot stayed up until that round trip
@@ -815,6 +825,7 @@ function SidebarView({
             </>
           ) : (
             <>
+              {contextMenu.session.runtime !== "terminal" && (
               <button
                 type="button"
                 onClick={() => {
@@ -823,6 +834,7 @@ function SidebarView({
                 }}
               >
                 <GitFork size={14} /> {t("현재 상태에서 포크")} </button>
+              )}
               {contextMenu.session.attachment !== "attached" && (
                 <button
                   type="button"
@@ -852,6 +864,7 @@ function SidebarView({
                   the only removal that actually completes is hiding the row here.
                   It is a separate item, not a silent substitute: the label says the
                   history stays. */}
+              {contextMenu.session.runtime !== "terminal" && (
               <button
                 type="button"
                 onClick={() => {
@@ -860,6 +873,7 @@ function SidebarView({
                 }}
               >
                 <EyeOff size={14} /> {t("목록에서 숨기기")} </button>
+              )}
             </>
           )}
         </div>

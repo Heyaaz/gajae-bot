@@ -27,10 +27,15 @@ import type {
   SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type { ForkSessionInput } from "../../shared/agent-contract";
+import {
+  isTerminalSessionId,
+  type TerminalDesktopBridge,
+} from "../../shared/terminal-ipc";
 import { StreamDeltaCoalescer } from "./stream-delta-coalescer";
 
 export class GjcAgentBackend implements AgentBackend {
   private readonly bridge: GjcDesktopBridge;
+  private readonly terminal: TerminalDesktopBridge | undefined;
   private readonly listeners = new Set<(event: AgentEvent) => void>();
   private readonly unsubscribeBridge: () => void;
   private readonly coalescer = new StreamDeltaCoalescer((event) => {
@@ -38,11 +43,20 @@ export class GjcAgentBackend implements AgentBackend {
   });
   private disposed = false;
 
-  constructor(bridge: GjcDesktopBridge) {
+  /**
+   * Terminal sessions live in the app, not in GJC, so their list, rename, and
+   * delete go to the terminal bridge; every other call is a GJC session's.
+   */
+  constructor(bridge: GjcDesktopBridge, terminal?: TerminalDesktopBridge) {
     this.bridge = bridge;
+    this.terminal = terminal;
     this.unsubscribeBridge = bridge.onEvent((event) => {
       this.coalescer.receive(event);
     });
+  }
+
+  get terminalSessions(): boolean {
+    return Boolean(this.terminal);
   }
 
   private emit(event: AgentEvent): void {
@@ -53,11 +67,19 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.getConnection();
   }
 
-  listSessions(): Promise<AgentSession[]> {
-    return this.bridge.listSessions();
+  async listSessions(): Promise<AgentSession[]> {
+    const [sessions, terminals] = await Promise.all([
+      this.bridge.listSessions(),
+      this.terminal?.listSessions().catch(() => []) ?? [],
+    ]);
+    return [...sessions, ...terminals];
   }
 
   createSession(input: CreateSessionInput): Promise<AgentSession> {
+    if (input.runtime === "terminal") {
+      if (!this.terminal) return Promise.reject(new Error("Terminal sessions need the desktop app"));
+      return this.terminal.createSession({ title: input.title ?? "", workspace: input.workspace });
+    }
     if (input.runtime !== "gjc")
       return Promise.reject(new Error("Hermes is not connected yet"));
     return this.bridge.createSession(input);
@@ -67,6 +89,8 @@ export class GjcAgentBackend implements AgentBackend {
   }
 
   renameSession(sessionId: string, title: string): Promise<void> {
+    if (this.terminal && isTerminalSessionId(sessionId))
+      return this.terminal.renameSession(sessionId, title);
     return this.bridge.renameSession(sessionId, title);
   }
 
@@ -83,14 +107,21 @@ export class GjcAgentBackend implements AgentBackend {
   }
 
   confirmSessionRemoval(sessionId: string, action: "delete" | "hide"): Promise<boolean> {
+    // A terminal session has no history to keep, so hiding one is deleting it.
+    if (this.terminal && isTerminalSessionId(sessionId))
+      return this.terminal.confirmSessionRemoval(sessionId);
     return this.bridge.confirmSessionRemoval(sessionId, action);
   }
 
   deleteSession(sessionId: string): Promise<void> {
+    if (this.terminal && isTerminalSessionId(sessionId))
+      return this.terminal.deleteSession(sessionId);
     return this.bridge.deleteSession(sessionId);
   }
 
   hideSession(sessionId: string): Promise<void> {
+    if (this.terminal && isTerminalSessionId(sessionId))
+      return this.terminal.deleteSession(sessionId);
     return this.bridge.hideSession(sessionId);
   }
 

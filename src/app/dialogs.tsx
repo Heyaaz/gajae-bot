@@ -17,16 +17,21 @@ import {
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { t } from "../i18n";
-import { sessionTitleText } from "./format";
+import { directoryName, sessionTitleText } from "./format";
 import {
   PARALLEL_ATTEMPT_MAX,
   PARALLEL_ATTEMPT_MIN,
 } from "../../shared/parallel-run";
 
 
+/** What a new session opens: GJC in the app, or a terminal for any CLI. */
+export type NewSessionKind = "gjc" | "terminal";
+
 export interface NewSessionInput {
   title: string;
   workspace: string;
+  /** Unset means a GJC conversation. */
+  kind?: NewSessionKind;
   isolation?: "workspace" | "worktree";
   worktreeBranch?: string;
   worktreeBranchExisting?: boolean;
@@ -46,6 +51,8 @@ export interface NewSessionDialogProps {
   prefill?: NewSessionPrefill;
   /** Offered only where attempts can be run, which is the desktop window. */
   parallel?: { presets: readonly string[]; defaultPreset: string };
+  /** Offered only where a terminal can run, which is the desktop window. */
+  terminals?: boolean;
   onCancel: () => void;
   /** A promise keeps the dialog open until it settles; a rejection is shown in it. */
   onCreate: (input: NewSessionInput) => void | Promise<void>;
@@ -67,10 +74,13 @@ export function NewSessionDialog({
   defaultWorkspace,
   prefill,
   parallel,
+  terminals = false,
   onCancel,
   onCreate,
 }: NewSessionDialogProps) {
   const defaultTitle = t("새 Gajae 세션");
+  const [kind, setKind] = useState<NewSessionKind>("gjc");
+  const terminal = kind !== "gjc";
   const [title, setTitle] = useState(prefill?.title || defaultTitle);
   const [workspace, setWorkspace] = useState(
     prefill?.workspace || defaultWorkspace,
@@ -87,7 +97,8 @@ export function NewSessionDialog({
     parallel ? defaultAttemptPresets(parallel.presets, parallel.defaultPreset) : [],
   );
   // A CI fix has to start from the failing branch; attempts start from HEAD.
-  const parallelOffered = Boolean(parallel) && !prefill?.worktreeBranchExisting;
+  const parallelOffered =
+    Boolean(parallel) && !prefill?.worktreeBranchExisting && !terminal;
   const parallelRun = parallelOffered && attemptCount >= PARALLEL_ATTEMPT_MIN;
   const presetsComplete = attemptPresets
     .slice(0, attemptCount)
@@ -128,6 +139,26 @@ export function NewSessionDialog({
     event.preventDefault();
     if (!workspace) return;
     const trimmedTitle = title.trim();
+    if (terminal) {
+      if (submitting) return;
+      setSubmitError("");
+      setSubmitting(true);
+      void Promise.resolve(
+        onCreate({
+          title:
+            !trimmedTitle || trimmedTitle === defaultTitle
+              ? directoryName(workspace)
+              : trimmedTitle,
+          workspace,
+          kind,
+        }),
+      )
+        .catch((error: unknown) =>
+          setSubmitError(error instanceof Error ? error.message : String(error)),
+        )
+        .finally(() => setSubmitting(false));
+      return;
+    }
     const branch = worktreeBranch.trim() || undefined;
     const suggestedBranch =
       isolation === "worktree" && branch === prefill?.worktreeBranch;
@@ -186,8 +217,12 @@ export function NewSessionDialog({
             <Plus size={18} />
           </span>
           <div>
-            <h2>{t("새 GJC 세션")}</h2>
-            <p>{t("Gajae가 확인하고 수정할 프로젝트를 선택하세요.")}</p>
+            <h2>{terminal ? t("새 터미널 세션") : t("새 GJC 세션")}</h2>
+            <p>
+              {terminal
+                ? t("터미널을 열 폴더를 선택하세요.")
+                : t("Gajae가 확인하고 수정할 프로젝트를 선택하세요.")}
+            </p>
           </div>
           <button className="icon-button" type="button" onClick={cancel}>
             <X size={18} />
@@ -201,6 +236,30 @@ export function NewSessionDialog({
             onChange={(event) => setTitle(event.target.value)}
           />
         </label>
+        {terminals && !prefill && (
+          <fieldset className="session-kind-options">
+            <legend>{t("세션 종류")}</legend>
+            {(
+              [
+                ["gjc", t("앱"), t("앱 화면에서 GJC와 대화합니다.")],
+                ["terminal", t("CLI"), t("이 폴더에서 터미널을 엽니다. claude, codex 같은 CLI를 바로 실행할 수 있습니다.")],
+              ] as const
+            ).map(([value, label, description]) => (
+              <label key={value}>
+                <input
+                  type="radio"
+                  name="session-kind"
+                  checked={kind === value}
+                  onChange={() => setKind(value)}
+                />{" "}
+                <span>
+                  {label}
+                  <small>{description}</small>
+                </span>
+              </label>
+            ))}
+          </fieldset>
+        )}
         {parallelOffered && parallel && (
           <fieldset className="parallel-options">
             <legend>{t("병렬 실행")}</legend>
@@ -253,6 +312,7 @@ export function NewSessionDialog({
             )}
           </fieldset>
         )}
+        {!terminal && (
         <fieldset className="isolation-options">
           <legend>{t("작업 격리")}</legend>
           <label>
@@ -289,6 +349,7 @@ export function NewSessionDialog({
               </p>
             )}
         </fieldset>
+        )}
         <label>
           <span>{t("프로젝트 위치")}</span>
           <div className="project-location-field">
@@ -308,6 +369,7 @@ export function NewSessionDialog({
         </label>
         {workspaceError && <p role="alert">{workspaceError}</p>}
         {submitError && <p role="alert">{submitError}</p>}
+        {!terminal && (
         <label>
           <span>{t("첫 요청")}</span>
           <textarea
@@ -320,6 +382,7 @@ export function NewSessionDialog({
               : t("세션이 만들어지면 입력창에 채워 둡니다. 보내기 전에 고칠 수 있습니다.")}
           </small>
         </label>
+        )}
         {images.length > 0 && (
           <div className="composer-images new-session-images">
             {images.map((image) => (

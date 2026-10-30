@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { GjcAgentBackend } from "./gjc-agent-backend";
+import type { TerminalDesktopBridge } from "../../shared/terminal-ipc";
 import type {
   AgentEvent,
   AgentSession,
@@ -392,6 +393,49 @@ describe("GjcAgentBackend", () => {
       { sessionId: "session-1", title: "Renamed" },
     ]);
     expect(bridge.deleted).toEqual(["session-1"]);
+    backend.dispose();
+  });
+
+  it("lists terminal sessions with GJC's and routes their changes to the terminal bridge", async () => {
+    const bridge = new FakeGjcBridge();
+    const terminalRow = {
+      id: "terminal-1",
+      title: "셸",
+      runtime: "terminal",
+    } as AgentSession;
+    const terminal = {
+      listSessions: vi.fn().mockResolvedValue([terminalRow]),
+      createSession: vi.fn().mockResolvedValue(terminalRow),
+      renameSession: vi.fn().mockResolvedValue(undefined),
+      confirmSessionRemoval: vi.fn().mockResolvedValue(true),
+      deleteSession: vi.fn().mockResolvedValue(undefined),
+    } as unknown as TerminalDesktopBridge;
+    const backend = new GjcAgentBackend(bridge, terminal);
+    await bridge.createSession({ workspace: "/tmp/project", runtime: "gjc", isolation: "workspace" });
+
+    expect(backend.terminalSessions).toBe(true);
+    expect((await backend.listSessions()).map((session) => session.id)).toEqual([
+      "gjc-1",
+      "terminal-1",
+    ]);
+    await backend.createSession({
+      runtime: "terminal",
+      title: "셸",
+      workspace: "/tmp/project",
+      isolation: "workspace",
+    });
+    expect(terminal.createSession).toHaveBeenCalledWith({ title: "셸", workspace: "/tmp/project" });
+    await backend.renameSession("terminal-1", "새 이름");
+    expect(await backend.confirmSessionRemoval("terminal-1", "hide")).toBe(true);
+    await backend.hideSession("terminal-1");
+    await backend.deleteSession("terminal-1");
+
+    expect(terminal.renameSession).toHaveBeenCalledWith("terminal-1", "새 이름");
+    expect(terminal.deleteSession).toHaveBeenCalledTimes(2);
+    expect(bridge.renamed).toEqual([]);
+    expect(bridge.deleted).toEqual([]);
+    expect(bridge.hidden).toEqual([]);
+    expect(bridge.createCalls).toBe(1);
     backend.dispose();
   });
 

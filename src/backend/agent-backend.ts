@@ -34,6 +34,8 @@ export interface AgentBackend {
    * view-only device may not use.
    */
   readonly remoteAccess?: RemoteAccessBridge;
+  /** Whether this backend can create terminal sessions, which only the desktop app runs. */
+  readonly terminalSessions?: boolean;
   getConnection(): Promise<BackendConnection>;
   listSessions(): Promise<AgentSession[]>;
   createSession(input: CreateSessionInput): Promise<AgentSession>;

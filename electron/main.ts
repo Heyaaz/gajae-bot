@@ -34,6 +34,7 @@ import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
 import { SettingsStore, validDirectory } from "./settings-store.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
+import { TerminalSessionStore } from "./terminal-session-store.js";
 import { hostText, setHostLanguage } from "./host-text.js";
 import { ManagementService } from "./desktop-services.js";
 import { registerDesktopServicesIpcHandlers } from "./desktop-services-ipc-handlers.js";
@@ -420,7 +421,7 @@ const gjcController = new GjcSdkController({
   emit: broadcastAgentEvent,
 });
 export const ipcSecurity = new IpcSecurity(
-  !app.isPackaged && smokeMode ? async () => true : overlayDestructiveConfirmation,
+  !app.isPackaged && (smokeMode || terminalSmokeMode) ? async () => true : overlayDestructiveConfirmation,
 );
 const unregisterGjcIpc = registerGjcIpcHandlers(gjcController, attachmentStore, ipcSecurity);
 // One authorized invoke hands a window this process launched the event stream endpoint.
@@ -605,7 +606,9 @@ const unregisterOnboardingIpc = registerOnboardingIpcHandlers(
   }),
   ipcSecurity,
 );
-const terminalIpc = registerTerminalIpcHandlers(ipcSecurity);
+const terminalIpc = registerTerminalIpcHandlers(ipcSecurity, {
+  store: new TerminalSessionStore(userDataDirectory),
+});
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
