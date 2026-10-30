@@ -142,6 +142,18 @@ export async function getGoal(host: GoalTodoHost, sessionId: string): Promise<Go
       : {}),
     completed: tasks.filter((task) => task.status === "completed").length,
     total: tasks.length,
+    ...(live && tasks.length > 0
+      ? {
+          tasks: tasks.flatMap((task) =>
+            typeof task.content === "string"
+              ? [{
+                  content: task.content,
+                  ...(typeof task.status === "string" ? { status: task.status } : {}),
+                }]
+              : [],
+          ),
+        }
+      : {}),
     ...(progress ? { progress } : {}),
   };
 }

@@ -896,6 +896,8 @@ export interface GoalSnapshot {
   objective?: string;
   completed: number;
   total: number;
+  /** The todo tasks `completed`/`total` count, so the goal row can list them. */
+  tasks?: TodoSnapshotTask[];
   /** Present only when the session advertises `session.progress` and a read succeeded. */
   progress?: SessionProgress;
 }

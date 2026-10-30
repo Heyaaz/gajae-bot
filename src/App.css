@@ -3944,15 +3944,75 @@ button.diff-line-number:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.goal-story-list {
+.goal-progress-toggle {
+  padding: 2px 4px;
+  margin: -2px -4px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.goal-progress-toggle:hover {
+  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+}
+.goal-progress-chevron {
+  flex: 0 0 auto;
+  color: var(--text-tertiary);
+  transition: transform 120ms ease;
+}
+.goal-progress-toggle[aria-expanded="true"] .goal-progress-chevron {
+  transform: rotate(90deg);
+}
+.goal-progress-list {
   display: grid;
   grid-column: 1 / -1;
-  gap: 2px;
-  max-height: 180px;
+  gap: 6px;
+  max-height: 200px;
   margin: 2px 0 0;
-  padding: 0;
+  padding: 6px 0 2px;
   overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--overlay) 7%, transparent);
+}
+.goal-task-list,
+.goal-story-list {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
   list-style: none;
+}
+.goal-task {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 4px;
+  font-size: 10.5px;
+}
+.goal-task-marker {
+  color: var(--text-tertiary);
+  text-align: center;
+}
+.goal-task--in_progress .goal-task-marker {
+  color: var(--accent-bright);
+}
+.goal-task--completed .goal-task-marker {
+  color: var(--success, #67d6a5);
+}
+.goal-task-title {
+  min-width: 0;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.goal-task--completed .goal-task-title,
+.goal-task--abandoned .goal-task-title {
+  color: var(--text-tertiary);
+}
+.goal-task--abandoned .goal-task-title {
+  text-decoration: line-through;
 }
 .goal-story {
   display: grid;
