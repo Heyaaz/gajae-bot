@@ -125,7 +125,7 @@ if (!smokeMode && !terminalSmokeMode && !app.requestSingleInstanceLock()) {
   app.exit(0);
 }
 const appIconPath = app.isPackaged
-  ? path.join(process.resourcesPath, "gajae-icon.png")
+  ? path.join(process.resourcesPath, "electron.icns")
   : path.join(app.getAppPath(), "src/assets/gajae-icon.png");
 const menuBarIconPath = app.isPackaged
   ? path.join(process.resourcesPath, "gajae-menubar-Template.png")
@@ -1433,7 +1433,9 @@ app.whenReady().then(() => {
     .catch((error) =>
       console.error("Desktop integration could not read sessions", error),
     );
-  if (process.platform === "darwin")
+  // Packaged builds show the bundle's Icon Composer icon; nativeImage cannot
+  // read .icns, so overriding it here would fall back to the legacy icon.
+  if (process.platform === "darwin" && !app.isPackaged)
     app.dock?.setIcon(nativeImage.createFromPath(appIconPath));
   renderDesktopStatus = desktopStatusRenderer(
     electronStatusSurface({
