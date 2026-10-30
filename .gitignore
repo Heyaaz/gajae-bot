@@ -29,6 +29,10 @@ release
 .gajae-artifacts
 docs/*
 !docs/features/
+!docs/usage.md
+!docs/remote-access.md
+!docs/development.md
+!docs/media/
 .gjc
 
 # Editor directories and files

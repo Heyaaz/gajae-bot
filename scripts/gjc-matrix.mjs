@@ -239,14 +239,14 @@ function readmeBlock(report) {
 async function updateReadme(options) {
   const reportPath = options.reportPath ?? path.join(options.out, 'latest', 'report.json')
   const report = JSON.parse(await readFile(reportPath, 'utf8'))
-  const readmePath = path.join(repoRoot, 'README.md')
+  const readmePath = path.join(repoRoot, 'docs', 'development.md')
   const readme = await readFile(readmePath, 'utf8')
   const start = readme.indexOf(README_START)
   const end = readme.indexOf(README_END)
-  if (start < 0 || end < start) fail(`README.md has no ${README_START} ... ${README_END} block`)
+  if (start < 0 || end < start) fail(`docs/development.md has no ${README_START} ... ${README_END} block`)
   const next = readme.slice(0, start) + readmeBlock(report) + readme.slice(end + README_END.length)
   await writeFile(readmePath, next)
-  console.log(`README.md compatibility block rewritten from ${reportPath}`)
+  console.log(`docs/development.md compatibility block rewritten from ${reportPath}`)
 }
 
 async function main() {
