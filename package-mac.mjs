@@ -13,7 +13,13 @@ const args = new Set(process.argv.slice(2));
 const release = args.has('--release') || args.has('--public-release') || process.env.PUBLIC_RELEASE === '1' || process.env.GJC_PUBLIC_RELEASE === '1';
 if (args.has('--notarize') && !release)
   throw new Error('--notarize is valid only with --public-release.');
-const notarize = release;
+if (args.has('--adhoc') && !release)
+  throw new Error('--adhoc is valid only with --public-release.');
+// An ad-hoc release skips Developer ID signing and notarization. It is meant for
+// the curl and npm installers: files they download carry no quarantine flag, so
+// Gatekeeper never assesses the app. A browser download of it is still blocked.
+const adhoc = release && args.has('--adhoc');
+const notarize = release && !adhoc;
 
 function option(name) {
   const prefix = `${name}=`;
@@ -36,7 +42,7 @@ async function exists(file) {
   catch { return false; }
 }
 
-if (release && (!identity || !identity.startsWith('Developer ID Application:'))) {
+if (notarize && (!identity || !identity.startsWith('Developer ID Application:'))) {
   throw new Error('Public release requires a Developer ID Application identity (--identity or GJC_DEVELOPER_IDENTITY).');
 }
 if (release && !assetRightsConfirmed) {
@@ -89,7 +95,7 @@ const [outputDirectory] = await packager({
     path.join(root, 'src/assets/gajae-menubar-Template.png'),
     path.join(root, 'src/assets/gajae-menubar-Template@2x.png'),
   ],
-  ...(release
+  ...(notarize
     ? {
         osxSign: {
           identity,
@@ -132,7 +138,7 @@ const [outputDirectory] = await packager({
 });
 const appPath = path.join(outputDirectory, `${packageJson.productName}.app`);
 
-if (!release)
+if (!notarize)
   await exec('codesign', ['--force', '--deep', '--sign', '-', appPath], {
     cwd: root,
   });
@@ -148,7 +154,7 @@ if (notarize) {
 }
 
 if (release) {
-  await exec('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath], { cwd: root });
+  if (notarize) await exec('spctl', ['--assess', '--type', 'execute', '--verbose=4', appPath], { cwd: root });
   const publicationDirectory = path.join(stagingDirectory, 'publication');
   await mkdir(publicationDirectory);
   const temporaryArchive = path.join(publicationDirectory, `${releaseBaseName}.zip`);
@@ -169,6 +175,6 @@ if (release) {
 
 console.log(
   release
-    ? `Public notarized macOS arm64 package ready: ${publicDirectory}`
+    ? `Public ${adhoc ? 'ad-hoc signed' : 'notarized'} macOS arm64 package ready: ${publicDirectory}`
     : `Development macOS arm64 package ready: ${appPath}`,
 );
