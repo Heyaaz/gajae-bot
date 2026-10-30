@@ -84,7 +84,19 @@ describe('SettingsStore', () => {
       desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
       language: 'ko',
       runningSubmission: 'queue',
+      newSessionKind: 'app',
     })
+  })
+
+  it('saves what a new session opens on its own channel, and reads junk as the app', () => {
+    const root = temporaryDirectory()
+    const userData = path.join(root, 'user-data')
+    const store = new SettingsStore(userData, root)
+    expect(store.get().newSessionKind).toBe('app')
+    expect(store.setNewSessionKind('cli')).toBe('cli')
+    expect(new SettingsStore(userData, root).get().newSessionKind).toBe('cli')
+    expect(() => store.setNewSessionKind('terminal')).toThrow(/app or cli/)
+    expect(parsePreferences({ newSessionKind: 'terminal' }, root).newSessionKind).toBe('app')
   })
 
   it('accepts a configured custom GJC model profile', () => {
@@ -133,7 +145,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Private workspace', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: false, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue' })
+    expect(saved).toEqual({ workspace, workspaceLabel: 'Private workspace', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: false, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue', newSessionKind: 'app' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')

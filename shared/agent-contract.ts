@@ -116,6 +116,8 @@ export function isToolViewMode(value: unknown): value is ToolViewMode {
   return value === "basic" || value === "reasoning" || value === "detailed";
 }
 
+export type NewSessionKind = "app" | "cli";
+
 export interface AgentControlPreferences {
   workspace: string;
   workspaceLabel: string;
@@ -142,6 +144,8 @@ export interface AgentControlPreferences {
    * boundary. Explicit `/queue` and `/steer` prefixes always win.
    */
   runningSubmission: "queue" | "steer";
+  /** What 새 세션 opens: a GJC chat in the app, or a terminal for any CLI. */
+  newSessionKind: NewSessionKind;
   /**
    * Whether reasoning (thought) cards render expanded.
    *
@@ -1093,6 +1097,8 @@ export interface SettingsDesktopBridge {
   setLanguage(language: UiLanguage): Promise<UiLanguage>;
   /** Persists the running-turn Enter behavior alone. */
   setRunningSubmission(value: "queue" | "steer"): Promise<"queue" | "steer">;
+  /** Persists what 새 세션 opens, app or CLI, alone. */
+  setNewSessionKind(value: NewSessionKind): Promise<NewSessionKind>;
   /** Names the session a window is currently showing, for notification suppression. */
   setViewedSession(sessionId: string | null): Promise<void>;
   savePreferences(preferences: AgentControlPreferences): Promise<{

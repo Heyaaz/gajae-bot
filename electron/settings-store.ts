@@ -13,6 +13,7 @@ import path from 'node:path'
 import type {
   AgentControlPreferences,
   GjcPermissionHandling,
+  NewSessionKind,
   NotificationPreferences,
   ToolViewMode,
   UiLanguage,
@@ -96,6 +97,7 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
     language: candidate.language === 'en' ? 'en' : 'ko',
     runningSubmission:
       candidate.runningSubmission === "steer" ? "steer" : "queue",
+    newSessionKind: candidate.newSessionKind === "cli" ? "cli" : "app",
   }
 }
 
@@ -193,6 +195,17 @@ export class SettingsStore {
     this.persist(preferences)
     this.preferences = preferences
     return this.preferences.runningSubmission
+  }
+
+  /** What 새 세션 opens, saved without the runtime confirmation. */
+  setNewSessionKind(value: unknown): NewSessionKind {
+    if (value !== "app" && value !== "cli")
+      throw new Error("New session kind must be app or cli")
+    const newSessionKind: NewSessionKind = value
+    const preferences = { ...this.preferences, newSessionKind }
+    this.persist(preferences)
+    this.preferences = preferences
+    return this.preferences.newSessionKind
   }
 
   /** Resolved UI language for native host text. */

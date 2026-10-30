@@ -38,6 +38,7 @@ const fallback: AgentControlPreferences = {
   desktopIntegration: DEFAULT_DESKTOP_INTEGRATION,
   language: "ko",
   runningSubmission: "queue",
+  newSessionKind: "app",
 };
 
 const loaded: AgentControlPreferences = {

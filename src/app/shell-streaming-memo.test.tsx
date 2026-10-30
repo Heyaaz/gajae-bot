@@ -8,7 +8,6 @@ import type { TranscriptPageRequest } from "../../shared/agent-contract";
 import type { SessionShortcut } from "../../shared/settings-ipc";
 import { selectTranscriptPage } from "../../shared/transcript-page";
 import type { AgentEvent, AgentSession, TranscriptItem } from "../backend/types";
-import type { ParallelGroup } from "../../shared/parallel-run";
 
 const probe = vi.hoisted(() => ({
   sidebar: null as null | Record<string, unknown>,
@@ -463,119 +462,5 @@ describe("session shortcuts from the main process", () => {
     );
     expect(probe.prefillComposerDraft).toHaveBeenCalledExactlyOnceWith("s-created", "이슈 내용", undefined);
     expect(probe.composer?.sessionId).toBe("s-created");
-  });
-});
-
-describe("parallel runs from the new-session dialog", () => {
-  let root: Root | undefined;
-  let host: HTMLDivElement | undefined;
-  let shortcut: ((value: SessionShortcut) => void) | undefined;
-  let changed: ((groups: ParallelGroup[]) => void) | undefined;
-  const group: ParallelGroup = {
-    id: "g1",
-    title: "로그인 고치기",
-    prompt: "로그인 버그를 고쳐 줘",
-    workspace: "/tmp/gajae-bot",
-    createdAt: 1,
-    state: { kind: "draft" },
-    attempts: [
-      { id: "1", preset: "codex-pro", branch: "feat/login-1", state: { kind: "started", sessionId: "s-2", worktreePath: "/wt/1" } },
-      { id: "2", preset: "codex-eco", branch: "feat/login-2", state: { kind: "creating" } },
-    ],
-  };
-  const start = vi.fn(async () => group);
-
-  beforeEach(() => {
-    probe.sessions = [
-      probe.initialSession!,
-      { ...probe.initialSession!, id: "s-2", title: "시도 1", status: "idle" },
-    ];
-    const pending = new Proxy({}, { get: () => () => new Promise(() => undefined) });
-    Object.assign(window, {
-      agentControlDesktop: {
-        settings: pending,
-        parallel: {
-          list: async () => [],
-          start,
-          adopt: vi.fn(),
-          discard: vi.fn(),
-          cleanup: vi.fn(),
-          onChanged: (listener: (groups: ParallelGroup[]) => void) => {
-            changed = listener;
-            return () => undefined;
-          },
-        },
-        onAbortRun: () => () => undefined,
-        onSessionShortcut: (listener: (value: SessionShortcut) => void) => {
-          shortcut = listener;
-          return () => undefined;
-        },
-      },
-    });
-  });
-
-  afterEach(() => {
-    act(() => root?.unmount());
-    host?.remove();
-    delete (window as { agentControlDesktop?: unknown }).agentControlDesktop;
-    shortcut = undefined;
-    changed = undefined;
-    start.mockClear();
-    probe.sidebar = null;
-    probe.composer = null;
-    probe.newSessionDialog = null;
-    probe.parallelView = null;
-    probe.createSession.mockClear();
-    probe.listeners.clear();
-    probe.sessions = probe.initialSession ? [probe.initialSession] : [];
-  });
-
-  it("starts the group through the parallel bridge, opens its comparison, and reaches it again by ⌘ digit", async () => {
-    host = document.createElement("div");
-    document.body.append(host);
-    root = createRoot(host);
-    await act(async () => root!.render(createElement(App)));
-    await vi.waitFor(() => {
-      expect(probe.composer?.sessionId).toBe("s-1");
-      expect(shortcut).toBeDefined();
-    });
-
-    await act(async () => shortcut!({ type: "new", prefill: { workspace: "/tmp/gajae-bot" } }));
-    expect(probe.newSessionDialog?.parallel).toEqual({
-      presets: expect.arrayContaining(["codex-medium", "codex-pro", "codex-eco"]),
-      defaultPreset: "codex-medium",
-    });
-    await act(async () =>
-      (probe.newSessionDialog!.onCreate as (input: unknown) => void)({
-        title: "로그인 고치기",
-        workspace: "/tmp/gajae-bot",
-        isolation: "worktree",
-        worktreeBranch: "feat/login",
-        initialPrompt: "로그인 버그를 고쳐 줘",
-        parallelPresets: ["codex-pro", "codex-eco"],
-      }),
-    );
-    expect(start).toHaveBeenCalledExactlyOnceWith({
-      title: "로그인 고치기",
-      workspace: "/tmp/gajae-bot",
-      prompt: "로그인 버그를 고쳐 줘",
-      branch: "feat/login",
-      presets: ["codex-pro", "codex-eco"],
-    });
-    expect(probe.createSession).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect((probe.parallelView?.group as ParallelGroup | undefined)?.id).toBe("g1"));
-
-    const running = { ...group, state: { kind: "running" as const } };
-    await act(async () => changed!([running]));
-    expect(probe.sidebar?.parallelGroups).toEqual([running]);
-    expect(probe.sidebar?.openParallelGroupId).toBe("g1");
-    expect(probe.parallelView?.group).toEqual(running);
-
-    await act(async () => (probe.sidebar!.onSelect as (id: string) => void)("s-1"));
-    expect(probe.sidebar?.openParallelGroupId).toBeNull();
-    probe.parallelView = null;
-    // s-1 is working and leads the rail; the group, placed by its idle attempt, is next.
-    await act(async () => shortcut!({ type: "select", index: 1 }));
-    await vi.waitFor(() => expect((probe.parallelView?.group as ParallelGroup | undefined)?.id).toBe("g1"));
   });
 });

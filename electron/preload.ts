@@ -472,6 +472,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
     ipcRenderer.invoke(SETTINGS_IPC.setViewedSession, sessionId),
   setRunningSubmission: (value: "queue" | "steer") =>
     ipcRenderer.invoke(SETTINGS_IPC.setRunningSubmission, value),
+  setNewSessionKind: (value: "app" | "cli") =>
+    ipcRenderer.invoke(SETTINGS_IPC.setNewSessionKind, value),
   savePreferences: (preferences: AgentControlPreferences) =>
     ipcRenderer.invoke(SETTINGS_IPC.savePreferences, preferences),
   checkGjcUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkGjcUpdate),

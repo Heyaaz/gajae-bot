@@ -218,6 +218,8 @@ export function registerSettingsIpcHandlers(
   }))
   ipcMain.handle(SETTINGS_IPC.setRunningSubmission, security.guarded((_event, value: unknown) =>
     store.setRunningSubmission(value)))
+  ipcMain.handle(SETTINGS_IPC.setNewSessionKind, security.guarded((_event, value: unknown) =>
+    store.setNewSessionKind(value)))
   ipcMain.handle(SETTINGS_IPC.setViewedSession, security.guarded((event, sessionId: unknown) => {
     if (sessionId !== null && (typeof sessionId !== 'string' || !sessionId))
       throw new Error('Viewed session must be a session ID or null')

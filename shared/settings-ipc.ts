@@ -14,6 +14,7 @@ export const SETTINGS_IPC = {
   setDesktopIntegration: "agent-control:settings:set-desktop-integration",
   setLanguage: "agent-control:settings:set-language",
   setRunningSubmission: "agent-control:settings:set-running-submission",
+  setNewSessionKind: "agent-control:settings:set-new-session-kind",
   setViewedSession: "agent-control:settings:set-viewed-session",
   savePreferences: "agent-control:settings:save-preferences",
   checkGjcUpdate: "agent-control:settings:check-gjc-update",

@@ -1,7 +1,5 @@
 import { useCallback } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
-import type { ParallelGroup } from "../../shared/parallel-run";
 import type { AgentSession, TranscriptItem } from "../backend/types";
 import type { AgentBackend } from "../backend/agent-backend";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
@@ -12,11 +10,8 @@ import { directoryName, humanErrorMessage } from "./format";
 
 export function useCreateSession(
   backend: AgentBackend,
-  parallelBridge: ParallelDesktopBridge | null,
-  openParallelGroup: (groupId: string) => void,
   pendingSessions: MutableRefObject<Map<string, Promise<AgentSession>>>,
   setAppError: (message: string) => void,
-  setParallelGroups: Dispatch<SetStateAction<ParallelGroup[]>>,
   setNewSessionRequest: Dispatch<
     SetStateAction<{ prefill?: NewSessionPrefill; serial: number } | null>
   >,
@@ -26,31 +21,6 @@ export function useCreateSession(
 ) {
   const createSession = useCallback(
     (input: NewSessionInput): void | Promise<void> => {
-      if (input.parallelPresets && parallelBridge) {
-        setAppError("");
-        // The dialog stays open until the start is accepted, so a branch clash or
-        // any other correctable error leaves the user's request where they typed it.
-        return parallelBridge
-          .start({
-            title: input.title,
-            workspace: input.workspace,
-            prompt: input.initialPrompt ?? "",
-            ...(input.worktreeBranch ? { branch: input.worktreeBranch } : {}),
-            presets: input.parallelPresets,
-          })
-          .then((group) => {
-            setParallelGroups((current) =>
-              current.some((entry) => entry.id === group.id)
-                ? current
-                : [group, ...current],
-            );
-            setNewSessionRequest(null);
-            openParallelGroup(group.id);
-          })
-          .catch((error: unknown) => {
-            throw new Error(humanErrorMessage(error));
-          });
-      }
       if (input.kind === "terminal") {
         setAppError("");
         return backend
@@ -142,7 +112,7 @@ export function useCreateSession(
           setAppError(humanErrorMessage(error));
         });
     },
-    [backend, parallelBridge, openParallelGroup],
+    [backend],
   );
 
   return createSession;
