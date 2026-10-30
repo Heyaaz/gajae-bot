@@ -252,6 +252,23 @@ nothing local is removed. `node scripts/gjc-cli-delete-e2e.mjs` (also the
 legacy ledger row in a throwaway HOME and agent dir, and deletes through the
 real GJC. It passed on 0.19.2 in about 14 s per delete.
 
+### CLI sessions
+
+The new-session dialog asks whether the session runs in the **app** (a GJC
+chat) or on the **CLI** (a terminal). A CLI session opens a login shell in the
+chosen folder, so `claude`, `codex`, or any other CLI runs there directly. The
+app keeps the list in `terminal-sessions.json` under its user data, since GJC
+does not know about these sessions.
+
+- Switching to another session keeps the shell running. Coming back replays
+  what it printed meanwhile, up to the last 512 KB.
+- After a restart the session is still listed and opens a fresh shell in the
+  same folder. Shells do not outlive the window that opened them.
+- Rename and delete work from the sidebar. Delete asks in the host dialog, then
+  closes the shell the way closing a terminal window does.
+- Search, Inbox, notifications, remote access, model settings, and parallel
+  runs only cover GJC sessions.
+
 ### Resume a session
 
 Eligible interactive GJC root sessions publish an SDK endpoint automatically
