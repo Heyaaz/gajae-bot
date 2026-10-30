@@ -399,17 +399,19 @@ describe("explicit compaction action", () => {
     const compact = vi.fn().mockResolvedValue(undefined);
     const remove = vi.fn().mockResolvedValue(undefined);
     const confirm = vi.fn().mockResolvedValue(undefined);
+    const holder = vi.fn().mockResolvedValue(undefined);
     const guarded = vi.fn((handler: (...args: unknown[]) => unknown) => async (...args: unknown[]) => handler(...args));
     registerGjcIpcHandlers(
       {
         compactSession: compact,
         deleteSession: remove,
         sessionTitle: () => "Release notes",
+        sessionHostElsewhere: holder,
       } as unknown as GjcSdkController,
       new AttachmentStore(),
       { guarded, authorizeDestructive: confirm } as unknown as IpcSecurity,
     );
-    return { compact, remove, confirm, guarded };
+    return { compact, remove, confirm, guarded, holder };
   }
 
   it("compacts without opening a native confirmation dialog", async () => {
@@ -456,9 +458,25 @@ describe("explicit compaction action", () => {
         detail: expect.stringContaining("Release notes"),
         danger: true,
       }),
-      "delete:session-a",
+      "delete:session-a:none",
     );
-    expect(remove).toHaveBeenCalledExactlyOnceWith("session-a");
+    expect(remove).toHaveBeenCalledExactlyOnceWith("session-a", undefined);
+  });
+
+  it("names the other GJC it would stop and binds the answer to that process", async () => {
+    const { remove, confirm, holder } = setup();
+    holder.mockResolvedValue({ pid: 4242, terminal: "ttys002" });
+    const event = {};
+    await handled.get(GJC_IPC.deleteSession)!(event, "session-a");
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(
+      event,
+      expect.objectContaining({
+        confirmLabel: "GJC 종료 후 삭제",
+        detail: expect.stringContaining("ttys002 · pid 4242"),
+      }),
+      "delete:session-a:4242",
+    );
+    expect(remove).toHaveBeenCalledExactlyOnceWith("session-a", { stopHost: 4242 });
   });
 });
 

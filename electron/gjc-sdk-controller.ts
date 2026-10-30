@@ -179,12 +179,14 @@ import {
 import {
   createSession,
   deleteSession,
+  type DeleteSessionOptions,
   forkSession,
   hideSession,
   type LifecycleHost,
   recoverForkedSession,
   removeLocalSession,
   renameSession,
+  sessionHostElsewhere,
 } from "./gjc-sdk-lifecycle.js";
 import {
   brokerIndexRevision,
@@ -269,6 +271,7 @@ import {
 } from "./gjc-sdk-questions.js";
 import { executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
+import { gjcHostProcess, stopGjcHostProcess, type GjcHostProcess } from "./gjc-host-process.js";
 import {
   commitChanges,
   getGitStatus,
@@ -821,6 +824,8 @@ export class GjcSdkController {
     stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
     removeSessionArtifacts: (sessionId) => controller.removeSessionArtifacts(sessionId),
     deleteThroughGjcCli: (cwd, sessionPath) => controller.deleteThroughGjcCli(cwd, sessionPath),
+    gjcHostProcess: (pid) => controller.gjcHostProcess(pid),
+    stopGjcHostProcess: (pid) => controller.stopGjcHostProcess(pid),
     removeLocalSession: (sessionId, hide) => controller.removeLocalSession(sessionId, hide),
     get transcriptAttachments() { return controller.transcriptAttachments; },
     get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
@@ -2126,12 +2131,25 @@ export class GjcSdkController {
     return hideSession(this.lifecycleHost, sessionId);
   }
 
-  deleteSession(sessionId: string): Promise<void> {
-    return deleteSession(this.lifecycleHost, sessionId);
+  deleteSession(sessionId: string, options?: DeleteSessionOptions): Promise<void> {
+    return deleteSession(this.lifecycleHost, sessionId, options);
+  }
+
+  /** Another GJC holding the session open, which deleting it would have to stop. */
+  sessionHostElsewhere(sessionId: string): Promise<GjcHostProcess | undefined> {
+    return sessionHostElsewhere(this.lifecycleHost, sessionId);
   }
 
   private removeSessionArtifacts(sessionId: string): Promise<void> {
     return removeSessionArtifacts(this.filesHost, sessionId);
+  }
+
+  private gjcHostProcess(pid: number): Promise<GjcHostProcess | undefined> {
+    return gjcHostProcess(pid);
+  }
+
+  private stopGjcHostProcess(pid: number): Promise<boolean> {
+    return stopGjcHostProcess(pid);
   }
 
   private async deleteThroughGjcCli(cwd: string, sessionPath: string): Promise<void> {

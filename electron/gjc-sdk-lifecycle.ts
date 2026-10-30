@@ -22,6 +22,7 @@ import {
 } from "./gjc-sdk-foundation.js";
 import { remotesWithBranch } from "./gjc-sdk-git.js";
 import { CliDeleteError } from "./gjc-cli-session-delete.js";
+import type { GjcHostProcess } from "./gjc-host-process.js";
 import path from "node:path";
 
 /** The controller members session create, fork, rename and delete read and write. */
@@ -71,6 +72,10 @@ export interface LifecycleHost {
   removeSessionArtifacts(sessionId: string): Promise<void>;
   /** Runs GJC's interactive `/session delete` on a saved transcript no host holds. */
   deleteThroughGjcCli(cwd: string, sessionPath: string): Promise<void>;
+  /** The running GJC behind a broker row's pid; undefined once it has exited. */
+  gjcHostProcess(pid: number): Promise<GjcHostProcess | undefined>;
+  /** Asks a GJC host to exit and waits; false when it is still running. */
+  stopGjcHostProcess(pid: number): Promise<boolean>;
   removeLocalSession(sessionId: string, hide: boolean): void;
   readonly transcriptAttachments: Map<string, Promise<void>>;
   readonly dirtyTranscriptRows: Map<string, Set<string>>;
@@ -556,10 +561,36 @@ async function recoverLifecycleSession(
   return undefined;
 }
 
-export function deleteSession(host: LifecycleHost, sessionId: string): Promise<void> {
+export interface DeleteSessionOptions {
+  /**
+   * The pid of another GJC hosting the session that the user agreed to stop. It
+   * is stopped only while it still hosts this session; any other host refuses.
+   */
+  stopHost?: number;
+}
+
+/**
+ * The GJC outside this window that holds the session open, if any. A row still
+ * marked live whose process is gone holds nothing.
+ */
+export async function sessionHostElsewhere(
+  host: LifecycleHost,
+  sessionId: string,
+): Promise<GjcHostProcess | undefined> {
+  if (host.windowHostedSessions.has(sessionId)) return undefined;
+  const row = await sessionBrokerRow(host, sessionId);
+  if (row?.live !== true || row.pid === undefined) return undefined;
+  return host.gjcHostProcess(row.pid);
+}
+
+export function deleteSession(
+  host: LifecycleHost,
+  sessionId: string,
+  options: DeleteSessionOptions = {},
+): Promise<void> {
   const previous = host.deletionPromises.get(sessionId);
   if (previous) return previous;
-  const operation = performDeleteSession(host, sessionId);
+  const operation = performDeleteSession(host, sessionId, options);
   host.deletionPromises.set(sessionId, operation);
   void operation
     .finally(() => {
@@ -570,10 +601,15 @@ export function deleteSession(host: LifecycleHost, sessionId: string): Promise<v
   return operation;
 }
 
-async function performDeleteSession(host: LifecycleHost, sessionId: string): Promise<void> {
+async function performDeleteSession(
+  host: LifecycleHost,
+  sessionId: string,
+  options: DeleteSessionOptions,
+): Promise<void> {
   const session = host.sessions.get(sessionId);
   host.deletingSessions.add(sessionId);
   try {
+    if (options.stopHost !== undefined) await stopHostElsewhere(host, sessionId, options.stopHost);
     // A session this window re-hosted is ours to close; a terminal's host is
     // not. GJC refuses `session.delete` while a host is live, so close only the
     // host this app attached, then delete the saved transcript.
@@ -594,11 +630,14 @@ async function performDeleteSession(host: LifecycleHost, sessionId: string): Pro
     } catch (error) {
       // An input refusal is this app's request being wrong, not a fence the CLI
       // should step around.
+      // A live-session refusal can come from a row whose host already exited;
+      // the CLI path checks the process itself.
       if (
         lifecycleInputRefused(error) ||
         (!lifecycleLegacyHistoryAmbiguous(error) &&
           !lifecycleUncertainError(error) &&
-          !uncertainLifecycleOutcomeError(error))
+          !uncertainLifecycleOutcomeError(error) &&
+          !liveSessionDeleteError(error))
       )
         throw error;
       // The outer handler keeps its broker-specific explanation when the CLI
@@ -727,15 +766,43 @@ async function brokerLifecycleDelete(
 }
 
 const HELD_ELSEWHERE =
-  "이 세션은 다른 터미널의 GJC가 열고 있어 앱에서 지울 수 없습니다. 그 터미널에서 /session delete를 입력해 지우세요. 앱은 기록 삭제를 위해 CLI를 종료하지 않습니다.";
+  "삭제를 확인하는 동안 다른 GJC가 이 세션을 열어 지우지 않았습니다. 다시 삭제하면 그 GJC를 종료하고 지울지 확인합니다.";
+const HOST_CHANGED =
+  "이 세션을 연 GJC가 확인 창에서 보여 준 프로세스와 달라 종료하지 않았습니다. 다시 삭제하면 지금 열고 있는 GJC를 기준으로 확인합니다.";
+const HOST_DID_NOT_EXIT =
+  "이 세션을 연 GJC가 10초 안에 종료되지 않아 삭제하지 않았습니다. 그 GJC가 작업 중인지 확인한 뒤 다시 삭제하세요.";
+const BROKER_RELEASE_MS = 10_000;
+
+/**
+ * Stops the other GJC hosting the session, the one the user agreed to stop in
+ * the delete confirmation, and waits until the broker no longer lists the
+ * session as live. A different host refuses: the user agreed to that pid only.
+ */
+async function stopHostElsewhere(
+  host: LifecycleHost,
+  sessionId: string,
+  pid: number,
+): Promise<void> {
+  const holder = await sessionHostElsewhere(host, sessionId);
+  if (!holder) return;
+  if (holder.pid !== pid) throw new Error(HOST_CHANGED);
+  if (!(await host.stopGjcHostProcess(pid))) throw new Error(HOST_DID_NOT_EXIT);
+  for (const deadline = Date.now() + BROKER_RELEASE_MS; Date.now() < deadline; ) {
+    host.invalidateBrokerIndexCache();
+    if ((await sessionBrokerRow(host, sessionId))?.live !== true) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+}
 
 const CLI_DELETE_FAILURES: Record<CliDeleteError["reason"], string> = {
   timeout:
-    "GJC CLI의 /session delete가 45초 안에 끝나지 않아 GJC를 종료했습니다. 기록은 그대로 남아 있습니다. 터미널에서 gjc --resume으로 세션을 열고 /session delete를 입력해 지울 수 있습니다.",
+    "GJC CLI의 /session delete가 45초 안에 끝나지 않아 GJC를 종료했습니다. 기록은 그대로 남아 있습니다. 다시 삭제해 보세요.",
   exited:
-    "GJC CLI가 세션을 지우기 전에 종료됐습니다. 기록은 그대로 남아 있습니다. 터미널에서 gjc --resume으로 세션을 열고 /session delete를 입력해 지울 수 있습니다.",
+    "GJC CLI가 세션을 지우기 전에 종료됐습니다. 기록은 그대로 남아 있습니다. 다시 삭제해 보세요.",
+  busy:
+    "GJC가 세션 저장소 작업을 끝내지 않아 여러 번 시도했지만 삭제하지 못했습니다. 기록은 그대로 남아 있습니다. 잠시 뒤 다시 삭제해 보세요.",
   "unexpected-dialog":
-    "GJC CLI가 예상하지 못한 확인 창을 띄워 삭제를 멈췄습니다. 기록은 그대로 남아 있습니다. 터미널에서 gjc --resume으로 세션을 열고 /session delete를 입력해 지울 수 있습니다.",
+    "GJC CLI가 예상하지 못한 확인 창을 띄워 삭제를 멈췄습니다. 기록은 그대로 남아 있습니다. 다시 삭제해 보세요.",
 };
 
 /**
@@ -746,8 +813,8 @@ const CLI_DELETE_FAILURES: Record<CliDeleteError["reason"], string> = {
  * broker delete with `lifecycle_legacy_history_ambiguous` and forbids touching the
  * ledger. The CLI command deletes through GJC's session store and does not go
  * through that fence. It needs the transcript and a session nobody is hosting:
- * `--resume` on a live session would race the host that owns it, and the app
- * never stops a terminal's GJC.
+ * `--resume` on a live session would race the host that owns it. Another GJC is
+ * stopped only through `stopHost`, after the user agreed to it.
  */
 async function deleteThroughGjcCliFallback(
   host: LifecycleHost,
@@ -755,7 +822,9 @@ async function deleteThroughGjcCliFallback(
 ): Promise<"deleted" | "held" | "unavailable"> {
   const row = await sessionBrokerRow(host, sessionId);
   if (!row || row.deleted) return "unavailable";
-  if (row.live === true) return "held";
+  // A row left live by a host that exited holds nothing.
+  if (row.live === true && (row.pid === undefined || (await host.gjcHostProcess(row.pid))))
+    return "held";
   const sessionPath = await host.locateSharedTranscriptFile(sessionId);
   if (!sessionPath) return "unavailable";
   host.attachedSessions.delete(sessionId);

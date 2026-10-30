@@ -17,6 +17,9 @@ const ENGLISH: Readonly<Record<string, string>> = {
   "이 목표를 삭제할까요?": "Delete this goal?",
   "GJC 프로세스를 종료하고 대화 기록까지 삭제합니다. 목록에서만 숨기지 않습니다.":
     "Stops the session's GJC process and deletes the conversation history. It is not merely hidden from the list.",
+  "다른 곳에서 실행 중인 GJC가 이 세션을 열고 있습니다. 삭제하면 그 GJC를 종료하고 대화 기록까지 삭제합니다. 그 GJC가 하던 작업은 중단됩니다.":
+    "Another running GJC has this session open. Deleting stops that GJC and deletes the conversation history; whatever it was doing stops.",
+  "GJC 종료 후 삭제": "Stop GJC and delete",
   "취소": "Cancel",
   "계속": "Continue",
   "삭제": "Delete",
