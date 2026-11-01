@@ -46,7 +46,7 @@ function setNumber(input: HTMLInputElement, value: string) {
 }
 
 describe("GjcSettingsPanel", () => {
-  it("shows Korean names, descriptions and groups with the key beside them", async () => {
+  it("shows Korean names, descriptions and groups, with the key only on hover", async () => {
     const container = await renderPanel({
       listGjcSettings: async () => SETTINGS,
       applyGjcSettings: vi.fn(),
@@ -55,7 +55,8 @@ describe("GjcSettingsPanel", () => {
       .toEqual(["재시도", "전원"]);
     const idle = container.querySelectorAll(".gjc-settings-group")[1]!;
     expect(idle.querySelector("strong")?.textContent).toBe("유휴 잠자기 막기 (macOS)기본값");
-    expect(idle.querySelector(".gjc-setting-key")?.textContent).toBe("power.preventIdleSleep");
+    expect(idle.querySelector("strong")?.getAttribute("title")).toBe("power.preventIdleSleep");
+    expect(idle.querySelector("code")).toBeNull();
     expect(idle.querySelector("small")?.textContent).toContain("caffeinate -i");
   });
 
@@ -127,11 +128,11 @@ describe("GjcSettingsPanel", () => {
 
   it("filters by Korean name or key", async () => {
     const container = await renderPanel({ listGjcSettings: async () => SETTINGS, applyGjcSettings: vi.fn() });
+    const keys = () =>
+      [...container.querySelectorAll(".gjc-settings-group strong")].map((strong) => strong.getAttribute("title"));
     await act(async () => setNumber(container.querySelector<HTMLInputElement>('input[type="search"]')!, "잠자기"));
-    expect([...container.querySelectorAll(".gjc-settings-group code")].map((code) => code.textContent))
-      .toEqual(["power.preventIdleSleep"]);
+    expect(keys()).toEqual(["power.preventIdleSleep"]);
     await act(async () => setNumber(container.querySelector<HTMLInputElement>('input[type="search"]')!, "maxRetries"));
-    expect([...container.querySelectorAll(".gjc-settings-group code")].map((code) => code.textContent))
-      .toEqual(["retry.maxRetries"]);
+    expect(keys()).toEqual(["retry.maxRetries"]);
   });
 });
