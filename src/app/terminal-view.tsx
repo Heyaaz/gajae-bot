@@ -7,6 +7,7 @@ import {
   TERMINAL_OUTPUT_LOW_WATER,
   createOutputGate,
 } from "./terminal-flow";
+import { TERMINAL_FONTS, TERMINAL_OPTIONS, terminalKeyAction } from "./terminal-ghostty";
 
 /**
  * xterm.js host for the desktop login shell.
@@ -38,7 +39,6 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
   const activeRef = useRef(active);
   const [phase, setPhase] = useState<TerminalPhase>("starting");
   const [detail, setDetail] = useState("");
-  const [shellCwd, setShellCwd] = useState(cwd);
   const [epoch, setEpoch] = useState(0);
   const restartRef = useRef(false);
   const [shellId, setShellId] = useState("");
@@ -54,7 +54,6 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
 
     setPhase("starting");
     setDetail("");
-    setShellCwd(cwd);
     setShellId("");
     const token = nextTerminalToken++;
     const restart = restartRef.current;
@@ -87,7 +86,9 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
       }
       if (liveId) bridge.resize(liveId, term.cols, term.rows);
     };
-    fontsLoaded = document.fonts.load('14px "Gajae Terminal Symbols"', "󰆍").then(() => document.fonts.ready).then((loadedFonts) => {
+    fontsLoaded = Promise.all(
+      TERMINAL_FONTS.map(([font, sample]) => document.fonts.load(font, sample)),
+    ).then(() => document.fonts.ready).then((loadedFonts) => {
       fontsReady = true;
       applySize();
       return loadedFonts;
@@ -101,29 +102,32 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
         import("@xterm/addon-web-links"),
         import("@xterm/xterm/css/xterm.css"),
       ]);
+      // The emulator sizes its cells from the font it can measure when it opens.
+      await fontsLoaded;
       if (disposed) return;
-      const term = new Terminal({
-        cursorBlink: true,
-        cursorStyle: "block",
-        fontFamily:
-          '"Fira Code", Menlo, "Gajae Terminal Symbols", monospace',
-        fontSize: 14,
-        lineHeight: 1.1,
-        scrollback: 5000,
-        theme: readTerminalTheme(),
-        macOptionClickForcesSelection: true,
-      });
+      const term = new Terminal({ ...TERMINAL_OPTIONS, theme: readTerminalTheme() });
       const addon = new FitAddon();
       fitAddon = addon;
       term.loadAddon(addon);
       term.loadAddon(
-        new WebLinksAddon((_event, uri) => {
-          if (uri.startsWith("https://")) window.open(uri, "_blank", "noopener,noreferrer");
+        new WebLinksAddon((event, uri) => {
+          if (event.metaKey && uri.startsWith("https://")) window.open(uri, "_blank", "noopener,noreferrer");
         }),
       );
       term.open(host);
       term.onData((data) => {
         if (liveId) bridge.write(liveId, data);
+      });
+      term.attachCustomKeyEventHandler((event) => {
+        const action = terminalKeyAction(event);
+        if (!action) return true;
+        if (event.type === "keydown") {
+          event.preventDefault();
+          if (action.kind === "send") term.input(action.data);
+          else if (action.kind === "clear") term.clear();
+          else term.selectAll();
+        }
+        return false;
       });
       termRef.current = term;
       resizeObserver = new ResizeObserver(() => applySize());
@@ -142,7 +146,6 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
         if (disposed) return;
         liveId = started.id;
         setShellId(started.id);
-        if (started.cwd) setShellCwd(started.cwd);
         if (started.replay) term.write(started.replay);
         const accept = (event: { id: string }): boolean => event.id === started.id;
         removeOutput = bridge.onOutput((event: TerminalOutputEvent) => {
@@ -206,13 +209,11 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
   }, [active]);
 
   const status =
-    phase === "starting"
-      ? t("터미널을 여는 중")
-      : phase === "error"
-        ? detail || t("터미널을 열지 못했습니다")
-        : phase === "exited"
-          ? t("셸이 종료되었습니다")
-          : "";
+    phase === "error"
+      ? detail || t("터미널을 열지 못했습니다")
+      : phase === "exited"
+        ? t("셸이 종료되었습니다")
+        : "";
 
   return (
     <section
@@ -223,12 +224,12 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
       aria-label={t("터미널")}
     >
       <div className="terminal-pane__host" ref={hostRef} />
-      <footer className="terminal-pane__bar">
-        <span className="terminal-pane__cwd" title={shellCwd}>
-          {status || shellCwd}
-          {phase === "exited" && detail ? ` (${detail})` : ""}
-        </span>
-        {phase === "error" || phase === "exited" ? (
+      {status ? (
+        <footer className="terminal-pane__bar">
+          <span className="terminal-pane__cwd">
+            {status}
+            {phase === "exited" && detail ? ` (${detail})` : ""}
+          </span>
           <button
             type="button"
             onClick={() => {
@@ -238,34 +239,39 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
           >
             {t("터미널 다시 시작")}
           </button>
-        ) : null}
-      </footer>
+        </footer>
+      ) : null}
     </section>
   );
 }
 
+/** Ghostty's default colors. It draws a selection by swapping the foreground and background. */
 export function readTerminalTheme(): ITheme {
   return {
-    background: "#17191d",
-    foreground: "#e6e8eb",
-    cursor: "#ffad66",
-    cursorAccent: "#17191d",
-    selectionBackground: "rgba(240, 100, 22, 0.35)",
-    black: "#343840",
-    red: "#ff7b72",
-    green: "#7ee787",
-    yellow: "#e3b341",
-    blue: "#79c0ff",
-    magenta: "#d2a8ff",
-    cyan: "#56d4dd",
-    white: "#e6e8eb",
-    brightBlack: "#8b949e",
-    brightRed: "#ffa198",
-    brightGreen: "#aff5b4",
-    brightYellow: "#f2cc60",
-    brightBlue: "#a5d6ff",
-    brightMagenta: "#e2c5ff",
-    brightCyan: "#a5f3fc",
-    brightWhite: "#ffffff",
+    background: "#282c34",
+    foreground: "#ffffff",
+    cursor: "#ffffff",
+    cursorAccent: "#282c34",
+    selectionBackground: "#ffffff",
+    selectionForeground: "#282c34",
+    black: "#1d1f21",
+    red: "#cc6666",
+    green: "#b5bd68",
+    yellow: "#f0c674",
+    blue: "#81a2be",
+    magenta: "#b294bb",
+    cyan: "#8abeb7",
+    white: "#c5c8c6",
+    brightBlack: "#666666",
+    brightRed: "#d54e53",
+    brightGreen: "#b9ca4a",
+    brightYellow: "#e7c547",
+    brightBlue: "#7aa6da",
+    brightMagenta: "#c397d8",
+    brightCyan: "#70c0b1",
+    brightWhite: "#eaeaea",
+    scrollbarSliderBackground: "rgba(255, 255, 255, 0.16)",
+    scrollbarSliderHoverBackground: "rgba(255, 255, 255, 0.28)",
+    scrollbarSliderActiveBackground: "rgba(255, 255, 255, 0.36)",
   };
 }

@@ -73,6 +73,28 @@ export function attachTerminalSmoke(window: BrowserWindow): void {
           terminalFocused: Boolean(document.activeElement?.closest('.terminal-pane')),
           background: getComputedStyle(document.querySelector('.xterm-viewport')).backgroundColor,
         })`);
+        const press = async (keyCode: string, modifier: "meta" | "alt"): Promise<void> => {
+          window.webContents.sendInputEvent({ type: "keyDown", keyCode, modifiers: [modifier] });
+          window.webContents.sendInputEvent({ type: "keyUp", keyCode, modifiers: [modifier] });
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        };
+        await press("Left", "meta");
+        await press("Right", "meta");
+        await press("Backspace", "meta");
+        await press("Left", "alt");
+        await press("Right", "alt");
+        const expectedKeys = ["\x01", "\x05", "\x15", "\x1bb", "\x1bf"];
+        const missingKeys = expectedKeys.filter((data) => !terminalWrites.includes(data));
+        if (missingKeys.length > 0)
+          throw new Error("Terminal keys did not reach the PTY: " + JSON.stringify(missingKeys));
+        await press("K", "meta");
+        const clearReport = await window.webContents.executeJavaScript(`({
+          terminalFocused: Boolean(document.activeElement?.closest('.terminal-pane')),
+          text: document.querySelector('.xterm-rows')?.textContent ?? '',
+        })`);
+        if (!clearReport.terminalFocused || clearReport.text.includes("gajae-pty-ok"))
+          throw new Error("Command-K did not clear the terminal in place: " + JSON.stringify(clearReport));
+        console.log("Terminal keys passed");
         ipcMain.removeListener(TERMINAL_IPC.input, observeWrite);
         if (keyReport.effort !== effortBefore) throw new Error("Terminal Shift+Tab changed Chat reasoning effort");
         if (!keyReport.terminalFocused || !terminalWrites.includes('\x1b[Z'))

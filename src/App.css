@@ -3,6 +3,18 @@
   src: url("./assets/nerd-symbols-mono.ttf") format("truetype");
   font-display: block;
 }
+@font-face {
+  font-family: "Gajae Terminal Mono";
+  src: url("./assets/jetbrains-mono-400.woff2") format("woff2");
+  font-weight: 400;
+  font-display: block;
+}
+@font-face {
+  font-family: "Gajae Terminal Mono";
+  src: url("./assets/jetbrains-mono-700.woff2") format("woff2");
+  font-weight: 700;
+  font-display: block;
+}
 
 #root {
   width: 100%;
@@ -1342,12 +1354,9 @@
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  margin: 10px;
   overflow: hidden;
-  color: #e6e8eb;
-  background: #17191d;
-  border: 1px solid #353941;
-  border-radius: 10px;
+  color: #ffffff;
+  background: #282c34;
 }
 .terminal-pane__host {
   position: relative;
@@ -1355,19 +1364,19 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: 12px 14px 8px;
-  background: #17191d;
+  padding: 2px;
+  background: #282c34;
 }
 .terminal-pane__host .xterm {
   height: 100%;
-  background: #17191d;
+  background: #282c34;
 }
 .terminal-pane__host .xterm-viewport {
-  background-color: #17191d !important;
-  scrollbar-color: #555b66 #17191d;
+  background-color: #282c34 !important;
+  scrollbar-color: #5c6370 #282c34;
 }
 .terminal-pane__host .xterm-screen {
-  background: #17191d;
+  background: #282c34;
 }
 .terminal-pane__bar {
   display: flex;
