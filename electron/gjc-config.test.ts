@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyGjcSettings, editableGjcSettings, listGjcSettings, type ConfigRunner } from './gjc-config'
+import { applyGjcSettings, editableGjcSettings, listGjcSettings, type ConfigRunner } from './gjc-config.js'
 
 const LISTING = {
   'retry.enabled': { type: 'boolean', value: true, description: 'Retry failed requests' },
