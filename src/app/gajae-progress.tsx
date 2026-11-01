@@ -3,15 +3,19 @@ import sprite160 from "../assets/gajae-progress-sprite@160.webp";
 import {
   GAJAE_EMOTICONS,
   GAJAE_PROGRESS_ROW_HEIGHT,
+  QUIET_AFTER_MS,
   ROTATING_WORK_LABELS,
+  elapsedTurnMs,
   gajaeEmoticonFor,
   gajaeEmoticonFrame,
   type GajaeEmoticon,
   type TurnActivityKind,
   type TurnApproval,
+  type TurnClock,
 } from "../transcript-utils";
 import { memo, useEffect, useRef, useState } from "react";
 import { t, useLanguage } from "../i18n";
+import { formatDuration } from "./format";
 
 
 const SHEET_80_WIDTH = 80 * GAJAE_EMOTICONS.length;
@@ -78,9 +82,40 @@ function GajaeSprite({
   );
 }
 
+/**
+ * How long the running turn has worked, when it last produced anything once it has
+ * been quiet for a while, and whether a message sent into it is still unread. The
+ * one-second tick re-renders only this text.
+ */
+function WorkingMeta({
+  clock,
+  activityAt,
+  queuedMessage,
+}: {
+  clock: TurnClock;
+  activityAt: number;
+  queuedMessage: boolean;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const idle = now - activityAt;
+  const parts = [formatDuration(elapsedTurnMs(clock, now))];
+  if (idle >= QUIET_AFTER_MS) parts.push(t`마지막 활동 ${formatDuration(idle)} 전`);
+  if (queuedMessage) parts.push(t("보낸 메시지는 지금 단계가 끝나면 읽힙니다"));
+  return <span className="gajae-progress-meta">{parts.join(" · ")}</span>;
+}
+
 export interface GajaeProgressRowProps {
   kind: TurnActivityKind;
   label?: string;
+  /** The turn's clock. A running row shows its elapsed time. */
+  clock?: TurnClock;
+  /** When the turn last produced anything. */
+  activityAt?: number;
+  queuedMessage?: boolean;
   approval?: TurnApproval;
   onResolve?: (toolId: string, optionId: string) => void;
   onRetry?: () => void;
@@ -95,6 +130,9 @@ export interface GajaeProgressRowProps {
 export const GajaeProgressRow = memo(function GajaeProgressRow({
   kind,
   label,
+  clock,
+  activityAt,
+  queuedMessage = false,
   approval,
   onResolve,
   onRetry,
@@ -210,6 +248,9 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
         >
           {shownLabel}
         </span>
+        {clock && activityAt !== undefined && (kind === "thinking" || kind === "tool") && (
+          <WorkingMeta clock={clock} activityAt={activityAt} queuedMessage={queuedMessage} />
+        )}
         {kind === "approval" && approval && (approval.deny || approval.allow) && (
           <span className="gajae-progress-actions">
             {approval.deny && (

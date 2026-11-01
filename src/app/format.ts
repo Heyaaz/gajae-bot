@@ -101,6 +101,17 @@ export function httpUrls(value: string, limit = 3): string[] {
   return [...new Set(value.match(HTTP_URL_PATTERN) ?? [])].slice(0, limit);
 }
 
+/** A span of time at the precision a running turn needs: `45초`, `2분 10초`, `1시간 5분`. */
+export function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (hours > 0) return t`${hours}시간 ${minutes}분`;
+  if (minutes > 0) return t`${minutes}분 ${seconds}초`;
+  return t`${seconds}초`;
+}
+
 export function statusLabel(status: AgentSession["status"], phase?: string): string {
   if (phase === "compacting") return "Compacting";
   if (status === "starting") return "Starting";

@@ -280,17 +280,44 @@ export function progressBlockId(sessionId: string, turnId: string): string {
   return `gajae-progress:${sessionId}:${turnId}`;
 }
 
+/** Silence after which the working row also says when the turn last produced anything. */
+export const QUIET_AFTER_MS = 30_000;
+
 export interface ProgressBlock {
   kind: "progress";
   id: string;
   work: TurnWork;
   clock: TurnClock;
+  /** When the transcript's tail last changed, streamed text included. */
+  activityAt: number;
+  /**
+   * The newest row is a message sent into the running turn. GJC reads it only when
+   * its current step, often a long model call that streams nothing, finishes.
+   */
+  queuedMessage: boolean;
   approval?: TurnApproval;
 }
 
 export interface StoredTurnClock {
   turnId: string;
   clock: TurnClock;
+  /** User messages seen, which tells a steer apart from a prompt echo being replaced. */
+  userCount: number;
+  steered: boolean;
+  activity: { signature: string; at: number };
+}
+
+/** Changes whenever the tail grows, streams more text, or changes status. */
+function activitySignature(items: readonly TranscriptItem[]): string {
+  const last = items.at(-1);
+  if (!last) return "";
+  const detail =
+    last.kind === "message" || last.kind === "thought"
+      ? last.content.length
+      : last.kind === "tool"
+        ? `${last.status}:${last.output?.length ?? 0}`
+        : "";
+  return `${items.length}:${last.id}:${detail}`;
 }
 
 /**
@@ -307,7 +334,21 @@ export function resolveTurnProgress(
   now: number,
 ): { progress: ProgressBlock | null; stored: StoredTurnClock | undefined } {
   const turnId = latestUserMessageId(items) ?? "";
-  const prior = previous?.turnId === turnId ? previous.clock : undefined;
+  const userCount = items.filter((item) => item.kind === "message" && item.role === "user").length;
+  // The confirmed row replacing a prompt's local echo changes the id but not the count.
+  const sameTurn = previous !== undefined &&
+    (previous.turnId === turnId || previous.userCount === userCount);
+  // A message sent while the clock runs joins the turn GJC is still working on.
+  const steer = previous !== undefined && !sameTurn &&
+    userCount > previous.userCount && previous.clock.heldAt === undefined;
+  const prior = sameTurn || steer ? previous.clock : undefined;
+  const tail = items.at(-1);
+  const steered = tail?.kind === "message" && tail.role === "user" &&
+    (steer || (sameTurn && previous.steered));
+  const signature = activitySignature(items);
+  const activity = prior && previous?.activity.signature === signature
+    ? previous.activity
+    : { signature, at: now };
   const mode = turnClockRuns(items, session);
   const work = currentTurnWork(items, session);
   if (mode === null) return { progress: null, stored: undefined };
@@ -318,7 +359,7 @@ export function resolveTurnProgress(
     return { progress: null, stored: undefined };
 
   const clock = stepTurnClock(prior, now, mode);
-  const stored: StoredTurnClock = { turnId, clock };
+  const stored: StoredTurnClock = { turnId, clock, userCount, steered, activity };
   if (!work) return { progress: null, stored };
   // A finished turn we never saw running is not a completion row we witnessed.
   // The held clock from an approval or a waiting row we opened mid-way is not one.
@@ -330,6 +371,8 @@ export function resolveTurnProgress(
       id: progressBlockId(sessionId, turnId || "session"),
       work,
       clock,
+      activityAt: activity.at,
+      queuedMessage: steered,
       ...(work.kind === "approval"
         ? { approval: currentTurnApproval(items) }
         : {}),

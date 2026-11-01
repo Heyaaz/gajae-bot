@@ -3741,6 +3741,15 @@ button.diff-line-number:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.gajae-progress-meta {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .gajae-progress-label.is-shimmer {
   color: transparent;
   background-image: linear-gradient(
