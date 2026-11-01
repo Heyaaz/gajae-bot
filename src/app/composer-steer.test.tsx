@@ -67,6 +67,22 @@ describe("queued message Send now", () => {
     } finally { await test.close(); }
   });
 
+  it("sends /btw right away instead of holding it behind the turn or the queue", async () => {
+    const test = await mount();
+    try {
+      const input = test.node.querySelector("textarea")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "/btw what changed?");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => {
+        input.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "/btw what changed?", images: [], files: [] });
+      expect(composerQueue(test.sessionId)).toHaveLength(2);
+    } finally { await test.close(); }
+  });
+
   it("keeps the row until acceptance, steers only that entry, and never stops the turn", async () => {
     let accept!: () => void;
     const send = vi.fn(() => new Promise<undefined>((resolve) => { accept = () => resolve(undefined); }));

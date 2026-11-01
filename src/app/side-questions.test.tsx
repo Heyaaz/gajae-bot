@@ -160,6 +160,18 @@ describe("SideQuestionPanel", () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it("says the session's GJC cannot answer and takes no question", () => {
+    const onAsk = vi.fn();
+    const host = mount(
+      createElement(SideQuestionPanel, {
+        exchanges: [], unsupported: true, onAsk, onRetry: vi.fn(), onClear: vi.fn(), onClose: vi.fn(),
+      }),
+    );
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("지원하지 않습니다");
+    expect(host.querySelector("textarea")!.disabled).toBe(true);
+    expect(host.querySelector<HTMLButtonElement>(".side-panel-send")!.disabled).toBe(true);
+  });
+
   it("shows waiting, answers, and failures with a retry, and holds input while waiting", () => {
     const onRetry = vi.fn();
     const host = panel(

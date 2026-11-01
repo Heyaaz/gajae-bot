@@ -1613,10 +1613,16 @@ export default function App() {
   }, [repoBridge, projectRoot]);
   const updateBusyFlag = Boolean(updateBusy);
 
+  // GJC advertises `/btw` only when it has `btw.ask`. Until the list arrives the
+  // question is tried and any refusal is shown in the panel.
+  const sideUnsupported =
+    askSideBackend !== undefined &&
+    !commandsPending &&
+    !selectedCommands.some((command) => command.name === "btw");
   const askSideFromComposer = askSideBackend
     ? (sessionId: string, question: string) => {
         setSideOpen(true);
-        askSide(sessionId, question);
+        if (!sideUnsupported) askSide(sessionId, question);
       }
     : undefined;
 
@@ -1977,6 +1983,7 @@ export default function App() {
               <SideQuestionPanel
                 key={selectedSession.id}
                 exchanges={sideThreads[selectedSession.id] ?? NO_SIDE_EXCHANGES}
+                unsupported={sideUnsupported}
                 onAsk={(question) => askSide(selectedSession.id, question)}
                 onRetry={(id) => retrySide(selectedSession.id, id)}
                 onClear={() => clearSide(selectedSession.id)}
