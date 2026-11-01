@@ -108,7 +108,7 @@ An authoritative command update replaces that provisional skill list. TUI-only
 commands and commands without a public SDK equivalent are not claimed as supported;
 desktop slash commands are not a complete copy of the CLI command surface.
 
-## Side questions (`/btw`)
+## Side chat (`/btw`)
 
 `/btw <question>`, the header's question button, or `⌘⇧B` opens a panel beside the
 conversation. GJC answers from the session's context through `btw.ask` and saves
@@ -118,7 +118,7 @@ side questions, so each follow-up carries the panel's earlier answers, as many o
 the newest as fit in 12 KiB. One question is answered at a time. Each session keeps its
 own questions until the window closes. In a narrow window the panel covers the
 conversation. A remote device sends `/btw` as before and gets the answer as a
-conversation row. `/btw` is never held behind a running turn. Side questions need
+conversation row. `/btw` is never held behind a running turn. Side chat needs
 a GJC that advertises `btw.ask`; GJC 0.19.2 does not, and the panel says so instead
 of taking a question.
 
@@ -143,7 +143,7 @@ listing, and `@` stays plain text there.
 | `⌘T`        | New session           |
 | `⌘1`–`⌘9`   | Select session        |
 | Esc         | Abort the current run |
-| `⌘⇧B`       | Side questions        |
+| `⌘⇧B`       | Side chat             |
 | `Shift+Tab` | Cycle effort          |
 
 ## Links from other apps

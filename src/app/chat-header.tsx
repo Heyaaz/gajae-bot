@@ -109,7 +109,7 @@ export function ChatHeader({
         <button
           className={`icon-button ${sideOpen ? "is-active" : ""}`}
           type="button"
-          title={t("옆 질문 (⌘⇧B)")}
+          title={t("사이드 채팅 (⌘⇧B)")}
           aria-pressed={sideOpen}
           onClick={() => setSideOpen((open) => !open)}
         >
