@@ -1,6 +1,7 @@
 import type { AppUpdateStatus } from "./app-update.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
 import type { EnvironmentReport } from "./environment-check.js";
+import type { GjcSetting, GjcSettingChange } from "./gjc-settings.js";
 import type { QuickInputShortcutStatus } from "./quick-input.js";
 
 export type RuntimeKind = "gjc" | "hermes" | "terminal";
@@ -1115,6 +1116,10 @@ export interface SettingsDesktopBridge {
   checkAppUpdate(): Promise<AppUpdateStatus>;
   /** Looks for bun, GJC, the model profile, gh and tailscale. Installs nothing. */
   checkEnvironment(): Promise<EnvironmentReport>;
+  /** GJC's own boolean and number settings that apply to app sessions. */
+  listGjcSettings(): Promise<GjcSetting[]>;
+  /** Writes the changes with `gjc config set` after one confirmation, then lists again. */
+  applyGjcSettings(changes: GjcSettingChange[]): Promise<GjcSetting[]>;
   /** Whether the environment check should open at launch. */
   environmentCheckDue(): Promise<boolean>;
   /** Whether the quick input shortcut is registered right now. */

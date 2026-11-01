@@ -23,6 +23,7 @@ import type {
 } from "../shared/agent-contract.js";
 import type { ProductivityDesktopBridge } from "../shared/productivity-ipc.js";
 import type { DesktopIntegrationPreferences } from "../shared/desktop-integration.js";
+import type { GjcSettingChange } from "../shared/gjc-settings.js";
 import type {
   RemoteDesktopBridge,
   RemotePermission,
@@ -483,6 +484,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
   getAppUpdateStatus: () => ipcRenderer.invoke(SETTINGS_IPC.getAppUpdateStatus),
   checkAppUpdate: () => ipcRenderer.invoke(SETTINGS_IPC.checkAppUpdate),
   checkEnvironment: () => ipcRenderer.invoke(SETTINGS_IPC.checkEnvironment),
+  listGjcSettings: () => ipcRenderer.invoke(SETTINGS_IPC.listGjcSettings),
+  applyGjcSettings: (changes: GjcSettingChange[]) => ipcRenderer.invoke(SETTINGS_IPC.applyGjcSettings, changes),
   environmentCheckDue: () => ipcRenderer.invoke(SETTINGS_IPC.environmentCheckDue),
   quickInputShortcutStatus: () =>
     ipcRenderer.invoke(SETTINGS_IPC.quickInputShortcutStatus),

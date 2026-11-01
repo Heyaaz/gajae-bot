@@ -23,6 +23,8 @@ const ENGLISH: Readonly<Record<string, string>> = {
   "다른 곳에서 실행 중인 GJC가 이 세션을 열고 있습니다. 삭제하면 그 GJC를 종료하고 대화 기록까지 삭제합니다. 그 GJC가 하던 작업은 중단됩니다.":
     "Another running GJC has this session open. Deleting stops that GJC and deletes the conversation history; whatever it was doing stops.",
   "GJC 종료 후 삭제": "Stop GJC and delete",
+  "GJC 설정을 바꿀까요?": "Change these GJC settings?",
+  "터미널의 GJC에도 같이 적용됩니다.": "They apply to GJC in the terminal too.",
   "취소": "Cancel",
   "계속": "Continue",
   "삭제": "Delete",
