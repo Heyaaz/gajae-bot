@@ -269,7 +269,7 @@ import {
   settleOpenQuestions,
   submitQuestionAnswer,
 } from "./gjc-sdk-questions.js";
-import { executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
+import { askSideQuestion, executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
 import { gjcHostProcess, stopGjcHostProcess, type GjcHostProcess } from "./gjc-host-process.js";
 import {
@@ -1586,6 +1586,18 @@ export class GjcSdkController {
 
   cycleThinking(sessionId: string): Promise<string | undefined> {
     return cycleThinking(this.sessionConfigHost, sessionId);
+  }
+
+  askSideQuestion(sessionId: string, question: string): Promise<string> {
+    return askSideQuestion(
+      {
+        sdkOperations: (id) => this.sdkOperations(id),
+        controlSession: (id, operation, input, options) =>
+          this.controlSession(id, operation, input, options),
+      },
+      sessionId,
+      question,
+    );
   }
 
   // A session proven uncontrollable is recorded so the row stops advertising a

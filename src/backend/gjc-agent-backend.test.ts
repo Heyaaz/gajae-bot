@@ -140,6 +140,9 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async cycleThinking(_sessionId: string): Promise<string | undefined> {
     return undefined;
   }
+  async askSideQuestion(_sessionId: string, _question: string): Promise<string> {
+    return "";
+  }
   async compactSession(_sessionId: string): Promise<void> {}
   async queueFollowUp(
     _sessionId: string,

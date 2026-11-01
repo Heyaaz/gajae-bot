@@ -31,6 +31,7 @@ export const GJC_IPC = {
   refreshSessionContext: "agent-control:gjc:refresh-session-context",
   setSessionConfig: "agent-control:gjc:set-session-config",
   cycleThinking: "agent-control:gjc:cycle-thinking",
+  askSideQuestion: "agent-control:gjc:ask-side-question",
   compactSession: "agent-control:gjc:compact-session",
   queueFollowUp: "agent-control:gjc:queue-follow-up",
   listQueuedMessages: "agent-control:gjc:list-queued-messages",

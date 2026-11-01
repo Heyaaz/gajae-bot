@@ -54,6 +54,8 @@ import {
   sessionTitleText,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
+import { SideQuestionPanel } from "./side-question-panel";
+import { sideQuestionText, useSideQuestions, type SideExchange } from "./side-questions";
 import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
@@ -130,6 +132,8 @@ export {
   unreadBadgeCount,
 } from "./shell-model";
 
+const NO_SIDE_EXCHANGES: readonly SideExchange[] = [];
+
 export default function App() {
   const language = useLanguage();
   const backend = useAgentBackend();
@@ -168,6 +172,15 @@ export default function App() {
   );
   const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
+  const [sideOpen, setSideOpen] = useState(false);
+  const askSideBackend = useMemo(
+    () =>
+      backend.askSideQuestion
+        ? (sessionId: string, question: string) => backend.askSideQuestion!(sessionId, question)
+        : undefined,
+    [backend],
+  );
+  const { threads: sideThreads, askSide, retrySide, clearSide } = useSideQuestions(askSideBackend);
 
   const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
   // Each open is its own request: a second prefill while the dialog is up
@@ -1532,6 +1545,27 @@ export default function App() {
 
   // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
   // Option turns the key into a dead key on macOS, so `key` is not "u".
+  // ⌘⇧B: the side-question panel.
+  useEffect(() => {
+    if (!askSideBackend) return;
+    function onSideShortcut(event: globalThis.KeyboardEvent): void {
+      if (
+        !event.metaKey ||
+        !event.shiftKey ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.code !== "KeyB" ||
+        surfaceRef.current === "terminal" ||
+        !selectedSessionRef.current
+      )
+        return;
+      event.preventDefault();
+      setSideOpen((open) => !open);
+    }
+    window.addEventListener("keydown", onSideShortcut);
+    return () => window.removeEventListener("keydown", onSideShortcut);
+  }, [askSideBackend]);
+
   useEffect(() => {
     function onInboxShortcut(event: globalThis.KeyboardEvent): void {
       if (
@@ -1579,6 +1613,13 @@ export default function App() {
   }, [repoBridge, projectRoot]);
   const updateBusyFlag = Boolean(updateBusy);
 
+  const askSideFromComposer = askSideBackend
+    ? (sessionId: string, question: string) => {
+        setSideOpen(true);
+        askSide(sessionId, question);
+      }
+    : undefined;
+
   // Streaming re-renders the shell on every joined delta. These callbacks stay
   // the same object so the memoized composer does not run again while a reply grows.
   const composerActionsRef = useRef({
@@ -1589,6 +1630,7 @@ export default function App() {
     createSession,
     setSessionConfig,
     cycleThinking,
+    askSide: askSideFromComposer,
     session: selectedSession,
   });
   composerActionsRef.current = {
@@ -1599,12 +1641,19 @@ export default function App() {
     createSession,
     setSessionConfig,
     cycleThinking,
+    askSide: askSideFromComposer,
     session: selectedSession,
   };
   const onComposerSend = useCallback((input: MessageInput) => {
     const current = composerActionsRef.current;
     const session = current.session;
     if (!session) return Promise.resolve(undefined);
+    // `/btw` answers in the side panel instead of the conversation.
+    const question = current.askSide ? sideQuestionText(input) : undefined;
+    if (question !== undefined) {
+      current.askSide?.(session.id, question);
+      return Promise.resolve(undefined);
+    }
     return current.sendMessage(session.id, input);
   }, []);
   // A diff review is submitted as if typed into that session's composer, so a
@@ -1802,6 +1851,7 @@ export default function App() {
             setDiffOpen={setDiffOpen}
             inspectorOpen={inspectorOpen}
             setInspectorOpen={setInspectorOpen}
+            {...(askSideBackend ? { sideOpen, setSideOpen } : {})}
           />
 
           <div className="workspace-body">
@@ -1921,6 +1971,16 @@ export default function App() {
                 cwd={selectedSession.workspace}
                 active={surface === "terminal"}
                 hidden={surface !== "terminal"}
+              />
+            )}
+            {surface === "chat" && sideOpen && askSideBackend && (
+              <SideQuestionPanel
+                key={selectedSession.id}
+                exchanges={sideThreads[selectedSession.id] ?? NO_SIDE_EXCHANGES}
+                onAsk={(question) => askSide(selectedSession.id, question)}
+                onRetry={(id) => retrySide(selectedSession.id, id)}
+                onClear={() => clearSide(selectedSession.id)}
+                onClose={() => setSideOpen(false)}
               />
             )}
             {surface === "chat" && inspectorOpen && (

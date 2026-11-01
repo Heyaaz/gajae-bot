@@ -1015,6 +1015,8 @@ export interface GjcDesktopBridge {
     value: string,
   ): Promise<void>;
   cycleThinking(sessionId: string): Promise<string | undefined>;
+  /** `/btw`: GJC's answer from the session's context, kept out of the transcript. */
+  askSideQuestion(sessionId: string, question: string): Promise<string>;
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]>;

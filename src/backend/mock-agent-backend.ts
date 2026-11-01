@@ -632,6 +632,14 @@ export class MockAgentBackend implements AgentBackend {
     return change;
   }
 
+  async askSideQuestion(sessionId: string, question: string): Promise<string> {
+    if (!this.sessionStore.some((candidate) => candidate.id === sessionId))
+      throw new Error(`Unknown session: ${sessionId}`);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    const asked = question.split("\n").at(-1)?.replace(/^Follow-up question:\s*/u, "") ?? question;
+    return `샘플 답변입니다. "${asked}"에 대해 지금 세션의 맥락으로 답했고, 이 문답은 대화 기록에 남지 않습니다.`;
+  }
+
   async cycleThinking(sessionId: string): Promise<string | undefined> {
     const session = this.sessionStore.find(
       (candidate) => candidate.id === sessionId,

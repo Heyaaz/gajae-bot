@@ -363,6 +363,11 @@ export function registerGjcIpcHandlers(
   handle(GJC_IPC.cycleThinking, (_event, sessionId: unknown) =>
     controller.cycleThinking(requiredId(sessionId, "Session ID")),
   );
+  handle(GJC_IPC.askSideQuestion, (_event, sessionId: unknown, question: unknown) => {
+    if (typeof question !== "string" || !question.trim())
+      throw new Error("Side question must be a nonempty string");
+    return controller.askSideQuestion(requiredId(sessionId, "Session ID"), question);
+  });
   handle(GJC_IPC.compactSession, (_event, sessionId: unknown) =>
     controller.compactSession(requiredId(sessionId, "Session ID")),
   );
