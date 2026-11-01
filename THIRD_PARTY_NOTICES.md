@@ -72,6 +72,9 @@ Portions of the conversation view are adapted from
 
 - `src/ui/conversation/work-log.ts`: folding a finished turn's work between its
   prompt and its last answer into one line
+- `src/ui/conversation/working-status.ts`: a running turn's elapsed time, the
+  30-second quiet threshold before naming its last activity, and noticing a
+  message sent into the running turn
 
 ```
 MIT License
