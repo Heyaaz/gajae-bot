@@ -33,6 +33,14 @@ Default model preset is `codex-medium`. If `~/.gjc/agent/models.yml` defines it,
 
 Type a request and press Enter. Files and images are sent as local paths. Images are opened with GJC `read` before the model answers.
 
+A finished turn keeps its request and final answer on screen and folds everything
+between them into one line, such as `4분 동안 작업함`, with a failure count when a
+tool failed. Click the line to open the work in order. A running turn, a turn
+without a final answer, and a turn still waiting on a question or an approval stay
+open. A turn that ends while you are scrolled up reading it also stays open. The
+상세 view never folds. Rows carry clock times like `13:22`, so the duration is
+counted in minutes.
+
 ## While a turn is running
 
 | Action                | Result                                                                                                      |
@@ -49,6 +57,12 @@ The submit slot holds one button, not two: the send arrow whenever there is
 something to send, otherwise Stop. The Composer owns one local held-work queue;
 Both `/queue` and `/steer` hold work locally while a turn runs. The saved
 steer-on-Enter preference also creates a visible Steer row rather than bypassing it.
+
+The working row under a running turn shows how long it has run. After 30 seconds
+with no new output, streamed text included, it also says when the last activity
+was. When the newest row is a message sent into the running turn, it says the
+message is read when the current step finishes. The count starts when this window
+first sees the turn running.
 
 GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait
 queue. Held requests appear as full-width rows above the input, with Send now,
@@ -94,6 +108,18 @@ An authoritative command update replaces that provisional skill list. TUI-only
 commands and commands without a public SDK equivalent are not claimed as supported;
 desktop slash commands are not a complete copy of the CLI command surface.
 
+## Side questions (`/btw`)
+
+`/btw <question>`, the header's question button, or `⌘⇧B` opens a panel beside the
+conversation. GJC answers from the session's context through `btw.ask` and saves
+nothing, so the conversation gains no row. It works while a turn runs and does not
+affect that turn. Follow-ups are typed in the panel. GJC remembers nothing between
+side questions, so each follow-up carries the panel's earlier answers, as many of
+the newest as fit in 12 KiB. One question is answered at a time. Each session keeps its
+own questions until the window closes. In a narrow window the panel covers the
+conversation. A remote device sends `/btw` as before and gets the answer as a
+conversation row.
+
 ## File mentions
 
 Type `@` at the start of the draft or after a space to search the session
@@ -115,6 +141,7 @@ listing, and `@` stays plain text there.
 | `⌘T`        | New session           |
 | `⌘1`–`⌘9`   | Select session        |
 | Esc         | Abort the current run |
+| `⌘⇧B`       | Side questions        |
 | `Shift+Tab` | Cycle effort          |
 
 ## Links from other apps
