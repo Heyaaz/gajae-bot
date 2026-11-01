@@ -11,6 +11,7 @@ import {
   type LoginShellOptions,
   type LoginShellSession,
 } from "./terminal-session.js";
+import { ReplayBuffer, createOutputBatcher, type OutputBatcher } from "./terminal-output.js";
 import type { TerminalSessionStore } from "./terminal-session-store.js";
 import {
   TERMINAL_IPC,
@@ -42,7 +43,10 @@ interface LiveTerminal {
   token: number;
   cwd: string;
   session: LoginShellSession;
-  output: string;
+  replay: ReplayBuffer;
+  outgoing: OutputBatcher;
+  /** The views showing this shell, by start token. With none, output only goes to the replay. */
+  views: Set<number>;
   exitCode?: number;
   exited: Promise<void>;
 }
@@ -72,10 +76,13 @@ export class TerminalHost {
     const current = this.windows.get(sender.id)?.get(key);
     if (current && key !== SURFACE_KEY && !request.restart) {
       current.session.handle({ t: "r", c: request.cols, r: request.rows });
+      // The replay covers anything still waiting, and this view is not listening yet.
+      current.outgoing.flush();
+      current.views.add(token);
       return {
         id: current.id,
         cwd: current.cwd,
-        replay: current.output,
+        replay: current.replay.read(),
         ...(current.exitCode === undefined ? {} : { exitCode: current.exitCode }),
       };
     }
@@ -83,33 +90,37 @@ export class TerminalHost {
     const id = randomUUID();
     const cwd = resolveShellCwd(stored?.workspace ?? request.cwd);
     let markExited = (): void => undefined;
+    const isCurrent = (): boolean => this.windows.get(sender.id)?.get(key) === terminal;
     const terminal: LiveTerminal = {
       id,
       key,
       token,
       cwd,
       session: undefined as unknown as LoginShellSession,
-      output: "",
+      replay: new ReplayBuffer(TERMINAL_REPLAY_LIMIT),
+      outgoing: createOutputBatcher((data) => {
+        if (!isCurrent() || sender.isDestroyed()) return;
+        const payload: TerminalOutputEvent = { id, data };
+        sender.send(TERMINAL_IPC.output, payload);
+      }),
+      views: new Set([token]),
       exited: new Promise<void>((resolve) => {
         markExited = resolve;
       }),
     };
-    const isCurrent = (): boolean => this.windows.get(sender.id)?.get(key) === terminal;
     const options: LoginShellOptions = {
       cwd,
       cols: request.cols,
       rows: request.rows,
       onData: (data) => {
         if (!isCurrent()) return;
-        if (key !== SURFACE_KEY)
-          terminal.output = (terminal.output + data).slice(-TERMINAL_REPLAY_LIMIT);
-        if (sender.isDestroyed()) return;
-        const payload: TerminalOutputEvent = { id, data };
-        sender.send(TERMINAL_IPC.output, payload);
+        if (key !== SURFACE_KEY) terminal.replay.push(data);
+        if (terminal.views.size > 0) terminal.outgoing.push(data);
       },
       onExit: (status) => {
         markExited();
         if (!isCurrent()) return;
+        terminal.outgoing.flush();
         if (key === SURFACE_KEY) this.windows.get(sender.id)?.delete(key);
         else terminal.exitCode = status.exitCode;
         if (sender.isDestroyed()) return;
@@ -150,8 +161,12 @@ export class TerminalHost {
     this.find(senderId, id)?.session.handle({ t: "p", paused });
   }
 
-  /** Ends the chat surface's shell. A terminal session's shell outlives its view. */
+  /**
+   * A view went away. A terminal session's shell outlives it and stops sending
+   * output once no view is left; the chat surface's shell ends with its view.
+   */
   dispose(senderId: number, token?: number): void {
+    if (typeof token === "number" && this.leaveSession(senderId, token)) return;
     if (typeof token === "number") this.cancel(senderId, token);
     const current = this.windows.get(senderId)?.get(SURFACE_KEY);
     if (token !== undefined && current && current.token !== token) return;
@@ -191,6 +206,15 @@ export class TerminalHost {
   }
 
 
+  private leaveSession(senderId: number, token: number): boolean {
+    for (const terminal of this.windows.get(senderId)?.values() ?? []) {
+      if (terminal.key === SURFACE_KEY || !terminal.views.delete(token)) continue;
+      if (terminal.views.size === 0) terminal.outgoing.discard();
+      return true;
+    }
+    return false;
+  }
+
   private find(senderId: number, id: unknown): LiveTerminal | undefined {
     if (typeof id !== "string") return undefined;
     for (const terminal of this.windows.get(senderId)?.values() ?? [])
@@ -222,6 +246,7 @@ export class TerminalHost {
     const terminals = this.windows.get(senderId);
     const current = terminals?.get(key);
     terminals?.delete(key);
+    current?.outgoing.discard();
     current?.session.dispose();
   }
 }

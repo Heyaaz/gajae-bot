@@ -200,6 +200,67 @@ describe("terminal sessions", () => {
     expect(opened).toHaveLength(2);
   });
 
+  it("sends a session's output only while a view shows it", async () => {
+    const { directory, opened, sender, call } = setup();
+    const session = (await call(TERMINAL_IPC.createSession, {
+      title: "빌드",
+      workspace: directory,
+    })) as AgentSession;
+    await call(TERMINAL_IPC.start, { token: 1, session: session.id });
+    opened[0]!.options.onData("first");
+    expect(sender.send).toHaveBeenCalledTimes(1);
+
+    await call(TERMINAL_IPC.dispose, 1);
+    opened[0]!.options.onData("second");
+    opened[0]!.options.onData("third");
+    expect(sender.send).toHaveBeenCalledTimes(1);
+
+    const again = (await call(TERMINAL_IPC.start, { token: 2, session: session.id })) as TerminalSessionInfo;
+    expect(again.replay).toBe("firstsecondthird");
+  });
+
+  it("does not mistake a session view leaving for a start to cancel", async () => {
+    const { directory, call } = setup();
+    const session = (await call(TERMINAL_IPC.createSession, {
+      title: "빌드",
+      workspace: directory,
+    })) as AgentSession;
+    await call(TERMINAL_IPC.start, { token: 1, session: session.id });
+    await call(TERMINAL_IPC.dispose, 1);
+    // A reloaded renderer counts its tokens from 1 again.
+    expect(() => call(TERMINAL_IPC.start, { token: 1, session: session.id })).not.toThrow();
+  });
+
+  it("keeps sending while another view of the session remains", async () => {
+    const { directory, opened, sender, call } = setup();
+    const session = (await call(TERMINAL_IPC.createSession, {
+      title: "빌드",
+      workspace: directory,
+    })) as AgentSession;
+    await call(TERMINAL_IPC.start, { token: 1, session: session.id });
+    await call(TERMINAL_IPC.start, { token: 2, session: session.id });
+    await call(TERMINAL_IPC.dispose, 1);
+    opened[0]!.options.onData("still shown");
+    expect(sender.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("delivers batched output before the exit that followed it", async () => {
+    const { directory, opened, sender, call } = setup();
+    const session = (await call(TERMINAL_IPC.createSession, {
+      title: "빌드",
+      workspace: directory,
+    })) as AgentSession;
+    await call(TERMINAL_IPC.start, { token: 1, session: session.id });
+    opened[0]!.options.onData("a");
+    opened[0]!.options.onData("b");
+    opened[0]!.options.onExit({ exitCode: 0 });
+    expect(sender.send.mock.calls.map(([channel, payload]) => [channel, payload.data])).toEqual([
+      [TERMINAL_IPC.output, "a"],
+      [TERMINAL_IPC.output, "b"],
+      [TERMINAL_IPC.exit, undefined],
+    ]);
+  });
+
   it("opens one shell for two views that start the same session at once", async () => {
     const { directory, opened, call } = setup();
     const session = (await call(TERMINAL_IPC.createSession, {

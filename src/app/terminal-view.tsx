@@ -61,6 +61,7 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
     restartRef.current = false;
     let liveId: string | undefined;
     let disposed = false;
+    let startRequested = false;
     let removeOutput = (): void => undefined;
     let removeExit = (): void => undefined;
     let resizeObserver: ResizeObserver | undefined;
@@ -129,6 +130,7 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
       resizeObserver.observe(host);
       applySize();
       try {
+        startRequested = true;
         const started = await bridge.start({
           token,
           cwd,
@@ -187,9 +189,9 @@ export function TerminalView({ cwd, active, hidden, session }: TerminalViewProps
       termRef.current?.dispose();
       termRef.current = null;
       fitRef.current = null;
-      // A session's shell keeps running for the next view; only the chat
-      // surface's shell ends with its view.
-      if (!session) void bridge.dispose(token);
+      // A session's shell keeps running for the next view, and only needs to
+      // hear about a view it was told about. The chat surface's shell ends here.
+      if (!session || startRequested) void bridge.dispose(token);
     };
   }, [cwd, epoch, session]);
 

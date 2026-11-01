@@ -59,8 +59,9 @@ export interface TerminalStartRequest {
   cols?: number;
   rows?: number;
   /**
-   * Pairs this start with the dispose that cancels it. A dispose for the same
-   * token wins even when it is processed first.
+   * Pairs this start with the dispose that ends its view. A dispose for the same
+   * token wins even when it is processed first. A session's shell sends output
+   * only while a view that started it is still there.
    */
   token: number;
 }
