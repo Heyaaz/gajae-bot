@@ -48,18 +48,18 @@ export function SideQuestionPanel({
   }
 
   return (
-    <aside className="side-panel" aria-label={t("옆 질문")}>
+    <aside className="side-panel" aria-label={t("사이드 채팅")}>
       <header>
         <span>
-          <strong>{t("옆 질문")}</strong>
+          <strong>{t("사이드 채팅")}</strong>
           <small>{t("대화 기록에 남지 않습니다")}</small>
         </span>
         {exchanges.length > 0 && (
           <button
             className="icon-button"
             type="button"
-            title={t("옆 질문 지우기")}
-            aria-label={t("옆 질문 지우기")}
+            title={t("사이드 채팅 지우기")}
+            aria-label={t("사이드 채팅 지우기")}
             onClick={onClear}
           >
             <Trash2 size={15} />
@@ -79,8 +79,8 @@ export function SideQuestionPanel({
         {unsupported && exchanges.length === 0 ? (
           <div className="side-panel-empty" role="status">
             <MessageCircleQuestion size={22} aria-hidden="true" />
-            <p>{t("이 세션의 GJC는 옆 질문을 지원하지 않습니다.")}</p>
-            <small>{t("옆 질문에는 GJC의 btw.ask 기능이 필요합니다. 이 기능이 들어간 GJC로 업데이트하면 쓸 수 있습니다.")}</small>
+            <p>{t("이 세션의 GJC는 사이드 채팅을 지원하지 않습니다.")}</p>
+            <small>{t("사이드 채팅에는 GJC의 btw.ask 기능이 필요합니다. 이 기능이 들어간 GJC로 업데이트하면 쓸 수 있습니다.")}</small>
           </div>
         ) : exchanges.length === 0 ? (
           <div className="side-panel-empty">
@@ -126,7 +126,7 @@ export function SideQuestionPanel({
           rows={2}
           disabled={unsupported}
           placeholder={exchanges.length > 0 ? t("이어서 묻기") : t("무엇이든 물어보세요")}
-          aria-label={t("옆 질문 입력")}
+          aria-label={t("사이드 채팅 입력")}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
