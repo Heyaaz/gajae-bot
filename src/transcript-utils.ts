@@ -531,7 +531,8 @@ export type TranscriptBlock =
       kind: "tools";
       id: string;
       items: Extract<TranscriptItem, { kind: "tool" }>[];
-    };
+    }
+  | { kind: "fold"; id: string; fold: TurnFold; open: boolean };
 
 /**
  * The most tool cards one virtual row may render.
@@ -563,6 +564,129 @@ export function groupTranscriptItems(
       last.items.push(item);
     else blocks.push({ kind: "tools", id: `tools-${item.id}`, items: [item] });
   }
+  return blocks;
+}
+
+/** The items a finished turn folds into its one-line work row; `end` is exclusive. */
+export interface TurnFold {
+  /** The prompt's id. The row is opened and closed by it. */
+  id: string;
+  start: number;
+  end: number;
+  /**
+   * Minutes from the prompt to the final answer. Live and restored rows carry only
+   * a clock label (`13:22`), so this is minute precision, and null when the two
+   * times do not parse.
+   */
+  minutes: number | null;
+  /** Failed or denied calls inside the fold, so folding does not hide them. */
+  failedCount: number;
+}
+
+function clockMinutes(label: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/u.exec(label.trim());
+  if (!match) return null;
+  return (Number(match[1]) % 24) * 60 + Number(match[2]);
+}
+
+function minutesBetween(from: string, to: string): number | null {
+  const start = clockMinutes(from);
+  const end = clockMinutes(to);
+  if (start !== null && end !== null) return (end - start + 1440) % 1440;
+  const startMs = Date.parse(from);
+  const endMs = Date.parse(to);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  return Math.max(0, Math.floor((endMs - startMs) / 60_000));
+}
+
+function needsAnswer(item: TranscriptItem): boolean {
+  return (
+    (item.kind === "tool" && item.status === "approval-required") ||
+    (item.kind === "question" &&
+      item.answerable &&
+      (item.status === "pending" || item.status === "rejected"))
+  );
+}
+
+/** True once the newest turn has ended, whether it finished or failed. */
+export function lastTurnSettled(
+  items: readonly TranscriptItem[],
+  session?: TurnSessionHint | null,
+): boolean {
+  const kind = currentTurnWork(items, session)?.kind;
+  return kind === "done" || kind === "error";
+}
+
+/**
+ * Finished turns whose work folds between the prompt and the final answer.
+ *
+ * A turn is a user message and everything up to the next one, and its final answer
+ * is its last assistant message. The newest turn folds only once it has settled. A
+ * turn with no answer, a still-streaming answer, nothing between prompt and answer,
+ * or a question or approval still waiting stays open.
+ */
+export function turnFolds(
+  items: readonly TranscriptItem[],
+  newestSettled: boolean,
+): TurnFold[] {
+  const prompts: number[] = [];
+  items.forEach((item, index) => {
+    if (item.kind === "message" && item.role === "user") prompts.push(index);
+  });
+  const folds: TurnFold[] = [];
+  prompts.forEach((start, at) => {
+    const next = prompts[at + 1] ?? items.length;
+    if (next === items.length && !newestSettled) return;
+    let answer = -1;
+    for (let index = next - 1; index > start; index -= 1) {
+      const item = items[index]!;
+      if (item.kind === "message" && item.role === "assistant") {
+        if (!item.streaming) answer = index;
+        break;
+      }
+    }
+    if (answer < start + 2) return;
+    const inner = items.slice(start + 1, answer);
+    if (inner.some(needsAnswer)) return;
+    folds.push({
+      id: items[start]!.id,
+      start: start + 1,
+      end: answer,
+      minutes: minutesBetween(items[start]!.createdAt, items[answer]!.createdAt),
+      failedCount: inner.filter(
+        (item) => item.kind === "tool" && (item.status === "failed" || item.status === "denied"),
+      ).length,
+    });
+  });
+  return folds;
+}
+
+/** The fold an item sits inside, if any. */
+export function turnFoldContaining(
+  items: readonly TranscriptItem[],
+  folds: readonly TurnFold[],
+  itemId: string,
+): TurnFold | undefined {
+  const index = items.findIndex((item) => item.id === itemId);
+  return folds.find((fold) => index >= fold.start && index < fold.end);
+}
+
+/** Blocks with each fold as one row, followed by its own blocks while it is open. */
+export function foldTranscriptBlocks(
+  items: readonly TranscriptItem[],
+  folds: readonly TurnFold[],
+  open: ReadonlySet<string>,
+): TranscriptBlock[] {
+  const blocks: TranscriptBlock[] = [];
+  let index = 0;
+  for (const fold of folds) {
+    blocks.push(...groupTranscriptItems(items.slice(index, fold.start)));
+    const opened = open.has(fold.id);
+    blocks.push({ kind: "fold", id: `fold-${fold.id}`, fold, open: opened });
+    if (opened) blocks.push(...groupTranscriptItems(items.slice(fold.start, fold.end)));
+    index = fold.end;
+  }
+  blocks.push(...groupTranscriptItems(items.slice(index)));
   return blocks;
 }
 
@@ -781,7 +905,7 @@ export function transcriptBlockIndexForItem(
   return blocks.findIndex((block) =>
     block.kind === "item"
       ? block.item.id === itemId
-      : block.items.some((item) => item.id === itemId),
+      : block.kind === "tools" && block.items.some((item) => item.id === itemId),
   );
 }
 

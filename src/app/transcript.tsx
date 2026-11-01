@@ -12,7 +12,9 @@ import {
   appendProgressBlock,
   attachmentSummaryText,
   copyableMessageText,
-  groupTranscriptItems,
+  foldTranscriptBlocks,
+  lastTurnSettled,
+  latestUserMessageId,
   parseSkillInvocation,
   resolveTurnProgress,
   summarizeToolRun,
@@ -21,8 +23,11 @@ import {
   TRANSCRIPT_BOTTOM_EPSILON_PX as BOTTOM_EPSILON_PX,
   transcriptBlockIndexForItem,
   transcriptRowEstimate,
+  turnFoldContaining,
+  turnFolds,
   turnStartBlockIds,
   type StoredTurnClock,
+  type TurnFold,
   type TurnSessionHint,
 } from "../transcript-utils";
 import { GajaeProgressRow } from "./gajae-progress";
@@ -30,6 +35,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   Brain,
   Check,
+  ChevronRight,
   FolderGit2,
   ListChecks,
   Paperclip,
@@ -293,14 +299,51 @@ export function Transcript({
       );
     });
   }, [attentionAttempts, items]);
-  const grouped = useMemo(() => groupTranscriptItems(visibleItems), [visibleItems]);
-  const turnStarts = useMemo(() => turnStartBlockIds(grouped), [grouped]);
   // One clock per session, kept across renders so a streaming answer can hide the
   // row without forgetting when the turn started. The row itself only ticks a
   // text node; this memo runs when the transcript or the session status changes.
   const turnClockRef = useRef(new Map<string, StoredTurnClock>());
   const turnStatus = turnSession?.status;
   const turnPhase = turnSession?.phase;
+  const newestSettled = lastTurnSettled(visibleItems, { status: turnStatus, phase: turnPhase });
+  const folds = useMemo(
+    () => (toolViewMode === "detailed" ? [] : turnFolds(visibleItems, newestSettled)),
+    [newestSettled, toolViewMode, visibleItems],
+  );
+  const [openFolds, setOpenFolds] = useState<{ sessionId: string; ids: ReadonlySet<string> }>(
+    () => ({ sessionId, ids: new Set() }),
+  );
+  const openFoldIds = openFolds.sessionId === sessionId ? openFolds.ids : NO_OPEN_FOLDS;
+  const setFoldOpen = useCallback(
+    (id: string, open: boolean) =>
+      setOpenFolds((current) => {
+        const ids = new Set(current.sessionId === sessionId ? current.ids : []);
+        if (open) ids.add(id);
+        else ids.delete(id);
+        return { sessionId, ids };
+      }),
+    [sessionId],
+  );
+  // A turn that ends while the reader is scrolled up stays open: folding it would
+  // pull the content they are reading out from under them. A layout effect, so the
+  // fold never paints closed in between.
+  const newestPrompt = latestUserMessageId(visibleItems);
+  const liveTurnRef = useRef<string | undefined>(undefined);
+  useLayoutEffect(() => {
+    if (!newestSettled) {
+      liveTurnRef.current = newestPrompt;
+      return;
+    }
+    const live = liveTurnRef.current;
+    liveTurnRef.current = undefined;
+    if (live !== undefined && live === newestPrompt && !followingRef.current)
+      setFoldOpen(live, true);
+  }, [newestPrompt, newestSettled, setFoldOpen]);
+  const grouped = useMemo(
+    () => foldTranscriptBlocks(visibleItems, folds, openFoldIds),
+    [folds, openFoldIds, visibleItems],
+  );
+  const turnStarts = useMemo(() => turnStartBlockIds(grouped), [grouped]);
   const retryProgress = useCallback(() => {
     onRetryLastRequest?.(sessionId);
   }, [onRetryLastRequest, sessionId]);
@@ -871,7 +914,12 @@ export function Transcript({
   useEffect(() => {
     if (!revealItemId) return;
     const index = transcriptBlockIndexForItem(grouped, revealItemId);
-    if (index < 0) return;
+    if (index < 0) {
+      // A hit inside a closed fold has no row yet. Opening it runs this again.
+      const fold = turnFoldContaining(visibleItems, folds, revealItemId);
+      if (fold) setFoldOpen(fold.id, true);
+      return;
+    }
     // A search hit is usually not mounted, so it has to be scrolled to by index before
     // its element exists to highlight. Navigation wins over a pending restoration.
     earlierRequestSessionRef.current = null;
@@ -916,7 +964,7 @@ export function Transcript({
     return () => {
       if (revealGenerationRef.current === generation) cancelReveal();
     };
-  }, [grouped, onRevealComplete, revealItemId, virtualizer]);
+  }, [folds, grouped, onRevealComplete, revealItemId, setFoldOpen, virtualizer, visibleItems]);
 
   // A wheel, a trackpad swipe, or a touch drag over the transcript. Direction decides who
   // owns the view, never the distance to the bottom -- see transcriptGestureClaimsView.
@@ -1263,6 +1311,8 @@ export function Transcript({
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
                     <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onAnswerQuestion={onAnswerQuestion} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
+                ) : block.kind === "fold" ? (
+                  <TurnFoldRow fold={block.fold} open={block.open} onToggle={setFoldOpen} />
                 ) : block.kind === "tools" ? (
                   <ToolRunBlockView items={block.items} toolViewMode={toolViewMode} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRevealInspector={onRevealInspector} />
                 ) : (
@@ -1293,6 +1343,39 @@ export function Transcript({
 }
 
 
+
+const NO_OPEN_FOLDS: ReadonlySet<string> = new Set();
+
+function turnFoldLabel(minutes: number | null): string {
+  if (minutes === null) return t("작업 내역");
+  if (minutes < 1) return t("1분 안에 작업함");
+  if (minutes < 60) return t`${minutes}분 동안 작업함`;
+  return t`${Math.floor(minutes / 60)}시간 ${minutes % 60}분 동안 작업함`;
+}
+
+/** A finished turn's work between its prompt and final answer, as one line that opens it. */
+const TurnFoldRow = memo(function TurnFoldRow({
+  fold,
+  open,
+  onToggle,
+}: {
+  fold: TurnFold;
+  open: boolean;
+  onToggle: (id: string, open: boolean) => void;
+}) {
+  useLanguage();
+  return (
+    <div className={`transcript-entry turn-fold${open ? " is-open" : ""}`}>
+      <button type="button" aria-expanded={open} onClick={() => onToggle(fold.id, !open)}>
+        <ChevronRight size={13} aria-hidden="true" />
+        <span>{turnFoldLabel(fold.minutes)}</span>
+        {fold.failedCount > 0 && (
+          <span className="turn-fold-failed">{t`실패 ${fold.failedCount}개`}</span>
+        )}
+      </button>
+    </div>
+  );
+});
 
 /**
  * A tool-run block, collapsed to a one-line summary in `basic` view mode.
