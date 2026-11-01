@@ -1,4 +1,4 @@
-import { FolderGit2, GitBranch, Layers, PanelRight } from "lucide-react";
+import { FolderGit2, GitBranch, Layers, MessageCircleQuestion, PanelRight } from "lucide-react";
 import type { GitStatusSnapshot } from "../../shared/agent-contract";
 import type { AgentSession, ToolViewMode } from "../backend/types";
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
@@ -18,6 +18,9 @@ interface ChatHeaderProps {
   setDiffOpen: (update: (open: boolean) => boolean) => void;
   inspectorOpen: boolean;
   setInspectorOpen: (update: (open: boolean) => boolean) => void;
+  /** Absent when the backend cannot answer side questions. */
+  sideOpen?: boolean;
+  setSideOpen?: (update: (open: boolean) => boolean) => void;
 }
 
 export function ChatHeader({
@@ -32,6 +35,8 @@ export function ChatHeader({
   setDiffOpen,
   inspectorOpen,
   setInspectorOpen,
+  sideOpen = false,
+  setSideOpen,
 }: ChatHeaderProps) {
   return (
   <header className="chat-header">
@@ -100,6 +105,17 @@ export function ChatHeader({
             { value: "detailed", label: t("상세"), description: t("추론까지 펼침") },
           ]} />
       </div>
+      {setSideOpen && (
+        <button
+          className={`icon-button ${sideOpen ? "is-active" : ""}`}
+          type="button"
+          title={t("옆 질문 (⌘⇧B)")}
+          aria-pressed={sideOpen}
+          onClick={() => setSideOpen((open) => !open)}
+        >
+          <MessageCircleQuestion size={18} />
+        </button>
+      )}
       <button
         className={`icon-button ${diffOpen ? "is-active" : ""}`}
         type="button"

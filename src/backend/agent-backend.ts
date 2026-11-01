@@ -75,6 +75,11 @@ export interface AgentBackend {
     value: string,
   ): Promise<void>;
   cycleThinking(sessionId: string): Promise<string | undefined>;
+  /**
+   * `/btw`, answered from the session's context and kept out of the transcript.
+   * A backend without it sends `/btw` as an ordinary command.
+   */
+  askSideQuestion?(sessionId: string, question: string): Promise<string>;
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]>;

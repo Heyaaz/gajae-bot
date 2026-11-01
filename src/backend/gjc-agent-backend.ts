@@ -161,6 +161,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.cycleThinking(sessionId);
   }
 
+  askSideQuestion(sessionId: string, question: string): Promise<string> {
+    return this.bridge.askSideQuestion(sessionId, question);
+  }
+
   compactSession(sessionId: string): Promise<void> {
     return this.bridge.compactSession(sessionId);
   }

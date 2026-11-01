@@ -358,6 +358,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.setSessionConfig, sessionId, configId, value),
   cycleThinking: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.cycleThinking, sessionId),
+  askSideQuestion: (sessionId: string, question: string) =>
+    ipcRenderer.invoke(GJC_IPC.askSideQuestion, sessionId, question),
   compactSession: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.compactSession, sessionId),
   queueFollowUp: (sessionId: string, input: MessageInput) =>

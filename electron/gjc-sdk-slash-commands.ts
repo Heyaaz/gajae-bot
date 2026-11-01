@@ -65,6 +65,23 @@ export interface SlashCommandHost {
   renameSession(sessionId: string, title: string): Promise<void>;
 }
 
+/**
+ * Asks GJC a side question from the session's own context. GJC answers without a
+ * turn and stores nothing, so this may run while a turn is live.
+ */
+export async function askSideQuestion(
+  host: Pick<SlashCommandHost, "sdkOperations" | "controlSession">,
+  sessionId: string,
+  question: string,
+): Promise<string> {
+  if (!(await host.sdkOperations(sessionId)).has("btw.ask"))
+    throw new Error("/btw is unavailable in this GJC runtime (btw.ask is not advertised)");
+  const result = await host.controlSession(sessionId, "btw.ask", { question });
+  const reply = typeof result?.reply === "string" ? result.reply.trim() : "";
+  if (!reply) throw new Error("GJC returned no /btw answer");
+  return reply;
+}
+
 function sdkCommandJson(value: unknown): string {
   const text = JSON.stringify(value, null, 2) ?? String(value);
   const bounded =
@@ -154,10 +171,7 @@ export async function executeSdkSlashCommand(
   switch (name) {
     case "btw": {
       if (!args) throw new Error("Usage: /btw <question>");
-      const result = await control("btw.ask", { question: args });
-      const reply =
-        typeof result?.reply === "string" ? result.reply.trim() : "";
-      if (!reply) throw new Error("GJC returned no /btw answer");
+      const reply = await askSideQuestion(host, sessionId, args);
       // The runtime answers from this session's own context and keeps nothing:
       // the reply is an app-owned row like every other SDK command output, so
       // the GJC transcript this window mirrors never gains the side question.
