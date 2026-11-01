@@ -336,6 +336,7 @@ export function configOptionValues(
           name,
           ...(description ? { description } : {}),
           ...(group ? { group } : {}),
+          ...(item.kind === "model" ? { kind: "model" as const } : {}),
         },
       ];
     });

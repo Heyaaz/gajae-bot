@@ -45,7 +45,8 @@ import {
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { configOptionGroups, directoryName, httpUrls, humanErrorMessage } from "./format";
+import { directoryName, httpUrls, humanErrorMessage } from "./format";
+import { ModelPicker } from "./composer-model-picker";
 import { LinkPreviewCard } from "./primitives";
 import { t } from "../i18n";
 import {
@@ -1741,9 +1742,9 @@ export const Composer = memo(function Composer({
                 )}
               </button>
               {configMenu === modelOption.id && (
-                <span className="config-option-menu config-option-menu--model">
-                  <header>
-                    <strong>{t("모델 프로필")}</strong>
+                <ModelPicker
+                  option={modelOption}
+                  header={
                     <FastTierControls
                       commands={commands}
                       fastMode={fastMode}
@@ -1751,41 +1752,9 @@ export const Composer = memo(function Composer({
                       readOnly={readOnly}
                       onSelect={(fast) => void setFastTier(fast)}
                     />
-                    <small>
-                      {modelOption.options?.length ?? 0}{t("개 사용 가능")} </small>
-                  </header>
-                  <span className="config-option-scroll">
-                    {configOptionGroups(modelOption.options).map((group) => (
-                      <span className="config-option-group" key={group.name}>
-                        <strong>{group.name}</strong>
-                        {group.options.map((choice) => (
-                          <button
-                            key={choice.value}
-                            type="button"
-                            className={
-                              choice.value === modelOption.currentValue
-                                ? "is-current"
-                                : ""
-                            }
-                            onClick={() =>
-                              selectConfig(modelOption.id, choice.value)
-                            }
-                          >
-                            <span>
-                              <strong>{choice.name}</strong>
-                              {choice.description && (
-                                <small>{choice.description}</small>
-                              )}
-                            </span>
-                            {choice.value === modelOption.currentValue && (
-                              <Check size={13} />
-                            )}
-                          </button>
-                        ))}
-                      </span>
-                    ))}
-                  </span>
-                </span>
+                  }
+                  onSelect={(value) => selectConfig(modelOption.id, value)}
+                />
               )}
               {thinkingOption && configMenu === thinkingOption.id && (
                 <span className="config-option-menu config-option-menu--effort">

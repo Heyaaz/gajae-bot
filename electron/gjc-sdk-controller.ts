@@ -1695,6 +1695,7 @@ export class GjcSdkController {
       | "thinking.set"
       | "thinking.cycle"
       | "model.profile.set"
+      | "model.set"
       | "permission_mode.set"
       | "config.patch"
       | "service_tier.set"

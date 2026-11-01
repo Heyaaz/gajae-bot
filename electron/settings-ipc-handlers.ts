@@ -10,10 +10,12 @@ import type { SettingsStore } from './settings-store.js'
 import type { AttachmentStore } from './attachment-store.js'
 import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
+import { applyGjcSettings, listGjcSettings } from './gjc-config.js'
+import type { GjcSettingChange } from '../shared/gjc-settings.js'
 import type { AppUpdateMonitor } from './app-update.js'
 import type { EnvironmentReport } from '../shared/environment-check.js'
 import type { QuickInputShortcutStatus } from '../shared/quick-input.js'
-import { setHostLanguage } from './host-text.js'
+import { hostText, setHostLanguage } from './host-text.js'
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif'])
 const MAX_IMAGE_COUNT = 6
@@ -238,6 +240,21 @@ export function registerSettingsIpcHandlers(
   }))
   const executable = () => store.get().gjcExecutable || process.env.GJC_BIN || 'gjc'
   ipcMain.handle(SETTINGS_IPC.checkGjcUpdate, security.guarded(() => checkGjcUpdate(executable())))
+  ipcMain.handle(SETTINGS_IPC.listGjcSettings, security.guarded(() => listGjcSettings(executable())))
+  ipcMain.handle(SETTINGS_IPC.applyGjcSettings, security.guarded(async (event, changes: unknown) => {
+    const parsed = gjcSettingChanges(changes)
+    // `gjc config set` changes what every GJC session does, the terminal's
+    // included, so the batch is confirmed once rather than per toggle.
+    await security.authorizeDestructive(event, {
+      message: 'GJC 설정을 바꿀까요?',
+      detail: [
+        hostText('터미널의 GJC에도 같이 적용됩니다.'),
+        parsed.map((change) => `${change.key} = ${change.value}`).join('\n'),
+      ].join('\n\n'),
+      confirmLabel: '적용',
+    })
+    return applyGjcSettings(executable(), parsed)
+  }))
   ipcMain.handle(SETTINGS_IPC.installGjcUpdate, security.guarded(async (event) => {
     await security.authorizeDestructive(event, {
       message: 'GJC를 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.',
@@ -263,4 +280,17 @@ export function registerSettingsIpcHandlers(
   return () => {
     for (const channel of Object.values(SETTINGS_IPC)) ipcMain.removeHandler(channel)
   }
+}
+
+function gjcSettingChanges(value: unknown): GjcSettingChange[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 100)
+    throw new Error('GJC setting changes must be a non-empty list')
+  return value.map((entry) => {
+    const { key, value: setting } = (entry ?? {}) as Record<string, unknown>
+    if (typeof key !== 'string' || !/^[A-Za-z0-9_.-]+$/.test(key))
+      throw new Error('Invalid GJC setting key')
+    if (typeof setting !== 'boolean' && !(typeof setting === 'number' && Number.isFinite(setting)))
+      throw new Error(`Invalid value for GJC setting ${key}`)
+    return { key, value: setting }
+  })
 }

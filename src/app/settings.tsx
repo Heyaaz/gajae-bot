@@ -14,7 +14,7 @@ import type {
   NotificationPreferences,
 } from "../../shared/agent-contract";
 import type { AgentControlPreferences, BackendConnection } from "../backend/types";
-import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Monitor, Palette, Server, ShieldCheck, Smartphone, Sparkles, Stethoscope, X } from "lucide-react";
+import { Bell, CalendarClock, ChartNoAxesColumn, Check, Command, FolderOpen, Monitor, Palette, Server, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Stethoscope, X } from "lucide-react";
 import {
   DEFAULT_DESKTOP_INTEGRATION,
   type DesktopIntegrationPreferences,
@@ -29,6 +29,7 @@ import { Dropdown } from "./primitives";
 import { AppUpdateRow } from "./app-update-row";
 import { QuickInputShortcutRow } from "./quick-input-shortcut-row";
 import { EnvironmentCheckPanel } from "./environment-check-panel";
+import { GjcSettingsPanel } from "./gjc-settings-panel";
 const RemoteAccessPanel = lazy(() =>
   import("./remote-access-panel").then((mod) => ({ default: mod.RemoteAccessPanel })),
 );
@@ -57,6 +58,7 @@ export interface SettingsDialogProps {
 
 export type SettingsTab =
   | "gjc"
+  | "gjcAdvanced"
   | "appearance"
   | "workspace"
   | "remote"
@@ -244,6 +246,7 @@ export function SettingsDialog({
     preferences.gjcExecutable !== original.gjcExecutable;
   const tabTitle = {
     gjc: "GJC",
+    gjcAdvanced: t("GJC 고급 설정"),
     appearance: t("모양"),
     workspace: t("Workspace 범위"),
     remote: t("원격 접속"),
@@ -257,6 +260,7 @@ export function SettingsDialog({
   }[tab];
   const tabDescription = {
     gjc: t("GJC 실행 파일과 새 세션이 시작될 모델 프로필·도구 승인 방식을 설정합니다."),
+    gjcAdvanced: t("GJC가 세션에서 쓰는 켜고 끄는 설정과 숫자 설정을 바꿉니다."),
     appearance: t("앱의 테마와 표시 언어를 설정합니다."),
     workspace: t("GJC가 확인하고 수정할 폴더를 선택합니다."),
     remote: t("휴대폰과 다른 개인 기기에서 이 컴퓨터의 세션을 조회·조작합니다."),
@@ -523,6 +527,12 @@ export function SettingsDialog({
           >
             <Command size={17} /> GJC
           </button>
+          <button
+            type="button"
+            className={tab === "gjcAdvanced" ? "is-active" : ""}
+            onClick={() => setTab("gjcAdvanced")}
+          >
+            <SlidersHorizontal size={17} /> {t("GJC 고급")} </button>
           <button
             type="button"
             className={tab === "appearance" ? "is-active" : ""}
@@ -807,6 +817,9 @@ export function SettingsDialog({
             </div>
           )}
 
+          {tab === "gjcAdvanced" && (
+            <GjcSettingsPanel bridge={settingsBridge} />
+          )}
           {tab === "environment" && (
             <EnvironmentCheckPanel bridge={settingsBridge} />
           )}

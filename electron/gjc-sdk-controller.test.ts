@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { AgentConfigOption } from "../shared/agent-contract.js";
 import { mkdir, mkdtemp, stat, writeFile, readFile, rm } from "node:fs/promises";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
@@ -3031,6 +3032,67 @@ describe("SDK slash commands", () => {
         ([, query]: [string, string]) => query === "models.profiles.list",
       ),
     ).toHaveLength(0);
+    controller.dispose();
+  });
+
+  it("adds the catalog's concrete models to the picker after the profiles", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockImplementation(
+      async (_id: string, query: string) => {
+        if (query === "config.list/get") return [{}];
+        if (query === "models.profiles.list")
+          return [{ id: "profile-one", displayName: "Profile One", source: "builtin" }];
+        if (query === "models.list/current")
+          return [
+            { provider: "google", id: "gemini-3-pro", name: "Gemini 3 Pro", current: true },
+            { provider: "openai", id: "gpt-6" },
+            { provider: "gajae-code", id: "profile-one", name: "Profile One" },
+          ];
+        return [];
+      },
+    );
+    await internals.refreshSessionConfigOptions("s1");
+    await vi.waitFor(() => {
+      const model = (internals.sessionConfig.get("s1") as AgentConfigOption[])
+        .find((option) => option.id === "model");
+      expect(model?.currentValue).toBe("google/gemini-3-pro");
+      expect(model?.options).toEqual([
+        { value: "profile-one", name: "Profile One", group: "Built-in profiles", description: "Bundled with GJC" },
+        { value: "google/gemini-3-pro", name: "Gemini 3 Pro", group: "google", kind: "model" },
+        { value: "openai/gpt-6", name: "gpt-6", group: "openai", kind: "model" },
+      ]);
+    });
+    controller.dispose();
+  });
+
+  it("selects a concrete model with model.set", async () => {
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    internals.sessionConfig.set("s1", [
+      {
+        id: "model",
+        name: "Model",
+        category: "model",
+        type: "select",
+        currentValue: "profile-one",
+        options: [
+          { value: "profile-one", name: "Profile One" },
+          { value: "openai/gpt-6", name: "gpt-6", group: "openai", kind: "model" },
+        ],
+      },
+    ]);
+    (cli.queryItems as any).mockResolvedValue([]);
+    await controller.setSessionConfig("s1", "model", "openai/gpt-6");
+    expect(cli.rawControl).toHaveBeenCalledWith(
+      "s1",
+      "model.set",
+      { id: "openai/gpt-6" },
+      expect.objectContaining({ repo: "/repo" }),
+    );
     controller.dispose();
   });
 

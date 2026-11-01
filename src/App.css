@@ -4609,6 +4609,149 @@ button.diff-line-number:hover {
   max-height: min(430px, 55vh);
   grid-template-rows: auto minmax(0, 1fr);
 }
+/* Tabs and a search field may sit between the header and the list, so the
+   menu stacks its rows and only the list shrinks below its content. */
+.config-option-menu--model:has(.model-picker-tabs) {
+  display: flex;
+  flex-direction: column;
+  width: 320px;
+}
+.config-option-menu--model:has(.model-picker-tabs) > .config-option-scroll {
+  flex: 1 1 auto;
+}
+.model-picker-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 7px 8px 0;
+}
+.model-picker-tabs > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+.model-picker-tabs > button small {
+  color: var(--text-tertiary);
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+}
+.model-picker-tabs > button:hover {
+  color: var(--text-primary);
+}
+.model-picker-tabs > button.is-active {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.model-picker-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 7px 8px 0;
+  padding: 0 8px;
+  color: var(--text-tertiary);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.model-picker-search:focus-within {
+  border-color: var(--accent-bright);
+}
+.config-option-menu .model-picker-search input:focus-visible {
+  outline: none;
+}
+.config-option-menu .model-picker-search input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  color: var(--text-primary);
+  font-size: 11px;
+  background: transparent;
+  border: 0;
+  outline: none;
+  box-shadow: none;
+}
+.model-choice {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.model-choice > button:first-child {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 31px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  color: var(--text-secondary);
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+}
+.model-choice > button:first-child:hover,
+.model-choice > button:first-child.is-current {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.model-choice > button:first-child > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.model-choice > button:first-child strong {
+  overflow: hidden;
+  font-size: 10.5px;
+  font-weight: 520;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-choice > button:first-child small {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-favorite {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  color: var(--text-tertiary);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  opacity: 0;
+}
+.model-choice:hover .model-favorite,
+.model-favorite:focus-visible,
+.model-favorite.is-on {
+  opacity: 1;
+}
+.model-favorite:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+.model-favorite.is-on {
+  color: var(--accent-bright);
+}
+.model-picker-hint {
+  padding: 10px 8px 6px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 1.5;
+}
 .config-option-menu--effort {
   bottom: calc(100% + 9px);
   left: 0;
@@ -8189,4 +8332,92 @@ button.diff-line-number:hover {
   min-width: 0;
   flex: 1 1 auto;
   border-left: 0;
+}
+
+.gjc-settings .settings-panel > label.gjc-settings-search {
+  min-height: 0;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 13px;
+  color: var(--text-tertiary);
+  border-top: 1px solid var(--border);
+}
+.gjc-settings-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 11px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.gjc-settings-group > h3 {
+  margin: 0;
+  padding: 9px 13px 7px;
+  color: var(--text-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--border);
+}
+.gjc-settings-group > div.settings-toggle-row {
+  min-height: 44px;
+}
+.gjc-settings-group > div.settings-toggle-row > span strong {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.gjc-settings-group code {
+  overflow: hidden;
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gjc-settings-group em {
+  padding: 1px 5px;
+  color: var(--text-tertiary);
+  font-size: 9px;
+  font-style: normal;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.gjc-settings-group > div.settings-toggle-row.is-changed {
+  box-shadow: inset 2px 0 0 var(--accent-bright);
+}
+.gjc-settings-group input[type="number"] {
+  flex: 0 0 96px;
+  width: 96px;
+  height: 26px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.gjc-settings-apply {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 9px 13px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 -6px 16px color-mix(in srgb, var(--overlay) 10%, transparent);
+}
+.gjc-settings-apply > span {
+  flex: 1 1 auto;
 }

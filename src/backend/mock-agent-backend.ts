@@ -43,6 +43,19 @@ const mockModelOptions = [
   { value: "codex-eco", name: "Codex Eco", group: "Built-in profiles" },
   { value: "codex-medium", name: "Codex Medium", group: "Built-in profiles" },
   { value: "codex-pro", name: "Codex Pro", group: "Built-in profiles" },
+  ...[
+    ["openai-codex", "gpt-6.1", "GPT-6.1"],
+    ["openai-codex", "gpt-6.1-mini", "GPT-6.1 mini"],
+    ["google", "gemini-3-pro", "Gemini 3 Pro"],
+    ["google", "gemini-3-flash", "Gemini 3 Flash"],
+    ["xai", "grok-4.7", "Grok 4.7"],
+    ["moonshot", "kimi-k3", "Kimi K3"],
+  ].map(([provider, id, name]) => ({
+    value: `${provider}/${id}`,
+    name: name!,
+    group: provider!,
+    kind: "model" as const,
+  })),
 ];
 
 const sessions: AgentSession[] = [
