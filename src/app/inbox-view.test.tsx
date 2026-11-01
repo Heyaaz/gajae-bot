@@ -21,6 +21,7 @@ const probe = vi.hoisted(() => ({
   markRead: [] as string[],
   cancelled: [] as string[],
   sessions: [] as AgentSession[],
+  listeners: [] as ((event: AgentEvent) => void)[],
 }));
 
 function session(overrides: Partial<AgentSession>): AgentSession {
@@ -58,7 +59,12 @@ vi.mock("../backend/use-agent-backend", () => {
         selectTranscriptPage([], request),
       getTranscriptRevision: async () => undefined,
       getTranscriptChanges: async () => ({ kind: "patch" as const, items: [] }),
-      subscribe: (_listener: (event: AgentEvent) => void) => () => undefined,
+      subscribe: (listener: (event: AgentEvent) => void) => {
+        probe.listeners.push(listener);
+        return () => {
+          probe.listeners = probe.listeners.filter((entry) => entry !== listener);
+        };
+      },
       markSessionRead: async (sessionId: string) => {
         probe.markRead.push(sessionId);
       },
@@ -123,6 +129,8 @@ afterEach(() => {
   probe.markRead = [];
   probe.cancelled = [];
   probe.sessions = [];
+  probe.listeners = [];
+  vi.restoreAllMocks();
 });
 
 async function mount(node: ReturnType<typeof createElement>): Promise<HTMLDivElement> {
@@ -209,6 +217,37 @@ describe("Inbox inside the shell", () => {
     await act(async () => rowButton("단독 완료").click());
 
     expect(inbox()).toBeNull();
+    expect(probe.markRead).toEqual(["only"]);
+  });
+
+  it("marks the session on screen read when its turn finishes there, but not behind another app", async () => {
+    probe.sessions = [session({ id: "only", title: "보는 중", status: "running" })];
+    await mount(createElement(App));
+    await vi.waitFor(() => expect(probe.transcript?.sessionId).toBe("only"));
+    const finish = async () => {
+      await act(async () => {
+        for (const listener of probe.listeners)
+          listener({ type: "session.updated", session: session({ id: "only", title: "보는 중", unread: true }) });
+      });
+    };
+
+    const hidden = vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    probe.markRead = [];
+    await finish();
+    expect(probe.markRead).toEqual([]);
+
+    hidden.mockReturnValue(true);
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(probe.markRead).toEqual(["only"]);
+
+    probe.markRead = [];
+    await act(async () => {
+      for (const listener of probe.listeners)
+        listener({ type: "session.updated", session: session({ id: "only", title: "보는 중" }) });
+    });
+    await finish();
     expect(probe.markRead).toEqual(["only"]);
   });
 
