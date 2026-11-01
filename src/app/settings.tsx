@@ -1057,8 +1057,9 @@ export function SettingsDialog({
           )}
 
           {/* Remote access applies each change immediately and carries its own
-              footnote, so the preferences save bar would be dead weight there. */}
-          {tab !== "automations" && tab !== "remote" && tab !== "appearance" && (
+              footnote, and GJC advanced settings have their own apply bar, so the
+              preferences save bar would be dead weight there. */}
+          {tab !== "automations" && tab !== "remote" && tab !== "appearance" && tab !== "gjcAdvanced" && (
             <footer className="settings-footer">
               <span>
                 {!loaded

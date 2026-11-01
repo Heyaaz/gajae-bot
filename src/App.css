@@ -8378,10 +8378,6 @@ button.diff-line-number:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.gjc-settings-group code.gjc-setting-key {
-  color: var(--text-tertiary);
-  font-size: 9.5px;
-}
 .gjc-settings-group em {
   padding: 1px 5px;
   color: var(--text-tertiary);

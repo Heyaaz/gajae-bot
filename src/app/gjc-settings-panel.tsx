@@ -199,15 +199,12 @@ export function GjcSettingsPanel({ bridge }: { bridge: Bridge | undefined }) {
                 key={setting.key}
               >
                 <span>
-                  <strong>
+                  <strong title={setting.label ? setting.key : undefined}>
                     {setting.label ?? <code>{setting.key}</code>}
                     {setting.value === null && staged === undefined && (
                       <em>{t("기본값")}</em>
                     )}
                   </strong>
-                  {setting.label && (
-                    <code className="gjc-setting-key">{setting.key}</code>
-                  )}
                   {setting.description && <small>{setting.description}</small>}
                 </span>
                 {setting.type === "boolean" ? (
