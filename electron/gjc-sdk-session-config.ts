@@ -4,6 +4,7 @@ import {
   agentConfigOptions,
   CONTEXT_USAGE_REFRESH_INTERVAL_MS,
   EFFORT_LEVELS,
+  concreteModelChoices,
   profileDefaultModelLabel,
   SessionConfigOption,
   thinkingOptionsForModelCatalog,
@@ -44,6 +45,7 @@ export interface SessionConfigHost {
       | "thinking.set"
       | "thinking.cycle"
       | "model.profile.set"
+      | "model.set"
       | "permission_mode.set"
       | "config.patch"
       | "service_tier.set"
@@ -148,20 +150,42 @@ export async function refreshSessionConfigOptions(host: SessionConfigHost, sessi
   const thinking =
     typeof row.thinking === "string" && row.thinking ? row.thinking : undefined;
   const mode = typeof row.mode === "string" && row.mode ? row.mode : undefined;
+  // Concrete models come from the slower catalog read below. Carrying the last
+  // answer keeps the picker's model list filled while that read runs again.
+  const previousModel = host.sessionConfig
+    .get(sessionId)
+    ?.find((option) => option.category === "model" || option.id === "model");
+  const knownModels = (previousModel?.options ?? []).filter(
+    (option) => option.kind === "model",
+  );
+  const concreteInUse = knownModels.some(
+    (option) => option.value === previousModel?.currentValue,
+  )
+    ? previousModel?.currentValue
+    : undefined;
   const options: SessionConfigOption[] = [
     {
       type: "select",
       id: "model",
       name: "Model",
       category: "model",
-      currentValue: preset ?? host.modelPreset,
-      options: availableProfiles.map((profile) => ({
-        type: "item",
-        id: profile.value,
-        name: profile.name,
-        ...(profile.group ? { group: profile.group } : {}),
-        ...(profile.description ? { description: profile.description } : {}),
-      })),
+      currentValue: preset ?? concreteInUse ?? host.modelPreset,
+      options: [
+        ...availableProfiles.map((profile) => ({
+          type: "item",
+          id: profile.value,
+          name: profile.name,
+          ...(profile.group ? { group: profile.group } : {}),
+          ...(profile.description ? { description: profile.description } : {}),
+        })),
+        ...knownModels.map((model) => ({
+          type: "item",
+          id: model.value,
+          name: model.name,
+          ...(model.group ? { group: model.group } : {}),
+          kind: "model" as const,
+        })),
+      ],
     },
     {
       type: "select",
@@ -359,18 +383,36 @@ export async function refreshModelCapabilities(host: SessionConfigHost, sessionI
     (option) => option.category === "model" || option.id === "model",
   )?.currentValue;
   if (!current || stillSelected !== selectedModel) return;
+  const inUse = capabilities.current ?? selectedModel;
+  const concrete = capabilities.models?.find((model) => model.value === inUse);
   const modelDisplay =
     capabilities.modelDisplay ??
+    concrete?.name ??
     host.modelProfiles
       .get(sessionId)
-      ?.find((profile) => profile.value === selectedModel)?.name;
+      ?.find((profile) => profile.value === inUse)?.name;
   if (modelDisplay) patchSessionRuntime(host, sessionId, { modelDisplay });
-  if (!capabilities.thinkingOptions) return;
-  const updated = current.map((option) =>
-    option.category === "thought_level" || option.id === "thinking"
-      ? { ...option, options: capabilities.thinkingOptions! }
-      : option,
-  );
+  if (!capabilities.thinkingOptions && !capabilities.models) return;
+  const updated = current.map((option) => {
+    if (
+      capabilities.thinkingOptions &&
+      (option.category === "thought_level" || option.id === "thinking")
+    )
+      return { ...option, options: capabilities.thinkingOptions };
+    if (
+      capabilities.models &&
+      (option.category === "model" || option.id === "model")
+    )
+      return {
+        ...option,
+        currentValue: inUse,
+        options: [
+          ...(option.options ?? []).filter((choice) => choice.kind !== "model"),
+          ...capabilities.models,
+        ],
+      };
+    return option;
+  });
   host.sessionConfig.set(sessionId, updated);
   host.emitEvent({ type: "session.config", sessionId, options: updated });
 }
@@ -382,6 +424,9 @@ async function modelCapabilities(
 ): Promise<{
   thinkingOptions?: AgentConfigOptionValue[];
   modelDisplay?: string;
+  models?: AgentConfigOptionValue[];
+  /** The concrete model in use; the catalog marks one only when no profile is active. */
+  current?: string;
 }> {
   try {
     const cli = await host.requireCli();
@@ -391,9 +436,13 @@ async function modelCapabilities(
       {},
       { repo: host.repoFor(sessionId) },
     );
+    const { models, current } = concreteModelChoices(items);
+    const selected = current ?? selectedModel;
     return {
-      thinkingOptions: thinkingOptionsForModelCatalog(items, selectedModel),
-      modelDisplay: profileDefaultModelLabel(items, selectedModel),
+      thinkingOptions: thinkingOptionsForModelCatalog(items, selected),
+      modelDisplay: profileDefaultModelLabel(items, selected),
+      ...(models.length > 0 ? { models } : {}),
+      ...(current ? { current } : {}),
     };
   } catch {
     return {};
@@ -527,7 +576,14 @@ export async function setSessionConfig(
     return;
   }
   if (configId === "model") {
-    await host.controlSession(sessionId, "model.profile.set", { id: value });
+    const chosen = host.sessionConfig
+      .get(sessionId)
+      ?.find((option) => option.category === "model" || option.id === "model")
+      ?.options?.find((option) => option.value === value);
+    if (chosen?.kind === "model")
+      await host.controlSession(sessionId, "model.set", { id: value });
+    else
+      await host.controlSession(sessionId, "model.profile.set", { id: value });
     host.explicitSessionThinking.delete(sessionId);
     const existing = host.sessionConfig.get(sessionId);
     const selected = existing?.find(

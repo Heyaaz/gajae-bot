@@ -825,4 +825,13 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "바꾼 설정 {0}개": "{0} changed",
   "되돌리기": "Revert",
   "적용 중…": "Applying…",
+  "사용 중·즐겨찾기": "In use · Favorites",
+  "검색 결과 {0}개 중 {1}개": "{1} of {0} results",
+  "검색 결과 {0}개": "{0} results",
+  "모델 이름이나 provider로 찾기": "Search by model or provider",
+  "모델 찾기": "Search models",
+  "{0} 즐겨찾기": "Favorite {0}",
+  "즐겨찾기에서 빼기": "Remove from favorites",
+  "즐겨찾기에 추가": "Add to favorites",
+  "모델 {0}개 중에서 이름이나 provider로 찾으세요.": "Search {0} models by name or provider.",
 };

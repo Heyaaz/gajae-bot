@@ -341,6 +341,8 @@ export interface AgentConfigOptionValue {
   name: string;
   description?: string;
   group?: string;
+  /** A concrete `provider/id` model rather than a model profile. */
+  kind?: "model";
 }
 
 export interface AgentConfigOption {

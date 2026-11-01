@@ -222,6 +222,33 @@ export function thinkingOptionsForModelCatalog(
     : undefined;
 }
 
+/**
+ * The catalog's concrete models as picker choices, and the one in use when no
+ * profile is active. `gajae-code/*` rows are the profiles again and are skipped.
+ */
+export function concreteModelChoices(items: unknown[]): {
+  models: AgentConfigOptionValue[];
+  current?: string;
+} {
+  const models: AgentConfigOptionValue[] = [];
+  let current: string | undefined;
+  for (const item of items) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.provider !== "string" || typeof row.id !== "string") continue;
+    if (row.provider === "gajae-code") continue;
+    const value = `${row.provider}/${row.id}`;
+    if (row.current === true) current = value;
+    models.push({
+      value,
+      name: typeof row.name === "string" && row.name ? row.name : row.id,
+      group: row.provider,
+      kind: "model",
+    });
+  }
+  return { models, ...(current ? { current } : {}) };
+}
+
 export function profileDefaultModelLabel(
   items: unknown[],
   selectedModel: string,
