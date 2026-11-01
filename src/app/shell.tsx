@@ -679,6 +679,25 @@ export default function App() {
     if (!chatId) return;
     void backend.markSessionRead(chatId);
   }, [backend, chatId]);
+  // A turn that finishes while its session is on screen sets `unread` without
+  // changing the selection, which left it in the inbox. Only a window the user can
+  // see counts, so work that finishes behind another app still waits for them.
+  const selectedUnread = selectedSession?.unread === true;
+  const conversationShown = centerView === "conversation";
+  useEffect(() => {
+    if (!chatId || !conversationShown || !selectedUnread) return;
+    const markIfSeen = (): void => {
+      if (!document.hidden && document.hasFocus())
+        void backend.markSessionRead(chatId).catch(() => undefined);
+    };
+    markIfSeen();
+    window.addEventListener("focus", markIfSeen);
+    document.addEventListener("visibilitychange", markIfSeen);
+    return () => {
+      window.removeEventListener("focus", markIfSeen);
+      document.removeEventListener("visibilitychange", markIfSeen);
+    };
+  }, [backend, chatId, conversationShown, selectedUnread]);
 
   // The main process cannot infer which session a focused window is showing from
   // focus alone. Naming it lets notifications skip the turn being watched instead
@@ -1528,24 +1547,13 @@ export default function App() {
     setNavOpen(false);
     setCenterView((view) => (view === "inbox" ? "conversation" : "inbox"));
   }, []);
-  // Picking the session already selected does not change the selection, so the
-  // effect that marks a selection read would not run for it.
-  const openInboxSession = useCallback(
-    (sessionId: string) => {
-      if (selectedIdRef.current === sessionId)
-        void backend.markSessionRead(sessionId).catch(() => undefined);
-      selectSession(sessionId);
-    },
-    [backend, selectSession],
-  );
+  const openInboxSession = selectSession;
   const inboxCount = useMemo(() => {
     const attention = summarizeSessionAttention(sessions);
     return attention.needsInput + attention.unreadCompleted;
   }, [sessions]);
 
-  // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
-  // Option turns the key into a dead key on macOS, so `key` is not "u".
-  // ⌘⇧B: the side-question panel.
+  // ⌘⇧B: the side chat panel.
   useEffect(() => {
     if (!askSideBackend) return;
     function onSideShortcut(event: globalThis.KeyboardEvent): void {
@@ -1566,6 +1574,8 @@ export default function App() {
     return () => window.removeEventListener("keydown", onSideShortcut);
   }, [askSideBackend]);
 
+  // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
+  // Option turns the key into a dead key on macOS, so `key` is not "u".
   useEffect(() => {
     function onInboxShortcut(event: globalThis.KeyboardEvent): void {
       if (
