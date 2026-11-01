@@ -28,7 +28,7 @@ function shown(setting: GjcSetting, language: ResolvedLanguage): ShownSetting {
     ...setting,
     ...(label ? { label } : {}),
     ...(description ? { description } : { description: undefined }),
-    group: language === "ko" ? (GJC_SETTING_GROUP_TEXT[root] ?? root) : root,
+    group: GJC_SETTING_GROUP_TEXT[root]?.[language] ?? root,
   };
 }
 
