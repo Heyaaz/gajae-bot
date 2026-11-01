@@ -246,17 +246,17 @@ export function SettingsDialog({
     preferences.gjcExecutable !== original.gjcExecutable;
   const tabTitle = {
     gjc: "GJC",
-    gjcAdvanced: t("GJC 고급 설정"),
+    gjcAdvanced: t("고급 설정"),
     appearance: t("모양"),
-    workspace: t("Workspace 범위"),
+    workspace: t("작업 공간 범위"),
     remote: t("원격 접속"),
     mcp: t("MCP 서버"),
     skills: "Skills & Plugins",
-    usage: "Usage",
+    usage: t("사용량"),
     notifications: t("알림"),
     desktop: t("데스크톱"),
     environment: t("환경 점검"),
-    automations: "Automations",
+    automations: t("자동화"),
   }[tab];
   const tabDescription = {
     gjc: t("GJC 실행 파일과 새 세션이 시작될 모델 프로필·도구 승인 방식을 설정합니다."),
@@ -532,7 +532,7 @@ export function SettingsDialog({
             className={tab === "gjcAdvanced" ? "is-active" : ""}
             onClick={() => setTab("gjcAdvanced")}
           >
-            <SlidersHorizontal size={17} /> {t("GJC 고급")} </button>
+            <SlidersHorizontal size={17} /> {t("고급 설정")} </button>
           <button
             type="button"
             className={tab === "appearance" ? "is-active" : ""}
@@ -544,7 +544,7 @@ export function SettingsDialog({
             className={tab === "workspace" ? "is-active" : ""}
             onClick={() => setTab("workspace")}
           >
-            <FolderOpen size={17} /> Workspace
+            <FolderOpen size={17} /> {t("작업 공간")}
           </button>
           <button
             type="button"
@@ -589,14 +589,14 @@ export function SettingsDialog({
             className={tab === "usage" ? "is-active" : ""}
             onClick={() => setTab("usage")}
           >
-            <ChartNoAxesColumn size={17} /> Usage
+            <ChartNoAxesColumn size={17} /> {t("사용량")}
           </button>
           <button
             type="button"
             className={tab === "automations" ? "is-active" : ""}
             onClick={() => setTab("automations")}
           >
-            <CalendarClock size={17} /> Automations
+            <CalendarClock size={17} /> {t("자동화")}
           </button>
         </nav>
         <div className="settings-content">

@@ -60,7 +60,7 @@ describe("GjcSettingsPanel", () => {
     expect(idle.querySelector("small")?.textContent).toContain("caffeinate -i");
   });
 
-  it("keeps GJC's English text in English and for keys it does not know", async () => {
+  it("shows English names in English and GJC's own text for keys it does not know", async () => {
     setLanguageMode("en");
     const container = await renderPanel({
       listGjcSettings: async () => [
@@ -70,8 +70,8 @@ describe("GjcSettingsPanel", () => {
       applyGjcSettings: vi.fn(),
     });
     expect([...container.querySelectorAll(".gjc-settings-group h3")].map((h) => h.textContent))
-      .toEqual(["retry", "power", "brandNew"]);
-    expect(container.querySelector(".gjc-settings-group strong")?.textContent).toBe("retry.enabled");
+      .toEqual(["Retry", "Power", "brandNew"]);
+    expect(container.querySelector(".gjc-settings-group strong")?.textContent).toBe("Retry");
     expect(container.querySelectorAll(".gjc-settings-group")[2]!.querySelector("small")?.textContent)
       .toBe("Added later");
   });
