@@ -2992,6 +2992,31 @@ button.diff-line-number:hover {
 .tool-run-summary:hover {
   background: var(--bg-hover);
 }
+.turn-fold button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+}
+.turn-fold button:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+}
+.turn-fold svg {
+  transition: transform 120ms ease;
+}
+.turn-fold.is-open svg {
+  transform: rotate(90deg);
+}
+.turn-fold-failed {
+  color: var(--danger);
+}
 .tool-run-collapse {
   align-self: flex-end;
   margin: 2px 8px 0 0;
