@@ -132,7 +132,9 @@ export function GjcSettingsPanel({ bridge }: { bridge: Bridge | undefined }) {
           <span>
             <strong>{t("GJC 설정")}</strong>
             <small>
-              {error
+              {!bridge
+                ? t("데스크톱 앱에서만 설정할 수 있습니다.")
+                : error
                 ? t`불러오거나 저장하지 못했습니다: ${error}`
                 : settings
                   ? t`켜고 끄는 설정과 숫자 설정 ${settings.length}개`
