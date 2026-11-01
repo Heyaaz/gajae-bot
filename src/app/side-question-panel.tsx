@@ -10,12 +10,15 @@ import { MarkdownBody } from "./transcript-markdown";
  */
 export function SideQuestionPanel({
   exchanges,
+  unsupported = false,
   onAsk,
   onRetry,
   onClear,
   onClose,
 }: {
   exchanges: readonly SideExchange[];
+  /** The session's GJC has no `btw.ask`, so nothing can be asked. */
+  unsupported?: boolean;
   onAsk: (question: string) => void;
   onRetry: (id: string) => void;
   onClear: () => void;
@@ -39,7 +42,7 @@ export function SideQuestionPanel({
 
   function submit(): void {
     const question = draft.trim();
-    if (!question || pending) return;
+    if (!question || pending || unsupported) return;
     onAsk(question);
     setDraft("");
   }
@@ -73,7 +76,13 @@ export function SideQuestionPanel({
         </button>
       </header>
       <div className="side-panel-list" ref={listRef}>
-        {exchanges.length === 0 ? (
+        {unsupported && exchanges.length === 0 ? (
+          <div className="side-panel-empty" role="status">
+            <MessageCircleQuestion size={22} aria-hidden="true" />
+            <p>{t("이 세션의 GJC는 옆 질문을 지원하지 않습니다.")}</p>
+            <small>{t("옆 질문에는 GJC의 btw.ask 기능이 필요합니다. 이 기능이 들어간 GJC로 업데이트하면 쓸 수 있습니다.")}</small>
+          </div>
+        ) : exchanges.length === 0 ? (
           <div className="side-panel-empty">
             <MessageCircleQuestion size={22} aria-hidden="true" />
             <p>{t("작업을 멈추지 않고 이 세션에 대해 따로 물어볼 수 있습니다.")}</p>
@@ -115,6 +124,7 @@ export function SideQuestionPanel({
           ref={inputRef}
           value={draft}
           rows={2}
+          disabled={unsupported}
           placeholder={exchanges.length > 0 ? t("이어서 묻기") : t("무엇이든 물어보세요")}
           aria-label={t("옆 질문 입력")}
           onChange={(event) => setDraft(event.target.value)}
@@ -132,7 +142,7 @@ export function SideQuestionPanel({
         <button
           type="submit"
           className="side-panel-send"
-          disabled={pending || !draft.trim()}
+          disabled={pending || unsupported || !draft.trim()}
           title={t("묻기")}
           aria-label={t("묻기")}
         >

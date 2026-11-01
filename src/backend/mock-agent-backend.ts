@@ -549,6 +549,11 @@ export class MockAgentBackend implements AgentBackend {
           sessionId,
           commands: [
             {
+              name: "btw",
+              description: "Ask a side question with the current session context without saving it to the transcript",
+              hint: "<question>",
+            },
+            {
               name: "context",
               description: "Show active context token usage",
             },

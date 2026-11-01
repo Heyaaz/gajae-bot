@@ -118,7 +118,9 @@ side questions, so each follow-up carries the panel's earlier answers, as many o
 the newest as fit in 12 KiB. One question is answered at a time. Each session keeps its
 own questions until the window closes. In a narrow window the panel covers the
 conversation. A remote device sends `/btw` as before and gets the answer as a
-conversation row.
+conversation row. `/btw` is never held behind a running turn. Side questions need
+a GJC that advertises `btw.ask`; GJC 0.19.2 does not, and the panel says so instead
+of taking a question.
 
 ## File mentions
 

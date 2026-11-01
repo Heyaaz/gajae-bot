@@ -842,6 +842,8 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "이어서 묻기": "Ask a follow-up",
   "무엇이든 물어보세요": "Ask anything",
   "옆 질문 입력": "Side question",
+  "이 세션의 GJC는 옆 질문을 지원하지 않습니다.": "This session's GJC does not support side questions.",
+  "옆 질문에는 GJC의 btw.ask 기능이 필요합니다. 이 기능이 들어간 GJC로 업데이트하면 쓸 수 있습니다.": "Side questions need GJC's btw.ask. They work once GJC is updated to a version that has it.",
   "묻기": "Ask",
   "옆 질문 (⌘⇧B)": "Side questions (⌘⇧B)",
   "앞선 질문의 답을 기다리는 중입니다. 답이 온 뒤에 다시 물어보세요.": "Still waiting for the previous answer. Ask again once it arrives.",

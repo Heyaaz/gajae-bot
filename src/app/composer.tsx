@@ -1007,7 +1007,10 @@ export const Composer = memo(function Composer({
       commands,
       images.length > 0 || files.length > 0,
     );
-    const holdForTurn = liveTurn && !immediateSdkCommand;
+    // `/btw` asks beside the turn rather than into it, even before the runtime's
+    // command list has said whether it can answer.
+    const sideQuestion = /^\/btw(?:\s|$)/iu.test(content) && images.length === 0 && files.length === 0;
+    const holdForTurn = liveTurn && !immediateSdkCommand && !sideQuestion;
     if (holdForTurn) {
       // Steer intent is held visibly too. Only Send now releases an individual
       // instruction into the running turn; submitting must not skip this row.
