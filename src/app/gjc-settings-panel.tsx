@@ -1,20 +1,41 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
 import type { SettingsDesktopBridge } from "../../shared/agent-contract";
 import type {
   GjcSetting,
   GjcSettingValue,
 } from "../../shared/gjc-settings";
-import { t } from "../i18n";
+import { t, useLanguage, type ResolvedLanguage } from "../i18n";
+import { GJC_SETTING_GROUP_TEXT, GJC_SETTING_TEXT } from "./gjc-settings-text";
 
 type Bridge = Pick<SettingsDesktopBridge, "listGjcSettings" | "applyGjcSettings">;
 
-function groupByRoot(settings: GjcSetting[]): Array<[string, GjcSetting[]]> {
-  const groups = new Map<string, GjcSetting[]>();
-  for (const setting of settings) {
-    const root = setting.key.split(".")[0]!;
-    groups.set(root, [...(groups.get(root) ?? []), setting]);
-  }
+type ShownSetting = GjcSetting & { label?: string; group: string };
+
+/**
+ * The name, description and group a setting shows in the current language. A
+ * key the translation table does not know yet keeps GJC's own English text.
+ */
+function shown(setting: GjcSetting, language: ResolvedLanguage): ShownSetting {
+  const text = GJC_SETTING_TEXT[setting.key];
+  const root = setting.key.split(".")[0]!;
+  const label = language === "ko" ? text?.ko : text?.en;
+  const description =
+    language === "ko"
+      ? (text?.description ?? setting.description)
+      : setting.description;
+  return {
+    ...setting,
+    ...(label ? { label } : {}),
+    ...(description ? { description } : { description: undefined }),
+    group: language === "ko" ? (GJC_SETTING_GROUP_TEXT[root] ?? root) : root,
+  };
+}
+
+function groupBy(settings: ShownSetting[]): Array<[string, ShownSetting[]]> {
+  const groups = new Map<string, ShownSetting[]>();
+  for (const setting of settings)
+    groups.set(setting.group, [...(groups.get(setting.group) ?? []), setting]);
   return [...groups];
 }
 
@@ -87,16 +108,18 @@ export function GjcSettingsPanel({ bridge }: { bridge: Bridge | undefined }) {
     };
   }, [bridge, attempt]);
 
-  const groups = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    const matches = (settings ?? []).filter(
-      (setting) =>
-        !needle ||
-        setting.key.toLowerCase().includes(needle) ||
-        setting.description?.toLowerCase().includes(needle),
-    );
-    return groupByRoot(matches);
-  }, [settings, query]);
+  const language = useLanguage();
+  const needle = query.trim().toLowerCase();
+  const groups = groupBy(
+    (settings ?? [])
+      .map((setting) => shown(setting, language))
+      .filter((setting) => {
+        if (!needle) return true;
+        const text = GJC_SETTING_TEXT[setting.key];
+        return [setting.key, setting.label, setting.description, setting.group, text?.ko, text?.en]
+          .some((field) => field?.toLowerCase().includes(needle));
+      }),
+  );
 
   function stage(setting: GjcSetting, value: GjcSettingValue) {
     setDraft((current) => {
@@ -160,9 +183,9 @@ export function GjcSettingsPanel({ bridge }: { bridge: Bridge | undefined }) {
           />
         </label>
       </div>
-      {groups.map(([root, rows]) => (
-        <section className="settings-panel gjc-settings-group" key={root}>
-          <h3>{root}</h3>
+      {groups.map(([group, rows]) => (
+        <section className="settings-panel gjc-settings-group" key={group}>
+          <h3>{group}</h3>
           {rows.map((setting) => {
             const staged = draft.get(setting.key);
             const value = staged ?? setting.value;
@@ -177,11 +200,14 @@ export function GjcSettingsPanel({ bridge }: { bridge: Bridge | undefined }) {
               >
                 <span>
                   <strong>
-                    <code>{setting.key}</code>
+                    {setting.label ?? <code>{setting.key}</code>}
                     {setting.value === null && staged === undefined && (
                       <em>{t("기본값")}</em>
                     )}
                   </strong>
+                  {setting.label && (
+                    <code className="gjc-setting-key">{setting.key}</code>
+                  )}
                   {setting.description && <small>{setting.description}</small>}
                 </span>
                 {setting.type === "boolean" ? (

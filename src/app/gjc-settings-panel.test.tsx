@@ -5,6 +5,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GjcSetting, GjcSettingChange } from "../../shared/gjc-settings";
+import { setLanguageMode } from "../i18n";
 import { GjcSettingsPanel } from "./gjc-settings-panel";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
@@ -16,6 +17,7 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   document.body.innerHTML = "";
+  setLanguageMode("ko");
 });
 
 const SETTINGS: GjcSetting[] = [
@@ -44,14 +46,33 @@ function setNumber(input: HTMLInputElement, value: string) {
 }
 
 describe("GjcSettingsPanel", () => {
-  it("groups settings by their first key segment and marks unset values", async () => {
+  it("shows Korean names, descriptions and groups with the key beside them", async () => {
     const container = await renderPanel({
       listGjcSettings: async () => SETTINGS,
       applyGjcSettings: vi.fn(),
     });
     expect([...container.querySelectorAll(".gjc-settings-group h3")].map((h) => h.textContent))
-      .toEqual(["retry", "power"]);
-    expect(container.querySelector(".gjc-settings-group em")?.textContent).toBe("기본값");
+      .toEqual(["재시도", "전원"]);
+    const idle = container.querySelectorAll(".gjc-settings-group")[1]!;
+    expect(idle.querySelector("strong")?.textContent).toBe("유휴 잠자기 막기 (macOS)기본값");
+    expect(idle.querySelector(".gjc-setting-key")?.textContent).toBe("power.preventIdleSleep");
+    expect(idle.querySelector("small")?.textContent).toContain("caffeinate -i");
+  });
+
+  it("keeps GJC's English text in English and for keys it does not know", async () => {
+    setLanguageMode("en");
+    const container = await renderPanel({
+      listGjcSettings: async () => [
+        ...SETTINGS,
+        { key: "brandNew.toggle", type: "boolean", value: false, description: "Added later" },
+      ],
+      applyGjcSettings: vi.fn(),
+    });
+    expect([...container.querySelectorAll(".gjc-settings-group h3")].map((h) => h.textContent))
+      .toEqual(["retry", "power", "brandNew"]);
+    expect(container.querySelector(".gjc-settings-group strong")?.textContent).toBe("retry.enabled");
+    expect(container.querySelectorAll(".gjc-settings-group")[2]!.querySelector("small")?.textContent)
+      .toBe("Added later");
   });
 
   it("applies staged edits as one batch and shows the returned values", async () => {
@@ -104,10 +125,13 @@ describe("GjcSettingsPanel", () => {
     expect(container.textContent).not.toContain("저장하지 못했습니다");
   });
 
-  it("filters by key or description", async () => {
+  it("filters by Korean name or key", async () => {
     const container = await renderPanel({ listGjcSettings: async () => SETTINGS, applyGjcSettings: vi.fn() });
-    await act(async () => setNumber(container.querySelector<HTMLInputElement>('input[type="search"]')!, "failed"));
+    await act(async () => setNumber(container.querySelector<HTMLInputElement>('input[type="search"]')!, "잠자기"));
     expect([...container.querySelectorAll(".gjc-settings-group code")].map((code) => code.textContent))
-      .toEqual(["retry.enabled"]);
+      .toEqual(["power.preventIdleSleep"]);
+    await act(async () => setNumber(container.querySelector<HTMLInputElement>('input[type="search"]')!, "maxRetries"));
+    expect([...container.querySelectorAll(".gjc-settings-group code")].map((code) => code.textContent))
+      .toEqual(["retry.maxRetries"]);
   });
 });
