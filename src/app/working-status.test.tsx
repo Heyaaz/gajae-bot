@@ -70,6 +70,16 @@ describe("resolveTurnProgress activity", () => {
   });
 });
 
+describe("retry work label", () => {
+  it("names the retry while the session runs, and not after", () => {
+    const items = [user("u1"), thought("a", false)];
+    const retrying = resolveTurnProgress(items, { ...running, retrying: true }, "s", undefined, 1_000);
+    expect(retrying.progress?.work).toEqual({ kind: "thinking", label: "모델 오류" });
+    const idle = resolveTurnProgress(items, { status: "idle", retrying: true }, "s", retrying.stored, 2_000);
+    expect(idle.progress?.work.kind).toBe("done");
+  });
+});
+
 describe("formatDuration", () => {
   afterEach(() => setLanguageMode("ko"));
 
@@ -119,6 +129,25 @@ describe("GajaeProgressRow working meta", () => {
     expect(host.querySelector(".gajae-progress-meta")?.textContent).toContain(
       "보낸 메시지는 지금 단계가 끝나면 읽힙니다",
     );
+  });
+
+  it("counts down a model call retry and ends the wait from its buttons once", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(100_000);
+    const onControlRetry = vi.fn();
+    const clock = { zeroAt: 90_000, pausedMs: 0, ran: true };
+    const host = render({
+      kind: "thinking", clock, activityAt: 95_000, onControlRetry,
+      retry: { attempt: 2, maxAttempts: 5, retryAt: 108_000, error: "429 rate limit\nretry-after: 8" },
+    });
+    const meta = () => host.querySelector(".gajae-progress-meta")?.textContent;
+    expect(meta()).toBe("재시도 2/5 · 8초 후 · 429 rate limit");
+    act(() => vi.advanceTimersByTime(8_000));
+    expect(meta()).toBe("재시도 2/5 · 곧 다시 보냄 · 429 rate limit");
+    const [abort, now] = host.querySelectorAll<HTMLButtonElement>(".gajae-progress-actions button");
+    act(() => now!.click());
+    expect(onControlRetry).toHaveBeenCalledWith("now");
+    expect(abort!.disabled && now!.disabled).toBe(true);
   });
 
   it("shows nothing once the turn is done", () => {

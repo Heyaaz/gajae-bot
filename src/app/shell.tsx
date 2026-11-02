@@ -1352,6 +1352,15 @@ export default function App() {
       retryId: attemptId,
     }).catch(() => undefined);
   }, []);
+  const controlSelectedRetry = useCallback(
+    (action: "now" | "abort"): void => {
+      if (!chatId) return;
+      void backend.controlRetry?.(chatId, action).catch((error: unknown) =>
+        setAppError(humanErrorMessage(error)),
+      );
+    },
+    [backend, chatId],
+  );
   const retryLastRequest = useCallback((sessionId: string): void => {
     const text = lastUserRequestContent(transcriptsRef.current[sessionId] ?? []);
     if (!text) return;
@@ -1906,7 +1915,11 @@ export default function App() {
                 turnSession={{
                   status: selectedSession.status,
                   phase: selectedSession.phase,
+                  retrying:
+                    selectedSession.status === "running" && selectedSession.retry !== undefined,
                 }}
+                retry={selectedSession.retry}
+                onControlRetry={backend.controlRetry ? controlSelectedRetry : undefined}
                 compacting={selectedSession.phase === "compacting"}
                 thoughtsExpanded={preferences.thoughtsExpanded}
                 onToggleThoughtsExpanded={toggleThoughtsExpanded}

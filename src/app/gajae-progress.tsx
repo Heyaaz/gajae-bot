@@ -16,6 +16,7 @@ import {
 import { memo, useEffect, useRef, useState } from "react";
 import { t, useLanguage } from "../i18n";
 import { formatDuration } from "./format";
+import type { SessionRetry } from "../backend/types";
 
 
 const SHEET_80_WIDTH = 80 * GAJAE_EMOTICONS.length;
@@ -108,6 +109,66 @@ function WorkingMeta({
   return <span className="gajae-progress-meta">{parts.join(" · ")}</span>;
 }
 
+/**
+ * GJC's wait before it sends a failed model call again: which attempt, how long
+ * until it fires, and why the last one failed. Either button ends the wait.
+ */
+function RetryMeta({
+  retry,
+  onControl,
+}: {
+  retry: SessionRetry;
+  onControl?: (action: "now" | "abort") => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const [sent, setSent] = useState<string>();
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const key = `${retry.attempt}:${retry.retryAt}`;
+  const remaining = retry.retryAt - now;
+  const parts = [
+    retry.maxAttempts === undefined
+      ? t`재시도 ${retry.attempt}회째`
+      : t`재시도 ${retry.attempt}/${retry.maxAttempts}`,
+    remaining >= 1000 ? t`${formatDuration(remaining)} 후` : t("곧 다시 보냄"),
+  ];
+  const error = retry.error?.split("\n", 1)[0];
+  const control = (action: "now" | "abort") => {
+    setSent(key);
+    onControl?.(action);
+  };
+  return (
+    <>
+      <span className="gajae-progress-meta" title={retry.error}>
+        {parts.join(" · ")}
+        {error && <span className="gajae-progress-error"> · {error}</span>}
+      </span>
+      {onControl && (
+        <span className="gajae-progress-actions">
+          <button
+            type="button"
+            className="gajae-progress-button"
+            disabled={sent === key}
+            onClick={() => control("abort")}
+          >
+            {t("재시도 취소")}
+          </button>
+          <button
+            type="button"
+            className="gajae-progress-button is-allow"
+            disabled={sent === key}
+            onClick={() => control("now")}
+          >
+            {t("지금 재시도")}
+          </button>
+        </span>
+      )}
+    </>
+  );
+}
+
 export interface GajaeProgressRowProps {
   kind: TurnActivityKind;
   label?: string;
@@ -116,6 +177,9 @@ export interface GajaeProgressRowProps {
   /** When the turn last produced anything. */
   activityAt?: number;
   queuedMessage?: boolean;
+  /** GJC is waiting to retry a failed model call. Replaces the elapsed time. */
+  retry?: SessionRetry;
+  onControlRetry?: (action: "now" | "abort") => void;
   approval?: TurnApproval;
   onResolve?: (toolId: string, optionId: string) => void;
   onRetry?: () => void;
@@ -133,6 +197,8 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
   clock,
   activityAt,
   queuedMessage = false,
+  retry,
+  onControlRetry,
   approval,
   onResolve,
   onRetry,
@@ -248,8 +314,12 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
         >
           {shownLabel}
         </span>
-        {clock && activityAt !== undefined && (kind === "thinking" || kind === "tool") && (
-          <WorkingMeta clock={clock} activityAt={activityAt} queuedMessage={queuedMessage} />
+        {retry && kind === "thinking" ? (
+          <RetryMeta retry={retry} onControl={onControlRetry} />
+        ) : (
+          clock && activityAt !== undefined && (kind === "thinking" || kind === "tool") && (
+            <WorkingMeta clock={clock} activityAt={activityAt} queuedMessage={queuedMessage} />
+          )
         )}
         {kind === "approval" && approval && (approval.deny || approval.allow) && (
           <span className="gajae-progress-actions">

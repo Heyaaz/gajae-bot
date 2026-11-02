@@ -818,7 +818,43 @@ export class MockAgentBackend implements AgentBackend {
     };
     this.append(userMessage);
     this.updateStatus(sessionId, "running");
+    if (value === "/retry-demo") {
+      this.startRetryDemo(sessionId);
+      return "prompt";
+    }
+    this.streamSampleAnswer(sessionId);
+    return "prompt";
+  }
 
+  /** A model call that failed and waits to be sent again, as GJC reports it. */
+  private startRetryDemo(sessionId: string): void {
+    const session = this.sessionStore.find((candidate) => candidate.id === sessionId);
+    if (!session) return;
+    session.retry = {
+      attempt: 1,
+      maxAttempts: 3,
+      retryAt: Date.now() + 20_000,
+      error: "429 rate_limit_error: This request would exceed the rate limit for your organization.",
+    };
+    this.emit({ type: "session.updated", session: cloneSession(session) });
+    this.schedule(sessionId, 20_000, () => this.endRetry(sessionId, true));
+  }
+
+  private endRetry(sessionId: string, resend: boolean): void {
+    const session = this.sessionStore.find((candidate) => candidate.id === sessionId);
+    if (!session?.retry) return;
+    this.clearTimers(sessionId);
+    delete session.retry;
+    this.emit({ type: "session.updated", session: cloneSession(session) });
+    if (resend) this.streamSampleAnswer(sessionId);
+    else this.updateStatus(sessionId, "failed");
+  }
+
+  async controlRetry(sessionId: string, action: "now" | "abort"): Promise<void> {
+    this.endRetry(sessionId, action === "now");
+  }
+
+  private streamSampleAnswer(sessionId: string): void {
     const assistantMessage: ChatMessage = {
       id: `message-${this.nextId++}`,
       kind: "message",
@@ -875,7 +911,6 @@ export class MockAgentBackend implements AgentBackend {
         }
       });
     });
-    return "prompt";
   }
 
   async cancelRun(sessionId: string): Promise<void> {

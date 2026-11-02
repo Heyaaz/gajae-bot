@@ -38,6 +38,8 @@ export interface TurnWork {
 export interface TurnSessionHint {
   status?: SessionStatus;
   phase?: string;
+  /** GJC is waiting to retry a model call that failed. */
+  retrying?: boolean;
 }
 
 export const ROTATING_WORK_LABELS = [
@@ -226,6 +228,8 @@ export function currentTurnWork(
 ): TurnWork | null {
   if (session?.phase === "compacting")
     return { kind: "thinking", label: t("세션 context 압축 중") };
+  if (session?.status === "running" && session.retrying)
+    return { kind: "thinking", label: t("모델 오류") };
 
   const signal = tailSignal(items);
   if (signal.kind === "question")

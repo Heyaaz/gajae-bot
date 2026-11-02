@@ -368,6 +368,11 @@ export function registerGjcIpcHandlers(
       throw new Error("Side question must be a nonempty string");
     return controller.askSideQuestion(requiredId(sessionId, "Session ID"), question);
   });
+  handle(GJC_IPC.controlRetry, (_event, sessionId: unknown, action: unknown) => {
+    if (action !== "now" && action !== "abort")
+      throw new Error("Retry action must be now or abort");
+    return controller.controlRetry(requiredId(sessionId, "Session ID"), action);
+  });
   handle(GJC_IPC.compactSession, (_event, sessionId: unknown) =>
     controller.compactSession(requiredId(sessionId, "Session ID")),
   );

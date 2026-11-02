@@ -38,6 +38,36 @@ export const REQUEST_OUTCOME_RECONCILIATION_INTERVAL_MS = 1_000;
 
 export const REQUEST_OUTCOME_QUERY_TIMEOUT_MS = 2_000;
 
+/** The GJC SDK control operations this app sends. */
+export type SdkControlOperation =
+  | "turn.prompt"
+  | "turn.steer"
+  | "turn.follow_up"
+  | "turn.abort"
+  | "queue.message.remove"
+  | "compaction.run"
+  | "mode.goal.operate"
+  | "mode.plan.set"
+  | "thinking.set"
+  | "thinking.cycle"
+  | "model.profile.set"
+  | "model.set"
+  | "permission_mode.set"
+  | "config.patch"
+  | "service_tier.set"
+  | "session.export_html"
+  | "context.clear"
+  | "session.rename"
+  | "session.cwd.move"
+  | "retry.last"
+  | "retry.now"
+  | "retry.abort"
+  | "bash.background"
+  | "runtime.reload"
+  | "auth.login"
+  | "btw.ask"
+  | "workflow.gate_answer";
+
 /** The controller members sending, steering and aborting a turn read and write. */
 export interface ControlHost {
   readonly sessions: Map<string, AgentSession>;
@@ -66,32 +96,7 @@ export interface ControlHost {
   ): void;
   controlSession(
     sessionId: string,
-    operation:
-      | "turn.prompt"
-      | "turn.steer"
-      | "turn.follow_up"
-      | "turn.abort"
-      | "queue.message.remove"
-      | "compaction.run"
-      | "mode.goal.operate"
-      | "mode.plan.set"
-      | "thinking.set"
-      | "thinking.cycle"
-      | "model.profile.set"
-      | "model.set"
-      | "permission_mode.set"
-      | "config.patch"
-      | "service_tier.set"
-      | "session.export_html"
-      | "context.clear"
-      | "session.rename"
-      | "session.cwd.move"
-      | "retry.last"
-      | "bash.background"
-      | "runtime.reload"
-      | "auth.login"
-      | "btw.ask"
-      | "workflow.gate_answer",
+    operation: SdkControlOperation,
     input: Record<string, unknown>,
     options?: { confirm?: boolean; idempotencyKey?: string; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined>;
@@ -423,32 +428,7 @@ export async function queueFollowUp(
 export async function controlSession(
   host: ControlHost,
   sessionId: string,
-  operation:
-    | "turn.prompt"
-    | "turn.steer"
-    | "turn.follow_up"
-    | "turn.abort"
-    | "queue.message.remove"
-    | "compaction.run"
-    | "mode.goal.operate"
-    | "mode.plan.set"
-    | "thinking.set"
-    | "thinking.cycle"
-    | "model.profile.set"
-    | "model.set"
-    | "permission_mode.set"
-    | "config.patch"
-    | "service_tier.set"
-    | "session.export_html"
-    | "context.clear"
-    | "session.rename"
-    | "session.cwd.move"
-    | "retry.last"
-    | "bash.background"
-    | "runtime.reload"
-    | "auth.login"
-    | "btw.ask"
-    | "workflow.gate_answer",
+  operation: SdkControlOperation,
   input: Record<string, unknown>,
   options?: { confirm?: boolean; idempotencyKey?: string; timeoutMs?: number },
 ): Promise<Record<string, unknown> | undefined> {
@@ -519,6 +499,23 @@ export async function listQueuedMessages(host: ControlHost, sessionId: string): 
     return queued;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Skips the wait before GJC retries a failed model call, or stops retrying. The
+ * wait ending on its own between the click and the call is not an error.
+ */
+export async function controlRetry(
+  host: Pick<ControlHost, "controlSession">,
+  sessionId: string,
+  action: "now" | "abort",
+): Promise<void> {
+  try {
+    await host.controlSession(sessionId, action === "now" ? "retry.now" : "retry.abort", {});
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "retry_not_pending") return;
+    throw error;
   }
 }
 
