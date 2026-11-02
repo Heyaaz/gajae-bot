@@ -47,9 +47,11 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 import { directoryName, httpUrls } from "./format";
 import { LinkPreviewCard, MessageCopyButton } from "./primitives";
 import { SkillInvocation, SkillPromptCard } from "./skill-activity";
@@ -385,7 +387,17 @@ export function Transcript({
   // entries and 20,000 nodes live, which made every width change -- opening the detail
   // panel, resizing the window -- re-wrap and re-measure the whole document in one
   // frame. Estimates are refined by measuring each row as it mounts.
+  // A measurement that moves rows asks for a synchronous re-render. Inside React's
+  // commit (a row's ref, the layout effect below) React refuses that flush and logs
+  // an error on every session switch, so those re-render on the normal schedule.
+  // Scrolling still flushes at once, which keeps newly exposed rows from flashing.
+  const measuringInCommitRef = useRef(false);
+  const [, forceRender] = useReducer((tick: number) => tick + 1, 0);
   const virtualizer = useVirtualizer({
+    useFlushSync: false,
+    onChange: (_instance, sync) => {
+      if (sync && !measuringInCommitRef.current) flushSync(forceRender);
+    },
     count: rows.length,
     getScrollElement: () => transcriptRef.current,
     estimateSize: (index) =>
@@ -409,6 +421,17 @@ export function Transcript({
   });
 
   const virtualItems = virtualizer.getVirtualItems();
+  const measureInCommit = useCallback(
+    (element: HTMLElement | null) => {
+      measuringInCommitRef.current = true;
+      try {
+        virtualizer.measureElement(element);
+      } finally {
+        measuringInCommitRef.current = false;
+      }
+    },
+    [virtualizer],
+  );
 
   useLayoutEffect(() => {
     const pending = pendingPrependRef.current;
@@ -521,9 +544,9 @@ export function Transcript({
       // Within a pixel of the real height means the virtualizer already has it, and
       // re-reporting it is what interfered with scroll compensation.
       if (Math.abs(recorded - slot.offsetHeight) <= 1) continue;
-      virtualizer.measureElement(slot);
+      measureInCommit(slot);
     }
-  }, [rows, virtualItems, virtualizer]);
+  }, [measureInCommit, rows, virtualItems]);
 
   const totalSize = virtualizer.getTotalSize();
 
@@ -1302,7 +1325,7 @@ export function Transcript({
                 data-last={virtualRow.index === rows.length - 1 ? "true" : undefined}
                 data-turn-start={turnStarts.has(block.id) ? "true" : undefined}
                 key={virtualRow.key}
-                ref={virtualizer.measureElement}
+                ref={measureInCommit}
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
                 {block.kind === "progress" ? (
