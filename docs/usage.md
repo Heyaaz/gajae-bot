@@ -31,7 +31,7 @@ Default model preset is `codex-medium`. If `~/.gjc/agent/models.yml` defines it,
 
 ## Conversations
 
-Type a request and press Enter. Files and images are sent as local paths. Images are opened with GJC `read` before the model answers.
+Type a request and press Enter. Files are sent as local paths. Images are uploaded to GJC (`turn.image.*`) and reach the model as images with the prompt, on one `gjc sdk serve --stdio` relay per message, because GJC keeps a staged image only on the connection that uploaded it. PNG, JPEG, WebP and still GIF up to 20 MiB qualify. A message with any other image, a GJC without image uploads, or an upload GJC refuses sends its images as local paths instead, which the model opens with GJC `read`. Images sent into a running turn (steer) also go as paths.
 
 A finished turn keeps its request and final answer on screen and folds everything
 between them into one line, such as `4분 동안 작업함`, with a failure count when a

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentSession, MessageDelivery, NoticeActivity, QueuedMessage, ToolActivity, TranscriptItem } from "../shared/agent-contract.js";
 import { envelopeResult, freshOperationRef, GjcSdkCli, isSessionUnreachable } from "./gjc-sdk-cli.js";
+import { ImagePromptNotSentError, promptWithImages, readUploadImages } from "./gjc-sdk-image-prompt.js";
 import {
   attachedPathsText,
   brokerFailureMessage,
@@ -119,6 +120,7 @@ export interface ControlHost {
   readonly terminalOnlySessions: Set<string>;
   requireCli(): Promise<GjcSdkCli>;
   repoFor(sessionId: string): string;
+  sdkOperations(sessionId: string): Promise<Set<string>>;
   markTerminalOnly(sessionId: string): void;
   querySessionItems(
     sessionId: string,
@@ -245,6 +247,13 @@ export async function compactSession(host: ControlHost, sessionId: string): Prom
   // history has been rewritten. Clearing the phase here reported compaction
   // finished while it was still running, so the phase is left standing until
   // GJC reports a non-compacting phase through patchSessionInfo.
+}
+
+/** The text GJC will echo changed after the bubble was shown, so match that instead. */
+function replacePromptEcho(host: ControlHost, sessionId: string, shown: string, sent: string): void {
+  const echoes = host.echoedPromptTexts.get(sessionId);
+  const index = echoes?.indexOf(normalizeQueuedRequestText(shown)) ?? -1;
+  if (echoes && index >= 0) echoes[index] = normalizeQueuedRequestText(sent);
 }
 
 // Returns true when this user update is GJC repeating a prompt already shown.
@@ -596,6 +605,13 @@ export async function sendMessage(
   ) {
     return await steerSession(host, sessionId, { ...input, text: bare });
   }
+  // Images GJC can take as images go up on their own relay, and the paths block
+  // that told the model to open them with the read tool is left out of the text.
+  const uploadImages =
+    input.images.length > 0 && (await host.sdkOperations(sessionId)).has("turn.image.begin")
+      ? await readUploadImages(input.images)
+      : undefined;
+  const sentText = uploadImages ? bare + attachedPathsText({ ...input, images: [] }) : promptText;
   const admission = Symbol(sessionId);
   const admissionGeneration = host.generation;
   host.activePromptAdmissions.set(sessionId, admission);
@@ -623,7 +639,7 @@ export async function sendMessage(
   // them first left the composer looking like it had swallowed the message.
   host.activeAssistantMessages.delete(sessionId);
   host.finalizeThought(sessionId);
-  host.appendLocalUserMessage(sessionId, promptText, input);
+  host.appendLocalUserMessage(sessionId, sentText, input);
   host.updateSessionStatus(sessionId, "running");
 
   try {
@@ -637,10 +653,30 @@ export async function sendMessage(
     let accepted: Awaited<ReturnType<GjcSdkCli["send"]>> | undefined;
     let uncertain = false;
     try {
-      accepted = await cli.send(sessionId, promptText, {
-        repo: host.repoFor(sessionId),
-        opRef: operationRef,
-      });
+      if (uploadImages) {
+        try {
+          const receipt = await promptWithImages(
+            { executable: cli.executable, env: cli.env, cwd: host.repoFor(sessionId) },
+            sessionId,
+            { text: sentText, clientRef: operationRef, images: uploadImages },
+          );
+          accepted = { operationRef, status: "accepted", ...receipt };
+        } catch (error) {
+          if (!(error instanceof ImagePromptNotSentError)) throw error;
+          // GJC ran nothing, so the paths can still reach it the old way. A refused
+          // prompt may keep its reference, so this one gets a fresh one.
+          replacePromptEcho(host, sessionId, sentText, promptText);
+          accepted = await cli.send(sessionId, promptText, {
+            repo: host.repoFor(sessionId),
+            opRef: freshOperationRef(),
+          });
+        }
+      } else {
+        accepted = await cli.send(sessionId, promptText, {
+          repo: host.repoFor(sessionId),
+          opRef: operationRef,
+        });
+      }
     } catch (error) {
       if (!uncertainAfterSendError(error)) throw error;
       // The frame may already have reached the host. Never resend while the

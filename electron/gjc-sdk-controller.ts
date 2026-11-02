@@ -1028,6 +1028,7 @@ export class GjcSdkController {
     get terminalOnlySessions() { return controller.terminalOnlySessions; },
     requireCli: () => controller.requireCli(),
     repoFor: (sessionId) => controller.repoFor(sessionId),
+    sdkOperations: (sessionId) => controller.sdkOperations(sessionId),
     markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
     get flushingSessions() { return controller.flushingSessions; },
