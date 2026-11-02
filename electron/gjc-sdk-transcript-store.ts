@@ -692,7 +692,10 @@ export function publishTranscriptSync(
   host.dirtyTranscriptRows.delete(sessionId);
 }
 
-/** Inline the GJC blob store bytes so a read image renders in the transcript. */
+/**
+ * Inline the GJC blob store bytes so an image a tool read, or a prompt carried,
+ * renders in the transcript.
+ */
 export async function resolveToolImages(host: TranscriptStoreHost, items: TranscriptItem[]): Promise<void> {
   const blobDirectory = path.join(
     path.resolve(
@@ -700,26 +703,43 @@ export async function resolveToolImages(host: TranscriptStoreHost, items: Transc
     ),
     "blobs",
   );
+  const blobDataUrl = async (blobId: string, mimeType: string): Promise<string | undefined> => {
+    const cached = host.imageDataUrls.get(blobId);
+    if (cached) return cached;
+    try {
+      const file = path.join(blobDirectory, blobId);
+      const info = await stat(file);
+      if (!info.isFile() || info.size > 12 * 1024 * 1024) return undefined;
+      const dataUrl = `data:${mimeType};base64,${(await readFile(file)).toString("base64")}`;
+      host.imageDataUrls.set(blobId, dataUrl);
+      return dataUrl;
+    } catch {
+      return undefined;
+    }
+  };
   await Promise.all(
     items.map(async (item) => {
+      if (item.kind === "message" && item.images?.some((image) => image.data.startsWith("blob:"))) {
+        const images = await Promise.all(
+          item.images.map(async (image) => {
+            const blob = /^blob:sha256:([0-9a-f]{64})$/u.exec(image.data);
+            if (!blob) return image;
+            const dataUrl = await blobDataUrl(blob[1]!, image.mimeType);
+            return dataUrl ? { ...image, data: dataUrl.slice(dataUrl.indexOf(",") + 1) } : undefined;
+          }),
+        );
+        const kept = images.filter((image): image is NonNullable<typeof image> => image !== undefined);
+        if (kept.length > 0) item.images = kept;
+        else delete item.images;
+        return;
+      }
       if (item.kind !== "tool" || !item.images) return;
       item.images = (
         await Promise.all(
           item.images.map(async (image) => {
             if (image.dataUrl || !image.blobId) return image;
-              const cached = host.imageDataUrls.get(image.blobId);
-              if (cached) return { mimeType: image.mimeType, dataUrl: cached };
-            try {
-              const file = path.join(blobDirectory, image.blobId);
-              const info = await stat(file);
-              if (!info.isFile() || info.size > 12 * 1024 * 1024)
-                return undefined;
-              const dataUrl = `data:${image.mimeType};base64,${(await readFile(file)).toString("base64")}`;
-              host.imageDataUrls.set(image.blobId, dataUrl);
-              return { mimeType: image.mimeType, dataUrl };
-            } catch {
-              return undefined;
-            }
+            const dataUrl = await blobDataUrl(image.blobId, image.mimeType);
+            return dataUrl ? { mimeType: image.mimeType, dataUrl } : undefined;
           }),
         )
       ).filter(

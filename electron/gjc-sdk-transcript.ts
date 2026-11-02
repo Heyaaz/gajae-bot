@@ -649,6 +649,21 @@ export function toolImageRefs(content: unknown): ToolImage[] {
     .slice(0, 4);
 }
 
+/**
+ * Images a prompt carried, as GJC recorded them. A staged upload is stored as a blob
+ * id, which stays in `data` until the transcript read swaps in the blob's bytes.
+ */
+function userImages(content: unknown, sourceId: string): ImageAttachment[] {
+  return toolImageRefs(content).map((image, index) => ({
+    id: `shared-image-${sourceId}-${index}`,
+    name: "Image",
+    mimeType: image.mimeType,
+    data: image.blobId
+      ? `blob:sha256:${image.blobId}`
+      : image.dataUrl.slice(image.dataUrl.indexOf(",") + 1),
+  }));
+}
+
 /** Model id reported by the most recent assistant turn in a shared transcript. */
 export function lastReportedModel(rows: unknown[]): string | undefined {
   for (let index = rows.length - 1; index >= 0; index -= 1) {
@@ -1292,12 +1307,14 @@ export function sharedTranscriptItems(
       continue;
     }
     if (row.role === "user") {
+      const images = userImages(row.content, sourceId);
       items.push({
         id: `shared-message-${sourceId}`,
         kind: "message",
         sessionId,
         role: "user",
         content: body,
+        ...(images.length > 0 ? { images } : {}),
         createdAt,
       });
       continue;

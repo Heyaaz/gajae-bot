@@ -95,8 +95,8 @@ A Mac that already runs GJC skips this. GJC `0.18.12` or newer is required.
 
 1. Press **⌘T** (or **+**) and pick a folder. Settings decides whether a new
    session is an app conversation or a CLI session.
-2. Type a request and press **Enter**. Drop files or images in to send them as
-   local paths.
+2. Type a request and press **Enter**. Drop files in to send them as local
+   paths; images go to the model as images.
 3. While it runs, keep typing to queue the next request, or press **Esc** to
    stop.
 4. Answer question cards with **1–9**, then **Enter**.
