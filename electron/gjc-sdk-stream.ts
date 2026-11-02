@@ -1,4 +1,4 @@
-import type { AgentCommand, AgentConfigOption, AgentConfigOptionValue, AgentEvent, AgentSession, ChatMessage, PlanActivity, ThoughtActivity, ToolActivity, TranscriptItem } from "../shared/agent-contract.js";
+import type { AgentCommand, AgentConfigOption, AgentConfigOptionValue, AgentEvent, AgentSession, ChatMessage, PlanActivity, SessionRetry, ThoughtActivity, ToolActivity, TranscriptItem } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
 import {
@@ -479,6 +479,7 @@ export function projectTailItems(
           delete otherMeta.gjcRunning;
           delete otherMeta.gjcPhase;
           delete otherMeta.gjcCompactionState;
+          delete otherMeta.gjcRetryState;
           update = { ...source, _meta: otherMeta };
         }
       }
@@ -907,6 +908,29 @@ export function requestPermission(
   });
 }
 
+/**
+ * The wait GJC announces before retrying a failed model call (`auto_retry_start`).
+ * The end of the wait arrives as another state, which clears it.
+ */
+function retryFromMeta(
+  meta: Record<string, unknown> | null | undefined,
+): SessionRetry | undefined {
+  if (meta?.gjcRetryState !== "waiting") return undefined;
+  const attempt = meta.gjcRetryAttempt;
+  const delayMs = meta.gjcRetryDelayMs;
+  if (typeof attempt !== "number" || typeof delayMs !== "number") return undefined;
+  const maxAttempts = meta.gjcRetryMaxAttempts;
+  const error = meta.gjcRetryErrorMessage;
+  return {
+    attempt,
+    ...(meta.gjcRetryUnbounded !== true && typeof maxAttempts === "number"
+      ? { maxAttempts }
+      : {}),
+    retryAt: Date.now() + Math.max(0, delayMs),
+    ...(typeof error === "string" && error.trim() ? { error: error.trim() } : {}),
+  };
+}
+
 export function patchSessionInfo(
   host: StreamHost,
   sessionId: string,
@@ -1084,5 +1108,12 @@ export function patchSessionInfo(
   }
   if (typeof update._meta?.gjcThinkingLevel === "string")
     session.thinking = update._meta.gjcThinkingLevel;
+  const retry = retryFromMeta(update._meta);
+  if (retry) session.retry = retry;
+  else if (
+    update._meta?.gjcRetryState !== undefined ||
+    (phase !== undefined && phase !== "retrying")
+  )
+    delete session.retry;
   host.emitEvent({ type: "session.updated", session: { ...session } });
 }

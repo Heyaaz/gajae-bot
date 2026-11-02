@@ -28,6 +28,7 @@ import {
 } from "./gjc-sdk-controller.js";
 import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
 import { CliDeleteError } from "./gjc-cli-session-delete.js";
+import { controlRetry } from "./gjc-sdk-control.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 import {
@@ -532,6 +533,60 @@ describe("0.18.12 tool stream", () => {
       await vi.advanceTimersByTimeAsync(TAIL_WINDOW_MS * 2);
       expect(cli.observeTools).toHaveBeenCalledTimes(2);
     } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+});
+
+describe("model call retry", () => {
+  const retryUpdate = (meta: Record<string, unknown>) => ({
+    sessionUpdate: "session_info_update" as const,
+    updatedAt: new Date().toISOString(),
+    _meta: { gjcRunning: true, ...meta },
+  });
+
+  it("shows the wait GJC announces and clears it when the retry ends", () => {
+    vi.useFakeTimers({ now: 10_000 });
+    const { controller, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.patchSessionInfo("s1", retryUpdate({
+        gjcPhase: "retrying", gjcRetryState: "waiting", gjcRetryAttempt: 2,
+        gjcRetryMaxAttempts: 5, gjcRetryDelayMs: 8_000,
+        gjcRetryErrorMessage: "429 rate limit\nretry-after: 8", gjcRetryUnbounded: false,
+      }));
+      expect(internals.sessions.get("s1").retry).toEqual({
+        attempt: 2, maxAttempts: 5, retryAt: 18_000, error: "429 rate limit\nretry-after: 8",
+      });
+      internals.patchSessionInfo("s1", retryUpdate({
+        gjcPhase: "responding", gjcRetryState: "succeeded", gjcRetryAttempt: 2,
+      }));
+      expect(internals.sessions.get("s1").retry).toBeUndefined();
+    } finally { controller.dispose(); vi.useRealTimers(); }
+  });
+
+  it("drops the limit for an unbounded retry and clears the wait on a new phase", () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.patchSessionInfo("s1", retryUpdate({
+      gjcPhase: "retrying", gjcRetryState: "waiting", gjcRetryAttempt: 7,
+      gjcRetryMaxAttempts: 3, gjcRetryDelayMs: 1_000, gjcRetryUnbounded: true,
+    }));
+    expect(internals.sessions.get("s1").retry).not.toHaveProperty("maxAttempts");
+    internals.patchSessionInfo("s1", retryUpdate({ gjcPhase: "working" }));
+    expect(internals.sessions.get("s1").retry).toBeUndefined();
+    controller.dispose();
+  });
+
+  it("skips or stops the wait, and a wait that already ended is not an error", async () => {
+    const pending = Object.assign(new Error("No retry backoff is pending."), { code: "retry_not_pending" });
+    const controlSession = vi.fn()
+      .mockResolvedValueOnce({ retried: true })
+      .mockRejectedValueOnce(pending)
+      .mockRejectedValueOnce(new Error("unreachable"));
+    const host = { controlSession };
+    await controlRetry(host, "s1", "now");
+    await controlRetry(host, "s1", "abort");
+    expect(controlSession.mock.calls.map((call) => call[1])).toEqual(["retry.now", "retry.abort"]);
+    await expect(controlRetry(host, "s1", "now")).rejects.toThrow("unreachable");
   });
 });
 

@@ -275,6 +275,8 @@ export interface AgentSession {
   unread: boolean;
   accent: string;
   phase?: string;
+  /** GJC is waiting to retry a model call that failed. Read only while running. */
+  retry?: SessionRetry;
   mode?: string;
   model?: string;
   modelDisplay?: string;
@@ -287,6 +289,15 @@ export interface AgentSession {
   worktree?: ManagedWorktree;
   workLink?: SessionWorkLink;
   runtimeState?: EffectiveRuntimeState;
+}
+
+export interface SessionRetry {
+  attempt: number;
+  /** Absent when GJC retries without a limit. */
+  maxAttempts?: number;
+  /** Epoch ms when GJC sends the call again. */
+  retryAt: number;
+  error?: string;
 }
 
 /**
@@ -1017,6 +1028,7 @@ export interface GjcDesktopBridge {
   cycleThinking(sessionId: string): Promise<string | undefined>;
   /** `/btw`: GJC's answer from the session's context, kept out of the transcript. */
   askSideQuestion(sessionId: string, question: string): Promise<string>;
+  controlRetry(sessionId: string, action: "now" | "abort"): Promise<void>;
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]>;

@@ -3810,6 +3810,12 @@ button.diff-line-number:hover {
   border: 1px solid var(--border);
   border-radius: 6px;
 }
+.gajae-progress-button:disabled {
+  opacity: 0.5;
+}
+.gajae-progress-error {
+  color: var(--warning);
+}
 .gajae-progress-button.is-allow {
   color: #ffd894;
   background: #3a2e14;

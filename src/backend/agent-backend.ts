@@ -80,6 +80,8 @@ export interface AgentBackend {
    * A backend without it sends `/btw` as an ordinary command.
    */
   askSideQuestion?(sessionId: string, question: string): Promise<string>;
+  /** Skips GJC's wait before retrying a failed model call, or stops retrying. */
+  controlRetry?(sessionId: string, action: "now" | "abort"): Promise<void>;
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]>;

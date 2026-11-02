@@ -165,6 +165,10 @@ export class GjcAgentBackend implements AgentBackend {
     return this.bridge.askSideQuestion(sessionId, question);
   }
 
+  controlRetry(sessionId: string, action: "now" | "abort"): Promise<void> {
+    return this.bridge.controlRetry(sessionId, action);
+  }
+
   compactSession(sessionId: string): Promise<void> {
     return this.bridge.compactSession(sessionId);
   }

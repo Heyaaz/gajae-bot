@@ -23,6 +23,7 @@ export type {
   QuestionActivity,
   QuestionSubmission,
   RuntimeKind,
+  SessionRetry,
   SessionStatus,
   SettingsDesktopBridge,
   ToolActivity,

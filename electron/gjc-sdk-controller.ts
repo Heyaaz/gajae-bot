@@ -137,6 +137,7 @@ import {
   compactSession,
   consumePromptEcho,
   type ControlHost,
+  controlRetry,
   controlSession,
   fireAbort,
   flushQueuedNow,
@@ -1587,6 +1588,10 @@ export class GjcSdkController {
 
   cycleThinking(sessionId: string): Promise<string | undefined> {
     return cycleThinking(this.sessionConfigHost, sessionId);
+  }
+
+  controlRetry(sessionId: string, action: "now" | "abort"): Promise<void> {
+    return controlRetry(this.controlHost, sessionId, action);
   }
 
   askSideQuestion(sessionId: string, question: string): Promise<string> {

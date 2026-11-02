@@ -60,6 +60,8 @@ export type SdkControlOperation =
   | "session.rename"
   | "session.cwd.move"
   | "retry.last"
+  | "retry.now"
+  | "retry.abort"
   | "bash.background"
   | "runtime.reload"
   | "auth.login"
@@ -497,6 +499,23 @@ export async function listQueuedMessages(host: ControlHost, sessionId: string): 
     return queued;
   } catch {
     return [];
+  }
+}
+
+/**
+ * Skips the wait before GJC retries a failed model call, or stops retrying. The
+ * wait ending on its own between the click and the call is not an error.
+ */
+export async function controlRetry(
+  host: Pick<ControlHost, "controlSession">,
+  sessionId: string,
+  action: "now" | "abort",
+): Promise<void> {
+  try {
+    await host.controlSession(sessionId, action === "now" ? "retry.now" : "retry.abort", {});
+  } catch (error) {
+    if ((error as { code?: unknown } | null)?.code === "retry_not_pending") return;
+    throw error;
   }
 }
 

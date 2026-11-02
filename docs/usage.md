@@ -64,6 +64,11 @@ was. When the newest row is a message sent into the running turn, it says the
 message is read when the current step finishes. The count starts when this window
 first sees the turn running.
 
+When a model call fails and GJC waits to send it again (rate limits, dropped
+connections), the working row reads "Model error" and shows the attempt, the time
+left before the next one, and the first line of the error. Retry now skips the wait
+(`retry.now`) and Stop retrying ends it (`retry.abort`).
+
 GJC `turn.steer` is consumed at the next tool/turn boundary, so it is not a wait
 queue. Held requests appear as full-width rows above the input, with Send now,
 edit, and discard controls. Send now does not abort; empty Enter retains its

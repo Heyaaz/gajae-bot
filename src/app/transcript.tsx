@@ -1,6 +1,6 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type { ArtifactContent } from "../../shared/agent-contract";
-import type { QuestionSubmission, ToolViewMode, TranscriptItem } from "../backend/types";
+import type { QuestionSubmission, SessionRetry, ToolViewMode, TranscriptItem } from "../backend/types";
 import type { MessageDeliveryAttempt } from "../message-delivery";
 import {
   deliveryAttemptNeedsAttention,
@@ -126,6 +126,9 @@ export interface TranscriptProps {
   sentRequestToken?: number;
   /** Session row the progress emoticon reads. Absent on a session with no row. */
   turnSession?: TurnSessionHint | null;
+  /** The retry GJC is waiting on, shown on the working row while it lasts. */
+  retry?: SessionRetry;
+  onControlRetry?: (action: "now" | "abort") => void;
   compacting?: boolean;
   /** The persisted, window-wide reasoning-card preference. */
   thoughtsExpanded?: boolean;
@@ -181,6 +184,8 @@ export function Transcript({
   onRetryDelivery,
   sentRequestToken = 0,
   turnSession = null,
+  retry,
+  onControlRetry,
   compacting = false,
   thoughtsExpanded = false,
   onToggleThoughtsExpanded,
@@ -305,6 +310,7 @@ export function Transcript({
   const turnClockRef = useRef(new Map<string, StoredTurnClock>());
   const turnStatus = turnSession?.status;
   const turnPhase = turnSession?.phase;
+  const turnRetrying = turnSession?.retrying;
   const newestSettled = lastTurnSettled(visibleItems, { status: turnStatus, phase: turnPhase });
   const folds = useMemo(
     () => (toolViewMode === "detailed" ? [] : turnFolds(visibleItems, newestSettled)),
@@ -351,7 +357,7 @@ export function Transcript({
     const previous = turnClockRef.current.get(sessionId);
     const resolved = resolveTurnProgress(
       items,
-      { status: turnStatus, phase: turnPhase },
+      { status: turnStatus, phase: turnPhase, retrying: turnRetrying },
       sessionId,
       previous,
       Date.now(),
@@ -367,7 +373,7 @@ export function Transcript({
           attempt,
         })),
     ];
-  }, [renderedAttempts, grouped, items, sessionId, turnPhase, turnStatus]);
+  }, [renderedAttempts, grouped, items, sessionId, turnPhase, turnRetrying, turnStatus]);
   // The restoration runs across frames and has to name the anchored block, so it reads the
   // current blocks rather than the ones its effect closed over.
   const blocksRef = useRef(rows);
@@ -1306,6 +1312,8 @@ export function Transcript({
                     clock={block.clock}
                     activityAt={block.activityAt}
                     queuedMessage={block.queuedMessage}
+                    retry={turnRetrying ? retry : undefined}
+                    onControlRetry={onControlRetry}
                     approval={block.approval}
                     onResolve={onResolveTool}
                     onRetry={onRetryLastRequest ? retryProgress : undefined}
