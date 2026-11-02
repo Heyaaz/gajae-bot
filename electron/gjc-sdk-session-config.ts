@@ -1,3 +1,4 @@
+import type { SdkControlOperation } from "./gjc-sdk-control.js";
 import type { AgentConfigOption, AgentConfigOptionValue, AgentControlPreferences, AgentEvent, AgentSession } from "../shared/agent-contract.js";
 import { GjcSdkCli } from "./gjc-sdk-cli.js";
 import {
@@ -33,32 +34,7 @@ export interface SessionConfigHost {
   advanceRunRevision(sessionId: string): number;
   controlSession(
     sessionId: string,
-    operation:
-      | "turn.prompt"
-      | "turn.steer"
-      | "turn.follow_up"
-      | "turn.abort"
-      | "queue.message.remove"
-      | "compaction.run"
-      | "mode.goal.operate"
-      | "mode.plan.set"
-      | "thinking.set"
-      | "thinking.cycle"
-      | "model.profile.set"
-      | "model.set"
-      | "permission_mode.set"
-      | "config.patch"
-      | "service_tier.set"
-      | "session.export_html"
-      | "context.clear"
-      | "session.rename"
-      | "session.cwd.move"
-      | "retry.last"
-      | "bash.background"
-      | "runtime.reload"
-      | "auth.login"
-      | "btw.ask"
-      | "workflow.gate_answer",
+    operation: SdkControlOperation,
     input: Record<string, unknown>,
     options?: { confirm?: boolean; idempotencyKey?: string; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined>;
