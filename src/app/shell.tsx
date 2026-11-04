@@ -67,9 +67,10 @@ import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
 import { useMessageDelivery } from "./use-message-delivery";
 import { useSendMessage } from "./use-send-message";
+import { useInbox } from "./use-inbox";
+import { useShellShortcuts } from "./use-shell-shortcuts";
 import { useSessionSync } from "./use-session-sync";
 import { Sidebar } from "./sidebar";
-import { parallelGroupIdOf } from "./sidebar-model";
 import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
 import type { ParallelGroup } from "../../shared/parallel-run";
 import {
@@ -90,7 +91,6 @@ import {
 } from "../../shared/agent-contract";
 import {
   DEFAULT_DESKTOP_INTEGRATION,
-  summarizeSessionAttention,
 } from "../../shared/desktop-integration";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import {
@@ -99,10 +99,9 @@ import {
   invalidLinkMessage,
   syncAppBadge,
   unreadBadgeCount,
-  escapeCancelsRun,
-  isTextEntryTarget,
 } from "./shell-model";
 import type {
+  CenterView,
   ShellSendMessage,
 } from "./shell-model";
 
@@ -198,9 +197,7 @@ export default function App() {
   // The center area shows one of five things. A session pick always returns to the
   // conversation; the repository screen, the project list, the inbox and a parallel
   // run's comparison are entered on purpose.
-  const [centerView, setCenterView] = useState<
-    "conversation" | "repository" | "projects" | "inbox" | "parallel"
-  >("conversation");
+  const [centerView, setCenterView] = useState<CenterView>("conversation");
   // Best-of-N groups as the main process holds them, and the one the comparison
   // view shows when the center area is on it.
   const [parallelGroups, setParallelGroups] = useState<ParallelGroup[]>([]);
@@ -323,24 +320,6 @@ export default function App() {
   // but otherwise normal-looking window, so the failure is given the workspace instead.
   const runtimeUnavailable =
     connection.state === "disconnected" || connection.state === "error";
-
-  useEffect(() => {
-    function openGlobalSearch(event: globalThis.KeyboardEvent): void {
-      if (
-        !event.metaKey ||
-        event.ctrlKey ||
-        event.altKey ||
-        event.shiftKey ||
-        surfaceRef.current === "terminal" ||
-        event.key.toLowerCase() !== "k"
-      )
-        return;
-      event.preventDefault();
-      setSearchOpen(true);
-    }
-    window.addEventListener("keydown", openGlobalSearch);
-    return () => window.removeEventListener("keydown", openGlobalSearch);
-  }, []);
 
   useEffect(() => {
     const settingsBridge = window.agentControlDesktop?.settings;
@@ -537,29 +516,15 @@ export default function App() {
     };
   }, [backend, inspectorOpen, selectedSessionId]);
 
-  useEffect(() => {
-    if (!chatId) return;
-    void backend.markSessionRead(chatId);
-  }, [backend, chatId]);
-  // A turn that finishes while its session is on screen sets `unread` without
-  // changing the selection, which left it in the inbox. Only a window the user can
-  // see counts, so work that finishes behind another app still waits for them.
-  const selectedUnread = selectedSession?.unread === true;
-  const conversationShown = centerView === "conversation";
-  useEffect(() => {
-    if (!chatId || !conversationShown || !selectedUnread) return;
-    const markIfSeen = (): void => {
-      if (!document.hidden && document.hasFocus())
-        void backend.markSessionRead(chatId).catch(() => undefined);
-    };
-    markIfSeen();
-    window.addEventListener("focus", markIfSeen);
-    document.addEventListener("visibilitychange", markIfSeen);
-    return () => {
-      window.removeEventListener("focus", markIfSeen);
-      document.removeEventListener("visibilitychange", markIfSeen);
-    };
-  }, [backend, chatId, conversationShown, selectedUnread]);
+  const { toggleInbox, inboxCount } = useInbox(
+    backend,
+    chatId,
+    centerView,
+    selectedSession,
+    sessions,
+    setNavOpen,
+    setCenterView,
+  );
 
   // The main process cannot infer which session a focused window is showing from
   // focus alone. Naming it lets notifications skip the turn being watched instead
@@ -808,144 +773,34 @@ export default function App() {
     [backend, resolveSessionId],
   );
 
-  // Dismissible surfaces own Escape while they are up: the key's job there is to
-  // close the surface, and cancelling a run behind the dialog the user is reading is
-  // never what they asked for. The dialogs only bind Escape on their own fields, so
-  // with focus anywhere else in the dialog the key used to reach the abort shortcut.
-  // The inbox covers the conversation, so Escape there must close it instead of
-  // cancelling a run the user cannot see.
-  const dismissibleSurfaceOpen =
-    centerView === "inbox" ||
-    centerView === "parallel" ||
-    searchOpen ||
-    newSessionRequest !== null ||
-    resumeOpen ||
-    settingsOpen ||
-    findOpen;
-
-  useEffect(() => {
-    const unsubscribe = window.agentControlDesktop?.onSessionShortcut(
-      (shortcut) => {
-        if (shortcut.type === "abort") {
-          if (surfaceRef.current === "terminal") return;
-          const session = selectedSessionRef.current;
-          if (session) void cancelRun(session.id).catch(() => undefined);
-          return;
-        }
-        if (shortcut.type === "new") {
-          if (shortcut.prefill) {
-            openNewSessionDialog(shortcut.prefill);
-            return;
-          }
-          const workspace = selectedSession?.workspace || connection.workspace;
-          if (workspace) createSession({ title: "새 Gajae 세션", workspace });
-          else openNewSessionDialog();
-          return;
-        }
-        if (shortcut.type === "open") {
-          if (sessionLinkRef.current.listed)
-            openLinkedSession(shortcut.sessionId, sessionsRef.current);
-          else sessionLinkRef.current.waiting = shortcut.sessionId;
-          return;
-        }
-        if (shortcut.type === "invalidLink") {
-          setAppError(invalidLinkMessage(shortcut.reason));
-          return;
-        }
-        const session = shortcutSessions[shortcut.index];
-        if (!session) return;
-        const groupId = parallelGroupIdOf(session.id);
-        if (groupId) openParallelGroup(groupId);
-        else selectSession(session.id);
-      },
-    );
-    const unsubscribeAbort = window.agentControlDesktop?.onAbortRun(() => {
-      if (surfaceRef.current === "terminal") return;
-      const session = selectedSessionRef.current;
-      if (session) void cancelRun(session.id).catch(() => undefined);
-    });
-    function abortWithEscape(event: globalThis.KeyboardEvent): void {
-      if (surfaceRef.current === "terminal") return;
-      if (
-        !escapeCancelsRun({
-          key: event.key,
-          metaKey: event.metaKey,
-          ctrlKey: event.ctrlKey,
-          altKey: event.altKey,
-          shiftKey: event.shiftKey,
-          defaultPrevented: event.defaultPrevented,
-          textEntry: isTextEntryTarget(event.target),
-          surfaceOpen: dismissibleSurfaceOpen,
-        })
-      )
-        return;
-      event.preventDefault();
-      const session = selectedSessionRef.current;
-      if (session) void cancelRun(session.id).catch(() => undefined);
-    }
-    // Bubble phase, not capture: a dialog field, the rename editor and the composer
-    // are all nearer the key and each one decides for itself whether Escape means
-    // "close me" or "stop the run".
-    window.addEventListener("keydown", abortWithEscape);
-    return () => {
-      unsubscribe?.();
-      unsubscribeAbort?.();
-      window.removeEventListener("keydown", abortWithEscape);
-    };
-  }, [
-    connection.workspace,
+  useShellShortcuts({
+    surfaceRef,
+    selectedSessionRef,
+    sessionLinkRef,
+    sessionsRef,
+    connection,
+    selectedSession,
+    centerView,
+    searchOpen,
+    newSessionRequest,
+    resumeOpen,
+    settingsOpen,
+    findOpen,
+    shortcutSessions,
+    pendingApprovals,
+    focusedApprovalId,
     createSession,
-    dismissibleSurfaceOpen,
+    cancelRun,
     openLinkedSession,
     openNewSessionDialog,
     openParallelGroup,
     selectSession,
-    selectedSession?.workspace,
-    shortcutSessions,
-    cancelRun,
-  ]);
-
-  // ⌘↵/⌘⌫ approve or reject the currently focused pending approval. MetaKey-gated
-  // so it never fights the composer's own Enter handling, and ignored while a
-  // dismissible surface is open for the same reason abortWithEscape is.
-  useEffect(() => {
-    function onApprovalShortcut(event: globalThis.KeyboardEvent): void {
-      if (surfaceRef.current === "terminal") return;
-      if (!event.metaKey || dismissibleSurfaceOpen) return;
-      if (event.key !== "Enter" && event.key !== "Backspace") return;
-      const pending = pendingApprovals;
-      if (pending.length === 0) return;
-      const focused =
-        pending.find((tool) => tool.id === focusedApprovalId) ?? pending[0]!;
-      const option = focused.permissionOptions?.find((candidate) =>
-        event.key === "Enter"
-          ? candidate.kind.startsWith("allow")
-          : candidate.kind.startsWith("reject"),
-      );
-      if (!option) return;
-      event.preventDefault();
-      resolveToolCall(focused.id, option.optionId);
-    }
-    window.addEventListener("keydown", onApprovalShortcut);
-    return () => window.removeEventListener("keydown", onApprovalShortcut);
-  }, [dismissibleSurfaceOpen, pendingApprovals, focusedApprovalId, resolveToolCall]);
-
-  // ⌘F: find within the open conversation. Distinct from ⌘K (sidebar's cross-session
-  // global search, opened by focusing its own input) -- this one does not compete
-  // with a browser/OS find because the window never ships its own, and it is
-  // deliberately allowed through from inside a text field the same way a native
-  // find shortcut is.
-  useEffect(() => {
-    function onFindShortcut(event: globalThis.KeyboardEvent): void {
-      if (surfaceRef.current === "terminal") return;
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
-      if (!selectedSessionRef.current) return;
-      event.preventDefault();
-      setFindOpen(true);
-    }
-    window.addEventListener("keydown", onFindShortcut);
-    return () => window.removeEventListener("keydown", onFindShortcut);
-  }, []);
+    resolveToolCall,
+    toggleInbox,
+    setAppError,
+    setSearchOpen,
+    setFindOpen,
+  });
 
   const { sendMessage, retryMessageDelivery, retryLastRequest } = useSendMessage({
     backend,
@@ -1142,18 +997,7 @@ export default function App() {
   const openProjects = useCallback(() => setCenterView("projects"), []);
   const openConversation = useCallback(() => setCenterView("conversation"), []);
   const openGroup = parallelGroups.find((group) => group.id === parallelGroupId);
-  const toggleInbox = useCallback(() => {
-    // On a phone the rail is a drawer over the content; the inbox is what the
-    // user asked to see, so the drawer gets out of its way.
-    setNavOpen(false);
-    setCenterView((view) => (view === "inbox" ? "conversation" : "inbox"));
-  }, []);
   const openInboxSession = selectSession;
-  const inboxCount = useMemo(() => {
-    const attention = summarizeSessionAttention(sessions);
-    return attention.needsInput + attention.unreadCompleted;
-  }, [sessions]);
-
   // ⌘⇧B: the side chat panel.
   useEffect(() => {
     if (!askSideBackend) return;
@@ -1174,26 +1018,6 @@ export default function App() {
     window.addEventListener("keydown", onSideShortcut);
     return () => window.removeEventListener("keydown", onSideShortcut);
   }, [askSideBackend]);
-
-  // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
-  // Option turns the key into a dead key on macOS, so `key` is not "u".
-  useEffect(() => {
-    function onInboxShortcut(event: globalThis.KeyboardEvent): void {
-      if (
-        !event.metaKey ||
-        !event.altKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.code !== "KeyU" ||
-        surfaceRef.current === "terminal"
-      )
-        return;
-      event.preventDefault();
-      toggleInbox();
-    }
-    window.addEventListener("keydown", onInboxShortcut);
-    return () => window.removeEventListener("keydown", onInboxShortcut);
-  }, [toggleInbox]);
 
   const openRepositoryFor = useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
