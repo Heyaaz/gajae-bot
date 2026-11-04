@@ -147,7 +147,7 @@ describe("deleteSessionThroughCli", () => {
       transcriptExists: async () => true,
       timeoutMs: 5_000,
     });
-    const outcome = expect(deletion).rejects.toMatchObject({ reason: "timeout" });
+    const outcome = expect(deletion).rejects.toMatchObject({ reason: "timeout", stage: "typed" });
     await vi.advanceTimersByTimeAsync(10_000);
     await outcome;
     // Nothing echoed the command, so no Enter could know where it would land.

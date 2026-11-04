@@ -1,5 +1,6 @@
 import type { AppUpdateStatus } from "./app-update.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
+import type { CommandRuleMatch, ProjectCommandRules } from "./command-rules.js";
 import type { EnvironmentReport } from "./environment-check.js";
 import type { GjcSetting, GjcSettingChange } from "./gjc-settings.js";
 import type { QuickInputShortcutStatus } from "./quick-input.js";
@@ -277,6 +278,8 @@ export interface AgentSession {
   phase?: string;
   /** GJC is waiting to retry a model call that failed. Read only while running. */
   retry?: SessionRetry;
+  /** Tool approvals wait for a decision here instead of being refused (GJC's approval channel). */
+  approvalChannel?: boolean;
   mode?: string;
   model?: string;
   modelDisplay?: string;
@@ -440,6 +443,8 @@ export interface ToolActivity {
   outputArtifactId?: string;
   artifactRefs?: string[];
   permissionOptions?: PermissionOption[];
+  /** A project command rule decided this call without asking. */
+  autoDecision?: CommandRuleMatch;
   diff?: string;
   targetPath?: string;
   images?: ToolImage[];
@@ -890,6 +895,13 @@ export interface ForkSessionInput {
 
 export interface ToolDecision {
   optionId: string;
+  /** With a rejection: what the agent should do instead. */
+  comment?: string;
+  /**
+   * Also remember this command prefix for the call's project. The rule's decision
+   * follows the chosen option: allow_* allows, reject_* rejects.
+   */
+  rule?: { prefix: string };
 }
 
 export interface QueuedMessage {
@@ -1028,6 +1040,11 @@ export interface GjcDesktopBridge {
   cycleThinking(sessionId: string): Promise<string | undefined>;
   /** `/btw`: GJC's answer from the session's context, kept out of the transcript. */
   askSideQuestion(sessionId: string, question: string): Promise<string>;
+  /**
+   * The user's likely next message, predicted from the session's context, or null.
+   * Null covers the setting being off, a runtime without `btw.ask`, and a failure.
+   */
+  suggestNextInput(sessionId: string): Promise<string | null>;
   controlRetry(sessionId: string, action: "now" | "abort"): Promise<void>;
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
@@ -1136,6 +1153,10 @@ export interface SettingsDesktopBridge {
   listGjcSettings(): Promise<GjcSetting[]>;
   /** Writes the changes with `gjc config set` after one confirmation, then lists again. */
   applyGjcSettings(changes: GjcSettingChange[]): Promise<GjcSetting[]>;
+  /** The saved bash allow and reject rules of every project. Desktop only. */
+  listCommandRules(): Promise<ProjectCommandRules[]>;
+  /** Forgets one rule and returns the rules that remain. */
+  removeCommandRule(root: string, prefix: string): Promise<ProjectCommandRules[]>;
   /** Whether the environment check should open at launch. */
   environmentCheckDue(): Promise<boolean>;
   /** Whether the quick input shortcut is registered right now. */

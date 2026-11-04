@@ -7,6 +7,7 @@ import {
   brokerFailureMessage,
   busyPromptError,
   cancelledOperationError,
+  LIVE_TOOL_STATUSES,
   messageTextWithFiles,
   normalizeQueuedRequestText,
   nowLabel,
@@ -45,6 +46,7 @@ export type SdkControlOperation =
   | "turn.steer"
   | "turn.follow_up"
   | "turn.abort"
+  | "skill.invoke"
   | "queue.message.remove"
   | "compaction.run"
   | "mode.goal.operate"
@@ -63,11 +65,30 @@ export type SdkControlOperation =
   | "retry.last"
   | "retry.now"
   | "retry.abort"
+  | "compaction.auto.set"
+  | "retry.auto.set"
   | "bash.background"
   | "runtime.reload"
   | "auth.login"
   | "btw.ask"
   | "workflow.gate_answer";
+
+/** What a settlement query reads: skill turns have their own `turn.result` kind. */
+export type PromptSettlementKind = "prompt" | "skill";
+
+export interface SkillInvocation {
+  name: string;
+  args: string;
+}
+
+/**
+ * GJC does not expand slash commands in SDK prompts, so `/skill:<name> <args>`
+ * must go out as `skill.invoke`. This is the rule GJC's own ACP adapter uses.
+ */
+export function parseSkillInvocation(text: string): SkillInvocation | undefined {
+  const match = /^\/skill:(\S+)(?:\s+([\s\S]*))?$/u.exec(text.trim());
+  return match ? { name: match[1]!, args: (match[2] ?? "").trim() } : undefined;
+}
 
 /** The controller members sending, steering and aborting a turn read and write. */
 export interface ControlHost {
@@ -152,6 +173,7 @@ export interface ControlHost {
     sessionId: string,
     operationRef: string,
     isCurrent?: () => boolean,
+    kind?: PromptSettlementKind,
   ): Promise<
     | "terminal"
     | "unknown"
@@ -174,7 +196,7 @@ export interface ControlHost {
   ): Promise<"owned" | "plain" | "no_active_turn">;
   finalizeAllMessages(sessionId: string): void;
   readonly toolSnapshots: Map<string, Map<string, ToolActivity>>;
-  cancelOpenTools(sessionId: string): void;
+  readonly emitEvent: (event: AgentEvent) => void;
   settleOpenQuestions(
     sessionId: string,
     status: "cancelled" | "timeout",
@@ -611,6 +633,12 @@ export async function sendMessage(
     input.images.length > 0 && (await host.sdkOperations(sessionId)).has("turn.image.begin")
       ? await readUploadImages(input.images)
       : undefined;
+  const skill =
+    input.images.length === 0 &&
+    input.files.length === 0 &&
+    (await host.sdkOperations(sessionId)).has("skill.invoke")
+      ? parseSkillInvocation(bare)
+      : undefined;
   const sentText = uploadImages ? bare + attachedPathsText({ ...input, images: [] }) : promptText;
   const admission = Symbol(sessionId);
   const admissionGeneration = host.generation;
@@ -653,7 +681,19 @@ export async function sendMessage(
     let accepted: Awaited<ReturnType<GjcSdkCli["send"]>> | undefined;
     let uncertain = false;
     try {
-      if (uploadImages) {
+      if (skill) {
+        const receipt = await host.controlSession(sessionId, "skill.invoke", {
+          ...skill,
+          clientRef: operationRef,
+        });
+        if (receipt?.accepted === false || receipt?.status === "rejected") {
+          const detail = requestFailureDetail(receipt, "GJC rejected the skill request.");
+          if (promptPreflightNotExecutedReceipt(receipt))
+            return await settleNotExecuted(detail);
+          throw new Error(detail);
+        }
+        accepted = { operationRef, status: "accepted" };
+      } else if (uploadImages) {
         try {
           const receipt = await promptWithImages(
             { executable: cli.executable, env: cli.env, cwd: host.repoFor(sessionId) },
@@ -700,6 +740,7 @@ export async function sendMessage(
             sessionId,
             settledOperationRef,
             () => host.activePromptAdmissions.get(sessionId) === admission,
+            skill ? "skill" : "prompt",
           );
     if (settlement === "unknown" && uncertain) {
       // This send may have been cancelled and replaced while its settlement
@@ -907,6 +948,7 @@ export async function awaitPromptSettlement(
   sessionId: string,
   operationRef: string,
   isCurrent?: () => boolean,
+  kind: PromptSettlementKind = "prompt",
 ): Promise<
   | "terminal"
   | "unknown"
@@ -915,7 +957,7 @@ export async function awaitPromptSettlement(
   const record = await reconcileRequestQuery(host,
     sessionId,
     "turn.result",
-    { kind: "prompt", clientRef: operationRef },
+    { kind, clientRef: operationRef },
     (result) =>
       result.status === "terminal_ok" ||
       result.status === "failed" ||
@@ -970,7 +1012,7 @@ export async function cancelRun(host: ControlHost, sessionId: string): Promise<v
       host.finalizeAssistantMessage(sessionId);
       host.finalizeAllMessages(sessionId);
       host.toolSnapshots.delete(sessionId);
-      host.cancelOpenTools(sessionId);
+      cancelOpenTools(host, sessionId);
       host.settleOpenQuestions(sessionId, "cancelled");
       host.cancelPermissionsForSession(sessionId);
       appendCancelledNotice(host, sessionId, stop === "plain");
@@ -1163,4 +1205,46 @@ async function abortOwnedThroughControl(
   throw new Error(
     `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(result ?? null)}`,
   );
+}
+
+/**
+ * Cancel every tool card a stopped turn could still be showing as open work.
+ *
+ * A queued call is included: it was waiting rather than running, and a cancelled
+ * turn never starts it -- leaving it `pending` kept a live card (and its spinner)
+ * in a transcript whose turn is over.
+ */
+export function cancelOpenTools(host: ControlHost, sessionId: string): void {
+  const items = host.transcripts.get(sessionId) ?? [];
+  for (const item of items) {
+    if (item.kind !== "tool") continue;
+    if (!LIVE_TOOL_STATUSES.has(item.status)) continue;
+    item.status = "cancelled";
+    if (item.subagents) {
+      item.subagents = item.subagents.map((agent) =>
+        agent.status === "running" || agent.status === "waiting"
+          ? { ...agent, status: "failed" }
+          : agent,
+      );
+    }
+    host.emitEvent({ type: "tool.updated", tool: { ...item } });
+  }
+}
+
+export async function querySessionItems(
+  host: ControlHost,
+  sessionId: string,
+  query: string,
+  input: Record<string, unknown> = {},
+  options?: { strict?: boolean },
+): Promise<unknown[]> {
+  try {
+    const cli = await host.requireCli();
+    return await cli.queryItems(sessionId, query, input, {
+      repo: host.repoFor(sessionId),
+    });
+  } catch (error) {
+    if (!options?.strict) return [];
+    throw error;
+  }
 }

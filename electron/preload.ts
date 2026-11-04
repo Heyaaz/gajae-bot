@@ -360,6 +360,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
     ipcRenderer.invoke(GJC_IPC.cycleThinking, sessionId),
   askSideQuestion: (sessionId: string, question: string) =>
     ipcRenderer.invoke(GJC_IPC.askSideQuestion, sessionId, question),
+  suggestNextInput: (sessionId: string) =>
+    ipcRenderer.invoke(GJC_IPC.suggestNextInput, sessionId),
   controlRetry: (sessionId: string, action: "now" | "abort") =>
     ipcRenderer.invoke(GJC_IPC.controlRetry, sessionId, action),
   compactSession: (sessionId: string) =>
@@ -490,6 +492,9 @@ const settings: SettingsDesktopBridge = Object.freeze({
   checkEnvironment: () => ipcRenderer.invoke(SETTINGS_IPC.checkEnvironment),
   listGjcSettings: () => ipcRenderer.invoke(SETTINGS_IPC.listGjcSettings),
   applyGjcSettings: (changes: GjcSettingChange[]) => ipcRenderer.invoke(SETTINGS_IPC.applyGjcSettings, changes),
+  listCommandRules: () => ipcRenderer.invoke(SETTINGS_IPC.listCommandRules),
+  removeCommandRule: (root: string, prefix: string) =>
+    ipcRenderer.invoke(SETTINGS_IPC.removeCommandRule, root, prefix),
   environmentCheckDue: () => ipcRenderer.invoke(SETTINGS_IPC.environmentCheckDue),
   quickInputShortcutStatus: () =>
     ipcRenderer.invoke(SETTINGS_IPC.quickInputShortcutStatus),

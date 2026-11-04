@@ -12,7 +12,19 @@ describe("askSideQuestion", () => {
   it("asks btw.ask and returns the trimmed reply", async () => {
     const runtime = host(["btw.ask"], "  The tests passed.  ");
     await expect(askSideQuestion(runtime, "s1", "Did the tests pass?")).resolves.toBe("The tests passed.");
-    expect(runtime.controlSession).toHaveBeenCalledWith("s1", "btw.ask", { question: "Did the tests pass?" });
+    expect(runtime.controlSession).toHaveBeenCalledWith(
+      "s1",
+      "btw.ask",
+      { question: "Did the tests pass?" },
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
+  it("waits past GJC's own 120 s /btw limit instead of the CLI's 8 s default", async () => {
+    const runtime = host(["btw.ask"], "ok");
+    await askSideQuestion(runtime, "s1", "q");
+    const options = (runtime.controlSession.mock.calls[0] as unknown[])[3] as { timeoutMs: number };
+    expect(options.timeoutMs).toBeGreaterThan(120_000);
   });
 
   it("refuses when the runtime does not advertise btw.ask", async () => {

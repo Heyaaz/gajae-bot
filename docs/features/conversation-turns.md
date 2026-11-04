@@ -10,7 +10,7 @@ idle and any held work is released.
 
 - `TURN-SEND` — submit a prompt and stream the assistant reply into the transcript.
 - `TURN-QUEUE` — hold follow-up text locally while a turn runs, then release it on turn end or empty Enter.
-- `TURN-STEER` — hold `/steer <text>` visibly above the input, then deliver it with Send now.
+- `TURN-STEER` — deliver `/steer <text>`, or plain text under the `steer` preference, to the open turn at once.
 - `TURN-STOP` — cancel the open turn and its owned work from the Stop slot, Escape, or `/abort`.
 - `TURN-ATTACH` — attach up to 6 images and 5 files; images are read by GJC before the model answers.
 - `TURN-COMMAND` — open the slash palette and run bundled, SDK, or skill commands.
@@ -24,8 +24,10 @@ idle and any held work is released.
   placeholder `무엇이든 요청하세요`.
 - Enter submits. `Shift+Enter` inserts a newline. The submit slot holds one button: the
   send arrow when there is a draft, otherwise the Stop button while a turn runs.
-- While a turn runs, a plain Enter holds work under the default `queue` behavior; an
-  explicit `/queue` and `/steer` both hold visibly. Send now delivers a selected row without stopping the turn. The held-work chip
+- While a turn runs, a plain Enter holds work under the default `queue` behavior and
+  steers it into the turn under the `steer` preference. An explicit `/queue` always
+  holds and `/steer` always steers. Once something is held, a plain Enter joins the queue
+  so it cannot overtake it. Send now steers a selected row without stopping the turn. The held-work chip
   appears above the composer. Empty Enter releases held work. `Esc` or the Stop slot
   cancels.
 - Attach through `이미지 첨부` and `파일 첨부`, the native file picker, or drag-and-drop
@@ -107,8 +109,8 @@ open; `MAP_ROOT` is exported.
   ```bash
   cu "In Gajae, start this prompt in MAP-SESSION: 'MAP-TURN-STEER-BASE use the bash tool to run sleep 30, then reply exactly MAP-BASE-DONE. Do not edit any file.' While the header still says Working, type exactly '/steer MAP-TURN-4 reply with exactly MAP-STEER-OK after the current step' and press Enter. Save $MAP_ROOT/evidence/TURN-STEER-01.png and report whether a user bubble appeared immediately and whether any queue chip exists."
   ```
-  Observable: the instruction text after `/steer ` appears as a Steer row above the input.
-  Click Send now while the turn is still `Working`; a user bubble then appears. The reply contains
+  Observable: the instruction text after `/steer ` appears as a user bubble immediately
+  while the turn is still `Working`; no queue chip is created. The reply contains
   `MAP-STEER-OK`. Cross-check: `grep -RlF 'MAP-TURN-4' "$MAP_ROOT/agent/sessions"`
   finds the transcript.
 
@@ -165,13 +167,14 @@ open; `MAP_ROOT` is exported.
 
 ## Gotchas
 
-- `/steer` creates a visible held row; Send now delivers only that row without stopping.
-  Empty Enter first tries to stop the owned turn, then releases the held requests in order.
-  Expect the user bubble after delivery, not merely after holding the instruction.
-- Plain text while a turn runs is held only when the saved Enter-while-running
-  preference is `queue` (the default) and nothing is already held. Explicit `/queue`
-  always holds; explicit `/steer` holds a Steer row too. Check the visible behavior if the
-  preference was changed.
+- A steer reaches GJC at once, but GJC decides when it takes effect: at the next
+  boundary after the running tool call, or by interrupting that call when GJC's
+  immediate-interrupt setting is on. During a long command the bubble can show well
+  before the agent reacts. Empty Enter first tries to stop the owned turn, then releases the held
+  requests in order.
+- Plain text while a turn runs is held when the saved Enter-while-running preference is
+  `queue` (the default) or something is already held. Explicit `/queue` always holds;
+  explicit `/steer` never holds. Check the visible behavior if the preference was changed.
 - The Stop slot and Escape while the composer is focused discard the composer's held
   queue after cancelling. Escape from elsewhere (for example the transcript) cancels the
   turn without discarding held work. Use a disposable scenario if the journey must show

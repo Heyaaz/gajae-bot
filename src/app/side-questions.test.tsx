@@ -172,18 +172,36 @@ describe("SideQuestionPanel", () => {
     expect(host.querySelector<HTMLButtonElement>(".side-panel-send")!.disabled).toBe(true);
   });
 
+  it("counts the wait up and explains a long one", () => {
+    vi.useFakeTimers();
+    try {
+      const host = panel([{ id: "c", question: "q", status: "pending", askedAt: Date.now() }]);
+      const status = () => host.querySelector('[role="status"]')!;
+      expect(status().textContent).toBe("답을 생각하는 중");
+      act(() => vi.advanceTimersByTime(5_000));
+      expect(status().querySelector(".side-exchange-elapsed")?.textContent).toBe("5초");
+      expect(status().querySelector("small")).toBeNull();
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(status().querySelector("small")?.textContent).toContain("최대 2분");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("shows waiting, answers, and failures with a retry, and holds input while waiting", () => {
     const onRetry = vi.fn();
     const host = panel(
       [
         { id: "a", question: "q1", status: "answered", answer: "**done**" },
         { id: "b", question: "q2", status: "failed", error: "busy" },
-        { id: "c", question: "q3", status: "pending" },
+        { id: "c", question: "q3", status: "pending", askedAt: Date.now() },
       ],
       { onRetry },
     );
     expect(host.querySelector(".side-exchange-answer strong")?.textContent).toBe("done");
-    expect(host.querySelector('[role="status"]')?.textContent).toBe("답을 기다리는 중…");
+    // The shared markdown styles (tables, task lists, headings) key on this class.
+    expect(host.querySelector(".side-exchange-answer")?.classList.contains("markdown-body")).toBe(true);
+    expect(host.querySelector('[role="status"]')?.textContent).toContain("답을 생각하는 중");
     act(() => host.querySelector<HTMLButtonElement>(".side-exchange-failed button")!.click());
     expect(onRetry).toHaveBeenCalledWith("b");
     type(host.querySelector("textarea")!, "more");

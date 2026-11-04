@@ -258,12 +258,16 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.client.flushFollowUps(sessionId);
   }
 
+  suggestNextInput(sessionId: string): Promise<string | null> {
+    return this.client.suggestNextInput(sessionId);
+  }
+
   async cancelRun(sessionId: string): Promise<void> {
     await this.client.cancelRun(sessionId);
   }
 
   async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
-    await this.client.resolveToolCall(toolId, decision.optionId);
+    await this.client.resolveToolCall(toolId, decision);
   }
 
   async answerQuestion(

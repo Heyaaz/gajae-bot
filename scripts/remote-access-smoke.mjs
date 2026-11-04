@@ -296,7 +296,7 @@ async function main() {
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       const modelMenu = document.querySelector('.config-option-menu--model');
       const modelBounds = modelMenu?.getBoundingClientRect();
-      const modelChoice = modelMenu?.querySelector('.config-option-group > button');
+      const modelChoice = modelMenu?.querySelector('.config-option-group > .model-choice > button:first-child');
       const choiceBounds = modelChoice?.getBoundingClientRect();
       const modelHit = choiceBounds && document.elementFromPoint(choiceBounds.left + 10, choiceBounds.top + 10);
       const modelMenuVisible = Boolean(modelBounds && modelBounds.left >= 0 && modelBounds.right <= innerWidth &&

@@ -5,7 +5,7 @@ import { humanErrorMessage } from "./format";
 
 /** One `/btw` question in the side panel and what became of it. */
 export type SideExchange =
-  | { id: string; question: string; status: "pending" }
+  | { id: string; question: string; status: "pending"; askedAt: number }
   | { id: string; question: string; status: "answered"; answer: string }
   | { id: string; question: string; status: "failed"; error: string };
 
@@ -95,7 +95,7 @@ export function useSideQuestions(
         });
         return;
       }
-      add(sessionId, { id, question, status: "pending" });
+      add(sessionId, { id, question, status: "pending", askedAt: Date.now() });
       ask(sessionId, sideQuestionWithContext(history, question)).then(
         (answer) => settle(sessionId, { id, question, status: "answered", answer }),
         (error: unknown) =>

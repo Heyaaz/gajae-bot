@@ -630,21 +630,32 @@ describe("0.18.12 lifecycle refusal", () => {
   const legacyRefusal = () => new SdkCliError("operation_failed", "localized refusal", undefined,
     [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown");
 
-  it("preserves ambiguous legacy history when no transcript is left for the CLI to delete", async () => {
+  it("removes a session whose transcript is already gone without asking GJC to delete it", async () => {
+    // GJC refuses session.delete without the transcript path, so asking left the
+    // row undeletable: "GJC가 세션 삭제 요청의 입력을 거부했습니다".
     const { controller, cli, internals } = harness();
     try {
       internals.sessions.set("s1", session());
       internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
       internals.deleteThroughGjcCli = vi.fn();
       cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
-      cli.rawGlobal.mockRejectedValue(legacyRefusal());
-      const remove = vi.spyOn(internals, "removeSessionArtifacts");
-      await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_legacy_history_ambiguous");
-      expect(internals.sessions.get("s1").attachment).toBe("recovering");
-      expect(remove).not.toHaveBeenCalled();
+      await controller.deleteSession("s1");
+      expect(internals.sessions.has("s1")).toBe(false);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
       expect(internals.deleteThroughGjcCli).not.toHaveBeenCalled();
-      expect(cli.rawGlobal).toHaveBeenCalledExactlyOnceWith("session.delete",
-        expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+    } finally { controller.dispose(); }
+  });
+
+  it("still asks GJC about a session a host holds even when its transcript is not found", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", pid: 4242 }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
+      await expect(controller.deleteSession("s1")).rejects.toThrow();
+      expect(cli.rawGlobal).toHaveBeenCalledWith("session.delete", expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+      expect(internals.sessions.has("s1")).toBe(true);
     } finally { controller.dispose(); }
   });
 
@@ -978,6 +989,23 @@ describe("GjcSdkController CLI seam", () => {
     );
   });
 
+  it("asks through GJC's approval channel when the session offers one", async () => {
+    const { controller, cli } = harness({ permissionHandling: "prompt" });
+    (cli.rawGlobal as any).mockImplementation(async (op: string) =>
+      op === "session.create" ? { sessionId: "asks" } : {},
+    );
+    (cli.queryItems as any).mockImplementation(async (_id: string, query: string) =>
+      query === "runtime.capabilities"
+        ? [{ operations: ["permission.channel.set", "permission.requests.list", "permission.respond"] }]
+        : [],
+    );
+    const created = await controller.createSession({ runtime: "gjc", workspace: "/repo" } as any);
+    expect(cli.rawControl).toHaveBeenCalledWith("asks", "permission.channel.set", { enabled: true }, { repo: "/repo" });
+    expect(cli.rawControl).not.toHaveBeenCalledWith("asks", "permission_mode.set", expect.anything(), expect.anything());
+    expect(created.approvalChannel).toBe(true);
+    controller.dispose();
+  });
+
   it("leaves a created session recovering when permission policy cannot be confirmed", async () => {
     const { controller, cli, internals } = harness({ permissionHandling: "prompt" });
     (cli.rawGlobal as any).mockResolvedValue({ sessionId: "unsafe" });
@@ -1063,6 +1091,75 @@ describe("GjcSdkController CLI seam", () => {
     internals.awaitPromptSettlement = vi.fn(async () => undefined);
     await controller.sendMessage("s1", { text: "hello", images: [], files: [] });
     expect(cli.send).toHaveBeenCalledWith("s1", "hello", expect.objectContaining({ repo: "/repo", opRef: expect.any(String) }));
+  });
+
+  describe("a /skill: request", () => {
+    const skillHarness = (operations: string[]) => {
+      const ctx = harness();
+      const { cli, internals } = ctx;
+      internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+      internals.transcripts.set("s1", []); internals.messageKeys.set("s1", new Map());
+      internals.attachedSessions.add("s1");
+      internals.sessionSdkOperations.set("s1", new Set(operations));
+      (cli.rawControl as any).mockResolvedValue({ accepted: true });
+      (cli.rawQuery as any).mockResolvedValue({ result: { status: "terminal_ok" } });
+      return ctx;
+    };
+    const send = (text: string, extra: Record<string, unknown> = {}) => ({ text, images: [], files: [], ...extra });
+
+    it("runs through skill.invoke and settles by the same clientRef", async () => {
+      const { controller, cli } = skillHarness(["turn.prompt", "skill.invoke"]);
+      await controller.sendMessage("s1", send("/skill:greet Gajae"));
+      expect(cli.send).not.toHaveBeenCalled();
+      expect(cli.rawControl).toHaveBeenCalledWith(
+        "s1", "skill.invoke",
+        { name: "greet", args: "Gajae", clientRef: expect.any(String) },
+        expect.anything(),
+      );
+      const clientRef = (cli.rawControl as any).mock.calls[0][2].clientRef;
+      expect(cli.rawQuery).toHaveBeenCalledWith(
+        "s1", "turn.result", { kind: "skill", clientRef }, expect.anything(),
+      );
+      controller.dispose();
+    });
+
+    it("sends empty args for a skill without arguments", async () => {
+      const { controller, cli } = skillHarness(["skill.invoke"]);
+      await controller.sendMessage("s1", send("  /skill:greet  "));
+      expect(cli.rawControl).toHaveBeenCalledWith(
+        "s1", "skill.invoke", { name: "greet", args: "", clientRef: expect.any(String) }, expect.anything(),
+      );
+      controller.dispose();
+    });
+
+    it("is an ordinary prompt when the runtime does not advertise skill.invoke", async () => {
+      const { controller, cli } = skillHarness(["turn.prompt"]);
+      await controller.sendMessage("s1", send("/skill:greet Gajae"));
+      expect(cli.rawControl).not.toHaveBeenCalled();
+      expect(cli.send).toHaveBeenCalledWith("s1", "/skill:greet Gajae", expect.objectContaining({ opRef: expect.any(String) }));
+      expect(cli.rawQuery).toHaveBeenCalledWith(
+        "s1", "turn.result", { kind: "prompt", clientRef: expect.any(String) }, expect.anything(),
+      );
+      controller.dispose();
+    });
+
+    it("is an ordinary prompt when an attachment comes with it", async () => {
+      const { controller, cli } = skillHarness(["turn.prompt", "skill.invoke"]);
+      await controller.sendMessage("s1", send("/skill:greet Gajae", {
+        files: [{ id: "f1", name: "notes.md", nativePath: "/attachments/notes.md" }],
+      }));
+      expect(cli.rawControl).not.toHaveBeenCalled();
+      expect((cli.send.mock.calls[0] as unknown as [string, string])[1]).toContain("/skill:greet Gajae");
+      controller.dispose();
+    });
+
+    it("reports a skill GJC does not know as a failed run instead of a prompt", async () => {
+      const { controller, cli } = skillHarness(["skill.invoke"]);
+      (cli.rawControl as any).mockRejectedValue(new Error("Skill nope was not found. Available: greet"));
+      await expect(controller.sendMessage("s1", send("/skill:nope"))).rejects.toThrow("not found");
+      expect(cli.send).not.toHaveBeenCalled();
+      controller.dispose();
+    });
   });
 
   it("keeps an uncertain post-dispatch prompt running without retrying it", async () => {
@@ -1797,6 +1894,40 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("applies auto compaction and retry settings to attached sessions that advertise them", async () => {
+    const { controller, internals } = harness();
+    internals.attachedSessions.add("s1");
+    internals.attachedSessions.add("s2");
+    internals.sdkOperations = vi.fn(async (id: string) =>
+      new Set(id === "s1" ? ["compaction.auto.set", "retry.auto.set"] : ["retry.auto.set"]));
+    internals.controlSession = vi.fn(async (id: string) => {
+      if (id === "s2") throw new Error("gone");
+      return { changed: true };
+    });
+    await controller.applyLiveSettings([
+      { key: "compaction.enabled", value: false },
+      { key: "retry.enabled", value: true },
+      { key: "retry.maxRetries", value: 5 },
+    ]);
+    expect(internals.controlSession.mock.calls).toHaveLength(3);
+    expect(internals.controlSession.mock.calls).toEqual(expect.arrayContaining([
+      ["s1", "compaction.auto.set", { on: false }],
+      ["s1", "retry.auto.set", { on: true }],
+      ["s2", "retry.auto.set", { on: true }],
+    ]));
+    controller.dispose();
+  });
+
+  it("sends no live setting control to a session that is not attached", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sdkOperations = vi.fn(async () => new Set(["retry.auto.set"]));
+    internals.controlSession = vi.fn(async () => ({ changed: true }));
+    await controller.applyLiveSettings([{ key: "retry.enabled", value: true }]);
+    expect(internals.controlSession).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it.each([true, false])("requests only saved-history deletion when live=%s", async (live) => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
@@ -1828,7 +1959,8 @@ describe("GjcSdkController CLI seam", () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     internals.attachedSessions.add("s1");
-    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    // The CLI cannot take over either: the transcript is gone by the time it looks.
+    internals.locateSharedTranscriptFile = vi.fn().mockResolvedValueOnce("/agent/sessions/x/s1.jsonl").mockResolvedValue(undefined);
     (cli.listSessions as any).mockResolvedValue([
       { sessionId: "s1", repo: "/repo", live: false, deleted: false },
     ]);
@@ -1881,7 +2013,7 @@ describe("GjcSdkController CLI seam", () => {
   it("deletes a tombstoned session from that row's own locator window", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/stale");
-    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
     (cli.listSessions as any).mockResolvedValue([
       { sessionId: "s1", repo: "/repo", live: false, deleted: true, stateRoot: "/state" },
     ]);
@@ -1948,6 +2080,19 @@ describe("GjcSdkController CLI seam", () => {
     cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
     await (controller as any)["resume" + "Session"]("s1");
     expect(cli.rawGlobal).toHaveBeenCalledWith("session.resume", expect.objectContaining({ sessionId: "s1", cwd: "/repo", sessionPath: "/repo/transcript.jsonl" }), { repo: "/repo" });
+  });
+
+  it("lets go of a session whose transcript is gone instead of asking GJC to resume it", async () => {
+    // GJC refuses a resume without the transcript path, and the window showed
+    // "The operation failed. Its outcome could not be established." for it.
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
+    await expect(controller.getTranscriptPage("s1")).resolves.toMatchObject({ items: [] });
+    expect(cli.rawGlobal).not.toHaveBeenCalledWith("session.resume", expect.anything(), expect.anything());
+    expect(internals.sessions.has("s1")).toBe(false);
+    controller.dispose();
   });
 
   it("preserves managed worktree metadata when forking the same cwd", async () => {
@@ -2018,6 +2163,47 @@ describe("GjcSdkController CLI seam", () => {
       internals.appendLocalUserMessage("s1", "new prompt", { text: "new prompt", images: [], files: [] });
       const items = internals.installTranscript("s1", []);
       expect(items).toEqual([expect.objectContaining({ role: "user", content: "new prompt" })]);
+    } finally { controller.dispose(); }
+  });
+
+  it("shows one user row per send from the echo through the recorded turn", () => {
+    const { controller, internals } = harness();
+    const userRows = () =>
+      (internals.transcripts.get("s1") ?? []).filter((row: any) => row.role === "user").map((row: any) => row.content);
+    const record = (id: string, text: string) => ({ type: "message", id, message: { role: "user", content: [{ type: "text", text }] } });
+    const reply = (id: string, text: string) => ({ type: "message", id, message: { role: "assistant", content: [{ type: "text", text }] } });
+    const input = (text: string) => ({ text, images: [], files: [] });
+    try {
+      internals.appendLocalUserMessage("s1", "이슈 올려", input("이슈 올려"));
+      expect(userRows()).toEqual(["이슈 올려"]);
+
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "이슈 올려")]));
+      expect(userRows()).toEqual(["이슈 올려"]);
+
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "이슈 올려"), reply("a1", "작업 중")]));
+      expect(userRows()).toEqual(["이슈 올려"]);
+
+      internals.appendLocalUserMessage("s1", "다음", input("다음"));
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "이슈 올려"), reply("a1", "작업 중"), record("u2", "다음")]));
+      expect(userRows()).toEqual(["이슈 올려", "다음"]);
+    } finally { controller.dispose(); }
+  });
+
+  it("keeps the same words sent twice as two rows while the second is not recorded yet", () => {
+    const { controller, internals } = harness();
+    const userRows = () =>
+      (internals.transcripts.get("s1") ?? []).filter((row: any) => row.role === "user").map((row: any) => row.id);
+    const record = (id: string, text: string) => ({ type: "message", id, message: { role: "user", content: [{ type: "text", text }] } });
+    const input = { text: "계속", images: [], files: [] };
+    try {
+      internals.appendLocalUserMessage("s1", "계속", input);
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "계속")]));
+      internals.appendLocalUserMessage("s1", "계속", input);
+      expect(userRows()).toHaveLength(2);
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "계속")]));
+      expect(userRows()).toHaveLength(2);
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "계속"), record("u2", "계속")]));
+      expect(userRows()).toHaveLength(2);
     } finally { controller.dispose(); }
   });
 
@@ -3505,6 +3691,34 @@ describe("runtime activity visibility", () => {
     expect(items[1]).not.toHaveProperty("runtimeHidden");
     // A hidden row with no content is still nothing to show.
     expect(items).toHaveLength(2);
+  });
+
+  it("shows the request a skill ran from as the user's turn, and the window's echo settles on it", () => {
+    const record = {
+      type: "custom_message",
+      id: "k1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      customType: "skill-prompt",
+      content: "Say hello politely.\n\nUser: Gajae",
+      display: true,
+      details: { name: "greet", path: "/w/.gjc/skills/greet/SKILL.md", args: "Gajae", lineCount: 1 },
+    };
+    const reply = { role: "assistant", content: [{ type: "text", text: "hello Gajae" }] };
+    const items = sharedTranscriptItems("s1", [record, reply]);
+    expect(items.map((item: any) => [item.kind, item.role ?? item.sourceType, item.content])).toEqual([
+      ["message", "user", "/skill:greet Gajae"],
+      ["system", "skill-prompt", "Say hello politely.\n\nUser: Gajae"],
+      ["message", "assistant", "hello Gajae"],
+    ]);
+    expect(sharedTranscriptItems("s1", [{ ...record, details: { name: "greet", args: "" } }])[0])
+      .toMatchObject({ role: "user", content: "/skill:greet" });
+
+    const { internals } = harness();
+    internals.transcripts.set("s1", [
+      { id: "local-prompt-1", kind: "message", sessionId: "s1", role: "user", content: "/skill:greet Gajae", createdAt: "now", streaming: false },
+    ]);
+    const installed = internals.installTranscript("s1", items) as Array<{ id: string }>;
+    expect(installed.map((item) => item.id)).toEqual(["shared-message-k1", "shared-system-k1", items[2]!.id]);
   });
 
   it("shows an in-flight call as running even after an earlier turn was aborted", () => {

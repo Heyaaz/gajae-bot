@@ -11,6 +11,7 @@ import type {
   PermissionOption,
 } from "../shared/agent-contract.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
+import type { CommandRuleDecision, CommandRuleMatch } from "../shared/command-rules.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import {
   GjcSdkCli,
@@ -286,14 +287,26 @@ export const RUN_STATE_TAIL_BYTES = 256 * 1024;
 export interface PendingPermission {
   request: {
     sessionId: string;
-    toolCall: { toolCallId: string; title?: string };
+    toolCall: {
+      toolCallId: string;
+      title?: string;
+      toolName?: string;
+      /** The bash command, only when GJC's raw input carries one as a string. */
+      command?: string;
+    };
     options: Array<{
       optionId: string;
       name: string;
       kind: PermissionOption["kind"];
     }>;
   };
-  resolve: (response: { outcome: { outcome: string; optionId?: string } }) => void;
+  resolve: (response: PermissionResponse) => void;
+}
+
+export interface PermissionResponse {
+  outcome: { outcome: string; optionId?: string };
+  /** Why a rejection was chosen; GJC hands it to the agent as the tool's result. */
+  comment?: string;
 }
 
 export interface GjcControllerOptions {
@@ -302,6 +315,11 @@ export interface GjcControllerOptions {
   modelPreset?: AgentControlPreferences["modelPreset"];
   permissionHandling?: AgentControlPreferences["permissionHandling"];
   sessionMetadata?: SessionMetadataStore;
+  /** Project command rules that decide an approval request without a card. */
+  commandRules?: {
+    decide(projectPath: string, toolName: string, command: string): Promise<CommandRuleMatch | undefined>;
+    add(projectPath: string, prefix: string, decision: CommandRuleDecision): Promise<void>;
+  };
   artifactDirectory?: string;
   emit: (event: AgentEvent) => void;
 }

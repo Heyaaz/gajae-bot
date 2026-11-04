@@ -55,6 +55,7 @@ export interface RemoteOperationsHost {
   steerSession(sessionId: string, input: ResolvedMessageInput): Promise<MessageDelivery>;
   queueFollowUp(sessionId: string, input: ResolvedMessageInput): Promise<MessageDelivery>;
   flushQueuedNow(sessionId: string): Promise<boolean>;
+  suggestNextInput(sessionId: string): Promise<string | null>;
   cancelRun(sessionId: string): Promise<void>;
   resolveToolCall(toolId: string, decision: ToolDecision): Promise<void>;
   listPendingQuestions(sessionId: string): Promise<QuestionActivity[]>;
@@ -183,6 +184,8 @@ export async function runRemoteOperation(
       return host.queueFollowUp(sessionId!, remoteMessageInput(messageBody(body)));
     case "flush-follow-ups":
       return host.flushQueuedNow(sessionId!);
+    case "suggest-next-input":
+      return host.suggestNextInput(sessionId!);
     case "cancel-run":
       return host.cancelRun(sessionId!);
     case "resolve-tool-call":

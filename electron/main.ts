@@ -34,6 +34,7 @@ import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
 import { SettingsStore, validDirectory } from "./settings-store.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
+import { CommandRuleStore } from "./command-rule-store.js";
 import { TerminalSessionStore } from "./terminal-session-store.js";
 import { hostText, setHostLanguage } from "./host-text.js";
 import { ManagementService } from "./desktop-services.js";
@@ -150,6 +151,18 @@ const workspace = validDirectory(requestedWorkspace)
   ? path.resolve(requestedWorkspace)
   : preferences.workspace;
 const sessionMetadata = new SessionMetadataStore(userDataDirectory);
+// The repository screen reads Git and GitHub on demand. `gh` is resolved the way the
+// CLI itself would be, with GJC_BIN's precedent for a packaged app that has to name
+// an absolute path.
+const repoService = new RepoService({
+  ghExecutable: process.env.GAJA_GH_BIN || undefined,
+});
+// A rule belongs to the project's main working tree, so the sessions of a project
+// and of its worktrees share it.
+const commandRules = new CommandRuleStore(
+  userDataDirectory,
+  async (projectPath) => (await repoService.resolveProjects([projectPath]))[0]?.root ?? projectPath,
+);
 const attachmentStore = new AttachmentStore();
 let productivityService: ProductivityService | undefined;
 // Declared before the controller so the event fan-out below can reach it; the
@@ -417,6 +430,7 @@ const gjcController = new GjcSdkController({
   modelPreset,
   permissionHandling: preferences.permissionHandling,
   sessionMetadata,
+  commandRules,
   artifactDirectory: path.join(userDataDirectory, "artifacts"),
   emit: broadcastAgentEvent,
 });
@@ -535,6 +549,8 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
   // The menu bar is drawn before the window resolves the language, and redraws
   // otherwise only on a session change.
   () => renderDesktopStatus?.(desktopIntegration.state()),
+  (changes) => gjcController.applyLiveSettings(changes),
+  commandRules,
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
@@ -555,12 +571,6 @@ remoteAccess = new RemoteAccessService({
   log: (message) => console.log(`remote access: ${message}`),
 });
 const unregisterRemoteIpc = registerRemoteIpcHandlers(remoteAccess, ipcSecurity);
-// The repository screen reads Git and GitHub on demand. `gh` is resolved the way the
-// CLI itself would be, with GJC_BIN's precedent for a packaged app that has to name
-// an absolute path.
-const repoService = new RepoService({
-  ghExecutable: process.env.GAJA_GH_BIN || undefined,
-});
 const unregisterRepoIpc = registerRepoIpcHandlers(repoService, ipcSecurity);
 parallelRuns = new ParallelRunService({
   store: sessionMetadata,
@@ -877,6 +887,8 @@ function createWindow(): BrowserWindow {
             };
             const buttonWithText = (text) => Array.from(document.querySelectorAll('button'))
               .find((button) => button.textContent?.trim().includes(text));
+            // Settings tabs follow the system language, so the smoke accepts either.
+            const settingsTab = (korean, english) => buttonWithText(korean) || buttonWithText(english);
 
             assert(document.querySelector('.app-shell'), 'Application shell did not mount');
             assert(document.querySelectorAll('.session-row').length === 4, 'Mock sessions did not render');
@@ -1148,12 +1160,12 @@ function createWindow(): BrowserWindow {
             document.querySelector('.dropdown-menu [role="option"]')?.click();
             await wait(50);
             assert(!document.querySelector('.dropdown-menu'), 'Approval dropdown did not close after selection');
-            assert(buttonWithText('MCP') && buttonWithText('Skills/Plugins') && buttonWithText('Usage') && buttonWithText('Automations'), 'Management settings tabs did not render');
-            buttonWithText('Automations')?.click();
+            assert(buttonWithText('MCP') && buttonWithText('Skills/Plugins') && settingsTab('사용량', 'Usage') && settingsTab('자동화', 'Automations'), 'Management settings tabs did not render');
+            settingsTab('자동화', 'Automations')?.click();
             await wait(50);
             assert(document.querySelector('.automation-panel'), 'Automation settings panel did not render');
             assert(!buttonWithText('Accounts'), 'Removed Accounts settings tab still renders');
-            const workspaceTab = buttonWithText('Workspace');
+            const workspaceTab = settingsTab('작업 공간', 'Workspace');
             assert(workspaceTab, 'Workspace settings tab did not render');
             workspaceTab.click();
             await wait(100);

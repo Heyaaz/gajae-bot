@@ -2,32 +2,19 @@ import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
   GoalOperation,
   HistorySession,
-  MessageDelivery,
-  SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type {
   AgentCommand,
   AgentConfigOption,
   AgentControlPreferences,
-  AgentEvent,
   AgentSession,
   BackendConnection,
   MessageInput,
   QuestionSubmission,
-  TranscriptItem,
 } from "../backend/types";
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
-  deliveryEchoMatches,
-  isTrackableMessageInput,
-} from "../message-delivery";
-import {
   cacheTranscript,
-  initialSessionId,
-  discoveryRevisionIsFresh,
-  lastUserRequestContent,
-  mergeDiscoveredSessions,
-  mergeTranscriptItem,
   pendingQuestions,
   pendingToolApprovals,
 } from "../transcript-utils";
@@ -35,12 +22,10 @@ import { getLanguage, t, useLanguage } from "../i18n";
 import { Menu, Plus, X } from "lucide-react";
 import { TerminalView } from "./terminal-view";
 import { TerminalSessionPane } from "./terminal-session-pane";
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
-  releaseQueuedSession,
   submitComposerInput,
-  subscribeComposerReleaseRetry,
 } from "./composer";
 import {
   GlobalSearchDialog,
@@ -48,14 +33,16 @@ import {
   ResumeSessionDialog,
 } from "./dialogs";
 import {
-  BUNDLED_GJC_COMMANDS,
   EMPTY_TRANSCRIPT,
   humanErrorMessage,
   sessionTitleText,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { SideQuestionPanel } from "./side-question-panel";
-import { sideQuestionText, useSideQuestions, type SideExchange } from "./side-questions";
+import { sideQuestionText, type SideExchange } from "./side-questions";
+import { useSideChat } from "./use-side-chat";
+import { useLiveSubagents } from "./use-live-subagents";
+import { useParallelGroups } from "./use-parallel-groups";
 import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
@@ -78,14 +65,15 @@ import { useCreateSession } from "./use-create-session";
 import { useSessionRemoval } from "./use-session-removal";
 import { useProjectModel } from "./use-project-model";
 import { useSessionGrouping } from "./session-grouping";
-import { createBackendEventHandler, type BackendEventContext } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
 import { useMessageDelivery } from "./use-message-delivery";
+import { useSendMessage } from "./use-send-message";
+import { useInbox } from "./use-inbox";
+import { useShellShortcuts } from "./use-shell-shortcuts";
+import { useSessionSync } from "./use-session-sync";
 import { Sidebar } from "./sidebar";
-import { parallelGroupIdOf } from "./sidebar-model";
 import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
-import type { ParallelGroup } from "../../shared/parallel-run";
 import {
   ALL_PROJECTS_ID,
 } from "./project-model";
@@ -104,24 +92,18 @@ import {
 } from "../../shared/agent-contract";
 import {
   DEFAULT_DESKTOP_INTEGRATION,
-  summarizeSessionAttention,
 } from "../../shared/desktop-integration";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
 import {
   EMPTY_TRANSCRIPT_PAGE_STATE,
   composerTurnLive,
-  deliverySessionState,
   invalidLinkMessage,
-  isNotExecutedDelivery,
-  lastDurableUserRequest,
   syncAppBadge,
   unreadBadgeCount,
-  escapeCancelsRun,
-  isTextEntryTarget,
 } from "./shell-model";
 import type {
+  CenterView,
   ShellSendMessage,
-  ShellSendOptions,
 } from "./shell-model";
 
 export {
@@ -147,6 +129,7 @@ export default function App() {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const sendMessageRef = useRef<ShellSendMessage | null>(null);
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -172,17 +155,7 @@ export default function App() {
   );
   const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
-  const [sideOpen, setSideOpen] = useState(false);
-  const askSideBackend = useMemo(
-    () =>
-      backend.askSideQuestion
-        ? (sessionId: string, question: string) => backend.askSideQuestion!(sessionId, question)
-        : undefined,
-    [backend],
-  );
-  const { threads: sideThreads, askSide, retrySide, clearSide } = useSideQuestions(askSideBackend);
 
-  const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
   // Each open is its own request: a second prefill while the dialog is up
   // remounts it with the new values instead of being dropped.
   const [newSessionRequest, setNewSessionRequest] = useState<{
@@ -215,12 +188,9 @@ export default function App() {
   // The center area shows one of five things. A session pick always returns to the
   // conversation; the repository screen, the project list, the inbox and a parallel
   // run's comparison are entered on purpose.
-  const [centerView, setCenterView] = useState<
-    "conversation" | "repository" | "projects" | "inbox" | "parallel"
-  >("conversation");
+  const [centerView, setCenterView] = useState<CenterView>("conversation");
   // Best-of-N groups as the main process holds them, and the one the comparison
   // view shows when the center area is on it.
-  const [parallelGroups, setParallelGroups] = useState<ParallelGroup[]>([]);
   const [parallelGroupId, setParallelGroupId] = useState<string | null>(null);
   const [surface, setSurface] = useState<"chat" | "terminal">("chat");
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -342,24 +312,6 @@ export default function App() {
     connection.state === "disconnected" || connection.state === "error";
 
   useEffect(() => {
-    function openGlobalSearch(event: globalThis.KeyboardEvent): void {
-      if (
-        !event.metaKey ||
-        event.ctrlKey ||
-        event.altKey ||
-        event.shiftKey ||
-        surfaceRef.current === "terminal" ||
-        event.key.toLowerCase() !== "k"
-      )
-        return;
-      event.preventDefault();
-      setSearchOpen(true);
-    }
-    window.addEventListener("keydown", openGlobalSearch);
-    return () => window.removeEventListener("keydown", openGlobalSearch);
-  }, []);
-
-  useEffect(() => {
     const settingsBridge = window.agentControlDesktop?.settings;
     if (!settingsBridge) return;
     let active = true;
@@ -371,207 +323,98 @@ export default function App() {
     };
   }, []);
 
-  // The subscription and the polling below live as long as `backend`. These run the
-  // latest render's functions each time they fire, not the ones from the render
-  // that subscribed.
-  const onBackendEvent = useEffectEvent(
-    (
-      event: AgentEvent,
-      local: Pick<BackendEventContext, "observeSessionRun" | "refreshTranscript">,
-    ): void =>
-      createBackendEventHandler({
-        setConnection,
-        setSessions,
-        setTranscripts,
-        setCommands,
-        setConfigOptions,
-        setMessageDeliveryRevision,
-        messageDeliveryTrackerRef,
-        transcriptsRef,
-        transcriptPageStatesRef,
-        transcriptRevisionsRef,
-        selectedIdRef,
-        forgetSession,
-        tracksTranscriptSession,
-        noteTranscriptEvent,
-        updateRequestSummaries,
-        mergeLiveTranscriptItems,
-        ...local,
-      })(event),
-  );
-  const openListedSession = useEffectEvent(
-    (sessionId: string, known: readonly AgentSession[]): void =>
-      openLinkedSession(sessionId, known),
-  );
-  const readTranscriptTail = useEffectEvent(
-    (id: string): Promise<void> => refreshTranscriptPage(id),
-  );
-
-  useEffect(() => {
-    let active = true;
-    void backend.getConnection().then((currentConnection) => {
-      if (active) setConnection(currentConnection);
+  /**
+   * Everything the shell holds for a session that is gone: its row, its cached
+   * transcript, and a selection still pointing at it.
+   *
+   * The backend's `session.deleted` event and the optimistic delete the user
+   * confirms both go through here, so the row leaves the sidebar the same way
+   * whichever one arrives first -- and the event that follows an optimistic delete
+   * finds nothing left to move.
+   */
+  const forgetSession = useCallback((sessionId: string): void => {
+    setSessions((current) => {
+      const remaining = current.filter((session) => session.id !== sessionId);
+      setSelectedId((selected) =>
+        selected === sessionId ? (remaining[0]?.id ?? null) : selected,
+      );
+      return remaining;
     });
-    // Run ends can happen while another screen is open and no composer exists.
-    // This tracker lives for the shell's lifetime, so a queue restored from a
-    // snapshot is still released when its session reports idle. A running report
-    // must have been seen first: an idle row right after a send, before the turn
-    // starts, is not evidence that queued work can be handed over.
-    const runStates = new Map<string, AgentSession["status"]>();
-    // Discovery is a slow read. A live update that advances the revision while
-    // the list request is in flight makes the older response stale: merging it
-    // already refuses to overwrite the row, but observing it would still turn a
-    // running -> idle transition into a queue release. Track the newest revision
-    // seen so the side effect follows the same rule as the rendered row.
-    const observedRevisions = new Map<string, number>();
-    const releaseSessionQueue = (sessionId: string): void => {
-      const selectedAtRelease = selectedIdRef.current;
-      void releaseQueuedSession(sessionId, async (request) => {
-        // Send directly: this request belongs to the session whose run ended, which
-        // may not be the one on screen. The composer's sent-request token would
-        // scroll an unrelated transcript.
-        await sendMessageRef.current(sessionId, {
-          text: request.text,
-          images: request.images,
-          files: request.files,
-        }, { quiet: true });
-      }, () => selectedIdRef.current === selectedAtRelease)
-        .catch((error: unknown) => setAppError(humanErrorMessage(error)));
-    };
-    const observeSessionRun = (session: AgentSession): void => {
-      if (
-        !discoveryRevisionIsFresh(
-          observedRevisions.get(session.id),
-          session.runRevision,
-        )
-      )
-        return;
-      observedRevisions.set(session.id, session.runRevision ?? 0);
-      const previous = runStates.get(session.id);
-      runStates.set(session.id, session.status);
-      if (previous !== "running" || session.status !== "idle") return;
-      releaseSessionQueue(session.id);
-    };
-    // A flush that was awaiting the runtime can outlive its composer. The idle
-    // event then arrived while that instance held the release lock, so retry once
-    // the retiring instance hands the lock back -- but only while the session is
-    // still idle; otherwise its later idle transition will do it.
-    const unsubscribeReleaseRetry = subscribeComposerReleaseRetry((sessionId) => {
-      if (runStates.get(sessionId) === "idle") releaseSessionQueue(sessionId);
+    setTranscripts((current) => {
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
     });
+    transcriptRevisionsRef.current.delete(sessionId);
+  }, []);
 
-    // A GJC session started from the CLI after this window opened only shows up if
-    // discovery runs again, so the list refreshes instead of loading once.
-    let listing = false;
-    const loadSessions = (initial: boolean): void => {
-      if (listing || !active) return;
-      listing = true;
-      let listed: readonly AgentSession[] = [];
-      void backend
-        .listSessions()
-        .then((loadedSessions) => {
-          if (!active) return;
-          listed = loadedSessions.filter(
-            (session) => !removingSessionIdsRef.current.has(session.id),
-          );
-          for (const session of listed) observeSessionRun(session);
-          setSessions((current) =>
-            mergeDiscoveredSessions(current, listed, selectedIdRef.current),
-          );
-          if (initial)
-            setSelectedId((selected) =>
-              initialSessionId(listed, selected),
-            );
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          listing = false;
-          if (!initial || !active) return;
-          const link = sessionLinkRef.current;
-          link.listed = true;
-          if (link.waiting === undefined) return;
-          const sessionId = link.waiting;
-          link.waiting = undefined;
-          openListedSession(sessionId, [...sessionsRef.current, ...listed]);
-        });
-    };
-    // Poll only sessions already in the three-session transcript cache. A bounded page
-    // repairs missed watcher events without ever turning a historical view into a tail.
-    const refreshingTranscripts = new Set<string>();
-    const queuedTranscriptRefreshes = new Set<string>();
-    const refreshTranscript = (id: string): void => {
-      if (!active || !transcriptsRef.current[id]) return;
-      if (refreshingTranscripts.has(id)) {
-        queuedTranscriptRefreshes.add(id);
-        return;
-      }
-      refreshingTranscripts.add(id);
-      const startedAtVersion = transcriptEventVersionsRef.current.get(id) ?? 0;
-      void readTranscriptTail(id)
-        .catch(() => undefined)
-        .finally(() => {
-          refreshingTranscripts.delete(id);
-          const changedDuringRead =
-            (transcriptEventVersionsRef.current.get(id) ?? 0) !== startedAtVersion;
-          if (
-            active &&
-            (queuedTranscriptRefreshes.delete(id) || changedDuringRead)
-          )
-            window.setTimeout(() => refreshTranscript(id), 200);
-        });
-    };
-    const refreshSelectedTranscript = (): void => {
-      const id = selectedIdRef.current;
-      if (id) refreshTranscript(id);
-    };
-    const refreshVisibleState = (): void => {
-      loadSessions(false);
-      refreshSelectedTranscript();
-    };
-    loadSessions(true);
-    // A full scan costs seconds on a large broker index, so polling faster than
-    // that just queues overlapping scans. The controller skips `session list`
-    // while `sessions/index.jsonl` is unchanged; this beat still runs so a
-    // transcript-only run-state change can move the fingerprint. Focus refresh
-    // covers the case where the user switches to this window right after
-    // starting a CLI session.
-    //
-    // The scan is skipped while the window is hidden. Run state now arrives on its
-    // own from the transcript watchers, so the only thing polling still discovers is
-    // a session started elsewhere -- which nobody can see until this window is
-    // visible again, and the focus listener below already refreshes for that.
-    const discoveryTimer = window.setInterval(() => {
-      if (document.hidden) return;
-      refreshVisibleState();
-    }, 15_000);
-    // The event stream is still the primary path; this second beat only repairs a
-    // frozen selected conversation, so it can be shorter than session discovery.
-    const transcriptTimer = window.setInterval(() => {
-      if (!document.hidden) refreshSelectedTranscript();
-    }, 5_000);
-    const refreshOnFocus = (): void => refreshVisibleState();
-    window.addEventListener("focus", refreshOnFocus);
-    // `focus` does not fire when the window is merely un-occluded on macOS, so
-    // visibility is tracked separately to catch up after a hidden stretch.
-    const refreshOnVisible = (): void => {
-      if (!document.hidden) refreshVisibleState();
-    };
-    document.addEventListener("visibilitychange", refreshOnVisible);
-
-    const unsubscribe = backend.subscribe((event) =>
-      onBackendEvent(event, { observeSessionRun, refreshTranscript }),
+  const selectSession = useCallback((sessionId: string): void => {
+    navigationGenerationRef.current += 1;
+    setSelectedId(sessionId);
+    setNavOpen(false);
+    // A find query scoped to the previous conversation's content has nothing to
+    // do with the one just opened.
+    setFindOpen(false);
+    // Picking a session always returns to its conversation, and the project filter
+    // is left exactly as the user set it: the point of the project selector is
+    // that the context outlives any one session.
+    setCenterView("conversation");
+    setTranscripts((current) =>
+      current[sessionId]
+        ? cacheTranscript(current, sessionId, current[sessionId])
+        : current,
     );
+  }, []);
 
-    return () => {
-      active = false;
-      window.clearInterval(discoveryTimer);
-      window.clearInterval(transcriptTimer);
-      window.removeEventListener("focus", refreshOnFocus);
-      document.removeEventListener("visibilitychange", refreshOnVisible);
-      unsubscribeReleaseRetry();
-      unsubscribe();
-    };
-  }, [backend]);
+  const openLinkedSession = useCallback(
+    (sessionId: string, known: readonly AgentSession[]): void => {
+      if (known.some((session) => session.id === sessionId))
+        selectSession(sessionId);
+      else setAppError(invalidLinkMessage({ kind: "session" }));
+    },
+    [selectSession],
+  );
+
+  const [turnCompletion, setTurnCompletion] = useState<{ sessionId: string }>();
+  const onTurnCompleted = useCallback((sessionId: string) => {
+    // Only the session on screen can show a suggestion, so a background session
+    // finishing never costs a model call.
+    if (sessionId === selectedIdRef.current) setTurnCompletion({ sessionId });
+  }, []);
+  const suggestNextInput = useMemo(
+    () => (backend.suggestNextInput ? (sessionId: string) => backend.suggestNextInput!(sessionId) : undefined),
+    [backend],
+  );
+
+  useSessionSync({
+    onTurnCompleted,
+    backend,
+    sessionsRef,
+    selectedIdRef,
+    sendMessageRef,
+    messageDeliveryTrackerRef,
+    removingSessionIdsRef,
+    sessionLinkRef,
+    setConnection,
+    setSessions,
+    setSelectedId,
+    setTranscripts,
+    setCommands,
+    setConfigOptions,
+    setMessageDeliveryRevision,
+    setAppError,
+    forgetSession,
+    openLinkedSession,
+    transcriptsRef,
+    transcriptPageStatesRef,
+    transcriptRevisionsRef,
+    transcriptEventVersionsRef,
+    tracksTranscriptSession,
+    noteTranscriptEvent,
+    updateRequestSummaries,
+    mergeLiveTranscriptItems,
+    refreshTranscriptPage,
+  });
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? null;
@@ -643,61 +486,17 @@ export default function App() {
     selectedSessionStatus,
   );
 
-  useEffect(() => {
-    if (!selectedSessionId || !inspectorOpen) {
-      queueMicrotask(() => setLiveSubagents([]));
-      return;
-    }
-    let active = true;
-    const refresh = (): void => {
-      void backend
-        .listSubagents(selectedSessionId)
-        .then((jobs) => {
-          if (active) setLiveSubagents(jobs);
-        })
-        .catch(() => undefined);
-    };
-    queueMicrotask(refresh);
-    // Subagent rows only change when a delegated job starts or finishes, and the
-    // inspector is the only surface that shows them -- so a hidden window polls for
-    // rows nobody is looking at.
-    const timer = window.setInterval(() => {
-      if (!document.hidden) refresh();
-    }, 4_000);
-    const refreshOnVisible = (): void => {
-      if (!document.hidden) refresh();
-    };
-    document.addEventListener("visibilitychange", refreshOnVisible);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshOnVisible);
-    };
-  }, [backend, inspectorOpen, selectedSessionId]);
+  const liveSubagents = useLiveSubagents(backend, selectedSessionId, inspectorOpen);
 
-  useEffect(() => {
-    if (!chatId) return;
-    void backend.markSessionRead(chatId);
-  }, [backend, chatId]);
-  // A turn that finishes while its session is on screen sets `unread` without
-  // changing the selection, which left it in the inbox. Only a window the user can
-  // see counts, so work that finishes behind another app still waits for them.
-  const selectedUnread = selectedSession?.unread === true;
-  const conversationShown = centerView === "conversation";
-  useEffect(() => {
-    if (!chatId || !conversationShown || !selectedUnread) return;
-    const markIfSeen = (): void => {
-      if (!document.hidden && document.hasFocus())
-        void backend.markSessionRead(chatId).catch(() => undefined);
-    };
-    markIfSeen();
-    window.addEventListener("focus", markIfSeen);
-    document.addEventListener("visibilitychange", markIfSeen);
-    return () => {
-      window.removeEventListener("focus", markIfSeen);
-      document.removeEventListener("visibilitychange", markIfSeen);
-    };
-  }, [backend, chatId, conversationShown, selectedUnread]);
+  const { toggleInbox, inboxCount } = useInbox(
+    backend,
+    chatId,
+    centerView,
+    selectedSession,
+    sessions,
+    setNavOpen,
+    setCenterView,
+  );
 
   // The main process cannot infer which session a focused window is showing from
   // focus alone. Naming it lets notifications skip the turn being watched instead
@@ -759,24 +558,7 @@ export default function App() {
     window.agentControlDesktop?.repo ?? null;
   const parallelBridge: ParallelDesktopBridge | null =
     window.agentControlDesktop?.parallel ?? null;
-  useEffect(() => {
-    if (!parallelBridge) return;
-    let active = true;
-    const unsubscribe = parallelBridge.onChanged((groups) => {
-      active = false;
-      setParallelGroups(groups);
-    });
-    void parallelBridge
-      .list()
-      .then((groups) => {
-        if (active) setParallelGroups(groups);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [parallelBridge]);
+  const parallelGroups = useParallelGroups(parallelBridge);
   const sessionGrouping = useSessionGrouping();
   const {
     projectGroups,
@@ -811,10 +593,12 @@ export default function App() {
   // dialog looking answered while nothing had been sent, so it surfaces like
   // every other action failure.
   const resolveToolCall = useCallback(
-    (toolId: string, optionId: string) => {
-      backend.resolveToolCall(toolId, { optionId }).catch((error: unknown) => {
-        setAppError(humanErrorMessage(error));
-      });
+    (toolId: string, optionId: string, comment?: string, rule?: { prefix: string }) => {
+      backend
+        .resolveToolCall(toolId, { optionId, ...(comment ? { comment } : {}), ...(rule ? { rule } : {}) })
+        .catch((error: unknown) => {
+          setAppError(humanErrorMessage(error));
+        });
     },
     [backend],
   );
@@ -892,33 +676,6 @@ export default function App() {
     [sessions],
   );
 
-  const selectSession = useCallback((sessionId: string): void => {
-    navigationGenerationRef.current += 1;
-    setSelectedId(sessionId);
-    setNavOpen(false);
-    // A find query scoped to the previous conversation's content has nothing to
-    // do with the one just opened.
-    setFindOpen(false);
-    // Picking a session always returns to its conversation, and the project filter
-    // is left exactly as the user set it: the point of the project selector is
-    // that the context outlives any one session.
-    setCenterView("conversation");
-    setTranscripts((current) =>
-      current[sessionId]
-        ? cacheTranscript(current, sessionId, current[sessionId])
-        : current,
-    );
-  }, []);
-
-  const openLinkedSession = useCallback(
-    (sessionId: string, known: readonly AgentSession[]): void => {
-      if (known.some((session) => session.id === sessionId))
-        selectSession(sessionId);
-      else setAppError(invalidLinkMessage({ kind: "session" }));
-    },
-    [selectSession],
-  );
-
   const newSessionRequestRef = useRef(newSessionRequest);
   newSessionRequestRef.current = newSessionRequest;
 
@@ -973,385 +730,62 @@ export default function App() {
     [backend, resolveSessionId],
   );
 
-  // Dismissible surfaces own Escape while they are up: the key's job there is to
-  // close the surface, and cancelling a run behind the dialog the user is reading is
-  // never what they asked for. The dialogs only bind Escape on their own fields, so
-  // with focus anywhere else in the dialog the key used to reach the abort shortcut.
-  // The inbox covers the conversation, so Escape there must close it instead of
-  // cancelling a run the user cannot see.
-  const dismissibleSurfaceOpen =
-    centerView === "inbox" ||
-    centerView === "parallel" ||
-    searchOpen ||
-    newSessionRequest !== null ||
-    resumeOpen ||
-    settingsOpen ||
-    findOpen;
-
-  useEffect(() => {
-    const unsubscribe = window.agentControlDesktop?.onSessionShortcut(
-      (shortcut) => {
-        if (shortcut.type === "abort") {
-          if (surfaceRef.current === "terminal") return;
-          const session = selectedSessionRef.current;
-          if (session) void cancelRun(session.id).catch(() => undefined);
-          return;
-        }
-        if (shortcut.type === "new") {
-          if (shortcut.prefill) {
-            openNewSessionDialog(shortcut.prefill);
-            return;
-          }
-          const workspace = selectedSession?.workspace || connection.workspace;
-          if (workspace) createSession({ title: "새 Gajae 세션", workspace });
-          else openNewSessionDialog();
-          return;
-        }
-        if (shortcut.type === "open") {
-          if (sessionLinkRef.current.listed)
-            openLinkedSession(shortcut.sessionId, sessionsRef.current);
-          else sessionLinkRef.current.waiting = shortcut.sessionId;
-          return;
-        }
-        if (shortcut.type === "invalidLink") {
-          setAppError(invalidLinkMessage(shortcut.reason));
-          return;
-        }
-        const session = shortcutSessions[shortcut.index];
-        if (!session) return;
-        const groupId = parallelGroupIdOf(session.id);
-        if (groupId) openParallelGroup(groupId);
-        else selectSession(session.id);
-      },
-    );
-    const unsubscribeAbort = window.agentControlDesktop?.onAbortRun(() => {
-      if (surfaceRef.current === "terminal") return;
-      const session = selectedSessionRef.current;
-      if (session) void cancelRun(session.id).catch(() => undefined);
-    });
-    function abortWithEscape(event: globalThis.KeyboardEvent): void {
-      if (surfaceRef.current === "terminal") return;
-      if (
-        !escapeCancelsRun({
-          key: event.key,
-          metaKey: event.metaKey,
-          ctrlKey: event.ctrlKey,
-          altKey: event.altKey,
-          shiftKey: event.shiftKey,
-          defaultPrevented: event.defaultPrevented,
-          textEntry: isTextEntryTarget(event.target),
-          surfaceOpen: dismissibleSurfaceOpen,
-        })
-      )
-        return;
-      event.preventDefault();
-      const session = selectedSessionRef.current;
-      if (session) void cancelRun(session.id).catch(() => undefined);
-    }
-    // Bubble phase, not capture: a dialog field, the rename editor and the composer
-    // are all nearer the key and each one decides for itself whether Escape means
-    // "close me" or "stop the run".
-    window.addEventListener("keydown", abortWithEscape);
-    return () => {
-      unsubscribe?.();
-      unsubscribeAbort?.();
-      window.removeEventListener("keydown", abortWithEscape);
-    };
-  }, [
-    connection.workspace,
+  useShellShortcuts({
+    surfaceRef,
+    selectedSessionRef,
+    sessionLinkRef,
+    sessionsRef,
+    connection,
+    selectedSession,
+    centerView,
+    searchOpen,
+    newSessionRequest,
+    resumeOpen,
+    settingsOpen,
+    findOpen,
+    shortcutSessions,
+    pendingApprovals,
+    focusedApprovalId,
     createSession,
-    dismissibleSurfaceOpen,
+    cancelRun,
     openLinkedSession,
     openNewSessionDialog,
     openParallelGroup,
     selectSession,
-    selectedSession?.workspace,
-    shortcutSessions,
-    cancelRun,
-  ]);
+    resolveToolCall,
+    toggleInbox,
+    setAppError,
+    setSearchOpen,
+    setFindOpen,
+  });
 
-  // ⌘↵/⌘⌫ approve or reject the currently focused pending approval. MetaKey-gated
-  // so it never fights the composer's own Enter handling, and ignored while a
-  // dismissible surface is open for the same reason abortWithEscape is.
-  useEffect(() => {
-    function onApprovalShortcut(event: globalThis.KeyboardEvent): void {
-      if (surfaceRef.current === "terminal") return;
-      if (!event.metaKey || dismissibleSurfaceOpen) return;
-      if (event.key !== "Enter" && event.key !== "Backspace") return;
-      const pending = pendingApprovals;
-      if (pending.length === 0) return;
-      const focused =
-        pending.find((tool) => tool.id === focusedApprovalId) ?? pending[0]!;
-      const option = focused.permissionOptions?.find((candidate) =>
-        event.key === "Enter"
-          ? candidate.kind.startsWith("allow")
-          : candidate.kind.startsWith("reject"),
-      );
-      if (!option) return;
-      event.preventDefault();
-      resolveToolCall(focused.id, option.optionId);
-    }
-    window.addEventListener("keydown", onApprovalShortcut);
-    return () => window.removeEventListener("keydown", onApprovalShortcut);
-  }, [dismissibleSurfaceOpen, pendingApprovals, focusedApprovalId, resolveToolCall]);
+  const { sendMessage, retryMessageDelivery, retryLastRequest } = useSendMessage({
+    backend,
+    sessionsRef,
+    connectionRef,
+    commands,
+    pendingSessions,
+    selectedIdRef,
+    revealRequestGenerationRef,
+    messageDeliveryTrackerRef,
+    sendMessageRef,
+    resolveSessionId,
+    setRevealTarget,
+    setSentRequestToken,
+    setMessageDeliveryRevision,
+    setTranscripts,
+    setAppError,
+    transcriptsRef,
+    transcriptPageStatesRef,
+    requestSummariesRef,
+    pendingTranscriptScopesRef,
+    transcriptPageGenerationsRef,
+    transcriptPageInFlightRef,
+    transcriptItemVersionsRef,
+    updateTranscriptPageState,
+    readTranscriptPage,
+  });
 
-  // ⌘F: find within the open conversation. Distinct from ⌘K (sidebar's cross-session
-  // global search, opened by focusing its own input) -- this one does not compete
-  // with a browser/OS find because the window never ships its own, and it is
-  // deliberately allowed through from inside a text field the same way a native
-  // find shortcut is.
-  useEffect(() => {
-    function onFindShortcut(event: globalThis.KeyboardEvent): void {
-      if (surfaceRef.current === "terminal") return;
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f") return;
-      if (!selectedSessionRef.current) return;
-      event.preventDefault();
-      setFindOpen(true);
-    }
-    window.addEventListener("keydown", onFindShortcut);
-    return () => window.removeEventListener("keydown", onFindShortcut);
-  }, []);
-
-  async function sendMessage(
-    sessionId: string,
-    input: MessageInput,
-    options: ShellSendOptions = {},
-  ): Promise<MessageDelivery> {
-    const resolvedSessionId = await resolveSessionId(sessionId);
-    const tracker = messageDeliveryTrackerRef.current!;
-    const session =
-      sessionsRef.current.find((candidate) => candidate.id === resolvedSessionId) ??
-      (await pendingSessions.current.get(sessionId));
-    let baseline =
-      transcriptsRef.current[resolvedSessionId] ??
-      transcriptsRef.current[sessionId];
-    let baselineKnown = baseline !== undefined;
-    const pageState = transcriptPageStatesRef.current[resolvedSessionId];
-    const isSelectedSend =
-      options.quiet !== true && selectedIdRef.current === resolvedSessionId;
-    if (isSelectedSend) {
-      revealRequestGenerationRef.current += 1;
-      setRevealTarget(null);
-      if (pendingTranscriptScopesRef.current.get(resolvedSessionId)?.kind === "around") {
-        transcriptPageGenerationsRef.current.set(resolvedSessionId,
-          (transcriptPageGenerationsRef.current.get(resolvedSessionId) ?? 0) + 1);
-        pendingTranscriptScopesRef.current.delete(resolvedSessionId);
-        transcriptPageInFlightRef.current.delete(resolvedSessionId);
-        updateTranscriptPageState(resolvedSessionId, (current) => ({
-          ...current, loadingPage: false, pageError: "", loadingEarlier: false,
-        }));
-      }
-    }
-    const mustInstallLatest =
-      isSelectedSend &&
-      (pageState?.scope.kind === "around" || pageState?.hasMoreAfter === true);
-    const needsLatestBaseline =
-      !baselineKnown ||
-      pageState?.scope.kind === "around" ||
-      pageState?.hasMoreAfter === true;
-    if (needsLatestBaseline) {
-      try {
-        if (isSelectedSend)
-          updateTranscriptPageState(resolvedSessionId, (current) => ({
-            ...current,
-            loadingPage: true,
-            pageError: "",
-          }));
-        const latest = isSelectedSend
-          ? await readTranscriptPage(
-              resolvedSessionId,
-              undefined,
-              "replace",
-              { kind: "latest" },
-            )
-          : await backend.getTranscriptPage(resolvedSessionId);
-        if (!latest) throw new Error(t("최신 대화를 불러오지 못했습니다."));
-        baseline = latest.items;
-        const lastDurableRequest = lastDurableUserRequest(latest.items);
-        const latestIndexedRequest = latest.requests.at(-1);
-        baselineKnown = lastDurableRequest
-          ? latestIndexedRequest?.id === lastDurableRequest.id
-          : latest.requests.length === 0 && !latest.hasMoreBefore;
-      } catch (error) {
-        if (isSelectedSend)
-          updateTranscriptPageState(resolvedSessionId, (current) => ({
-            ...current,
-            loadingPage: false,
-            pageError: humanErrorMessage(error),
-          }));
-        if (mustInstallLatest) {
-          if (options.retryId) {
-            const retryGeneration = tracker.submissionGeneration(options.retryId);
-            if (retryGeneration !== undefined) {
-              tracker.rejectSubmission(
-                options.retryId,
-                Date.now(),
-                retryGeneration,
-                true,
-              );
-              setMessageDeliveryRevision((revision) => revision + 1);
-            }
-          }
-          throw error;
-        }
-        baseline = baseline ?? [];
-        baselineKnown = false;
-      }
-    } else if (baseline) {
-      const durable = lastDurableUserRequest(baseline);
-      const summaries = requestSummariesRef.current[resolvedSessionId] ?? [];
-      baselineKnown = durable
-        ? summaries.length === 0 || summaries.at(-1)?.id === durable.id
-        : summaries.length === 0 && !pageState?.hasMoreBefore;
-    }
-    const now = Date.now();
-    const sessionState = deliverySessionState(
-      session,
-      connectionRef.current.state,
-    );
-    let deliveryAttemptId = options.retryId;
-    if (options.retryId) {
-      tracker.submitRetry(
-        options.retryId,
-        resolvedSessionId,
-        baseline ?? [],
-        now,
-        sessionState,
-        baselineKnown,
-      );
-    } else if (
-      isTrackableMessageInput(
-        input,
-        [...BUNDLED_GJC_COMMANDS, ...(commands[resolvedSessionId] ?? [])],
-      )
-    ) {
-      deliveryAttemptId = tracker.submit(
-        resolvedSessionId,
-        input,
-        baseline ?? [],
-        now,
-        sessionState,
-        baselineKnown,
-      );
-    }
-    const generation = deliveryAttemptId
-      ? tracker.submissionGeneration(deliveryAttemptId)
-      : undefined;
-    setMessageDeliveryRevision((revision) => revision + 1);
-    let rendererEchoId: string | undefined;
-    const text = input.text.trim();
-    const prompt = text.replace(/^\/(?:steer|queue)(?:\s+|$)/u, "").trim();
-    if (prompt && (!text.startsWith("/") || /^\/(?:steer|queue)(?:\s+|$)/u.test(text))) {
-      const echo: TranscriptItem = {
-        id: `local-prompt-renderer-${crypto.randomUUID()}`,
-        sessionId: resolvedSessionId, kind: "message", role: "user", content: prompt,
-        // Same clock format as the controller's rows, so the label does not
-        // change (오후 01:22 -> 13:22) when the confirmed row replaces this one.
-        createdAt: new Intl.DateTimeFormat("en", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date()),
-        streaming: false,
-        ...(input.images.length ? { images: input.images } : {}),
-      };
-      rendererEchoId = echo.id;
-      setTranscripts((current) => {
-        const next = cacheTranscript(current, resolvedSessionId,
-          mergeTranscriptItem(current[resolvedSessionId] ?? [], echo),
-        );
-        transcriptsRef.current = next;
-        return next;
-      });
-    }
-    // Answering the reader is part of sending: the transcript takes the view to the
-    // newest content, so the request they just made and the reply to it appear where
-    // they are looking instead of below a scroll position they had left behind.
-    if (
-      options.quiet !== true &&
-      selectedIdRef.current === resolvedSessionId
-    ) {
-      setSentRequestToken((token) => token + 1);
-    }
-    try {
-      const result = await backend.sendMessage(resolvedSessionId, input);
-      if (deliveryAttemptId && generation !== undefined) {
-        if (isNotExecutedDelivery(result))
-          tracker.markNotExecuted(
-            deliveryAttemptId,
-            result.detail,
-            generation,
-            Date.now(),
-          );
-        else if (options.retryId)
-          tracker.finishRetry(deliveryAttemptId, Date.now(), generation);
-        else tracker.acceptSubmission(deliveryAttemptId, Date.now(), generation);
-        setMessageDeliveryRevision((revision) => revision + 1);
-      }
-      return result;
-    } catch (error) {
-      if (rendererEchoId) {
-        const echoId = rendererEchoId;
-        setTranscripts((current) => {
-          const items = current[resolvedSessionId];
-          if (!items?.some((item) => item.id === echoId)) return current;
-          return {
-            ...current,
-            [resolvedSessionId]: items.filter((item) => item.id !== echoId),
-          };
-        });
-      }
-      if (deliveryAttemptId && generation !== undefined) {
-        tracker.rejectSubmission(
-          deliveryAttemptId,
-          Date.now(),
-          generation,
-          options.retryId !== undefined,
-        );
-        setMessageDeliveryRevision((revision) => revision + 1);
-      }
-      setAppError(humanErrorMessage(error));
-      throw error;
-    }
-  }
-
-  // A run-failure notice's 다시 시도 button: resends the session's own last request
-  // rather than making the user retype it. Text only -- the transcript does not
-  // keep the original attachments to resend alongside it.
-  // The transcript changes on every streaming chunk. Reading it through a ref keeps
-  // this callback — and the memoized row that receives it — the same across those
-  // chunks. The text is read when the button is pressed, not when the row rendered.
-  const sendMessageRef = useRef<ShellSendMessage>(sendMessage);
-  sendMessageRef.current = sendMessage;
-  const retryMessageDelivery = useCallback((attemptId: string): void => {
-    const pending = messageDeliveryTrackerRef.current!.beginRetry(attemptId);
-    if (!pending) return;
-    // A failed request leaves its optimistic echo behind while the failure row
-    // replaces it. Remove every matching echo before the retry adds a fresh one;
-    // otherwise the old echo resurfaces once the tracker confirms the retry.
-    setTranscripts((current) => {
-      const items = current[pending.sessionId];
-      if (!items) return current;
-      const removedIds = new Set(
-        items
-          .filter((item) => deliveryEchoMatches(pending.input, item))
-          .map((item) => item.id),
-      );
-      if (removedIds.size === 0) return current;
-      // The page read inside sendMessage preserves rows that arrived after its
-      // read version. A removed echo is not new content; clear its version so
-      // that preservation cannot resurrect it next to the durable row.
-      const versions = transcriptItemVersionsRef.current.get(pending.sessionId);
-      for (const id of removedIds) versions?.delete(id);
-      const remaining = items.filter((item) => !removedIds.has(item.id));
-      // Do not use cacheTranscript here: it deliberately preserves optimistic
-      // echoes that the incoming list does not confirm, which would put the
-      // failed request's echo straight back.
-      const next = { ...current, [pending.sessionId]: remaining };
-      transcriptsRef.current = next;
-      return next;
-    });
-    setMessageDeliveryRevision((revision) => revision + 1);
-    void sendMessageRef.current(pending.sessionId, pending.input, {
-      retryId: attemptId,
-    }).catch(() => undefined);
-  }, []);
   const controlSelectedRetry = useCallback(
     (action: "now" | "abort"): void => {
       if (!chatId) return;
@@ -1361,11 +795,6 @@ export default function App() {
     },
     [backend, chatId],
   );
-  const retryLastRequest = useCallback((sessionId: string): void => {
-    const text = lastUserRequestContent(transcriptsRef.current[sessionId] ?? []);
-    if (!text) return;
-    void sendMessageRef.current(sessionId, { text, images: [], files: [] });
-  }, []);
 
   const {
     setSessionConfig,
@@ -1436,31 +865,6 @@ export default function App() {
       setAppError(error instanceof Error ? error.message : String(error));
     }
   }
-
-  /**
-   * Everything the shell holds for a session that is gone: its row, its cached
-   * transcript, and a selection still pointing at it.
-   *
-   * The backend's `session.deleted` event and the optimistic delete the user
-   * confirms both go through here, so the row leaves the sidebar the same way
-   * whichever one arrives first -- and the event that follows an optimistic delete
-   * finds nothing left to move.
-   */
-  const forgetSession = useCallback((sessionId: string): void => {
-    setSessions((current) => {
-      const remaining = current.filter((session) => session.id !== sessionId);
-      setSelectedId((selected) =>
-        selected === sessionId ? (remaining[0]?.id ?? null) : selected,
-      );
-      return remaining;
-    });
-    setTranscripts((current) => {
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
-    transcriptRevisionsRef.current.delete(sessionId);
-  }, []);
 
   const { onHideSession, onDeleteSession } = useSessionRemoval(
     backend,
@@ -1550,59 +954,7 @@ export default function App() {
   const openProjects = useCallback(() => setCenterView("projects"), []);
   const openConversation = useCallback(() => setCenterView("conversation"), []);
   const openGroup = parallelGroups.find((group) => group.id === parallelGroupId);
-  const toggleInbox = useCallback(() => {
-    // On a phone the rail is a drawer over the content; the inbox is what the
-    // user asked to see, so the drawer gets out of its way.
-    setNavOpen(false);
-    setCenterView((view) => (view === "inbox" ? "conversation" : "inbox"));
-  }, []);
   const openInboxSession = selectSession;
-  const inboxCount = useMemo(() => {
-    const attention = summarizeSessionAttention(sessions);
-    return attention.needsInput + attention.unreadCompleted;
-  }, [sessions]);
-
-  // ⌘⇧B: the side chat panel.
-  useEffect(() => {
-    if (!askSideBackend) return;
-    function onSideShortcut(event: globalThis.KeyboardEvent): void {
-      if (
-        !event.metaKey ||
-        !event.shiftKey ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.code !== "KeyB" ||
-        surfaceRef.current === "terminal" ||
-        !selectedSessionRef.current
-      )
-        return;
-      event.preventDefault();
-      setSideOpen((open) => !open);
-    }
-    window.addEventListener("keydown", onSideShortcut);
-    return () => window.removeEventListener("keydown", onSideShortcut);
-  }, [askSideBackend]);
-
-  // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
-  // Option turns the key into a dead key on macOS, so `key` is not "u".
-  useEffect(() => {
-    function onInboxShortcut(event: globalThis.KeyboardEvent): void {
-      if (
-        !event.metaKey ||
-        !event.altKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.code !== "KeyU" ||
-        surfaceRef.current === "terminal"
-      )
-        return;
-      event.preventDefault();
-      toggleInbox();
-    }
-    window.addEventListener("keydown", onInboxShortcut);
-    return () => window.removeEventListener("keydown", onInboxShortcut);
-  }, [toggleInbox]);
-
   const openRepositoryFor = useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
     setCenterView("repository");
@@ -1632,18 +984,17 @@ export default function App() {
   }, [repoBridge, projectRoot]);
   const updateBusyFlag = Boolean(updateBusy);
 
-  // GJC advertises `/btw` only when it has `btw.ask`. Until the list arrives the
-  // question is tried and any refusal is shown in the panel.
-  const sideUnsupported =
-    askSideBackend !== undefined &&
-    !commandsPending &&
-    !selectedCommands.some((command) => command.name === "btw");
-  const askSideFromComposer = askSideBackend
-    ? (sessionId: string, question: string) => {
-        setSideOpen(true);
-        if (!sideUnsupported) askSide(sessionId, question);
-      }
-    : undefined;
+  const {
+    askSideBackend,
+    sideOpen,
+    setSideOpen,
+    sideThreads,
+    askSide,
+    retrySide,
+    clearSide,
+    sideUnsupported,
+    askSideFromComposer,
+  } = useSideChat(backend, selectedCommands, commandsPending, surfaceRef, selectedSessionRef);
 
   // Streaming re-renders the shell on every joined delta. These callbacks stay
   // the same object so the memoized composer does not run again while a reply grows.
@@ -1682,7 +1033,7 @@ export default function App() {
     return current.sendMessage(session.id, input);
   }, []);
   // A diff review is submitted as if typed into that session's composer, so a
-  // live turn holds it as a row instead of sending it.
+  // live turn holds or steers it exactly as Enter would.
   const submitReview = useCallback((sessionId: string, text: string) => {
     submitComposerInput(sessionId, { text, images: [], files: [] }, {
       running: composerTurnLive(
@@ -1690,7 +1041,7 @@ export default function App() {
         transcriptsRef.current[sessionId] ?? EMPTY_TRANSCRIPT,
       ),
       runningSubmission: preferencesRef.current.runningSubmission,
-      send: (input) => sendMessageRef.current(sessionId, input),
+      send: (input) => sendMessageRef.current!(sessionId, input),
     });
   }, []);
   const {
@@ -1706,8 +1057,10 @@ export default function App() {
     setInspectorToolId(toolId);
     setInspectorOpen(true);
   }, []);
+  const approvalChannel = selectedSession?.approvalChannel === true;
   const autoDenyHint = useMemo(() => {
     if (
+      approvalChannel ||
       preferences.permissionHandling === "always-allow" ||
       preferences.permissionHandling === "auto"
     )
@@ -1716,7 +1069,7 @@ export default function App() {
       message: t("현재 권한 모드 때문에 자동 거부됨"),
       onOpenSettings: openSettings,
     };
-  }, [language, openSettings, preferences.permissionHandling]);
+  }, [approvalChannel, language, openSettings, preferences.permissionHandling]);
 
   const remoteViewOnly = remoteStatus?.permission === "view";
 
@@ -1991,6 +1344,8 @@ export default function App() {
                   onCycleThinking={onComposerCycleThinking}
                   onCommandPaletteOpen={onCommandPaletteOpen}
                   readOnly={remoteViewOnly}
+                  onSuggestNextInput={suggestNextInput}
+                  turnCompletion={turnCompletion}
                 />
               </div>
             </section>

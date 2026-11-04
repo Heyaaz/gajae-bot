@@ -1,5 +1,5 @@
 import type { SdkControlOperation } from "./gjc-sdk-control.js";
-import type { AgentEvent, AgentSession, GoalOperation, GoalSnapshot, SessionProgress, SystemNoticeActivity, TranscriptItem } from "../shared/agent-contract.js";
+import type { AgentEvent, AgentSession, GoalOperation, GoalSnapshot, SessionProgress, SubagentSnapshot, SystemNoticeActivity, TranscriptItem } from "../shared/agent-contract.js";
 import { parseSessionProgress } from "../shared/session-progress.js";
 import {
   boundedJson,
@@ -448,4 +448,25 @@ function publishAppRow(host: GoalTodoHost, sessionId: string, row: SystemNoticeA
     type: "transcript.appended",
     item: cloneTranscriptItem(row),
   });
+}
+
+/**
+ * The subagents a session launched, read from the task tool's own arguments.
+ *
+ * This used to also query `runtime.jobs.list` and merge anything whose kind matched
+ * /subagent|task/. Verified against gjc/0.18.11, that query answers a single wrapper
+ * row shaped `{running, recent, delivery}` whose entries are background *tool* runs
+ * with `type` set to the tool name ("bash"). No entry is ever a subagent and no
+ * top-level row has a `kind`, so the filter matched nothing: the merge was dead code
+ * whose only live effect was making this method require a live runtime, so a
+ * session whose subagents were already in the transcript failed to list them
+ * whenever the runtime was unreachable.
+ */
+export async function listSubagents(host: GoalTodoHost, sessionId: string): Promise<SubagentSnapshot[]> {
+  const declaredById = new Map<string, SubagentSnapshot>();
+  for (const agent of (host.transcripts.get(sessionId) ?? []).flatMap(
+    (item) => (item.kind === "tool" ? (item.subagents ?? []) : []),
+  ))
+    declaredById.set(agent.id, agent);
+  return [...declaredById.values()];
 }

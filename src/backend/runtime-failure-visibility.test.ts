@@ -104,6 +104,11 @@ describe("shell rendering while the runtime is unreachable", () => {
     "utf8",
   );
 
+  const sendMessageSource = readFileSync(
+    path.join(import.meta.dirname, "../app/use-send-message.ts"),
+    "utf8",
+  );
+
   it("gives the workspace to the failure instead of an empty session view", () => {
     // Without this branch a disconnected window rendered the ordinary "no session
     // selected" screen, which is indistinguishable from a healthy idle app.
@@ -134,7 +139,7 @@ describe("shell rendering while the runtime is unreachable", () => {
   });
 
   it("surfaces delivery failures and rejects them for queue retention", () => {
-    const body = sendMessageBody(shellSource);
+    const body = sendMessageBody(sendMessageSource);
     expect(body).toContain("const result = await backend.sendMessage(");
     expect(body).toContain("return result;");
     expect(body).toContain("setAppError(humanErrorMessage(error));");

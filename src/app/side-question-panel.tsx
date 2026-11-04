@@ -2,7 +2,35 @@ import { useEffect, useRef, useState } from "react";
 import { ArrowUp, MessageCircleQuestion, RotateCcw, Trash2, X } from "lucide-react";
 import { t, useLanguage } from "../i18n";
 import type { SideExchange } from "./side-questions";
+import { formatDuration } from "./format";
 import { MarkdownBody } from "./transcript-markdown";
+
+/** GJC gives up on a /btw answer after 120 s; past this the wait is worth explaining. */
+const LONG_WAIT_MS = 30_000;
+
+/** The wait for an answer: moving dots so it reads as live, and how long it has been. */
+function SidePending({ askedAt }: { askedAt: number }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+  const waited = Math.max(0, now - askedAt);
+  return (
+    <div className="side-exchange-pending" role="status">
+      <span className="side-exchange-dots" aria-hidden="true">
+        <span />
+        <span />
+        <span />
+      </span>
+      <span>{t("답을 생각하는 중")}</span>
+      {waited >= 1000 && <span className="side-exchange-elapsed">{formatDuration(waited)}</span>}
+      {waited >= LONG_WAIT_MS && (
+        <small>{t("답이 길어지고 있습니다. 최대 2분까지 기다립니다.")}</small>
+      )}
+    </div>
+  );
+}
 
 /**
  * `/btw` beside the conversation: side questions about the session that never
@@ -93,9 +121,7 @@ export function SideQuestionPanel({
             <section className="side-exchange" key={exchange.id}>
               <p className="side-exchange-question">{exchange.question}</p>
               {exchange.status === "pending" ? (
-                <p className="side-exchange-pending" role="status">
-                  {t("답을 기다리는 중…")}
-                </p>
+                <SidePending askedAt={exchange.askedAt} />
               ) : exchange.status === "failed" ? (
                 <div className="side-exchange-failed" role="alert">
                   <span>{exchange.error}</span>
@@ -105,7 +131,7 @@ export function SideQuestionPanel({
                   </button>
                 </div>
               ) : (
-                <div className="side-exchange-answer">
+                <div className="side-exchange-answer markdown-body">
                   <MarkdownBody>{exchange.answer}</MarkdownBody>
                 </div>
               )}

@@ -202,7 +202,9 @@ describe("settings reasoning-card toggle", () => {
     // edited the draft would never reach the store.
     const onToggleThoughtsExpanded = vi.fn();
     const bridge = window as unknown as { agentControlDesktop?: unknown };
-    bridge.agentControlDesktop = { settings: { getPreferences: async () => loaded } };
+    bridge.agentControlDesktop = {
+      settings: { getPreferences: async () => loaded, listCommandRules: async () => [], removeCommandRule: async () => [] },
+    };
     const host = document.createElement("div");
     document.body.append(host);
     const root = createRoot(host);
@@ -241,6 +243,64 @@ describe("settings reasoning-card toggle", () => {
   });
 });
 
+describe("settings command rules", () => {
+  const dialog = () =>
+    createElement(SettingsDialog, {
+      connection: { state: "connected", backend: "gjc", label: "GJC", detail: "", workspace: "/tmp" },
+      thoughtsExpanded: false,
+      onToggleThoughtsExpanded: () => undefined,
+      onClose: () => undefined,
+      onSaved: () => undefined,
+      updateStatus: null,
+      updateBusy: null,
+      updateError: "",
+      onCheckUpdate: () => undefined,
+      onInstallUpdate: () => undefined,
+    });
+
+  it("lists the saved rules on the GJC tab and deletes one", async () => {
+    const rule = { tool: "bash", prefix: "git status", decision: "allow", createdAt: "2026-11-04T00:00:00.000Z" };
+    const removeCommandRule = vi.fn(async () => []);
+    const bridge = window as unknown as { agentControlDesktop?: unknown };
+    bridge.agentControlDesktop = {
+      settings: {
+        getPreferences: async () => loaded,
+        listCommandRules: async () => [{ root: "/work/alpha", rules: [rule] }],
+        removeCommandRule,
+      },
+    };
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(dialog()));
+      expect(host.querySelector(".command-rules-project h3")?.textContent).toBe("alpha/work/alpha");
+      await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="git status 규칙 삭제"]')!.click());
+      expect(removeCommandRule).toHaveBeenCalledWith("/work/alpha", "git status");
+      expect(host.querySelector(".command-rule-row")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+      delete bridge.agentControlDesktop;
+    }
+  });
+
+  it("hides the section where there is no desktop bridge", async () => {
+    const bridge = window as unknown as { agentControlDesktop?: unknown };
+    delete bridge.agentControlDesktop;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(dialog()));
+      expect(host.querySelector(".command-rules")).toBeNull();
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+    }
+  });
+});
+
 describe("settings errors", () => {
   it("preserves useful Error messages and renders non-Error rejections", () => {
     expect(settingsErrorMessage(new Error("disk unavailable"))).toBe(
@@ -259,6 +319,8 @@ describe("settings desktop tab", () => {
     bridge.agentControlDesktop = {
       settings: {
         getPreferences: async () => loaded,
+        listCommandRules: async () => [],
+        removeCommandRule: async () => [],
         setDesktopIntegration,
         getAppUpdateStatus: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
         checkAppUpdate: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
@@ -345,6 +407,8 @@ describe("settings desktop tab", () => {
     bridge.agentControlDesktop = {
       settings: {
         getPreferences: async () => loaded,
+        listCommandRules: async () => [],
+        removeCommandRule: async () => [],
         setDesktopIntegration,
         getAppUpdateStatus: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
         checkAppUpdate: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),

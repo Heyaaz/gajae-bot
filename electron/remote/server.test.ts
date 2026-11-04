@@ -136,6 +136,10 @@ function fakeHost(): FakeHost {
       calls.push(`flush:${sessionId}`);
       return true;
     },
+    async suggestNextInput(sessionId: string) {
+      calls.push(`suggest:${sessionId}`);
+      return "다음 단계도 진행해줘";
+    },
     async cancelRun(sessionId: string) {
       calls.push(`cancel:${sessionId}`);
     },
@@ -683,6 +687,7 @@ describe("remote server permissions", () => {
       [REMOTE_API.steer("s-1"), { operationId: "op-22222222", input: { text: "hi", images: [], files: [] } }],
       [REMOTE_API.followUps("s-1"), { operationId: "op-33333333", input: { text: "hi", images: [], files: [] } }],
       [REMOTE_API.flushFollowUps("s-1"), { operationId: "op-44444444" }],
+      [REMOTE_API.suggestNextInput("s-1"), { operationId: "op-aaaaaaaa" }],
       [REMOTE_API.cancel("s-1"), { operationId: "op-55555555" }],
       [REMOTE_API.read("s-1"), { operationId: "op-66666666" }],
       [REMOTE_API.toolCallDecision("t-1"), { operationId: "op-77777777", decision: { optionId: "allow_once" } }],
@@ -698,6 +703,17 @@ describe("remote server permissions", () => {
       expect(response.body.error.code).toBe("forbidden");
     }
     expect(base.host.calls).toEqual([]);
+  });
+
+  it("lets a control device ask for a next-input suggestion", async () => {
+    const base = await harness();
+    const device = await base.pair("control");
+    const response = await post(base, device.token, REMOTE_API.suggestNextInput("s-1"), {
+      operationId: "op-bbbbbbbb",
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.result).toBe("다음 단계도 진행해줘");
+    expect(base.host.calls).toEqual(["suggest:s-1"]);
   });
 
   it("refuses control operations that are not exposed to remote devices at all", async () => {

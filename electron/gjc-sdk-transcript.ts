@@ -164,16 +164,6 @@ export async function readTranscriptTail(
   }
 }
 
-/**
- * A tool call awaiting the user's approval decision.
- *
- * Broker-hosted session hosts have no reverse channel to an external controller:
- * `permission.request` is a host-to-client operation the CLI cannot carry, so a
- * session left in `prompt` mode fails its tool calls with "no permission provider
- * is connected" instead of asking. Gajae therefore sets the session's permission
- * mode explicitly (see `applyPermissionMode`) and only tracks a pending decision
- * for the approvals GJC records in the transcript itself.
- */
 export function textFromContent(content: ContentBlock): string {
   if (content.type === "text") return content.text;
   if (content.type === "audio") return "[Audio attachment]";
@@ -1182,6 +1172,15 @@ export function customMessageTitle(customType: unknown): string {
   return "시스템 메시지";
 }
 
+/** The `/skill:<name> <args>` request a `skill-prompt` record's details describe. */
+function skillRequest(details: unknown): string | undefined {
+  if (!details || typeof details !== "object") return undefined;
+  const { name, args } = details as Record<string, unknown>;
+  if (typeof name !== "string" || !name.trim()) return undefined;
+  const request = typeof args === "string" ? args.trim() : "";
+  return request ? `/skill:${name.trim()} ${request}` : `/skill:${name.trim()}`;
+}
+
 export function sharedTranscriptItems(
   sessionId: string,
   rows: unknown[],
@@ -1293,6 +1292,20 @@ export function sharedTranscriptItems(
       if (content) {
         const sourceType =
           typeof row.customType === "string" ? row.customType.trim() : "";
+        // GJC records a skill run as the expanded skill only. The request that ran
+        // it is the user's turn, written the way it was sent, so the window's echo
+        // of `/skill:<name> <args>` finds its durable twin instead of drifting below
+        // the reply.
+        const skill = sourceType === "skill-prompt" ? skillRequest(row.details) : undefined;
+        if (skill)
+          items.push({
+            id: `shared-message-${sourceId}`,
+            kind: "message",
+            sessionId,
+            role: "user",
+            content: skill,
+            createdAt,
+          });
         items.push({
           id: `shared-system-${sourceId}`,
           kind: "system",

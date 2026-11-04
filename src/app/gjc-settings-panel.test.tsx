@@ -71,7 +71,7 @@ describe("GjcSettingsPanel", () => {
     });
     expect([...container.querySelectorAll(".gjc-settings-group h3")].map((h) => h.textContent))
       .toEqual(["Retry", "Power", "brandNew"]);
-    expect(container.querySelector(".gjc-settings-group strong")?.textContent).toBe("Retry");
+    expect(container.querySelector(".gjc-settings-group strong")?.textContent).toBe("Auto-Retry");
     expect(container.querySelectorAll(".gjc-settings-group")[2]!.querySelector("small")?.textContent)
       .toBe("Added later");
   });

@@ -1,5 +1,6 @@
 import type { SdkControlOperation } from "./gjc-sdk-control.js";
-import type { AgentConfigOption, AgentConfigOptionValue, AgentControlPreferences, AgentEvent, AgentSession } from "../shared/agent-contract.js";
+import type { AgentConfigOption, AgentConfigOptionValue, AgentControlPreferences, AgentEvent, AgentSession, BackendConnection, EffectiveRuntimeState } from "../shared/agent-contract.js";
+import type { GjcSettingChange } from "../shared/gjc-settings.js";
 import { GjcSdkCli } from "./gjc-sdk-cli.js";
 import {
   agentConfigOptions,
@@ -10,6 +11,12 @@ import {
   SessionConfigOption,
   thinkingOptionsForModelCatalog,
 } from "./gjc-sdk-foundation.js";
+
+/** GJC settings with a control that changes them on a live session. */
+const LIVE_SETTING_CONTROLS: Readonly<Record<string, SdkControlOperation>> = {
+  "compaction.enabled": "compaction.auto.set",
+  "retry.enabled": "retry.auto.set",
+};
 
 /** The controller members the model, config and context usage reads touch. */
 export interface SessionConfigHost {
@@ -42,6 +49,10 @@ export interface SessionConfigHost {
     sessionId: string,
     replay: boolean,
   ): Promise<void>;
+  readonly attachedSessions: Set<string>;
+  readonly permissionHandling: AgentControlPreferences["permissionHandling"];
+  readonly connectionState: BackendConnection;
+  sdkOperations(sessionId: string, options?: { strict?: boolean }): Promise<Set<string>>;
 }
 
 export function captureSessionState(
@@ -615,4 +626,103 @@ export async function cycleThinking(host: SessionConfigHost, sessionId: string):
     host.emitEvent({ type: "session.config", sessionId, options: updated });
   }
   return level;
+}
+
+/**
+ * GJC reloads `config.yml` only in its terminal TUI, so a session hosted
+ * through the SDK keeps the old value until a control changes it. The file is
+ * already written, which makes this best effort per session.
+ */
+export async function applyLiveSettings(host: SessionConfigHost, changes: readonly GjcSettingChange[]): Promise<void> {
+  const controls = changes.flatMap((change) => {
+    const operation = LIVE_SETTING_CONTROLS[change.key];
+    return operation && typeof change.value === "boolean"
+      ? [{ operation, on: change.value }]
+      : [];
+  });
+  if (controls.length === 0) return;
+  await Promise.all(
+    [...host.attachedSessions].map(async (sessionId) => {
+      try {
+        const operations = await host.sdkOperations(sessionId);
+        for (const { operation, on } of controls)
+          if (operations.has(operation)) await host.controlSession(sessionId, operation, { on });
+      } catch {
+        // The setting is saved; this session picks it up when it restarts.
+      }
+    }),
+  );
+}
+
+export async function refreshRuntimeState(host: SessionConfigHost, sessionId: string): Promise<EffectiveRuntimeState> {
+  await host.ensureAttached(sessionId, false);
+  const query = async (name: string): Promise<unknown[]> =>
+    await host.querySessionItems(sessionId, name);
+  const [metadata, skills, config, capabilities, tools] = await Promise.all([
+    query("session.metadata"),
+    query("skill.list/state"),
+    query("config.list/get"),
+    query("runtime.capabilities"),
+    query("tools.list"),
+  ]);
+  const names = (values: unknown[]): string[] =>
+    [
+      ...new Set(
+        values.flatMap((value) => {
+          if (typeof value === "string") return [value];
+          if (!value || typeof value !== "object" || Array.isArray(value))
+            return [];
+          const item = value as Record<string, unknown>;
+          const name = item.name ?? item.id ?? item.key;
+          return typeof name === "string" && name ? [name] : [];
+        }),
+      ),
+    ].sort();
+  const configRows = config.flatMap((value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? [value as Record<string, unknown>]
+      : [],
+  );
+  const namedConfig = (pattern: RegExp): string[] =>
+    [
+      ...new Set(
+        configRows.flatMap((item) => {
+          const key = String(item.key ?? item.name ?? item.id ?? "");
+          if (!pattern.test(key)) return [];
+          const value = item.value ?? item.currentValue;
+          if (Array.isArray(value))
+            return value.filter(
+              (entry): entry is string => typeof entry === "string",
+            );
+          return typeof value === "string" && value ? [value] : [];
+        }),
+      ),
+    ].sort();
+  const session = host.sessions.get(sessionId);
+  const runtimeState: EffectiveRuntimeState = {
+    modelProfile: session?.model ?? host.modelPreset,
+    model: session?.modelDisplay,
+    thinking: session?.thinking,
+    mode: session?.mode,
+    permissionHandling: host.permissionHandling,
+    mcpServers: namedConfig(/mcp/iu),
+    skills: names(skills),
+    rules: namedConfig(/rule/iu),
+    tools: [...new Set([...names(tools), ...names(capabilities)])].sort(),
+    gjcVersion: host.connectionState.version,
+    refreshedAt: new Date().toISOString(),
+  };
+  if (metadata.length > 0 && !runtimeState.model) {
+    const first = metadata[0];
+    if (first && typeof first === "object" && !Array.isArray(first)) {
+      const model = (first as Record<string, unknown>).model;
+      if (typeof model === "string") runtimeState.model = model;
+    }
+  }
+  if (session) {
+    session.runtimeState = runtimeState;
+    host.emitEvent({ type: "session.updated", session: { ...session } });
+  }
+  host.emitEvent({ type: "runtime.updated", sessionId, runtimeState });
+  return runtimeState;
 }

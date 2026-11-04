@@ -1,11 +1,12 @@
 import path from "node:path";
-import type { AgentEvent, AgentSession } from "../shared/agent-contract.js";
+import type { AgentEvent, AgentSession, ChatMessage, TranscriptItem } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import {
   destructiveSlashAction,
   destructiveSlashMessage,
   markUpdated,
   MAX_TOOL_TEXT,
+  nowLabel,
   ResolvedMessageInput,
   SDK_FAST_SERVICE_TIERS,
   SDK_RELOAD_COMPONENTS,
@@ -40,7 +41,8 @@ export interface SlashCommandHost {
   readonly sessionMetadata?: SessionMetadataStore;
   emitEvent(event: AgentEvent): void;
   sdkOperations(sessionId: string): Promise<Set<string>>;
-  appendSdkCommandOutput(sessionId: string, content: string): void;
+  nextLocalId: number;
+  appendTranscript(item: TranscriptItem): void;
   querySessionItems(
     sessionId: string,
     query: string,
@@ -51,7 +53,7 @@ export interface SlashCommandHost {
     sessionId: string,
     operation: SlashControlOperation,
     input: Record<string, unknown>,
-    options?: { confirm?: boolean },
+    options?: { confirm?: boolean; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined>;
   deleteSession(sessionId: string): Promise<void>;
   sessionConfigRow(sessionId: string): Promise<Record<string, unknown> | undefined>;
@@ -69,6 +71,14 @@ export interface SlashCommandHost {
  * Asks GJC a side question from the session's own context. GJC answers without a
  * turn and stores nothing, so this may run while a turn is live.
  */
+/**
+ * GJC gives a /btw answer up to 120 s (`BTW_STREAM_TOTAL_TIMEOUT_MS`). The CLI's
+ * default 8 s request budget gave up first on any slower answer and reported only
+ * that the outcome was uncertain, so the call waits a little past GJC's own limit
+ * and a slow answer ends in GJC's timeout message instead.
+ */
+const SIDE_QUESTION_TIMEOUT_MS = 125_000;
+
 export async function askSideQuestion(
   host: Pick<SlashCommandHost, "sdkOperations" | "controlSession">,
   sessionId: string,
@@ -76,7 +86,12 @@ export async function askSideQuestion(
 ): Promise<string> {
   if (!(await host.sdkOperations(sessionId)).has("btw.ask"))
     throw new Error("/btw is unavailable in this GJC runtime (btw.ask is not advertised)");
-  const result = await host.controlSession(sessionId, "btw.ask", { question });
+  const result = await host.controlSession(
+    sessionId,
+    "btw.ask",
+    { question },
+    { timeoutMs: SIDE_QUESTION_TIMEOUT_MS },
+  );
   const reply = typeof result?.reply === "string" ? result.reply.trim() : "";
   if (!reply) throw new Error("GJC returned no /btw answer");
   return reply;
@@ -127,7 +142,7 @@ export async function executeSdkSlashCommand(
       );
   };
   const output = (content: string): true => {
-    host.appendSdkCommandOutput(sessionId, content);
+    appendSdkCommandOutput(host, sessionId, content);
     return true;
   };
   const query = async (
@@ -459,4 +474,24 @@ export async function executeSdkSlashCommand(
     default:
       return false;
   }
+}
+
+export function appendSdkCommandOutput(
+  host: SlashCommandHost,
+  sessionId: string,
+  content: string,
+): void {
+  const message: ChatMessage = {
+    id: `sdk-command-${host.nextLocalId++}`,
+    kind: "message",
+    sessionId,
+    role: "assistant",
+    content,
+    createdAt: nowLabel(),
+    streaming: false,
+  };
+  host.appendTranscript(message);
+  const session = host.sessions.get(sessionId);
+  if (session)
+    host.emitEvent({ type: "session.updated", session: { ...session } });
 }

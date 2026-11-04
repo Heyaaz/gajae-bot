@@ -10,6 +10,7 @@ import type {
   WorktreePull,
 } from "../shared/agent-contract.js";
 import { parseSessionWorkLink } from "../shared/agent-contract.js";
+import { normalizeRulePrefix } from "../shared/command-rules.js";
 import { safeModelPreset } from "../shared/parallel-run.js";
 
 /**
@@ -299,7 +300,22 @@ export function toolDecision(value: unknown): ToolDecision {
   ) {
     throw new Error("Tool decision optionId is invalid");
   }
-  return { optionId: optionId.trim() };
+  const comment = (value as { comment?: unknown }).comment;
+  if (comment !== undefined && (typeof comment !== "string" || comment.length > 4096))
+    throw new Error("Tool decision comment is invalid");
+  const trimmed = typeof comment === "string" ? comment.trim() : "";
+  const rule = (value as { rule?: unknown }).rule;
+  let prefix: string | undefined;
+  if (rule !== undefined) {
+    const candidate = rule && typeof rule === "object" ? (rule as { prefix?: unknown }).prefix : undefined;
+    prefix = typeof candidate === "string" ? normalizeRulePrefix(candidate) : undefined;
+    if (!prefix) throw new Error("Tool decision rule prefix is invalid");
+  }
+  return {
+    optionId: optionId.trim(),
+    ...(trimmed ? { comment: trimmed } : {}),
+    ...(prefix ? { rule: { prefix } } : {}),
+  };
 }
 
 export function gitPaths(value: unknown): string[] {
