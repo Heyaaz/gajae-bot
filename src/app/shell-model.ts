@@ -12,6 +12,13 @@ import type { MessageDeliverySessionState } from "../message-delivery";
 import { t } from "../i18n";
 import type { InvalidLinkReason } from "../../shared/settings-ipc";
 
+export type CenterView =
+  | "conversation"
+  | "repository"
+  | "projects"
+  | "inbox"
+  | "parallel";
+
 export interface ShellSendOptions {
   quiet?: boolean;
   retryId?: string;

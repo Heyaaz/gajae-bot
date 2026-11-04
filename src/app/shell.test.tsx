@@ -430,7 +430,7 @@ describe("Escape keyboard routing", () => {
   });
 
   it("listens in the bubble phase so a nearer handler gets the key first", async () => {
-    const shell = await source("src/app/shell.tsx");
+    const shell = await source("src/app/use-shell-shortcuts.ts");
     expect(shell).toContain('window.addEventListener("keydown", abortWithEscape)');
     expect(shell).not.toContain(
       'window.addEventListener("keydown", abortWithEscape, true)',
@@ -438,7 +438,7 @@ describe("Escape keyboard routing", () => {
   });
 
   it("counts the resume picker among the surfaces that own Escape", async () => {
-    const shell = await source("src/app/shell.tsx");
+    const shell = await source("src/app/use-shell-shortcuts.ts");
     const gate =
       shell.match(/const dismissibleSurfaceOpen =\n([\s\S]*?);\n/u)?.[1] ?? "";
     expect(gate).toBeTruthy();
@@ -452,7 +452,7 @@ describe("Escape keyboard routing", () => {
   });
 
   it("does not claim shell shortcuts while the terminal surface is active", async () => {
-    const shell = await source("src/app/shell.tsx");
+    const shell = await source("src/app/use-shell-shortcuts.ts");
     expect(shell).toMatch(/surfaceRef\.current === "terminal"[\s\S]*?setSearchOpen\(true\)/u);
     expect(shell).toMatch(/shortcut\.type === "abort"\) \{\s*if \(surfaceRef\.current === "terminal"\)/u);
     expect(shell).toMatch(/onAbortRun\(\(\) => \{\s*if \(surfaceRef\.current === "terminal"\)/u);
