@@ -1894,6 +1894,40 @@ describe("GjcSdkController CLI seam", () => {
     controller.dispose();
   });
 
+  it("applies auto compaction and retry settings to attached sessions that advertise them", async () => {
+    const { controller, internals } = harness();
+    internals.attachedSessions.add("s1");
+    internals.attachedSessions.add("s2");
+    internals.sdkOperations = vi.fn(async (id: string) =>
+      new Set(id === "s1" ? ["compaction.auto.set", "retry.auto.set"] : ["retry.auto.set"]));
+    internals.controlSession = vi.fn(async (id: string) => {
+      if (id === "s2") throw new Error("gone");
+      return { changed: true };
+    });
+    await controller.applyLiveSettings([
+      { key: "compaction.enabled", value: false },
+      { key: "retry.enabled", value: true },
+      { key: "retry.maxRetries", value: 5 },
+    ]);
+    expect(internals.controlSession.mock.calls).toHaveLength(3);
+    expect(internals.controlSession.mock.calls).toEqual(expect.arrayContaining([
+      ["s1", "compaction.auto.set", { on: false }],
+      ["s1", "retry.auto.set", { on: true }],
+      ["s2", "retry.auto.set", { on: true }],
+    ]));
+    controller.dispose();
+  });
+
+  it("sends no live setting control to a session that is not attached", async () => {
+    const { controller, internals } = harness();
+    internals.sessions.set("s1", session());
+    internals.sdkOperations = vi.fn(async () => new Set(["retry.auto.set"]));
+    internals.controlSession = vi.fn(async () => ({ changed: true }));
+    await controller.applyLiveSettings([{ key: "retry.enabled", value: true }]);
+    expect(internals.controlSession).not.toHaveBeenCalled();
+    controller.dispose();
+  });
+
   it.each([true, false])("requests only saved-history deletion when live=%s", async (live) => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");

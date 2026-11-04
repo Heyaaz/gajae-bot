@@ -38,6 +38,7 @@ import type {
   TranscriptPage,
   TranscriptPageRequest,
 } from "../shared/agent-contract.js";
+import type { GjcSettingChange } from "../shared/gjc-settings.js";
 import {
   DEFAULT_MODEL_PRESET,
 } from "../shared/agent-contract.js";
@@ -298,6 +299,12 @@ export * from "./gjc-sdk-foundation.js";
  * CLI round trips, so a reopen seconds later must not repeat them.
  */
 export const SESSION_CONTEXT_REFRESH_TTL_MS = 15_000;
+
+/** GJC settings with a control that changes them on a live session. */
+const LIVE_SETTING_CONTROLS: Readonly<Record<string, SdkControlOperation>> = {
+  "compaction.enabled": "compaction.auto.set",
+  "retry.enabled": "retry.auto.set",
+};
 
 
 export class GjcSdkController {
@@ -1615,6 +1622,32 @@ export class GjcSdkController {
 
   cycleThinking(sessionId: string): Promise<string | undefined> {
     return cycleThinking(this.sessionConfigHost, sessionId);
+  }
+
+  /**
+   * GJC reloads `config.yml` only in its terminal TUI, so a session hosted
+   * through the SDK keeps the old value until a control changes it. The file is
+   * already written, which makes this best effort per session.
+   */
+  async applyLiveSettings(changes: readonly GjcSettingChange[]): Promise<void> {
+    const controls = changes.flatMap((change) => {
+      const operation = LIVE_SETTING_CONTROLS[change.key];
+      return operation && typeof change.value === "boolean"
+        ? [{ operation, on: change.value }]
+        : [];
+    });
+    if (controls.length === 0) return;
+    await Promise.all(
+      [...this.attachedSessions].map(async (sessionId) => {
+        try {
+          const operations = await this.sdkOperations(sessionId);
+          for (const { operation, on } of controls)
+            if (operations.has(operation)) await this.controlSession(sessionId, operation, { on });
+        } catch {
+          // The setting is saved; this session picks it up when it restarts.
+        }
+      }),
+    );
   }
 
   controlRetry(sessionId: string, action: "now" | "abort"): Promise<void> {

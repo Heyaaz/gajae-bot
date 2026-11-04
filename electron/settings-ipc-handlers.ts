@@ -125,6 +125,7 @@ export function registerSettingsIpcHandlers(
   environment?: { check(): Promise<EnvironmentReport>; due(): boolean },
   quickInputShortcut?: { status(): QuickInputShortcutStatus },
   onLanguage?: (language: UiLanguage) => void,
+  onGjcSettingsApplied?: (changes: readonly GjcSettingChange[]) => Promise<void>,
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -253,7 +254,9 @@ export function registerSettingsIpcHandlers(
       ].join('\n\n'),
       confirmLabel: '적용',
     })
-    return applyGjcSettings(executable(), parsed)
+    const listing = await applyGjcSettings(executable(), parsed)
+    await onGjcSettingsApplied?.(parsed)
+    return listing
   }))
   ipcMain.handle(SETTINGS_IPC.installGjcUpdate, security.guarded(async (event) => {
     await security.authorizeDestructive(event, {

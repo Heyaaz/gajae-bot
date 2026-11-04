@@ -822,7 +822,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "GJC 설정 찾기": "Search GJC settings",
   "기본값": "Default",
   "찾는 설정이 없습니다.": "No settings match.",
-  "터미널의 GJC와 같은 설정 파일을 씁니다. 이미 실행 중인 세션에는 바로 적용되지 않을 수 있습니다.": "These are the same settings the terminal's GJC uses. A session that is already running may not pick up a change right away.",
+  "터미널과 함께 쓰는 GJC 전체 설정입니다. 자동 압축과 재시도는 열린 세션에도 바로 적용되고, 나머지는 세션을 다시 시작해야 할 수 있습니다.": "These GJC settings are shared with the terminal. Auto-compaction and retry apply to open sessions right away. Others may need the session to restart.",
   "바꾼 설정": "Changed settings",
   "바꾼 설정 {0}개": "{0} changed",
   "작업 내역": "Work log",

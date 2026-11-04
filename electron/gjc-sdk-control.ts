@@ -64,6 +64,8 @@ export type SdkControlOperation =
   | "retry.last"
   | "retry.now"
   | "retry.abort"
+  | "compaction.auto.set"
+  | "retry.auto.set"
   | "bash.background"
   | "runtime.reload"
   | "auth.login"
