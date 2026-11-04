@@ -72,6 +72,7 @@
     "esbuild": "^0.28.2",
     "happy-dom": "^21.0.3",
     "lucide-react": "^1.34.0",
+    "mermaid": "12.2.0",
     "oxlint": "^1.79.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.8",
