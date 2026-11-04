@@ -141,6 +141,8 @@ describe("composer next-input suggestion", () => {
       const hint = test.node.querySelector(".composer-ghost-hint")!;
       expect(hint.textContent).toBe("Tab으로 받기 · Esc로 닫기");
       expect(test.textarea.getAttribute("aria-describedby")).toBe(hint.id);
+      // Drawn in the placeholder's place, so the two never overlap.
+      expect(test.textarea.placeholder).toBe("");
     } finally {
       await test.close();
     }
@@ -169,6 +171,7 @@ describe("composer next-input suggestion", () => {
       await press(test.textarea, "Escape");
       expect(test.ghost()).toBeNull();
       expect(test.textarea.value).toBe("");
+      expect(test.textarea.placeholder).toBe("무엇이든 요청하세요");
       expect((await press(test.textarea, "Tab")).defaultPrevented).toBe(false);
       expect(test.textarea.value).toBe("");
     } finally {

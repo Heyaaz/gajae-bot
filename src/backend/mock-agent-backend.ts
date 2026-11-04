@@ -247,9 +247,9 @@ const transcripts: Record<string, TranscriptItem[]> = {
       id: "tool-approval-1",
       kind: "tool",
       sessionId: "agent-control",
-      name: "Start desktop preview",
-      description: "Run the local Vite preview server",
-      command: "npm run dev -- --host 127.0.0.1",
+      name: "bash",
+      description: "작업 트리 변경 확인",
+      command: JSON.stringify({ command: "git status --short" }),
       status: "approval-required",
       createdAt: "10:46",
       permissionOptions: [
@@ -281,8 +281,43 @@ const transcripts: Record<string, TranscriptItem[]> = {
         "M1 Air is reachable over the private network. Docker health data will appear here after the bridge is connected.",
       createdAt: "09:58",
     },
+    {
+      id: "m1-message-2",
+      kind: "message",
+      sessionId: "m1-box",
+      role: "user",
+      content: "브리지가 폰에서 M1까지 어떻게 이어지는지 그림으로 보여줘.",
+      createdAt: "10:02",
+    },
+    {
+      id: "m1-message-3",
+      kind: "message",
+      sessionId: "m1-box",
+      role: "assistant",
+      content:
+        "폰은 Tailscale 사설망으로만 브리지에 닿고, 인증 정보와 실행 권한은 M1에 남습니다.\n\n```mermaid\nflowchart LR\n  Phone[Phone] -->|Tailscale| Bridge[M1 bridge]\n  Bridge --> Gajae[Gajae app]\n  Gajae --> GJC[GJC session]\n```",
+      createdAt: "10:03",
+    },
   ],
-  "codex-router": [],
+  "codex-router": [
+    {
+      id: "router-message-1",
+      kind: "message",
+      sessionId: "codex-router",
+      role: "user",
+      content: "라우터가 provider 세션을 어떻게 고르는지 정리하고 중복 분기를 걷어내줘.",
+      createdAt: "11:20",
+    },
+    {
+      id: "router-message-2",
+      kind: "message",
+      sessionId: "codex-router",
+      role: "assistant",
+      content:
+        "provider 선택 분기가 세 군데에 흩어져 있습니다. 먼저 `resolveProvider`로 한 곳에 모으겠습니다.",
+      createdAt: "11:21",
+    },
+  ],
 };
 
 function cloneSession(session: AgentSession): AgentSession {
@@ -640,9 +675,25 @@ export class MockAgentBackend implements AgentBackend {
   async askSideQuestion(sessionId: string, question: string): Promise<string> {
     if (!this.sessionStore.some((candidate) => candidate.id === sessionId))
       throw new Error(`Unknown session: ${sessionId}`);
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await new Promise((resolve) => setTimeout(resolve, 2800));
     const asked = question.split("\n").at(-1)?.replace(/^Follow-up question:\s*/u, "") ?? question;
-    return `샘플 답변입니다. "${asked}"에 대해 지금 세션의 맥락으로 답했고, 이 문답은 대화 기록에 남지 않습니다.`;
+    return [
+      `"${asked}"에 대한 답입니다. 지금 세션의 맥락으로 답했고, 이 문답은 대화 기록에 남지 않습니다.`,
+      "",
+      "| 구분 | 상태 |",
+      "| --- | --- |",
+      "| 메인 대화 | 계속 진행 중 |",
+      "| 사이드 챗 | 별도 패널 |",
+      "",
+      "- [x] 메인 세션은 멈추지 않음",
+      "- [x] 대화 본문에 추가되지 않음",
+      "- [ ] 필요하면 본문에 이어서 요청",
+    ].join("\n");
+  }
+
+  async suggestNextInput(): Promise<string | null> {
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    return "방금 바꾼 부분에 테스트도 추가해줘";
   }
 
   async cycleThinking(sessionId: string): Promise<string | undefined> {
@@ -946,8 +997,27 @@ export class MockAgentBackend implements AgentBackend {
         type: "tool.updated",
         tool: cloneItem(tool) as ToolActivity,
       });
+      if (decision.rule && approved) this.followWithRuleMatch(tool.sessionId, decision.rule.prefix);
       return;
     }
+  }
+
+  /** After a saved allow rule, a matching command arrives and is decided without a card. */
+  private followWithRuleMatch(sessionId: string, prefix: string): void {
+    this.schedule(sessionId, 900, () =>
+      this.append({
+        id: `tool-auto-${this.nextId++}`,
+        kind: "tool",
+        sessionId,
+        name: "bash",
+        description: "브랜치 상태 확인",
+        command: JSON.stringify({ command: `${prefix} --branch` }),
+        status: "completed",
+        output: "## main...origin/main\n M src/app/composer.tsx\n M src/app/side-chat.tsx",
+        autoDecision: { decision: "allow", prefix },
+        createdAt: "now",
+      }),
+    );
   }
 
   async markSessionRead(sessionId: string): Promise<void> {
@@ -978,6 +1048,29 @@ export class MockAgentBackend implements AgentBackend {
       files: [
         {
           id: `${sessionId}-diff-1`,
+          path: "src/router/resolve-provider.ts",
+          patch: [
+            "--- a/src/router/resolve-provider.ts",
+            "+++ b/src/router/resolve-provider.ts",
+            "@@ -1,9 +1,12 @@",
+            " import type { Provider } from \"./types\";",
+            " ",
+            "-export function pickProvider(name: string): Provider {",
+            "-  if (name.startsWith(\"openai\")) return providers.openai;",
+            "-  if (name.startsWith(\"google\")) return providers.google;",
+            "-  return providers.default;",
+            "+export function resolveProvider(name: string): Provider {",
+            "+  const [family] = name.split(\"/\");",
+            "+  const provider = providers[family] ?? providers.default;",
+            "+  if (!provider.enabled) throw new Error(`Provider disabled: ${family}`);",
+            "+  return provider;",
+            " }",
+            " ",
+            " export const defaultProvider = providers.default;",
+          ].join("\n") + "\n",
+        },
+        {
+          id: `${sessionId}-diff-2`,
           path: "README.md",
           patch: "--- a/README.md\n+++ b/README.md\n@@\n+# Gajae\n",
         },
