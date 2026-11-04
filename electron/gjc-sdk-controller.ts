@@ -87,6 +87,7 @@ import {
   type SdkControlOperation,
   sendMessage,
   steerSession,
+  type StopOutcome,
 } from "./gjc-sdk-control.js";
 import {
   appendTranscript,
@@ -886,9 +887,7 @@ export class GjcSdkController extends GjcSdkState {
     return cancelRun(this.host, sessionId);
   }
 
-  private fireAbort(
-    sessionId: string,
-  ): Promise<"owned" | "plain" | "no_active_turn"> {
+  private fireAbort(sessionId: string): Promise<StopOutcome> {
     return fireAbort(this.host, sessionId);
   }
 
