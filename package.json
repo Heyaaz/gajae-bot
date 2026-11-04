@@ -2,7 +2,7 @@
   "name": "agent-control",
   "productName": "Gajae",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A native macOS desktop client for GJC coding-agent sessions.",
   "license": "MIT",
   "repository": {
