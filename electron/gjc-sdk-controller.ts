@@ -179,6 +179,7 @@ import {
   type AttachHost,
   ensureAttached,
   listHistorySessions,
+  markTerminalOnly,
   openHistorySession,
   recoverOwnedSessions,
   refreshTranscriptAttachment,
@@ -1241,24 +1242,8 @@ export class GjcSdkController {
     return askSideQuestion(this.host, sessionId, question);
   }
 
-  // A session proven uncontrollable is recorded so the row stops advertising a
-  // control surface it does not have, instead of failing again on the next action.
   private markTerminalOnly(sessionId: string): void {
-    this.terminalOnlySessions.add(sessionId);
-    this.attachedSessions.delete(sessionId);
-    this.stopTailFollower(sessionId);
-    // The reuse fingerprint only covers broker liveness, which this discovery does
-    // not change. Without invalidating it the next scan replays the snapshot taken
-    // before the failure and the row goes back to advertising controls.
-    this.lastLiveFingerprint = undefined;
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
-    session.attachment = "terminal-only";
-    session.ownership = "external";
-    this.lastDiscovered = this.lastDiscovered.map((row) =>
-      row.id === sessionId ? { ...session } : row,
-    );
-    this.emitEvent({ type: "session.updated", session: { ...session } });
+    return markTerminalOnly(this.host, sessionId);
   }
 
   private rememberLiveRunningTranscriptSize(
