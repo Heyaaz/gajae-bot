@@ -79,7 +79,7 @@ h2 .g{color:#9b9ba0}
     <div id="in-l2" class="big" style="top:279px;width:560px"><span id="in-on" style="display:inline-block">on your</span><span id="in-dt" style="position:absolute;left:241px;top:0;display:flex;align-items:center;gap:7px"><i style="width:10px;height:10px;border-radius:50%;background:var(--o);display:block;margin-top:4px"></i><span>desktop</span></span><span id="in-dot" style="position:absolute;left:470px;top:0;color:#1d1d1f">.</span></div>
   </div>
   <div id="scenes"></div>
-  <canvas id="small" style="left:0;top:0"></canvas>
+  <div id="small" style="position:absolute;left:0;top:0;width:80px;height:80px;background:url(../../../../src/assets/gajae-progress-sprite@160.webp) 0 0/400px 80px no-repeat;transform-origin:50% 100%"></div>
   <div id="outro" class="layer">
     <div id="out-name" class="big" style="top:178px;font-size:112px;line-height:120px;letter-spacing:-.05em">Gajae</div>
     <div id="out-bars" style="position:absolute;left:421px;top:316px;width:280px;height:5px"></div>
@@ -430,15 +430,13 @@ function drawBig(t) {
   bctx.globalAlpha = 1;
 }
 
-const small = $('#small'), sctx = small.getContext('2d');
-const MP = MASCOT.pixels, SC = 2.6, SW = Math.ceil(MP.cols * SC) + 4, SH = Math.ceil(MP.rows * SC) + 4, SX = 814, SBASE = 136 - SH + 2;
-small.style.left = SX + 'px'; small.style.width = SW + 'px'; small.style.height = SH + 'px';
-small.width = SW * DPR; small.height = SH * DPR;
-function drawSmall() {
-  sctx.setTransform(DPR, 0, 0, DPR, 0, 0); sctx.clearRect(0, 0, SW, SH);
-  for (const [c, r, h] of MP.cells) { sctx.fillStyle = '#' + h; sctx.fillRect(2 + c * SC, 2 + r * SC, SC + .35, SC + .35); }
-}
-drawSmall();
+// The app's own small-size sprite (drawn for 40/80 px), not the icon shrunk down:
+// the icon's painted detail turns to mush at this size.
+const small = $('#small');
+const SPRITE = 80, SX = 806, SBASE = 136 - SPRITE + 3;
+const FACE = { coding: 0, sleepy: 1, surprised: 2, celebrate: 3 };
+const SCENE_FACE = ['coding', 'surprised', 'celebrate', 'coding', 'surprised', 'coding', 'coding', 'celebrate'];
+small.style.left = SX + 'px';
 
 const bars = $('#out-bars'), BARC = ['#f06416', '#f59a22', '#efb84a', '#22a05a', '#3b78e0'];
 BARC.forEach((c, i) => { const b = document.createElement('i'); b.style.cssText = `position:absolute;top:0;height:5px;border-radius:3px;width:48px;left:${i * 58}px;background:${c};transform-origin:left;display:block`; bars.appendChild(b); });
@@ -475,6 +473,11 @@ function renderAt(t) {
   small.style.opacity = sm;
   const drop = bounce(seg(t, first, first + .7)), bob = 2 * (.5 - .5 * Math.cos((t - first) * 2 * Math.PI / 2.4)) * seg(t, first + .8, first + 1.1);
   small.style.top = (SBASE - (1 - drop) * 70 - bob) + 'px';
+  let current = 0;
+  SCENES.forEach((s, i) => { if (t >= s.start) current = i; });
+  small.style.backgroundPosition = `${-FACE[SCENE_FACE[current]] * SPRITE}px 0`;
+  const pop = current > 0 ? 1 - eo(seg(t, SCENES[current].start, SCENES[current].start + .22)) : 0;
+  small.style.transform = `scale(${1 - .1 * pop}, ${1 + .06 * pop})`;
 
   const out = $('#outro'); out.style.opacity = seg(t, OUTRO_START, OUTRO_START + .15);
   const ot = t - OUTRO_START;
