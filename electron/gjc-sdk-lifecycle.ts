@@ -22,6 +22,7 @@ import {
   uncertainLifecycleOutcomeError,
 } from "./gjc-sdk-foundation.js";
 import { remotesWithBranch } from "./gjc-sdk-git.js";
+import { excludeGjcState } from "./git-exclude.js";
 import { CliDeleteError, type CliDeleteStage } from "./gjc-cli-session-delete.js";
 import type { GjcHostProcess } from "./gjc-host-process.js";
 import path from "node:path";
@@ -236,6 +237,7 @@ export async function createSession(host: LifecycleHost, input: CreateSessionInp
       managed: true,
     };
   }
+  await excludeGjcState(sessionWorkspace);
   const knownSessionIds = new Set([
     ...host.sessions.keys(),
     ...(await host.brokerSessions())?.map((session) => session.sessionId) ??
