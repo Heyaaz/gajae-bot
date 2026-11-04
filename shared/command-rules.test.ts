@@ -4,7 +4,7 @@ import {
   matchCommandRule,
   normalizeRulePrefix,
   type CommandRule,
-} from "./command-rules";
+} from "./command-rules.js";
 
 const rule = (prefix: string, decision: CommandRule["decision"]): CommandRule => ({
   tool: "bash",
