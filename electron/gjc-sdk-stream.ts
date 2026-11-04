@@ -4,6 +4,7 @@ import { GjcSdkCli, SdkCliError } from "./gjc-sdk-cli.js";
 import {
   agentCommands,
   artifactReferences,
+  awaitingApproval,
   inferToolName,
   LIVE_TOOL_STATUSES,
   markUpdated,
@@ -893,16 +894,10 @@ export function requestPermission(
     ...(toolCall.title !== undefined ? { title: toolCall.title } : {}),
     status: "pending",
   });
-  patchTool(host, toolCall.toolCallId, { status: "approval-required" });
-  patchTool(host, toolCall.toolCallId, {
-    permissionOptions: request.options.map((option) => ({
-      optionId: option.optionId,
-      kind: option.kind,
-      name: option.name,
-    })),
-  });
   return new Promise((resolve) => {
-    host.pendingPermissions.set(toolCall.toolCallId, { request, resolve });
+    const pending = { request, resolve };
+    host.pendingPermissions.set(toolCall.toolCallId, pending);
+    patchTool(host, toolCall.toolCallId, awaitingApproval(pending));
   });
 }
 

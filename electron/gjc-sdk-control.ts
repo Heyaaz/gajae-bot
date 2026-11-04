@@ -191,9 +191,7 @@ export interface ControlHost {
   readonly cancellationWatermarks: Map<string, number>;
   readonly cancellationPromises: Map<string, Promise<void>>;
   readonly cancellingSessions: Set<string>;
-  fireAbort(
-    sessionId: string,
-  ): Promise<"owned" | "plain" | "no_active_turn">;
+  fireAbort(sessionId: string): Promise<StopOutcome>;
   finalizeAllMessages(sessionId: string): void;
   readonly toolSnapshots: Map<string, Map<string, ToolActivity>>;
   readonly emitEvent: (event: AgentEvent) => void;
@@ -1001,28 +999,30 @@ export async function cancelRun(host: ControlHost, sessionId: string): Promise<v
   host.cancellingSessions.add(sessionId);
   try {
     const stop = await host.fireAbort(sessionId);
-    if (stop === "no_active_turn") {
-      // Nothing was running, so nothing was cancelled: the run state this window
-      // was showing is cleared so the row settles at idle, and the transcript is
-      // left alone -- it stays the source of truth for whether work continued on
-      // another connection. A notice here would claim a stop that did not happen.
-      throw new Error("GJC가 현재 연결에서 활성 turn을 찾지 못했습니다. 세션 작업의 중지 여부는 확인되지 않았습니다.");
-    } else {
-      host.finalizeThought(sessionId);
-      host.finalizeAssistantMessage(sessionId);
-      host.finalizeAllMessages(sessionId);
-      host.toolSnapshots.delete(sessionId);
-      cancelOpenTools(host, sessionId);
-      host.settleOpenQuestions(sessionId, "cancelled");
-      host.cancelPermissionsForSession(sessionId);
-      appendCancelledNotice(host, sessionId, stop === "plain");
-      host.locallyAbortedSessions.add(sessionId);
-      host.cancellationWatermarks.set(sessionId, Date.now());
-      host.activePromptAdmissions.delete(sessionId);
-      host.activePromptSessions.delete(sessionId);
-      // Only confirmed aborts may clear run authority and publish idle.
-      clearRunState(host, sessionId);
+    if (stop === "no_active_turn" || stop === "answer_lost") {
+      // Neither answer proves the work stopped. GJC's host-wide activity report is
+      // the second account: only a host it reports idle lets the window settle.
+      if (!(await hostSettledIdle(host, sessionId, stop)))
+        throw new Error(unconfirmedStopMessage(stop));
     }
+    host.finalizeThought(sessionId);
+    host.finalizeAssistantMessage(sessionId);
+    host.finalizeAllMessages(sessionId);
+    host.toolSnapshots.delete(sessionId);
+    cancelOpenTools(host, sessionId);
+    host.settleOpenQuestions(sessionId, "cancelled");
+    host.cancelPermissionsForSession(sessionId);
+    // A host that was already idle may have finished by itself, so no stop is
+    // claimed for it.
+    if (stop !== "no_active_turn")
+      appendCancelledNotice(host, sessionId, stop === "plain");
+    host.locallyAbortedSessions.add(sessionId);
+    host.cancellationWatermarks.set(sessionId, Date.now());
+    host.activePromptAdmissions.delete(sessionId);
+    host.activePromptSessions.delete(sessionId);
+    // Only a stop GJC or its host report confirmed may clear run authority and
+    // publish idle.
+    clearRunState(host, sessionId);
     host.updateSessionStatus(sessionId, "idle");
     resolveCancellation();
   } catch (error) {
@@ -1056,20 +1056,81 @@ function clearRunState(host: ControlHost, sessionId: string): void {
 }
 
 /**
+ * What a stop request left behind.
+ *
+ * `owned` stopped this window's turn and the work the runtime counts as owned, and
+ * `plain` stopped the turn through the ordinary route only. The other two confirm
+ * nothing: `no_active_turn` is GJC saying this connection has no turn, and
+ * `answer_lost` is a request that reached the host without an answer coming back.
+ *
+ * Verified against gjc/0.19.3: while a deep-interview question waits on its
+ * workflow gate, the terminal abort ends the turn within a second but the broker
+ * never answers it (`uncertain_after_send`), and every later terminal abort
+ * answers `no_active_turn`.
+ */
+export type StopOutcome = "owned" | "plain" | "no_active_turn" | "answer_lost";
+
+const UNCONFIRMED_STOP_REASON = {
+  no_active_turn:
+    "이 창이 쓰는 연결에서는 중지할 작업을 찾지 못했고, 세션은 아직 작업 중으로 보입니다. 다른 곳에서 진행 중인 작업의 중지 여부는 확인되지 않았습니다.",
+  answer_lost:
+    "중지 요청은 보냈지만 응답이 오지 않았고, 세션은 아직 작업 중으로 보입니다. 잠시 뒤 다시 시도해 주세요.",
+} as const;
+
+function unconfirmedStopMessage(stop: keyof typeof UNCONFIRMED_STOP_REASON): string {
+  return `GJC가 작업 중지를 확정하지 못했습니다. ${UNCONFIRMED_STOP_REASON[stop]}`;
+}
+
+const UNEXPECTED_STOP_ANSWER_MESSAGE =
+  "GJC가 작업 중지를 확정하지 못했습니다. 예상하지 못한 응답을 받았습니다.";
+
+/** GJC's activity report trails the abort by well under a second. */
+const HOST_IDLE_POLLS = 4;
+const HOST_IDLE_POLL_MS = 500;
+
+/**
+ * Whether the host itself, not just this connection, reports no work.
+ *
+ * `no_active_turn` only says the connection this window uses owns no turn; a
+ * session a terminal is driving answers the same. The broker's activity report
+ * for the session is the host-wide account. A prompt this window is still handing
+ * to GJC can be accepted after any read, so `no_active_turn` never settles while
+ * one is in flight. A lost answer already reached the host and does not wait.
+ */
+async function hostSettledIdle(
+  host: ControlHost,
+  sessionId: string,
+  stop: keyof typeof UNCONFIRMED_STOP_REASON,
+): Promise<boolean> {
+  if (stop === "no_active_turn" && host.activePromptSessions.has(sessionId))
+    return false;
+  for (let poll = 0; poll < HOST_IDLE_POLLS; poll += 1) {
+    if (poll > 0)
+      await new Promise((resolve) => setTimeout(resolve, HOST_IDLE_POLL_MS));
+    try {
+      const cli = await host.requireCli();
+      const row = await cli.inspectSession(sessionId, {
+        repo: host.repoFor(sessionId),
+      });
+      if (row?.activityState === "idle") return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Stops the run, through the operator route when the host serves it and through the
  * ordinary abort when the host answers but refuses the operator-owned Stop.
- *
- * The result names what was confirmed: `owned` stopped this window's turn and the
- * work the runtime counts as owned, `plain` stopped the turn through the ordinary
- * route only, and `no_active_turn` means there was no turn to stop at all.
  */
 export async function fireAbort(
   host: ControlHost,
   sessionId: string,
-): Promise<"owned" | "plain" | "no_active_turn"> {
+): Promise<StopOutcome> {
   try {
-    await abortOwnedThroughControl(host, sessionId);
-    return "owned";
+    const owned = await abortOwnedThroughControl(host, sessionId);
+    return owned === "stopped" ? "owned" : owned;
   } catch (error) {
     if (!(error instanceof OwnedStopUnavailableError)) throw error;
   }
@@ -1114,9 +1175,7 @@ async function abortPlainThroughControl(
   // No active turn on this connection: nothing was stopped, and that is not a
   // failure to report.
   if (answer?.turn === "no_active_turn") return "no_active_turn";
-  throw new Error(
-    `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(answer ?? null)}`,
-  );
+  throw new Error(UNEXPECTED_STOP_ANSWER_MESSAGE);
 }
 
 export function appendCancelledNotice(
@@ -1176,35 +1235,41 @@ export function appendCancelledNotice(
  * verifiably running (`status` in_flight and `turn.steer` accepted on the same
  * session) -- and the turn keeps running. Reporting that as a cancellation would
  * tell the user work stopped while it is still going, so the failure is surfaced
- * instead and the local run state is left untouched.
+ * instead and the local run state is left untouched. `cancelRun` settles such an
+ * answer only when the broker's own activity report says the host is idle.
  */
 async function abortOwnedThroughControl(
   host: ControlHost,
   sessionId: string,
-): Promise<Record<string, unknown>> {
+): Promise<"stopped" | "no_active_turn" | "answer_lost"> {
   // The local running event precedes the host's broker registration. A Stop
   // pressed in that gap answers `no_active_turn` even though the prompt is
   // being accepted, so re-ask briefly before reporting the stop unconfirmed.
-  let result: Record<string, unknown> | undefined;
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const idempotencyKey = `gajae-abort-${randomUUID()}`;
-    result = await host.controlSession(
-      sessionId,
-      "turn.abort",
-      {
-        mode: "terminal",
-        scope: "owned",
-        operator: true,
-      },
-      { idempotencyKey, confirm: true },
-    );
-    if (result?.turn === "stopped") return result;
-    if (result?.turn !== "no_active_turn" || attempt === 4) break;
+    let result: Record<string, unknown> | undefined;
+    try {
+      result = await host.controlSession(
+        sessionId,
+        "turn.abort",
+        {
+          mode: "terminal",
+          scope: "owned",
+          operator: true,
+        },
+        { idempotencyKey, confirm: true },
+      );
+    } catch (error) {
+      if (uncertainAfterSendError(error)) return "answer_lost";
+      throw error;
+    }
+    if (result?.turn === "stopped") return "stopped";
+    if (result?.turn === "uncertain") return "answer_lost";
+    if (result?.turn !== "no_active_turn") break;
+    if (attempt === 4) return "no_active_turn";
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  throw new Error(
-    `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(result ?? null)}`,
-  );
+  throw new Error(UNEXPECTED_STOP_ANSWER_MESSAGE);
 }
 
 /**

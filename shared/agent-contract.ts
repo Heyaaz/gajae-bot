@@ -1,4 +1,5 @@
 import type { AppUpdateStatus } from "./app-update.js";
+import type { WorkspaceInspection } from "./settings-ipc.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
 import type { CommandRuleMatch, ProjectCommandRules } from "./command-rules.js";
 import type { EnvironmentReport } from "./environment-check.js";
@@ -726,6 +727,12 @@ export interface SystemNoticeActivity {
    */
   runtimeHidden?: boolean;
   /**
+   * The skill a `skill-prompt` row expanded, from the record's own `details.name`.
+   * The expanded body's text says nothing reliable about which skill it is: its first
+   * heading can be a template line the skill fills in later.
+   */
+  skillName?: string;
+  /**
    * The phases behind an app-owned todo snapshot (`sourceType: "todo.list"`), kept in
    * the shape the runtime returned them so the card can render the list itself instead
    * of the snapshot's raw JSON.
@@ -1086,6 +1093,11 @@ export interface GjcDesktopBridge {
     sessionId: string,
     operation: GoalOperation,
   ): Promise<GoalSnapshot>;
+  /**
+   * Ends one active workflow (deep-interview, ralplan, ...) after the host's
+   * confirmation, stops the turn still working for it, and returns the fresh snapshot.
+   */
+  endWorkflow(sessionId: string, skill: string): Promise<GoalSnapshot>;
   listSubagents(sessionId: string): Promise<SubagentSnapshot[]>;
   refreshRuntimeState(sessionId: string): Promise<EffectiveRuntimeState>;
   reconnect(): Promise<BackendConnection>;
@@ -1100,6 +1112,7 @@ export interface GjcDesktopBridge {
 export interface SettingsDesktopBridge {
   getPreferences(): Promise<AgentControlPreferences>;
   chooseWorkspace(currentPath: string): Promise<string | null>;
+  inspectWorkspace(workspace: string): Promise<WorkspaceInspection>;
   isNativeFile(file: File): boolean;
   prepareImages(files: File[]): Promise<ImageAttachment[]>;
   prepareFiles(files: File[]): Promise<FileAttachment[]>;

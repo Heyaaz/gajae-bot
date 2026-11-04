@@ -1,5 +1,6 @@
 import type { SessionStatus, TranscriptItem } from "./backend/types";
 import { t } from "./i18n";
+import { isDefaultSessionTitle } from "../shared/session-title";
 import {
   transcriptDelivery,
   transcriptItemEqual,
@@ -561,11 +562,11 @@ export function initialSessionId(
   current: string | null,
 ): string | null {
   const selected = sessions.find((session) => session.id === current);
-  const selectedIsEmptyDraft = selected?.title === "새 Gajae 세션";
+  const selectedIsEmptyDraft = isDefaultSessionTitle(selected?.title);
   return (
     sessions.find((session) => session.unread)?.id ??
     (!selectedIsEmptyDraft ? selected?.id : undefined) ??
-    sessions.find((session) => session.title !== "새 Gajae 세션")?.id ??
+    sessions.find((session) => !isDefaultSessionTitle(session.title))?.id ??
     selected?.id ??
     sessions[0]?.id ??
     null

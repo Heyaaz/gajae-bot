@@ -461,6 +461,29 @@ describe("0.18.12 tool stream", () => {
     } finally { controller.dispose(); }
   });
 
+  it("keeps a tool waiting on approval on its card when the session file is read again", async () => {
+    const { controller, internals, event, tool } = streamHarness();
+    try {
+      event("tool_execution_start", { args: { command: "echo hi" } });
+      const options = [
+        { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+      ] as const;
+      const decided = internals.permissionChannels.host.requestPermission({
+        sessionId: "s1",
+        toolCall: { toolCallId: "t1", toolName: "bash", title: "echo hi", command: "echo hi" },
+        options,
+      });
+      expect(tool()).toMatchObject({ status: "approval-required" });
+      internals.installTranscript("s1", [{ ...tool(), status: "running", permissionOptions: undefined, output: undefined }]);
+      expect(tool()).toMatchObject({ status: "approval-required", permissionOptions: options });
+      await controller.resolveToolCall("t1", { optionId: "allow_once" });
+      await expect(decided).resolves.toMatchObject({ outcome: { outcome: "selected", optionId: "allow_once" } });
+      internals.installTranscript("s1", [{ ...tool(), status: "running", permissionOptions: undefined }]);
+      expect(tool()).toMatchObject({ status: "running" });
+    } finally { controller.dispose(); }
+  });
+
   it("projects SDK turn_stream snapshots without duplication or terminal regression", () => {
     const { controller, internals } = streamHarness();
     const frame = (text: string, phase = "live", sessionId = "s1") =>
@@ -1557,6 +1580,80 @@ describe("GjcSdkController CLI seam", () => {
     await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
     expect(internals.sessions.get("s1")?.status).toBe("running");
     expect(internals.liveRunningSessions.has("s1")).toBe(true);
+  });
+
+  describe("a stop GJC cannot confirm itself", () => {
+    const lostAnswer = () =>
+      new SdkCliError(
+        "uncertain_after_send",
+        "The request was sent but its outcome is uncertain. Reconcile before any replay.",
+      );
+    const noTurn = {
+      ok: true,
+      selection: "owned",
+      turn: "no_active_turn",
+      terminal: "terminal_no_effect",
+    };
+
+    function runningSession(hostActivity: "idle" | "active") {
+      const fixture = harness();
+      fixture.internals.sessions.set("s1", { ...session(), status: "running" });
+      fixture.internals.sessionCwds.set("s1", "/repo");
+      fixture.internals.transcripts.set("s1", []);
+      (fixture.cli.inspectSession as any).mockResolvedValue({
+        live: true,
+        repo: "/repo",
+        activityState: hostActivity,
+      });
+      return fixture;
+    }
+
+    it("settles the window when the stop's answer was lost but the host went idle", async () => {
+      const { controller, cli, internals } = runningSession("idle");
+      (cli.rawControl as any).mockRejectedValue(lostAnswer());
+      await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+      expect(internals.sessions.get("s1")?.status).toBe("idle");
+      expect(internals.transcripts.get("s1")).toEqual([
+        expect.objectContaining({ kind: "notice", title: "작업 취소됨" }),
+      ]);
+    });
+
+    it("settles a stale running row when GJC has no turn and the host is idle", async () => {
+      const { controller, cli, internals } = runningSession("idle");
+      (cli.rawControl as any).mockResolvedValue(noTurn);
+      await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+      expect(internals.sessions.get("s1")?.status).toBe("idle");
+      expect(internals.locallyAbortedSessions.has("s1")).toBe(true);
+      // The turn may have ended by itself, so no stop is claimed.
+      expect(internals.transcripts.get("s1")).toEqual([]);
+    });
+
+    it("keeps the run and says so in Korean, without the raw reply, while the host is active", async () => {
+      const { controller, cli, internals } = runningSession("active");
+      (cli.rawControl as any).mockResolvedValue(noTurn);
+      const failure = await controller.cancelRun("s1").catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/작업 중지를 확정하지 못했습니다/u);
+      expect((failure as Error).message).not.toMatch(/[{}]|no_active_turn|terminal_no_effect/u);
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    });
+
+    it("reports a lost stop answer in Korean while the host is still active", async () => {
+      const { controller, cli, internals } = runningSession("active");
+      (cli.rawControl as any).mockRejectedValue(lostAnswer());
+      const failure = await controller.cancelRun("s1").catch((error: Error) => error);
+      expect((failure as Error).message).toMatch(/작업 중지를 확정하지 못했습니다/u);
+      expect((failure as Error).message).not.toMatch(/outcome is uncertain|replay/u);
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    });
+
+    it("does not call the host idle while this window's own prompt is still being accepted", async () => {
+      const { controller, cli, internals } = runningSession("idle");
+      internals.activePromptSessions.add("s1");
+      (cli.rawControl as any).mockResolvedValue(noTurn);
+      await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    });
   });
 
   it("preserves a new run when an older tail settlement returns idle", async () => {
@@ -3712,6 +3809,7 @@ describe("runtime activity visibility", () => {
     ]);
     expect(sharedTranscriptItems("s1", [{ ...record, details: { name: "greet", args: "" } }])[0])
       .toMatchObject({ role: "user", content: "/skill:greet" });
+    expect(items[1]).toMatchObject({ kind: "system", skillName: "greet" });
 
     const { internals } = harness();
     internals.transcripts.set("s1", [

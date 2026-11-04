@@ -13,8 +13,8 @@ function render(item: TranscriptItem): string {
   }));
 }
 
-function prompt(content: string, title = "스킬"): TranscriptItem {
-  return { id: "skill-prompt-1", kind: "system", sessionId: "session-1", sourceType: "skill-prompt", title, content, createdAt: "01:44" };
+function prompt(content: string, skillName?: string): TranscriptItem {
+  return { id: "skill-prompt-1", kind: "system", sessionId: "session-1", sourceType: "skill-prompt", title: "스킬", content, createdAt: "01:44", ...(skillName ? { skillName } : {}) };
 }
 
 function message(content: string, role: "user" | "assistant" = "user"): TranscriptItem {
@@ -48,11 +48,10 @@ describe("skill transcript presentation", () => {
   });
 
   it("renders skill instructions collapsed without mounting a giant markdown preview", () => {
-    const markup = render(prompt("# Whip\n\nVerify the result.\n\n## Rules\nDo not discard the original instructions."));
+    const markup = render(prompt("# Whip\n\nVerify the result.\n\n## Rules\nDo not discard the original instructions.", "whip"));
     expect(markup).toContain('<details class="skill-activity">');
     expect(markup).toContain("<summary");
-    expect(markup).toContain('title="Whip"');
-    expect(markup).toContain("스킬 지침");
+    expect(markup).toContain('title="whip 지침"');
     expect(markup).toContain("원문 보기");
     expect(markup).not.toContain("Verify the result.");
     expect(markup).not.toContain("skill-prompt");
@@ -60,9 +59,17 @@ describe("skill transcript presentation", () => {
     expect(markup).not.toContain("완료");
   });
 
-  it("keeps a meaningful title when instructions contain no heading", () => {
-    expect(render(prompt("Plain text instructions", "code-review"))).toContain('title="code-review"');
-    expect(render(prompt("Plain text instructions"))).toContain('title="스킬 지침"');
+  it("titles the card from the skill name, never from a template heading inside the body", () => {
+    const body = "Interview the user.\n\n## Spec template\n\n# Deep Interview Spec: {title}\n\nFill this in.";
+    const markup = render(prompt(body, "deep-interview"));
+    expect(markup).toContain('title="deep-interview 지침"');
+    expect(markup).not.toContain("{title}");
+  });
+
+  it("falls back to a generic title when the record names no skill", () => {
+    const markup = render(prompt("# Deep Interview Spec: {title}\n\nbody"));
+    expect(markup).toContain('title="스킬 지침"');
+    expect(markup).not.toContain("{title}");
   });
 
   it("retains normal system cards for non-skill notices", () => {

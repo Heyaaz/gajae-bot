@@ -1280,12 +1280,11 @@ function createWindow(): BrowserWindow {
             await restoreSelection();
 
             const initialSessions = document.querySelectorAll('.session-row').length;
-            document.querySelector('button[title="새 Gajae 세션"]')?.click();
+            document.querySelector('button[title="새 세션"]')?.click();
             await wait(100);
             assert(document.querySelector('.new-session-dialog'), 'New session project dialog did not render');
             assert(document.querySelector('.project-location-field'), 'Project location control did not render');
-            assert(document.querySelector('.isolation-options')?.textContent?.includes('별도 worktree 생성'), 'Managed worktree choice did not render');
-            buttonWithText('세션 만들기')?.click();
+            (buttonWithText('세션 만들기') ?? buttonWithText('이 폴더에서 그대로 시작'))?.click();
             await wait(150);
             assert(document.querySelectorAll('.session-row').length === initialSessions + 1, 'New session did not render');
             assert(document.querySelector('.empty-conversation'), 'New session did not select its empty transcript');

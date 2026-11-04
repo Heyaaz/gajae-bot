@@ -244,6 +244,9 @@ export class GjcAgentBackend implements AgentBackend {
   ): Promise<GoalSnapshot> {
     return this.bridge.operateGoal(sessionId, operation);
   }
+  endWorkflow(sessionId: string, skill: string): Promise<GoalSnapshot> {
+    return this.bridge.endWorkflow(sessionId, skill);
+  }
   listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {
     return this.bridge.listSubagents(sessionId);
   }

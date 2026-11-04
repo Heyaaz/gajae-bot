@@ -1145,6 +1145,12 @@ export class MockAgentBackend implements AgentBackend {
     };
   }
 
+  async endWorkflow(sessionId: string, _skill: string): Promise<GoalSnapshot> {
+    const goal = await this.getGoal(sessionId);
+    const { progress: _progress, ...rest } = goal;
+    return rest;
+  }
+
   async listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {
     if (!this.sessionStore.some((session) => session.id === sessionId))
       throw new Error(`Unknown session: ${sessionId}`);

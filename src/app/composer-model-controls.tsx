@@ -43,7 +43,7 @@ export function ModelControls({
                   shell, which is better than hiding both controls until the turn ends. */}
               <button
                 type="button"
-                title="Model: /model · Effort: ⇧⇥"
+                title={t("모델 바꾸기: /model · 사고 수준 바꾸기: ⇧⇥")}
                 onClick={() => onToggleMenu(modelOption.id)}
               >
                 <strong>
@@ -54,12 +54,12 @@ export function ModelControls({
                     String(modelOption.currentValue)}
                 </strong>
                 <i />
-                <span>{currentEffort}</span>
+                <span title={t("사고 수준")}>{currentEffort}</span>
                 <i />
-                <span>
+                <span title={t("이 대화가 쓴 컨텍스트 비율")}>
                   {usagePercent === undefined
                     ? "—"
-                    : `${usagePercent.toFixed(1)}%`}
+                    : t`컨텍스트 ${usagePercent.toFixed(1)}%`}
                 </span>
                 {fastMode && (
                   <>

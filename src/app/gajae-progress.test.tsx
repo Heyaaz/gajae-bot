@@ -4,6 +4,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import { GajaeProgressRow } from "./gajae-progress";
 import { gajaeEmoticonFor } from "../transcript-utils";
 import { setLanguageMode } from "../i18n";
+import { LoginHintContext } from "./login-hint";
 
 afterEach(() => setLanguageMode("ko"));
 
@@ -78,5 +79,30 @@ describe("GajaeProgressRow", () => {
     expect(markup).toContain("완료");
     expect(markup).not.toContain("초 작업");
     expect(markup).not.toContain("gajae-progress-time");
+  });
+});
+
+describe("GajaeProgressRow with no signed-in provider", () => {
+  const withHint = (needsSignIn: boolean, kind: "error" | "thinking") =>
+    renderToStaticMarkup(
+      createElement(
+        LoginHintContext.Provider,
+        { value: { needsSignIn, openLogin: () => undefined } },
+        createElement(GajaeProgressRow, { kind, label: "오류가 났어요", onRetry: () => undefined }),
+      ),
+    );
+
+  it("names the missing sign-in as the reason a turn failed and offers it", () => {
+    const markup = withHint(true, "error");
+    expect(markup).toContain("로그인한 AI가 없어 실행하지 못했어요");
+    expect(markup).not.toContain("오류가 났어요");
+    expect(markup).toContain("AI 로그인");
+    expect(markup).toContain("다시 시도");
+  });
+
+  it("leaves a failure on a signed-in Mac, and any other state, as it was", () => {
+    expect(withHint(false, "error")).toContain("오류가 났어요");
+    expect(withHint(false, "error")).not.toContain("AI 로그인");
+    expect(withHint(true, "thinking")).not.toContain("AI 로그인");
   });
 });

@@ -127,7 +127,7 @@ describe("Sidebar memoization", () => {
       .split(/\s+(?![^(]*\))/u);
     const buttons = row!.match(/<button/gu) ?? [];
     expect(buttons.length + 1).toBe(columns?.length);
-    expect(row).toContain('title="새 Gajae 세션"');
+    expect(row).toContain('title="새 세션"');
     expect(row).toContain('title="Inbox (⌥⌘U)"');
     // Resume moved to the footer, where a label fits.
     expect(row).not.toContain("지난 세션");
@@ -141,10 +141,10 @@ describe("Sidebar memoization", () => {
     const markup = renderToStaticMarkup(
       createElement(Sidebar, props([session(0)])),
     );
-    const occurrences = markup.split("새 Gajae 세션").length - 1;
+    const occurrences = markup.split("새 세션").length - 1;
     expect(occurrences).toBe(1);
     // And the survivor is the header button the whole app targets by title.
-    expect(markup).toContain('title="새 Gajae 세션"');
+    expect(markup).toContain('title="새 세션"');
   });
 
   it("still renders every session it is given", () => {
@@ -160,6 +160,27 @@ function headings(markup: string): string[] {
     (match) => match[1],
   );
 }
+
+describe("Sidebar sign-in status", () => {
+  it("does not call a GJC with no signed-in provider connected, and opens the sign-in", () => {
+    const signedOut = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)], { needsSignIn: true, onLogin: noop })),
+    );
+    expect(signedOut).toContain("로그인 필요");
+    expect(signedOut).not.toContain("연결됨");
+    expect(signedOut).toContain("connection-dot--connecting");
+
+    const signedIn = renderToStaticMarkup(createElement(Sidebar, props([session(0)])));
+    expect(signedIn).toContain("연결됨");
+    expect(signedIn).not.toContain("로그인 필요");
+
+    // Without a host that can run the sign-in the status stays the plain one.
+    const remote = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)], { needsSignIn: true })),
+    );
+    expect(remote).toContain("연결됨");
+  });
+});
 
 describe("Sidebar runtime version warning", () => {
   it("warns about a runtime older than the minimum and stays quiet otherwise", () => {
@@ -208,7 +229,7 @@ describe("Sidebar session groups", () => {
     );
     // Pin first, then attention order: a status heading list that reads like the
     // list model instead of like the order the backend happened to send.
-    expect(headings(markup)).toEqual(["고정됨", "Needs input", "Working", "Done"]);
+    expect(headings(markup)).toEqual(["고정됨", "입력 필요", "작업 중", "완료"]);
     expect(markup).not.toContain("최근 세션");
   });
 
@@ -255,7 +276,7 @@ describe("Sidebar project sections", () => {
         }),
       ),
     );
-    expect(headings(markup)).toEqual(["Needs input"]);
+    expect(headings(markup)).toEqual(["입력 필요"]);
     const projectHeaders = [
       ...markup.matchAll(/class="session-project-toggle"[^>]*>.*?<span>([^<]*)<\/span>/gu),
     ].map((match) => match[1]);
@@ -309,7 +330,7 @@ describe("Sidebar families", () => {
         ]),
       ),
     );
-    expect(headings(markup)).toEqual(["Needs input"]);
+    expect(headings(markup)).toEqual(["입력 필요"]);
     expect(markup).toContain("Session 0");
     expect(markup).toContain("Session 1");
   });
@@ -354,8 +375,8 @@ describe("Sidebar row state", () => {
     expect(markup).toContain('class="session-state-dot session-state-dot--waiting"');
     expect(markup).toContain('class="session-state-dot session-state-dot--running"');
     expect(markup).toContain('class="session-state-dot session-state-dot--compacting"');
-    expect(markup).toContain('aria-label="Needs input"');
-    expect(markup).toContain('title="Compacting"');
+    expect(markup).toContain('aria-label="입력 필요"');
+    expect(markup).toContain('title="대화 정리 중"');
   });
 });
 

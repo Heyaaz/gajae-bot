@@ -1,3 +1,5 @@
+import type { TranscriptItem } from "../backend/types";
+
 // The todo card prints the runtime's own status vocabulary, so a status outside it is
 // rendered as itself (and counted as other) rather than mapped onto one of these.
 export const TODO_STATUS_MARKERS = {
@@ -46,4 +48,17 @@ export function todoStatusView(status: string | undefined): { marker: string; ke
   return key
     ? { marker: TODO_STATUS_MARKERS[key], key }
     : { marker: TODO_UNKNOWN_MARKER, key: "unknown" };
+}
+
+/**
+ * A snapshot the runtime read back with nothing in it. A new session starts with one,
+ * and a card saying "No todos" before anything was asked tells the person nothing.
+ */
+export function isEmptyTodoSnapshot(item: TranscriptItem): boolean {
+  return (
+    item.kind === "system" &&
+    item.sourceType?.trim() === "todo.list" &&
+    item.todoPhases !== undefined &&
+    item.todoPhases.every((phase) => (phase.tasks ?? []).length === 0)
+  );
 }

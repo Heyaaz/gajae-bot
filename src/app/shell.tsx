@@ -1,4 +1,5 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
+import { DEFAULT_SESSION_TITLE } from "../../shared/session-title";
 import type {
   GoalOperation,
   HistorySession,
@@ -25,6 +26,7 @@ import { TerminalSessionPane } from "./terminal-session-pane";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
+  prefillComposerDraft,
   submitComposerInput,
 } from "./composer";
 import {
@@ -35,6 +37,7 @@ import {
 import {
   EMPTY_TRANSCRIPT,
   humanErrorMessage,
+  isDeclinedConfirmation,
   sessionTitleText,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
@@ -56,6 +59,7 @@ import { createTranscriptNavigation } from "./transcript-navigation";
 import { createSessionActions } from "./session-actions";
 import { useGjcUpdate, useRemoteStatus } from "./use-host-status";
 import { ChatHeader } from "./chat-header";
+import { LoginHintContext } from "./login-hint";
 import { OnboardingView } from "./onboarding-view";
 import type { OnboardingStep } from "../../shared/onboarding";
 import { useComposerCallbacks } from "./use-composer-callbacks";
@@ -200,7 +204,7 @@ export default function App() {
   // one field through the bridge without touching the rest.
   const [preferences, setPreferences] = useState<AgentControlPreferences>({
     workspace: "",
-    workspaceLabel: t("개인 Workspace"),
+    workspaceLabel: t("내 작업 공간"),
     modelPreset: DEFAULT_MODEL_PRESET,
     permissionHandling: "prompt",
     gjcExecutable: "",
@@ -286,6 +290,24 @@ export default function App() {
       active = false;
     };
   }, [onboardingBridge, settingsBridge]);
+
+  // The sign-in flow outside first-run setup: from settings, `/login`, the sidebar
+  // and a failed turn. Setup opening itself takes precedence over it.
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [needsSignIn, setNeedsSignIn] = useState(false);
+  const refreshNeedsSignIn = useCallback(() => {
+    void onboardingBridge?.needsSignIn().then(setNeedsSignIn, () => undefined);
+  }, [onboardingBridge]);
+  useEffect(refreshNeedsSignIn, [refreshNeedsSignIn, connection.state]);
+  const openLogin = useCallback(() => {
+    setSettingsOpen(false);
+    setSettingsTab("gjc");
+    setLoginOpen(true);
+  }, [setLoginOpen]);
+  const loginHint = useMemo(
+    () => ({ needsSignIn, openLogin: onboardingBridge ? openLogin : undefined }),
+    [needsSignIn, onboardingBridge, openLogin],
+  );
 
   const { updateStatus, updateBusy, updateError, checkForUpdate, installUpdate } =
     useGjcUpdate(settingsBridge, connection.state, setSettingsOpen);
@@ -553,6 +575,28 @@ export default function App() {
     }
   }
 
+  const [endingWorkflow, setEndingWorkflow] = useState<{
+    sessionId: string;
+    skill: string;
+  } | null>(null);
+  async function endWorkflow(skill: string): Promise<void> {
+    const sessionId = selectedId;
+    if (!sessionId || endingWorkflow) return;
+    setEndingWorkflow({ sessionId, skill });
+    try {
+      const snapshot = await backend.endWorkflow(sessionId, skill);
+      if (selectedIdRef.current === sessionId) {
+        setGoal(snapshot);
+        goalRescheduleRef.current(snapshot);
+      }
+    } catch (error) {
+      if (selectedIdRef.current === sessionId && !isDeclinedConfirmation(error))
+        setAppError(humanErrorMessage(error));
+    } finally {
+      setEndingWorkflow(null);
+    }
+  }
+
   // The preload object is frozen, so this is one reference for the process's life.
   const repoBridge: RepoDesktopBridge | null =
     window.agentControlDesktop?.repo ?? null;
@@ -657,7 +701,7 @@ export default function App() {
   });
   const {
     selectedCommands,
-    commandsPending,
+    commandsLoad,
     onCommandPaletteOpen,
     composerConfigOptions,
   } = useComposerModel(
@@ -994,7 +1038,7 @@ export default function App() {
     clearSide,
     sideUnsupported,
     askSideFromComposer,
-  } = useSideChat(backend, selectedCommands, commandsPending, surfaceRef, selectedSessionRef);
+  } = useSideChat(backend, selectedCommands, commandsLoad !== "ready", surfaceRef, selectedSessionRef);
 
   // Streaming re-renders the shell on every joined delta. These callbacks stay
   // the same object so the memoized composer does not run again while a reply grows.
@@ -1082,6 +1126,7 @@ export default function App() {
   }
 
   return (
+    <LoginHintContext.Provider value={loginHint}>
     <div className={`app-shell ${navOpen ? "is-nav-open" : ""}`}>
       <button
         className="nav-toggle"
@@ -1108,6 +1153,8 @@ export default function App() {
       <Sidebar
         sessions={filteredSessions}
         connection={connection}
+        needsSignIn={needsSignIn}
+        onLogin={onboardingBridge ? openLogin : undefined}
         selectedId={selectedId}
         projects={projectGroups}
         projectId={activeProjectId}
@@ -1289,12 +1336,17 @@ export default function App() {
                 onRetryLastRequest={retryLastRequest}
                 onRevealInspector={onRevealInspector}
                 autoDenyHint={autoDenyHint}
+                onPickExample={
+                  remoteViewOnly
+                    ? undefined
+                    : (text) => prefillComposerDraft(selectedSession.id, text)
+                }
                 emptyStateMeta={{
                   workspace: selectedSession.workspace,
                   modelDisplay: selectedSession.modelDisplay,
                   recentWorkspaces,
                   onWorkspaceChange: (workspace) =>
-                    createSession({ title: "새 Gajae 세션", workspace }),
+                    createSession({ title: DEFAULT_SESSION_TITLE, workspace }),
                 }}
               />
               <div className="composer-wrap">
@@ -1311,7 +1363,15 @@ export default function App() {
                   }}
                   onFocusChange={setFocusedApprovalId}
                 />
-                <WorkflowStatusCards progress={goal.progress} />
+                <WorkflowStatusCards
+                  progress={goal.progress}
+                  onEnd={(skill) => void endWorkflow(skill)}
+                  endingSkill={
+                    endingWorkflow?.sessionId === selectedSession.id
+                      ? endingWorkflow.skill
+                      : null
+                  }
+                />
                 <GoalProgressRow
                   goal={goal}
                   busy={goalBusySessionId === selectedSession.id}
@@ -1327,7 +1387,7 @@ export default function App() {
                   workspace={selectedSession.workspace}
                   workspaces={recentWorkspaces}
                   commands={selectedCommands}
-                  commandsPending={commandsPending}
+                  commandsLoad={commandsLoad}
                   configOptions={composerConfigOptions}
                   modelDisplay={selectedSession.modelDisplay}
                   thinking={selectedSession.thinking}
@@ -1339,6 +1399,7 @@ export default function App() {
                   onFlushQueued={onComposerFlushQueued}
                   onCompact={onComposerCompact}
                   onNewSession={onComposerNewSession}
+                  onLogin={onboardingBridge ? openLogin : undefined}
                   onWorkspaceChange={onComposerWorkspaceChange}
                   onConfigChange={onComposerConfigChange}
                   onCycleThinking={onComposerCycleThinking}
@@ -1397,7 +1458,7 @@ export default function App() {
           <span className="workspace-empty__mark">
             <img src={gajaeIconUrl} alt="" />
           </span>
-          <h1>{t("선택된 Gajae 세션이 없습니다")}</h1>
+          <h1>{t("선택된 세션이 없습니다")}</h1>
           <button
             className="button-primary"
             type="button"
@@ -1486,16 +1547,23 @@ export default function App() {
           onCheckUpdate={() => void checkForUpdate()}
           onInstallUpdate={() => void installUpdate()}
           initialTab={settingsTab}
+          onLogin={onboardingBridge ? openLogin : undefined}
         />
       )}
-      {onboardingStep && onboardingBridge && (
+      {(onboardingStep || loginOpen) && onboardingBridge && (
         <OnboardingView
           bridge={onboardingBridge}
-          step={onboardingStep}
-          onClose={() => setOnboardingStep(null)}
+          step={onboardingStep ?? "sign-in"}
+          reentry={!onboardingStep}
+          onClose={() => {
+            setOnboardingStep(null);
+            setLoginOpen(false);
+            refreshNeedsSignIn();
+          }}
           onStartConversation={() => openNewSessionDialog()}
         />
       )}
     </div>
+    </LoginHintContext.Provider>
   );
 }

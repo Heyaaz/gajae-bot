@@ -5,6 +5,7 @@ import type {
   TranscriptPageRequest,
 } from "../shared/agent-contract.js";
 import { GJC_IPC } from "../shared/gjc-ipc.js";
+import { endableWorkflow } from "../shared/session-progress.js";
 import {
   createSessionInput,
   gitPaths,
@@ -26,7 +27,7 @@ import type { GjcSdkController } from "./gjc-sdk-controller.js";
 import { AttachmentStore } from "./attachment-store.js";
 import { fileAttachment } from "./settings-ipc-handlers.js";
 import type { ResolvedMessageInput } from "./gjc-sdk-controller.js";
-import { hostText } from "./host-text.js";
+import { END_WORKFLOW_DETAIL, endWorkflowMessage, hostText } from "./host-text.js";
 import type { IpcSecurity } from "./ipc-security.js";
 import { projectTranscriptItemForDelivery } from "./transcript-body-preview.js";
 
@@ -511,6 +512,21 @@ export function registerGjcIpcHandlers(
         id,
         operation,
       );
+    },
+  );
+  handle(
+    GJC_IPC.endWorkflow,
+    async (event, sessionId: unknown, skill: unknown) => {
+      const id = requiredId(sessionId, "Session ID");
+      const workflow = endableWorkflow(requiredString(skill, "Workflow skill"));
+      if (!workflow) throw new Error("Workflow skill is invalid");
+      await security.authorizeDestructive(event, {
+        message: endWorkflowMessage(workflow),
+        detail: END_WORKFLOW_DETAIL,
+        confirmLabel: "끝내기",
+        danger: true,
+      });
+      return controller.endWorkflow(id, workflow);
     },
   );
   handle(GJC_IPC.listSubagents, (_event, sessionId: unknown) =>

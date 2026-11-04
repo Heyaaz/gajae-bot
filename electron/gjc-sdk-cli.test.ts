@@ -606,6 +606,31 @@ describe("GjcSdkCli.rawControl", () => {
   });
 });
 
+describe("GjcSdkCli.clearWorkflow", () => {
+  const cleared = JSON.stringify({ ok: true, skill: "deep-interview", active: false, current_phase: "complete" });
+
+  it("runs `gjc state clear` for the session from its workspace", async () => {
+    const { client, calls } = cli([cleared]);
+    await client.clearWorkflow("s1", "deep-interview", { repo: "/work" });
+    expect(calls).toEqual([
+      ["state", "clear", "--mode", "deep-interview", "--session-id", "s1", "--json"],
+    ]);
+    expect((client.exec as ReturnType<typeof vi.fn>).mock.calls[0]![2]).toMatchObject({ cwd: "/work" });
+  });
+
+  it("reports a reply that still shows the workflow active without printing it", async () => {
+    const { client } = cli([JSON.stringify({ ok: true, active: true })]);
+    await expect(client.clearWorkflow("s1", "ralplan")).rejects.toThrow("GJC가 워크플로 상태를 지우지 못했습니다.");
+  });
+
+  it("reports a failed command in Korean instead of its raw output", async () => {
+    const { client } = cli(() => {
+      throw new Error("unknown --mode: bogus. Expected one of: deep-interview");
+    });
+    await expect(client.clearWorkflow("s1", "bogus")).rejects.toThrow("GJC가 워크플로 상태를 지우지 못했습니다.");
+  });
+});
+
 describe("GjcSdkCli.queryItems", () => {
   it("drains query pages to completion", async () => {
     const { client, calls } = cli((args) =>

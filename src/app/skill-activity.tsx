@@ -86,14 +86,13 @@ export function SkillInvocation({
 
 export function SkillPromptCard({ item }: { item: Extract<TranscriptItem, { kind: "system" }> }) {
   const [expanded, setExpanded] = useState(false);
-  const heading = /^#[\t ]+(.+?)[\t ]*#*[\t ]*$/mu.exec(item.content)?.[1]?.trim();
-  const name = heading || (item.title !== "스킬" ? item.title : t("스킬 지침"));
+  const name = item.skillName ? t`${item.skillName} 지침` : t("스킬 지침");
   return (
     <details className="skill-activity" onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary className="skill-activity-summary">
         <span className="skill-activity-icon"><Sparkles size={15} aria-hidden /></span>
         <span className="skill-activity-name" title={name}>{name}</span>
-        <span className="skill-activity-label">{t("스킬 지침")}</span>
+        <span className="skill-activity-label">{t("스킬")}</span>
         <span className="skill-activity-action">{expanded ? t("원문 접기") : t("원문 보기")}</span>
         <ChevronRight className="skill-activity-chevron" size={14} aria-hidden />
       </summary>

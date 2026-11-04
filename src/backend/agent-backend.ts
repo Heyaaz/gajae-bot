@@ -113,6 +113,7 @@ export interface AgentBackend {
     sessionId: string,
     operation: GoalOperation,
   ): Promise<GoalSnapshot>;
+  endWorkflow(sessionId: string, skill: string): Promise<GoalSnapshot>;
   listSubagents(sessionId: string): Promise<SubagentSnapshot[]>;
   refreshRuntimeState(sessionId: string): Promise<EffectiveRuntimeState>;
   reconnect(): Promise<BackendConnection>;

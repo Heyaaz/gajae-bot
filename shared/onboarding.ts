@@ -9,21 +9,26 @@ export interface SignInProvider {
   method: SignInMethod;
   /** GJC's recommended model profile for this provider (its PROFILE_RECOMMENDATIONS). */
   preset: string;
+  /** Where someone without an account gets one. */
+  signUpUrl: string;
 }
+
+/** Who to point a person with no subscription at: it matches the app's default model profile. */
+export const RECOMMENDED_SIGN_IN_PROVIDER_ID = "openai-codex";
 
 /**
  * The providers first-run setup offers: each one GJC can log in to by itself and
  * has a built-in model profile for, so signing in is all a new user does.
  */
 export const SIGN_IN_PROVIDERS: readonly SignInProvider[] = [
-  { id: "openai-codex", name: "ChatGPT Plus/Pro", method: "browser", preset: "codex-medium" },
-  { id: "anthropic", name: "Claude Pro/Max", method: "browser", preset: "claude-opus" },
-  { id: "cursor", name: "Cursor", method: "browser", preset: "cursor-medium" },
-  { id: "xai", name: "Grok (xAI)", method: "browser", preset: "grok-46-medium" },
-  { id: "kimi-code", name: "Kimi Code", method: "browser", preset: "kimi-coding-plan-medium" },
-  { id: "zai", name: "Z.AI GLM Coding Plan", method: "api-key", preset: "glm-medium" },
-  { id: "minimax-code", name: "MiniMax Coding Plan", method: "api-key", preset: "minimax-medium" },
-  { id: "opencode-go", name: "OpenCode Go", method: "api-key", preset: "opencodego" },
+  { id: "openai-codex", name: "ChatGPT Plus/Pro", method: "browser", preset: "codex-medium", signUpUrl: "https://chatgpt.com/" },
+  { id: "anthropic", name: "Claude Pro/Max", method: "browser", preset: "claude-opus", signUpUrl: "https://claude.ai/" },
+  { id: "cursor", name: "Cursor", method: "browser", preset: "cursor-medium", signUpUrl: "https://cursor.com/" },
+  { id: "xai", name: "Grok (xAI)", method: "browser", preset: "grok-46-medium", signUpUrl: "https://grok.com/" },
+  { id: "kimi-code", name: "Kimi Code", method: "browser", preset: "kimi-coding-plan-medium", signUpUrl: "https://www.kimi.com/code" },
+  { id: "zai", name: "Z.AI GLM Coding Plan", method: "api-key", preset: "glm-medium", signUpUrl: "https://z.ai/subscribe" },
+  { id: "minimax-code", name: "MiniMax Coding Plan", method: "api-key", preset: "minimax-medium", signUpUrl: "https://platform.minimax.io/" },
+  { id: "opencode-go", name: "OpenCode Go", method: "api-key", preset: "opencodego", signUpUrl: "https://opencode.ai/go" },
 ];
 
 /** What first-run setup still has to do, or null when nothing is left. */
@@ -34,8 +39,15 @@ export type OnboardingEvent =
   | { type: "open-url"; url: string; instructions?: string }
   | { type: "prompt"; message: string };
 
+/** What a finished sign-in changed. */
+export interface SignInResult {
+  /** The provider's recommended model profile became the app's default. */
+  switchedModel: boolean;
+}
+
 export const ONBOARDING_IPC = {
   pendingStep: "agent-control:onboarding:pending-step",
+  needsSignIn: "agent-control:onboarding:needs-sign-in",
   installGjc: "agent-control:onboarding:install-gjc",
   signIn: "agent-control:onboarding:sign-in",
   answer: "agent-control:onboarding:answer",
@@ -46,10 +58,12 @@ export const ONBOARDING_IPC = {
 
 export interface OnboardingDesktopBridge {
   pendingStep(): Promise<OnboardingStep | null>;
+  /** GJC is installed but has no signed-in provider, whether or not first-run setup was dismissed. */
+  needsSignIn(): Promise<boolean>;
   /** Resolves with the installed version once the runtime has reconnected to it. */
   installGjc(): Promise<{ version: string }>;
-  /** Resolves once GJC saved the credential and the app switched to its model profile. */
-  signIn(providerId: string): Promise<void>;
+  /** Resolves once GJC saved the credential. */
+  signIn(providerId: string): Promise<SignInResult>;
   answer(text: string): Promise<void>;
   cancelSignIn(): Promise<void>;
   /** The user chose to set GJC up on their own; first-run setup does not open again. */

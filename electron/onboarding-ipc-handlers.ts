@@ -18,6 +18,7 @@ function emitter(event: IpcMainInvokeEvent): (payload: OnboardingEvent) => void 
 
 export function registerOnboardingIpcHandlers(onboarding: OnboardingService, security: IpcSecurity): () => void {
   ipcMain.handle(ONBOARDING_IPC.pendingStep, security.guarded(() => onboarding.pendingStep()))
+  ipcMain.handle(ONBOARDING_IPC.needsSignIn, security.guarded(() => onboarding.needsSignIn()))
   ipcMain.handle(ONBOARDING_IPC.installGjc, security.guarded((event) => onboarding.installGjc(emitter(event))))
   ipcMain.handle(ONBOARDING_IPC.signIn, security.guarded((event, providerId: unknown) => {
     if (typeof providerId !== 'string') throw new Error('Sign-in provider is invalid')

@@ -84,6 +84,7 @@ import { useMentionFilesLoader, useSelectedMentionVisible } from "./use-mention-
 import { QueueList } from "./composer-queue-list";
 import { usePromptSuggestion } from "./use-prompt-suggestion";
 import { WorkspaceSwitcher } from "./composer-workspace-switcher";
+import type { CommandsLoad } from "./use-composer-model";
 
 export {
   acknowledgeComposerDraftRecoveries,
@@ -132,7 +133,7 @@ export interface ComposerProps {
   workspaces: string[];
   commands: AgentCommand[];
   /** The live command list has not arrived yet; the bundled entries are all there is. */
-  commandsPending?: boolean;
+  commandsLoad?: CommandsLoad;
   configOptions: AgentConfigOption[];
   modelDisplay?: string;
   thinking?: string;
@@ -145,6 +146,8 @@ export interface ComposerProps {
   onFlushQueued: () => Promise<void>;
   onCompact: () => void;
   onNewSession: () => void;
+  /** Opens the AI sign-in flow for `/login`; without it `/login` is not offered. */
+  onLogin?: () => void;
   onWorkspaceChange: (workspace: string) => void;
   onConfigChange: (configId: string, value: string) => void;
   onCycleThinking: () => void;
@@ -165,7 +168,7 @@ export const Composer = memo(function Composer({
   workspace,
   workspaces,
   commands,
-  commandsPending = false,
+  commandsLoad = "ready",
   configOptions,
   modelDisplay,
   thinking,
@@ -177,6 +180,7 @@ export const Composer = memo(function Composer({
   onFlushQueued,
   onCompact,
   onNewSession,
+  onLogin,
   onWorkspaceChange,
   onConfigChange,
   onCycleThinking,
@@ -285,8 +289,10 @@ export const Composer = memo(function Composer({
   const matchingCommands =
     commandQuery === null
       ? []
-      : commands.filter((command) =>
-          command.name.toLowerCase().includes(commandQuery),
+      : commands.filter(
+          (command) =>
+            (onLogin || command.name !== "login") &&
+            command.name.toLowerCase().includes(commandQuery),
         );
   const paletteOpen = commandQuery !== null;
   const mentionsEnabled = Boolean(workspaceBridge) && !readOnly;
@@ -874,6 +880,14 @@ export const Composer = memo(function Composer({
       void releasePendingQueue();
       return;
     }
+    // The app's own sign-in, not GJC's: sent on, the model answers that /login is a
+    // terminal command.
+    if (onLogin && /^\/login(?:\s|$)/iu.test(content) && images.length === 0 && files.length === 0) {
+      if (textareaRef.current) textareaRef.current.value = "";
+      setValue("");
+      onLogin();
+      return;
+    }
     const modelCommand = content.match(/^\/(?:model|models)(?:\s+(.+))?$/iu);
     if (modelCommand && images.length === 0 && files.length === 0) {
       const query = modelCommand[1]?.trim();
@@ -1039,6 +1053,11 @@ export const Composer = memo(function Composer({
     if (command.name === "new") {
       setValue("");
       onNewSession();
+      return;
+    }
+    if (command.name === "login" && onLogin) {
+      setValue("");
+      onLogin();
       return;
     }
     if (command.name === "model") {
@@ -1446,11 +1465,11 @@ export const Composer = memo(function Composer({
       )}
       </div>
       {(matchingCommands.length > 0 ||
-        (commandsPending && commandQuery !== null)) && (
+        (commandsLoad !== "ready" && commandQuery !== null)) && (
         <CommandList
           paletteRef={commandPaletteRef}
           commands={matchingCommands}
-          commandsPending={commandsPending}
+          commandsLoad={commandsLoad}
           commandIndex={commandIndex}
           onSelect={selectCommand}
         />

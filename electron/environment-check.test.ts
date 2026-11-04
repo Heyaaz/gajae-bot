@@ -64,6 +64,7 @@ const ready: Machine = {
   answers: {
     "/Users/me/.bun/bin/bun --version": ok("1.4.0\n"),
     "/Users/me/.local/bin/gjc --version": ok("gjc/0.19.0\n"),
+    "/Users/me/.local/bin/gjc models": ok("Canonical models\ngpt-5  openai-codex/gpt-5\n"),
     "/opt/homebrew/bin/gh auth status --hostname github.com": ok(
       "",
       "github.com\n  ✓ Logged in to github.com account octo (keyring)\n",
@@ -86,6 +87,7 @@ describe("checkEnvironment", () => {
     expect(report.checkedAtMs).toBe(7);
     expect(report.rows.map((row) => [row.id, row.status, row.detail])).toEqual([
       ["gjc", "ok", "0.19.0 · /Users/me/.local/bin/gjc"],
+      ["provider-login", "ok", undefined],
       ["model-preset", "ok", "codex-medium"],
       ["gh", "ok", "github.com · octo"],
       ["tailscale", "ok", "Running"],
@@ -118,6 +120,31 @@ describe("checkEnvironment", () => {
       ["gh", "warning", "not-found", "brew install gh"],
       ["tailscale", "warning", "not-found", "brew install --cask tailscale"],
     ]);
+  });
+
+  it("blocks readiness while GJC has no signed-in provider, and says how to sign in", async () => {
+    const report = await checkEnvironment(
+      context({
+        ...ready,
+        answers: {
+          ...ready.answers,
+          "/Users/me/.local/bin/gjc models": ok("No models available. Set API keys in environment variables.\n"),
+        },
+      }),
+    );
+    expect(report.ready).toBe(false);
+    expect(report.rows.find((row) => row.id === "provider-login")).toMatchObject({
+      required: true,
+      status: "warning",
+      problem: "no-provider",
+    });
+  });
+
+  it("does not guess at a provider when GJC cannot list its models", async () => {
+    const answers = { ...ready.answers };
+    delete answers["/Users/me/.local/bin/gjc models"];
+    const found = await rows({ ...ready, answers });
+    expect(found["provider-login"]).toMatchObject({ status: "ok" });
   });
 
   it("holds GJC and bun to their minimum versions", async () => {
