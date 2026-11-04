@@ -1172,6 +1172,15 @@ export function customMessageTitle(customType: unknown): string {
   return "시스템 메시지";
 }
 
+/** The `/skill:<name> <args>` request a `skill-prompt` record's details describe. */
+function skillRequest(details: unknown): string | undefined {
+  if (!details || typeof details !== "object") return undefined;
+  const { name, args } = details as Record<string, unknown>;
+  if (typeof name !== "string" || !name.trim()) return undefined;
+  const request = typeof args === "string" ? args.trim() : "";
+  return request ? `/skill:${name.trim()} ${request}` : `/skill:${name.trim()}`;
+}
+
 export function sharedTranscriptItems(
   sessionId: string,
   rows: unknown[],
@@ -1283,6 +1292,20 @@ export function sharedTranscriptItems(
       if (content) {
         const sourceType =
           typeof row.customType === "string" ? row.customType.trim() : "";
+        // GJC records a skill run as the expanded skill only. The request that ran
+        // it is the user's turn, written the way it was sent, so the window's echo
+        // of `/skill:<name> <args>` finds its durable twin instead of drifting below
+        // the reply.
+        const skill = sourceType === "skill-prompt" ? skillRequest(row.details) : undefined;
+        if (skill)
+          items.push({
+            id: `shared-message-${sourceId}`,
+            kind: "message",
+            sessionId,
+            role: "user",
+            content: skill,
+            createdAt,
+          });
         items.push({
           id: `shared-system-${sourceId}`,
           kind: "system",
