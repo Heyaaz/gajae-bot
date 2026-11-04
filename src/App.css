@@ -8679,3 +8679,31 @@ button.diff-line-number:hover {
 .gjc-settings-apply > span {
   flex: 1 1 auto;
 }
+/* `.settings-panel button` outranks the shared button classes, so the bar restores
+   their size and shape to keep both buttons on the app's common rule. */
+.gjc-settings-apply .button-primary,
+.gjc-settings-apply .button-secondary {
+  height: 28px;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 11px;
+  border-radius: 6px;
+}
+.gjc-settings-apply .button-primary {
+  color: #17100b;
+  font-weight: 650;
+  background: #ff8a34;
+  border: 0;
+}
+.gjc-settings-apply .button-primary:hover:not(:disabled) {
+  background: #ffa159;
+}
+.gjc-settings-apply .button-secondary {
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--overlay) 5%, transparent);
+  border: 1px solid var(--border);
+}
+.gjc-settings-apply .button-secondary:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--overlay) 8%, transparent);
+}
