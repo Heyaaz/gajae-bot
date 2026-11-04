@@ -186,7 +186,7 @@ export const GJC_SETTING_TEXT: Readonly<
   "reportIssue.enabled": { ko: "도구 문제 기록", en: "Tool issue reporting", description: "도구가 설명과 다르게 동작하면 모델이 로컬 ~/.gjc/tool-issues.db에 기록합니다. 어디로도 보내지 않습니다" },
   "resourceGc.sweepIntervalMs": { ko: "리소스 정리 간격 (ms)", en: "Resource GC Sweep Interval (ms)", description: "브라우저 탭과 오래된 스크린샷 폴더를 정리하는 주기입니다" },
   "retry.baseDelayMs": { ko: "재시도 기본 대기 시간 (ms)", en: "Base Retry Delay (ms)" },
-  "retry.enabled": { ko: "재시도", en: "Retry" },
+  "retry.enabled": { ko: "자동 재시도", en: "Auto-Retry", description: "모델 호출이 실패하면 잠시 기다렸다가 다시 시도합니다. 끄면 대화에 재시도 진행 표시 없이 바로 실패로 끝납니다" },
   "retry.maxDelayMs": { ko: "재시도 최대 대기 시간 (ms)", en: "Max Retry Delay", description: "재시도 사이 최대 대기 시간(ms)입니다. 예전 방식 재시도는 provider의 Retry-After를 이 값으로 자르고, 관리형 대체 경로는 이 값을 넘어도 Retry-After를 따릅니다" },
   "retry.maxRetries": { ko: "재시도 횟수", en: "Retry Attempts", description: "API 오류가 났을 때 최대 재시도 횟수입니다" },
   "retry.requestMaxRetries": { ko: "provider 요청 재시도 횟수", en: "Provider Request Retries", description: "스트림이 열리기 전 provider 요청을 다시 시도하는 최대 횟수입니다. 첫 시도는 세지 않습니다. 0이면 재시도하지 않습니다" },

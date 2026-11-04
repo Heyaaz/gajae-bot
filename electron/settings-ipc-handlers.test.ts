@@ -26,6 +26,12 @@ vi.mock("electron", () => ({
   },
 }));
 
+const gjcConfig = vi.hoisted(() => ({ applyGjcSettings: vi.fn() }));
+vi.mock("./gjc-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./gjc-config.js")>()),
+  applyGjcSettings: gjcConfig.applyGjcSettings,
+}));
+
 const created: string[] = [];
 
 afterEach(() => {
@@ -64,6 +70,52 @@ describe("settings language channel", () => {
     try {
       await handled.get(SETTINGS_IPC.setLanguage)?.({}, "en");
       expect(seen).toEqual(["Needs input"]);
+    } finally {
+      dispose();
+    }
+  });
+});
+
+describe("GJC settings channel", () => {
+  function registerWith(
+    onApplied: (changes: readonly { key: string; value: boolean | number }[]) => Promise<void>,
+  ): () => void {
+    const directory = mkdtempSync(path.join(tmpdir(), "gajae-settings-ipc-"));
+    created.push(directory);
+    const security = {
+      guarded: (handler: (...args: unknown[]) => unknown) => handler,
+      authorizeDestructive: async () => undefined,
+    } as unknown as IpcSecurity;
+    return registerSettingsIpcHandlers(
+      new SettingsStore(directory, directory), {} as AttachmentStore, security,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      onApplied,
+    );
+  }
+
+  it("hands the applied changes on and returns the listing", async () => {
+    const listing = [{ key: "compaction.enabled", type: "boolean", value: false }];
+    gjcConfig.applyGjcSettings.mockResolvedValue(listing);
+    const onApplied = vi.fn(async () => undefined);
+    const dispose = registerWith(onApplied);
+    try {
+      const changes = [{ key: "compaction.enabled", value: false }];
+      await expect(handled.get(SETTINGS_IPC.applyGjcSettings)?.({}, changes)).resolves.toBe(listing);
+      expect(onApplied).toHaveBeenCalledWith(changes);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("does not hand on changes GJC refused", async () => {
+    gjcConfig.applyGjcSettings.mockRejectedValue(new Error("refused"));
+    const onApplied = vi.fn(async () => undefined);
+    const dispose = registerWith(onApplied);
+    try {
+      await expect(
+        handled.get(SETTINGS_IPC.applyGjcSettings)?.({}, [{ key: "retry.enabled", value: true }]),
+      ).rejects.toThrow("refused");
+      expect(onApplied).not.toHaveBeenCalled();
     } finally {
       dispose();
     }

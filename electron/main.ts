@@ -535,6 +535,7 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
   // The menu bar is drawn before the window resolves the language, and redraws
   // otherwise only on a session change.
   () => renderDesktopStatus?.(desktopIntegration.state()),
+  (changes) => gjcController.applyLiveSettings(changes),
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
