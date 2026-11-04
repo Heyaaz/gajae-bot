@@ -26,6 +26,7 @@ import { TerminalSessionPane } from "./terminal-session-pane";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
+  prefillComposerDraft,
   submitComposerInput,
 } from "./composer";
 import {
@@ -1290,6 +1291,11 @@ export default function App() {
                 onRetryLastRequest={retryLastRequest}
                 onRevealInspector={onRevealInspector}
                 autoDenyHint={autoDenyHint}
+                onPickExample={
+                  remoteViewOnly
+                    ? undefined
+                    : (text) => prefillComposerDraft(selectedSession.id, text)
+                }
                 emptyStateMeta={{
                   workspace: selectedSession.workspace,
                   modelDisplay: selectedSession.modelDisplay,

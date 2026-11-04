@@ -2210,6 +2210,28 @@
   border-radius: 6px;
   white-space: nowrap;
 }
+.tool-target {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 11px 10px 50px;
+  font-size: 11px;
+}
+.tool-target-path {
+  min-width: 0;
+  color: var(--text-primary);
+  font:
+    11px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  overflow-wrap: anywhere;
+}
+.tool-target-detail {
+  color: var(--text-secondary);
+}
 .tool-output-preview {
   margin: -3px 11px 10px 50px;
   overflow: hidden;
@@ -3473,6 +3495,38 @@ button.diff-line-number:hover {
   margin: 8px 0 20px;
   color: var(--text-tertiary);
   font-size: 12px;
+}
+.empty-conversation__examples {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  justify-items: center;
+}
+.empty-conversation__examples > span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.empty-conversation__examples ul {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.empty-conversation__examples button {
+  padding: 6px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--overlay) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.empty-conversation__examples button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 .empty-conversation__meta {
   display: grid;

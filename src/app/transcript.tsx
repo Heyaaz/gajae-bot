@@ -81,6 +81,7 @@ export {
   type TranscriptViewportAnchor,
 } from "./transcript-scroll";
 export { TodoCard } from "./transcript-todo";
+import { isEmptyTodoSnapshot } from "./transcript-todo";
 export { ToolCard, type ToolCardProps } from "./transcript-tool-card";
 
 export interface TranscriptProps {
@@ -142,6 +143,8 @@ export interface TranscriptProps {
   /** Retries the session's own last user request, from a run-failure notice's 다시 시도 button. */
   onRetryLastRequest?: (sessionId: string) => void;
   onRevealInspector?: (toolId: string) => void;
+  /** Puts an example request into the composer without sending it. */
+  onPickExample?: (text: string) => void;
   /** What the empty-conversation state shows about the session it is about to run in. */
   emptyStateMeta?: {
     workspace: string;
@@ -151,9 +154,15 @@ export interface TranscriptProps {
   };
 }
 
+const exampleRequests = (): string[] => [
+  t("이 프로젝트가 뭘 하는지 설명해 줘"),
+  t("README를 읽기 쉽게 다듬어 줘"),
+  t("테스트를 실행하고 실패한 걸 알려 줘"),
+];
+
 export function Transcript({
   sessionId,
-  items,
+  items: allItems,
   hasMoreBefore = false,
   loadingEarlier = false,
   loadEarlierError = "",
@@ -181,7 +190,12 @@ export function Transcript({
   onRetryLastRequest,
   emptyStateMeta,
   onRevealInspector,
+  onPickExample,
 }: TranscriptProps) {
+  const items = useMemo(
+    () => allItems.filter((item) => !isEmptyTodoSnapshot(item)),
+    [allItems],
+  );
   // `detailed` absorbs the reasoning toggle: it always shows thought cards open
   // regardless of the persisted preference, rather than requiring a second control.
   const effectiveThoughtsExpanded = toolViewMode === "detailed" || thoughtsExpanded;
@@ -1168,6 +1182,20 @@ export function Transcript({
               </button>
             )}
           </p>
+        )}
+        {onPickExample && (
+          <div className="empty-conversation__examples">
+            <span>{t("이렇게 시작해 보세요")}</span>
+            <ul>
+              {exampleRequests().map((example) => (
+                <li key={example}>
+                  <button type="button" onClick={() => onPickExample(example)}>
+                    {example}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
         {emptyStateMeta && (
           <div className="empty-conversation__meta">

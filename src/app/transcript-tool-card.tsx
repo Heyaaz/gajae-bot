@@ -6,6 +6,7 @@ import { ChevronDown, ShieldCheck, TerminalSquare } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
 import { DiffView } from "./primitives";
+import { summarizeTool } from "./tool-summary";
 import { t } from "../i18n";
 
 export interface ToolCardProps {
@@ -101,6 +102,7 @@ export function ToolCard({
   const output = tool.output
     ? compactToolText(humanRuntimeText(tool.output))
     : undefined;
+  const summary = summarizeTool(tool);
   const currentInputBody = inputBody?.key === inputKey ? inputBody : undefined;
   const currentOutputBody = outputBody?.key === outputKey ? outputBody : undefined;
   const currentManualArtifact =
@@ -281,8 +283,14 @@ export function ToolCard({
             </section>
           </div>
         )}
-        {command?.preview && <code>{command.preview}</code>}
-        {tool.diff && <DiffView diff={tool.diff} path={tool.targetPath} />}
+        {summary.command && <code>{summary.command}</code>}
+        {summary.target && !tool.diff && (summary.target.path || summary.target.detail) && (
+          <p className="tool-target">
+            {summary.target.path && <span className="tool-target-path">{summary.target.path}</span>}
+            {summary.target.detail && <span className="tool-target-detail">{summary.target.detail}</span>}
+          </p>
+        )}
+        {tool.diff && <DiffView diff={tool.diff} path={tool.targetPath ?? summary.diffPath} />}
         {tool.images?.map((image, index) => (
           <img
             key={`${tool.id}-image-${index}`}
@@ -291,12 +299,12 @@ export function ToolCard({
             alt={tool.targetPath ?? t("도구가 읽은 이미지")}
           />
         ))}
-        {!tool.diff && output?.text && (
+        {summary.output?.text && (
           <div className="tool-output-preview">
-            {output.omittedLines > 0 && (
-              <small>{t("앞부분")} {output.omittedLines}{t("줄 생략")}</small>
+            {summary.output.omittedLines > 0 && (
+              <small>{t("앞부분")} {summary.output.omittedLines}{t("줄 생략")}</small>
             )}
-            <pre>{output.text}</pre>
+            <pre>{summary.output.text}</pre>
           </div>
         )}
         {hasDetails && (
