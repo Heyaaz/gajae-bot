@@ -1662,6 +1662,10 @@
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
+  /* The column is a share of this box. Reserving the scrollbar's place keeps that share
+     fixed while a growing composer makes the scrollbar come and go; otherwise a narrow
+     window re-wraps the text and the block being read jumps. */
+  scrollbar-gutter: stable;
 }
 .transcript-column {
   width: min(760px, calc(100% - 48px));
