@@ -630,21 +630,32 @@ describe("0.18.12 lifecycle refusal", () => {
   const legacyRefusal = () => new SdkCliError("operation_failed", "localized refusal", undefined,
     [{ code: "lifecycle_legacy_history_ambiguous" }], "unknown");
 
-  it("preserves ambiguous legacy history when no transcript is left for the CLI to delete", async () => {
+  it("removes a session whose transcript is already gone without asking GJC to delete it", async () => {
+    // GJC refuses session.delete without the transcript path, so asking left the
+    // row undeletable: "GJC가 세션 삭제 요청의 입력을 거부했습니다".
     const { controller, cli, internals } = harness();
     try {
       internals.sessions.set("s1", session());
       internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
       internals.deleteThroughGjcCli = vi.fn();
       cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: false, deleted: false, repo: "/repo" }] as never);
-      cli.rawGlobal.mockRejectedValue(legacyRefusal());
-      const remove = vi.spyOn(internals, "removeSessionArtifacts");
-      await expect(controller.deleteSession("s1")).rejects.toThrow("lifecycle_legacy_history_ambiguous");
-      expect(internals.sessions.get("s1").attachment).toBe("recovering");
-      expect(remove).not.toHaveBeenCalled();
+      await controller.deleteSession("s1");
+      expect(internals.sessions.has("s1")).toBe(false);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
       expect(internals.deleteThroughGjcCli).not.toHaveBeenCalled();
-      expect(cli.rawGlobal).toHaveBeenCalledExactlyOnceWith("session.delete",
-        expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+    } finally { controller.dispose(); }
+  });
+
+  it("still asks GJC about a session a host holds even when its transcript is not found", async () => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", session());
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      cli.listSessions.mockResolvedValue([{ sessionId: "s1", live: true, deleted: false, repo: "/repo", pid: 4242 }] as never);
+      cli.rawGlobal.mockRejectedValue(legacyRefusal());
+      await expect(controller.deleteSession("s1")).rejects.toThrow();
+      expect(cli.rawGlobal).toHaveBeenCalledWith("session.delete", expect.objectContaining({ sessionId: "s1" }), expect.any(Object));
+      expect(internals.sessions.has("s1")).toBe(true);
     } finally { controller.dispose(); }
   });
 
@@ -1845,7 +1856,8 @@ describe("GjcSdkController CLI seam", () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
     internals.attachedSessions.add("s1");
-    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    // The CLI cannot take over either: the transcript is gone by the time it looks.
+    internals.locateSharedTranscriptFile = vi.fn().mockResolvedValueOnce("/agent/sessions/x/s1.jsonl").mockResolvedValue(undefined);
     (cli.listSessions as any).mockResolvedValue([
       { sessionId: "s1", repo: "/repo", live: false, deleted: false },
     ]);
@@ -1898,7 +1910,7 @@ describe("GjcSdkController CLI seam", () => {
   it("deletes a tombstoned session from that row's own locator window", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/stale");
-    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    internals.locateSharedTranscriptFile = vi.fn(async () => "/agent/sessions/x/s1.jsonl");
     (cli.listSessions as any).mockResolvedValue([
       { sessionId: "s1", repo: "/repo", live: false, deleted: true, stateRoot: "/state" },
     ]);
@@ -1965,6 +1977,19 @@ describe("GjcSdkController CLI seam", () => {
     cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
     await (controller as any)["resume" + "Session"]("s1");
     expect(cli.rawGlobal).toHaveBeenCalledWith("session.resume", expect.objectContaining({ sessionId: "s1", cwd: "/repo", sessionPath: "/repo/transcript.jsonl" }), { repo: "/repo" });
+  });
+
+  it("lets go of a session whose transcript is gone instead of asking GJC to resume it", async () => {
+    // GJC refuses a resume without the transcript path, and the window showed
+    // "The operation failed. Its outcome could not be established." for it.
+    const { controller, cli, internals } = harness();
+    internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+    internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+    cli.inspectSession.mockResolvedValue({ live: false, repo: "/repo" });
+    await expect(controller.getTranscriptPage("s1")).resolves.toMatchObject({ items: [] });
+    expect(cli.rawGlobal).not.toHaveBeenCalledWith("session.resume", expect.anything(), expect.anything());
+    expect(internals.sessions.has("s1")).toBe(false);
+    controller.dispose();
   });
 
   it("preserves managed worktree metadata when forking the same cwd", async () => {

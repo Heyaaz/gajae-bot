@@ -384,19 +384,19 @@ export async function ensureAttached(
     await cli.queryItems(sessionId, "session.metadata", {}, { repo: cwd });
   let rehosted = false;
   if (!row?.live) {
-    // Resume re-hosts a session whose endpoint is gone. `sessionPath` is passed
-    // when known so the host adopts this exact transcript rather than resolving a
-    // same-id file elsewhere.
+    // Resume re-hosts a session whose endpoint is gone, from this exact
+    // transcript rather than a same-id file elsewhere. GJC refuses a resume
+    // without one, so a session whose transcript is gone has nothing to re-host.
     const sessionPath = await host.locateSharedTranscriptFile(sessionId);
     requireCurrentAttachment();
+    if (!sessionPath)
+      throw new SdkCliError(
+        "session_not_found",
+        `Session ${sessionId} has no saved transcript.`,
+      );
     await cli.rawGlobal(
       "session.resume",
-      {
-        sessionId,
-        cwd,
-        ...(sessionPath ? { sessionPath } : {}),
-        modelPreset: host.modelPreset,
-      },
+      { sessionId, cwd, sessionPath, modelPreset: host.modelPreset },
       { repo: cwd },
     );
     rehosted = true;
