@@ -54,6 +54,7 @@ export interface StreamHost {
   readonly tailCheckpoints: Map<string, { cursor: string; afterTranscriptId: string }>;
   readonly tailEventPositions: Map<string, { generation: number; seq: number }>;
   refreshWorkflowQuestions(sessionId: string): Promise<void>;
+  followAskGate(sessionId: string, toolCallId: string): Promise<void>;
   requireCli(): Promise<GjcSdkCli>;
   projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void;
   repoFor(sessionId: string): string;
@@ -332,6 +333,8 @@ export function projectToolStream(host: StreamHost, sessionId: string, kind: str
   if (!snapshots) host.toolSnapshots.set(sessionId, snapshots = new Map());
   snapshots.set(tool.id, { ...tool });
   if (snapshots.size > 256) snapshots.delete(snapshots.keys().next().value!);
+  if (kind === "tool_execution_start" && value.toolName === "ask")
+    void host.followAskGate(sessionId, value.toolCallId);
   if (
     ended &&
     value.isError === true &&

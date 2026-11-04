@@ -437,6 +437,31 @@ describe("workflow question controller", () => {
     }
   });
 
+  it("shows the question an ask opens when GJC relays only the ask's start", async () => {
+    const { controller, cli, internals } = harness();
+    cli.queryItems.mockResolvedValueOnce([]);
+    try {
+      internals.projectToolStream("s1", "tool_execution_start", {
+        event: {
+          type: "tool_execution_start",
+          toolCallId: "ask-1",
+          toolName: "ask",
+          args: { questions: [{ id: "topology", question: "Ship it?" }] },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(internals.questionById("s1", "g1")).toMatchObject({
+          status: "pending",
+          answerable: true,
+          question: "Ship it?",
+        }),
+      );
+      expect(internals.sessions.get("s1").status).toBe("waiting");
+    } finally {
+      controller.dispose();
+    }
+  });
+
   it("keeps question rows across a durable transcript reload and a fresh controller", async () => {
     const first = harness();
     try {
