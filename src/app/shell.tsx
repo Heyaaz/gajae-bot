@@ -593,10 +593,12 @@ export default function App() {
   // dialog looking answered while nothing had been sent, so it surfaces like
   // every other action failure.
   const resolveToolCall = useCallback(
-    (toolId: string, optionId: string, comment?: string) => {
-      backend.resolveToolCall(toolId, { optionId, ...(comment ? { comment } : {}) }).catch((error: unknown) => {
-        setAppError(humanErrorMessage(error));
-      });
+    (toolId: string, optionId: string, comment?: string, rule?: { prefix: string }) => {
+      backend
+        .resolveToolCall(toolId, { optionId, ...(comment ? { comment } : {}), ...(rule ? { rule } : {}) })
+        .catch((error: unknown) => {
+          setAppError(humanErrorMessage(error));
+        });
     },
     [backend],
   );
