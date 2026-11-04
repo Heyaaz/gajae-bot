@@ -167,9 +167,9 @@ export function clearCommandRefreshRetry(host: CommandPaletteHost, sessionId: st
  * and a config that explicitly disables skills removes the whole set, but a hidden
  * skill in a row that carries no flag cannot be told apart from a visible one, so
  * these entries are advertised as selectable agent work only: `/skill:<name>` is
- * still delivered to the runtime as a prompt, and the runtime decides whether the
- * skill runs. They are also dropped as soon as an `available_commands_update`
- * arrives, since the runtime's own list is the authority on its own commands.
+ * delivered with `skill.invoke`, and the runtime decides whether the skill exists.
+ * They are also dropped as soon as an `available_commands_update` arrives, since
+ * the runtime's own list is the authority on its own commands.
  */
 async function discoverDynamicCommands(
   host: CommandPaletteHost,

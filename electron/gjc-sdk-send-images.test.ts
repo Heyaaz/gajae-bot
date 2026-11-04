@@ -57,7 +57,7 @@ describe("sending a message with images", () => {
     const [, sessionId, prompt] = upload.prompt.mock.calls[0]!;
     expect(sessionId).toBe("s1");
     expect(prompt).toMatchObject({ text: "what is on screen?", images: [IMAGE] });
-    expect(internals.awaitPromptSettlement).toHaveBeenCalledWith("s1", prompt.clientRef, expect.any(Function));
+    expect(internals.awaitPromptSettlement).toHaveBeenCalledWith("s1", prompt.clientRef, expect.any(Function), "prompt");
     expect(internals.echoedPromptTexts.get("s1")).toEqual(["what is on screen?"]);
     controller.dispose();
   });
@@ -69,7 +69,7 @@ describe("sending a message with images", () => {
     const [, text] = cli.send.mock.calls[0] as unknown as [string, string];
     expect(text).toContain("<local-images>");
     expect(internals.echoedPromptTexts.get("s1")?.[0]).toContain("<local-images>");
-    expect(internals.awaitPromptSettlement).toHaveBeenCalledWith("s1", "fallback-ref", expect.any(Function));
+    expect(internals.awaitPromptSettlement).toHaveBeenCalledWith("s1", "fallback-ref", expect.any(Function), "prompt");
     controller.dispose();
   });
 

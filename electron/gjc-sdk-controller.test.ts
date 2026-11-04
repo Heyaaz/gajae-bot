@@ -1093,6 +1093,75 @@ describe("GjcSdkController CLI seam", () => {
     expect(cli.send).toHaveBeenCalledWith("s1", "hello", expect.objectContaining({ repo: "/repo", opRef: expect.any(String) }));
   });
 
+  describe("a /skill: request", () => {
+    const skillHarness = (operations: string[]) => {
+      const ctx = harness();
+      const { cli, internals } = ctx;
+      internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");
+      internals.transcripts.set("s1", []); internals.messageKeys.set("s1", new Map());
+      internals.attachedSessions.add("s1");
+      internals.sessionSdkOperations.set("s1", new Set(operations));
+      (cli.rawControl as any).mockResolvedValue({ accepted: true });
+      (cli.rawQuery as any).mockResolvedValue({ result: { status: "terminal_ok" } });
+      return ctx;
+    };
+    const send = (text: string, extra: Record<string, unknown> = {}) => ({ text, images: [], files: [], ...extra });
+
+    it("runs through skill.invoke and settles by the same clientRef", async () => {
+      const { controller, cli } = skillHarness(["turn.prompt", "skill.invoke"]);
+      await controller.sendMessage("s1", send("/skill:greet Gajae"));
+      expect(cli.send).not.toHaveBeenCalled();
+      expect(cli.rawControl).toHaveBeenCalledWith(
+        "s1", "skill.invoke",
+        { name: "greet", args: "Gajae", clientRef: expect.any(String) },
+        expect.anything(),
+      );
+      const clientRef = (cli.rawControl as any).mock.calls[0][2].clientRef;
+      expect(cli.rawQuery).toHaveBeenCalledWith(
+        "s1", "turn.result", { kind: "skill", clientRef }, expect.anything(),
+      );
+      controller.dispose();
+    });
+
+    it("sends empty args for a skill without arguments", async () => {
+      const { controller, cli } = skillHarness(["skill.invoke"]);
+      await controller.sendMessage("s1", send("  /skill:greet  "));
+      expect(cli.rawControl).toHaveBeenCalledWith(
+        "s1", "skill.invoke", { name: "greet", args: "", clientRef: expect.any(String) }, expect.anything(),
+      );
+      controller.dispose();
+    });
+
+    it("is an ordinary prompt when the runtime does not advertise skill.invoke", async () => {
+      const { controller, cli } = skillHarness(["turn.prompt"]);
+      await controller.sendMessage("s1", send("/skill:greet Gajae"));
+      expect(cli.rawControl).not.toHaveBeenCalled();
+      expect(cli.send).toHaveBeenCalledWith("s1", "/skill:greet Gajae", expect.objectContaining({ opRef: expect.any(String) }));
+      expect(cli.rawQuery).toHaveBeenCalledWith(
+        "s1", "turn.result", { kind: "prompt", clientRef: expect.any(String) }, expect.anything(),
+      );
+      controller.dispose();
+    });
+
+    it("is an ordinary prompt when an attachment comes with it", async () => {
+      const { controller, cli } = skillHarness(["turn.prompt", "skill.invoke"]);
+      await controller.sendMessage("s1", send("/skill:greet Gajae", {
+        files: [{ id: "f1", name: "notes.md", nativePath: "/attachments/notes.md" }],
+      }));
+      expect(cli.rawControl).not.toHaveBeenCalled();
+      expect((cli.send.mock.calls[0] as unknown as [string, string])[1]).toContain("/skill:greet Gajae");
+      controller.dispose();
+    });
+
+    it("reports a skill GJC does not know as a failed run instead of a prompt", async () => {
+      const { controller, cli } = skillHarness(["skill.invoke"]);
+      (cli.rawControl as any).mockRejectedValue(new Error("Skill nope was not found. Available: greet"));
+      await expect(controller.sendMessage("s1", send("/skill:nope"))).rejects.toThrow("not found");
+      expect(cli.send).not.toHaveBeenCalled();
+      controller.dispose();
+    });
+  });
+
   it("keeps an uncertain post-dispatch prompt running without retrying it", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", session()); internals.sessionCwds.set("s1", "/repo");

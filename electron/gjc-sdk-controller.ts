@@ -144,6 +144,7 @@ import {
   flushQueuedNow,
   listQueuedMessages,
   queueFollowUp,
+  type PromptSettlementKind,
   type SdkControlOperation,
   sendMessage,
   steerSession,
@@ -1061,7 +1062,7 @@ export class GjcSdkController {
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
     get activeAssistantMessages() { return controller.activeAssistantMessages; },
     finalizeThought: (sessionId) => controller.finalizeThought(sessionId),
-    awaitPromptSettlement: (sessionId, operationRef, isCurrent) => controller.awaitPromptSettlement(sessionId, operationRef, isCurrent),
+    awaitPromptSettlement: (sessionId, operationRef, isCurrent, kind) => controller.awaitPromptSettlement(sessionId, operationRef, isCurrent, kind),
     finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
     get nextLocalId() { return controller.nextLocalId; },
     set nextLocalId(value) { controller.nextLocalId = value; },
@@ -1805,12 +1806,13 @@ export class GjcSdkController {
     sessionId: string,
     operationRef: string,
     isCurrent?: () => boolean,
+    kind?: PromptSettlementKind,
   ): Promise<
     | "terminal"
     | "unknown"
     | { kind: "not_executed"; detail: string }
   > {
-    return awaitPromptSettlement(this.controlHost, sessionId, operationRef, isCurrent);
+    return awaitPromptSettlement(this.controlHost, sessionId, operationRef, isCurrent, kind);
   }
 
   cancelRun(sessionId: string): Promise<void> {
