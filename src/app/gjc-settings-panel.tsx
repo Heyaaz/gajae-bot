@@ -249,6 +249,7 @@ export function GjcSettingsPanel({ bridge }: { bridge: Bridge | undefined }) {
           </button>
           <button
             type="button"
+            className="button-primary"
             disabled={applying}
             onClick={() => void apply()}
           >

@@ -236,6 +236,28 @@ export function SettingsDialog({
   const editedBeforeLoad = useRef(new Set<keyof AgentControlPreferences>());
   const editRevision = useRef(0);
   const mounted = useRef(true);
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
+  // Read while rendering: child autoFocus effects run before this component's own.
+  const [opener] = useState(() =>
+    typeof document === "undefined" ? null : document.activeElement,
+  );
+  useEffect(() => {
+    // The same path as the X button, so staged GJC edits are treated alike.
+    function closeWithEscape(event: globalThis.KeyboardEvent): void {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.isComposing || event.keyCode === 229) return;
+      event.preventDefault();
+      onCloseRef.current();
+    }
+    window.addEventListener("keydown", closeWithEscape);
+    return () => {
+      window.removeEventListener("keydown", closeWithEscape);
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, [opener]);
   const preferencesRef = useRef(preferences);
   const settingsBridge = window.agentControlDesktop?.settings;
   const managementBridge = window.agentControlDesktop?.management;
