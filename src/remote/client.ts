@@ -4,6 +4,7 @@ import type {
   TranscriptChange,
   TranscriptPage,
   TranscriptPageRequest,
+  ToolDecision,
 } from "../../shared/agent-contract.js";
 import {
   REMOTE_API,
@@ -679,8 +680,8 @@ export class RemoteClient {
     return this.control<void>(REMOTE_API.read(sessionId));
   }
 
-  resolveToolCall(toolId: string, optionId: string) {
-    return this.control<void>(REMOTE_API.toolCallDecision(toolId), { decision: { optionId } });
+  resolveToolCall(toolId: string, decision: ToolDecision) {
+    return this.control<void>(REMOTE_API.toolCallDecision(toolId), { decision });
   }
 
   pendingQuestions(sessionId: string) {

@@ -978,6 +978,23 @@ describe("GjcSdkController CLI seam", () => {
     );
   });
 
+  it("asks through GJC's approval channel when the session offers one", async () => {
+    const { controller, cli } = harness({ permissionHandling: "prompt" });
+    (cli.rawGlobal as any).mockImplementation(async (op: string) =>
+      op === "session.create" ? { sessionId: "asks" } : {},
+    );
+    (cli.queryItems as any).mockImplementation(async (_id: string, query: string) =>
+      query === "runtime.capabilities"
+        ? [{ operations: ["permission.channel.set", "permission.requests.list", "permission.respond"] }]
+        : [],
+    );
+    const created = await controller.createSession({ runtime: "gjc", workspace: "/repo" } as any);
+    expect(cli.rawControl).toHaveBeenCalledWith("asks", "permission.channel.set", { enabled: true }, { repo: "/repo" });
+    expect(cli.rawControl).not.toHaveBeenCalledWith("asks", "permission_mode.set", expect.anything(), expect.anything());
+    expect(created.approvalChannel).toBe(true);
+    controller.dispose();
+  });
+
   it("leaves a created session recovering when permission policy cannot be confirmed", async () => {
     const { controller, cli, internals } = harness({ permissionHandling: "prompt" });
     (cli.rawGlobal as any).mockResolvedValue({ sessionId: "unsafe" });

@@ -277,6 +277,8 @@ export interface AgentSession {
   phase?: string;
   /** GJC is waiting to retry a model call that failed. Read only while running. */
   retry?: SessionRetry;
+  /** Tool approvals wait for a decision here instead of being refused (GJC's approval channel). */
+  approvalChannel?: boolean;
   mode?: string;
   model?: string;
   modelDisplay?: string;
@@ -890,6 +892,8 @@ export interface ForkSessionInput {
 
 export interface ToolDecision {
   optionId: string;
+  /** With a rejection: what the agent should do instead. */
+  comment?: string;
 }
 
 export interface QueuedMessage {

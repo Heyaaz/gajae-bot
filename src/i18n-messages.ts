@@ -543,6 +543,8 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "허용된 기기": "Allowed devices",
   "현재 workspace에서 작업": "Work in current workspace",
   "현재 권한 모드 때문에 자동 거부됨": "Automatically denied by the current permission mode",
+  "거절할 때 에이전트에게 남길 말": "Note for the agent when rejecting",
+  "거절할 때 에이전트에게 남길 말 (선택)": "Note for the agent when rejecting (optional)",
   "현재 모델은 추론 effort 전환을 지원하지 않습니다.": "The current model does not support reasoning effort changes.",
   "현재 상태에서 포크": "Fork from current state",
   "현재 세션 context 압축": "Compact current session context",

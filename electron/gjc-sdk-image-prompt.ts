@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { SdkCliError } from "./gjc-sdk-cli.js";
+import { openRelay, RelayRefusal, type RelayTransport } from "./gjc-sdk-relay.js";
 
 /** An image read from disk and checked against what GJC stages. */
 export interface UploadImage {
@@ -60,14 +60,6 @@ export class ImagePromptNotSentError extends Error {
   }
 }
 
-export interface ImagePromptTransport {
-  executable: string;
-  env: NodeJS.ProcessEnv;
-  cwd: string;
-  /** Per request. A finish verifies and decodes the whole image. */
-  timeoutMs?: number;
-}
-
 /**
  * Stages each image and submits the prompt that carries them, all on one relay.
  *
@@ -77,7 +69,7 @@ export interface ImagePromptTransport {
  * prompt's operation reference, the same one `gjc sdk session status` reconciles.
  */
 export async function promptWithImages(
-  transport: ImagePromptTransport,
+  transport: RelayTransport,
   sessionId: string,
   prompt: { text: string; clientRef: string; images: readonly UploadImage[] },
 ): Promise<{ turnId?: string }> {
@@ -128,115 +120,4 @@ export async function promptWithImages(
   } finally {
     relay.close();
   }
-}
-
-/** A `control_response` with `ok: false`: GJC answered, and the answer was no. */
-class RelayRefusal extends Error {
-  constructor(message: string, readonly code?: string) {
-    super(message);
-  }
-}
-
-function openRelay(transport: ImagePromptTransport, sessionId: string) {
-  const child = spawn(transport.executable, ["sdk", "serve", "--stdio", "--session", sessionId], {
-    cwd: transport.cwd,
-    env: transport.env,
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  const waiting = new Map<string, { resolve: (frame: Record<string, unknown>) => void; reject: (error: Error) => void }>();
-  let failure: Error | undefined;
-  const fail = (error: Error): void => {
-    if (failure) return;
-    failure = error;
-    for (const pending of waiting.values()) pending.reject(error);
-    waiting.clear();
-    rejectReady(error);
-  };
-  let resolveReady!: () => void;
-  let rejectReady!: (error: Error) => void;
-  const ready = new Promise<void>((resolve, reject) => {
-    resolveReady = resolve;
-    rejectReady = reject;
-  });
-  ready.catch(() => undefined);
-  const handshake = setTimeout(() => fail(new Error("GJC image relay handshake timed out")), 12_000);
-
-  let buffer = "";
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    buffer += chunk;
-    let boundary: number;
-    while ((boundary = buffer.indexOf("\n")) >= 0) {
-      const line = buffer.slice(0, boundary).trim();
-      buffer = buffer.slice(boundary + 1);
-      if (!line) continue;
-      let frame: Record<string, unknown>;
-      try {
-        frame = JSON.parse(line) as Record<string, unknown>;
-      } catch {
-        continue;
-      }
-      if (frame.type === "hello") {
-        child.stdin.write(`${JSON.stringify({ type: "hello", protocolVersion: 3, capabilities: [] })}\n`);
-        clearTimeout(handshake);
-        resolveReady();
-      } else if (frame.type === "control_response" && typeof frame.id === "string") {
-        const pending = waiting.get(frame.id);
-        waiting.delete(frame.id);
-        pending?.resolve(frame);
-      }
-    }
-  });
-  child.stderr.resume();
-  child.stdin.on("error", (error) => fail(error));
-  child.once("error", (error) => fail(error));
-  child.once("close", () => fail(new Error("GJC image relay closed")));
-
-  const control = async (
-    operation: string,
-    input: Record<string, unknown>,
-  ): Promise<Record<string, unknown>> => {
-    if (failure) throw failure;
-    const id = randomUUID();
-    const frame = await new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        waiting.delete(id);
-        reject(new Error(`GJC ${operation} timed out`));
-      }, transport.timeoutMs ?? 15_000);
-      waiting.set(id, {
-        resolve: (value) => {
-          clearTimeout(timer);
-          resolve(value);
-        },
-        reject: (error) => {
-          clearTimeout(timer);
-          reject(error);
-        },
-      });
-      child.stdin.write(
-        `${JSON.stringify({ type: "control_request", id, operation, input, idempotencyKey: randomUUID() })}\n`,
-      );
-    });
-    if (frame.ok !== true) {
-      const error = frame.error as { code?: unknown; message?: unknown } | undefined;
-      throw new RelayRefusal(
-        typeof error?.message === "string" ? error.message : `GJC refused ${operation}`,
-        typeof error?.code === "string" ? error.code : undefined,
-      );
-    }
-    const result = frame.result;
-    return result && typeof result === "object" && !Array.isArray(result)
-      ? (result as Record<string, unknown>)
-      : {};
-  };
-
-  return {
-    ready,
-    control,
-    close(): void {
-      clearTimeout(handshake);
-      // Only the relay is ours; the session host it attached to keeps running.
-      child.kill("SIGTERM");
-    },
-  };
 }

@@ -38,6 +38,9 @@ goal above the composer ticks to 3/3. Full quality:
 - **Questions and plan approvals.** When GJC asks (a deep interview, a ralplan
   approval), the choices appear as a card above the composer. Press 1–9 or type
   your own answer.
+- **Tool approvals.** With `매번 확인`, a command waits on its card until you
+  allow or reject it, from the window or a paired phone. A rejection can tell the
+  agent what to do instead. Needs GJC 0.19.3 or later.
 - **Goals.** An active goal stays pinned above the composer with its progress.
   Open it to see each task.
 - **Projects sidebar.** Sessions group by repository, worktrees included.

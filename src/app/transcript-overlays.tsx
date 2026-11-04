@@ -114,9 +114,7 @@ export interface ApprovalBannerProps {
  *
  * It surfaces only the *location*: approving or rejecting still happens on the card
  * itself (via its own permissionOptions), once the banner or ⌘↵/⌘⌫ has brought it
- * on screen. A richer approval card that can decide from the banner directly needs
- * the reverse GJC approval channel this app does not have (see README, Permission
- * handling) and is out of scope here.
+ * on screen.
  */
 export function ApprovalBanner({
   pending,

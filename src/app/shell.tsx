@@ -811,8 +811,8 @@ export default function App() {
   // dialog looking answered while nothing had been sent, so it surfaces like
   // every other action failure.
   const resolveToolCall = useCallback(
-    (toolId: string, optionId: string) => {
-      backend.resolveToolCall(toolId, { optionId }).catch((error: unknown) => {
+    (toolId: string, optionId: string, comment?: string) => {
+      backend.resolveToolCall(toolId, { optionId, ...(comment ? { comment } : {}) }).catch((error: unknown) => {
         setAppError(humanErrorMessage(error));
       });
     },
@@ -1706,8 +1706,10 @@ export default function App() {
     setInspectorToolId(toolId);
     setInspectorOpen(true);
   }, []);
+  const approvalChannel = selectedSession?.approvalChannel === true;
   const autoDenyHint = useMemo(() => {
     if (
+      approvalChannel ||
       preferences.permissionHandling === "always-allow" ||
       preferences.permissionHandling === "auto"
     )
@@ -1716,7 +1718,7 @@ export default function App() {
       message: t("현재 권한 모드 때문에 자동 거부됨"),
       onOpenSettings: openSettings,
     };
-  }, [language, openSettings, preferences.permissionHandling]);
+  }, [approvalChannel, language, openSettings, preferences.permissionHandling]);
 
   const remoteViewOnly = remoteStatus?.permission === "view";
 

@@ -9,13 +9,14 @@ import { t } from "../i18n";
 
 export interface ToolCardProps {
   tool: ToolActivity;
-  onResolve: (toolId: string, optionId: string) => void;
+  /** `comment` goes with a rejection, as what the agent should do instead. */
+  onResolve: (toolId: string, optionId: string, comment?: string) => void;
   onReadArtifact?: (artifactId: string) => Promise<ArtifactContent>;
   /**
    * Shown on a denied call when the current permission mode is what denied it,
-   * rather than a user's own reject decision -- the app has no reverse channel to
-   * ask an external controller for a decision (README, Permission handling), so a
-   * session not in "always allow" mode has every call auto-denied by GJC itself.
+   * rather than a user's own reject decision: a GJC without the approval channel
+   * cannot ask anyone (README, Permission handling), so a session not in "always
+   * allow" mode has every call auto-denied by GJC itself.
    */
   autoDenyHint?: { message: string; onOpenSettings?: () => void };
   /**
@@ -55,6 +56,7 @@ export function ToolCard({
   const approvalRequired = tool.status === "approval-required";
   const isSubagentCall = SUBAGENT_TOOL_NAME.test(tool.name);
   const [expanded, setExpanded] = useState(false);
+  const [rejectComment, setRejectComment] = useState("");
   const [inputBody, setInputBody] = useState<ToolBodyState>();
   const [outputBody, setOutputBody] = useState<ToolBodyState>();
   const [inputRetry, setInputRetry] = useState(0);
@@ -435,21 +437,33 @@ export function ToolCard({
             <span>
               <ShieldCheck size={14} /> {t("승인이 필요합니다")} </span>
             <div className="permission-options">
-              {(tool.permissionOptions ?? []).map((option) => (
-                <button
-                  key={option.optionId}
-                  type="button"
-                  className={
-                    option.kind.startsWith("reject")
-                      ? "button-secondary"
-                      : "button-primary"
-                  }
-                  onClick={() => onResolve(tool.id, option.optionId)}
-                >
-                  {option.name}
-                </button>
-              ))}
+              {(tool.permissionOptions ?? []).map((option) => {
+                const reject = option.kind.startsWith("reject");
+                return (
+                  <button
+                    key={option.optionId}
+                    type="button"
+                    className={reject ? "button-secondary" : "button-primary"}
+                    onClick={() =>
+                      onResolve(tool.id, option.optionId, reject ? rejectComment.trim() || undefined : undefined)
+                    }
+                  >
+                    {option.name}
+                  </button>
+                );
+              })}
             </div>
+          </footer>
+        )}
+        {approvalRequired && tool.permissionOptions?.some((option) => option.kind.startsWith("reject")) && (
+          <footer className="tool-card-reject-comment">
+            <input
+              value={rejectComment}
+              maxLength={4096}
+              aria-label={t("거절할 때 에이전트에게 남길 말")}
+              placeholder={t("거절할 때 에이전트에게 남길 말 (선택)")}
+              onChange={(event) => setRejectComment(event.target.value)}
+            />
           </footer>
         )}
       </article>
