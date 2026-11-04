@@ -1391,7 +1391,8 @@ export const Composer = memo(function Composer({
         ref={textareaRef}
         aria-label={t`${sessionTitle}에게 메시지 보내기`}
         aria-describedby={suggestion.text !== null ? "composer-suggestion-hint" : undefined}
-        placeholder={readOnly ? t("보기 전용 기기입니다") : t("무엇이든 요청하세요")}
+        // The ghost suggestion is drawn where the placeholder sits, so it replaces it.
+        placeholder={readOnly ? t("보기 전용 기기입니다") : suggestion.text !== null ? "" : t("무엇이든 요청하세요")}
         rows={1}
         value={value}
         disabled={readOnly}

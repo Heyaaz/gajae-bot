@@ -137,9 +137,6 @@ const scenes = {
     out: "feature-suggestion.gif",
     async setup(page) {
       await openSession(page, "M1 Air box health");
-      // The product draws the ghost over the empty composer's placeholder, so the two
-      // collide on screen. Hide only the placeholder to read the ghost clearly.
-      await page.addStyleTag({ content: ".composer textarea::placeholder{color:transparent!important}" });
     },
     async run(page) {
       await hold(900);
