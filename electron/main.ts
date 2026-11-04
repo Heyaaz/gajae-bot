@@ -878,6 +878,8 @@ function createWindow(): BrowserWindow {
             };
             const buttonWithText = (text) => Array.from(document.querySelectorAll('button'))
               .find((button) => button.textContent?.trim().includes(text));
+            // Settings tabs follow the system language, so the smoke accepts either.
+            const settingsTab = (korean, english) => buttonWithText(korean) || buttonWithText(english);
 
             assert(document.querySelector('.app-shell'), 'Application shell did not mount');
             assert(document.querySelectorAll('.session-row').length === 4, 'Mock sessions did not render');
@@ -1149,12 +1151,12 @@ function createWindow(): BrowserWindow {
             document.querySelector('.dropdown-menu [role="option"]')?.click();
             await wait(50);
             assert(!document.querySelector('.dropdown-menu'), 'Approval dropdown did not close after selection');
-            assert(buttonWithText('MCP') && buttonWithText('Skills/Plugins') && buttonWithText('Usage') && buttonWithText('Automations'), 'Management settings tabs did not render');
-            buttonWithText('Automations')?.click();
+            assert(buttonWithText('MCP') && buttonWithText('Skills/Plugins') && settingsTab('사용량', 'Usage') && settingsTab('자동화', 'Automations'), 'Management settings tabs did not render');
+            settingsTab('자동화', 'Automations')?.click();
             await wait(50);
             assert(document.querySelector('.automation-panel'), 'Automation settings panel did not render');
             assert(!buttonWithText('Accounts'), 'Removed Accounts settings tab still renders');
-            const workspaceTab = buttonWithText('Workspace');
+            const workspaceTab = settingsTab('작업 공간', 'Workspace');
             assert(workspaceTab, 'Workspace settings tab did not render');
             workspaceTab.click();
             await wait(100);
