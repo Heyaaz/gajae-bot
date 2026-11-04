@@ -131,6 +131,34 @@ describe("tool card default view shows what the tool did, not its JSON", () => {
     expect(markup).not.toContain("&quot;query&quot;");
   });
 
+  it("reads a long input the window got as a cut-off preview, and never shows its JSON", () => {
+    const preview = (input: Record<string, unknown>) =>
+      `${JSON.stringify(input, null, 2).slice(0, 220)}\n\n[Preview truncated; full content available as artifact]`;
+    const ask = card(
+      tool({
+        name: "ask",
+        status: "failed",
+        command: preview({
+          _i: "Confirming Round 0 topology",
+          questions: [{ id: "topology", question: `Round 0 | 토폴로지 확인\n${"구성 요소 ".repeat(80)}` }],
+        }),
+        output: "Tool execution was aborted.",
+      }),
+    );
+    expect(ask).not.toContain("_i");
+    expect(ask).not.toContain("&quot;questions&quot;");
+    expect(ask).toContain("Tool execution was aborted.");
+
+    const bash = card(
+      tool({
+        name: "bash",
+        command: preview({ _i: "Running tests", command: `npm test -- ${"--filter x ".repeat(40)}` }),
+      }),
+    );
+    expect(bash).toContain("<code>npm test -- --filter x");
+    expect(bash).not.toContain("&quot;command&quot;");
+  });
+
   it("keeps the proposed change readable while it waits for approval", () => {
     const markup = card(
       tool({
