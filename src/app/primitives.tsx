@@ -36,7 +36,10 @@ export function Dropdown<T extends string>({
       if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
     };
     const onKeyDown = (event: globalThis.KeyboardEvent): void => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape" || event.isComposing || event.keyCode === 229) return;
+      // Consumed, so a dialog hosting this menu closes only after the menu is gone.
+      event.preventDefault();
+      setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
