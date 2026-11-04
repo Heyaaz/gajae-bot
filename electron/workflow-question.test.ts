@@ -138,13 +138,20 @@ describe("workflow question mapping", () => {
     expect(question?.options[1]).not.toHaveProperty("recommended");
   });
 
-  it("reads a one-line prompt, multi, and diagnostic tags", () => {
+  it("reads a prompt with its line breaks, multi, and diagnostic tags", () => {
     expect(
       questionFromGateRecord("s1", gateRow({
-        context: { prompt: "  Ship\nit?  ", stage_state: { multi: true } },
+        context: { prompt: "  Ship   it?  ", stage_state: { multi: true } },
         options: [{ label: "A" }, { label: "B" }],
       }))?.question,
     ).toBe("Ship it?");
+    expect(
+      questionFromGateRecord("s1", gateRow({
+        context: {
+          prompt: "\r\nRound 0 | Topology  \r\n1. calc:  core\n\n\n\n- Artifacts: a\nRight?\n",
+        },
+      }))?.question,
+    ).toBe("Round 0 | Topology\n1. calc: core\n\n- Artifacts: a\nRight?");
     expect(
       questionFromGateRecord("s1", gateRow({
         context: { title: "Pick", stage_state: { multi: true } },
