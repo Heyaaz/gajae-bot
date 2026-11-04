@@ -151,6 +151,9 @@ import {
   steerSession,
 } from "./gjc-sdk-control.js";
 import {
+  appendTranscript,
+  finalizeAllMessages,
+  finalizeAssistantMessage,
   getTranscript,
   getTranscriptChanges,
   getTranscriptPage,
@@ -843,8 +846,6 @@ export class GjcSdkController {
     get recovery() { return controller.recovery; },
     set recovery(value) { controller.recovery = value; },
     refreshTranscriptAttachment: (sessionId) => controller.refreshTranscriptAttachment(sessionId),
-    terminalOnlyNotice: (sessionId) => controller.terminalOnlyNotice(sessionId),
-    lifecycleUncertainNotice: (sessionId) => controller.lifecycleUncertainNotice(sessionId),
     get transcriptEpoch() { return controller.transcriptEpoch; },
     readTranscriptEnvelopes: (filePath, info) => controller.readTranscriptEnvelopes(filePath, info),
     reconciledAsyncJobIds: (sessionId, jobIds) => controller.reconciledAsyncJobIds(sessionId, jobIds),
@@ -1208,32 +1209,6 @@ export class GjcSdkController {
 
   private resolveToolImages(items: TranscriptItem[]): Promise<void> {
     return resolveToolImages(this.host, items);
-  }
-
-  private terminalOnlyNotice(sessionId: string): NoticeActivity {
-    return {
-      id: `terminal-only-${sessionId}`,
-      kind: "notice",
-      sessionId,
-      title: "기록 보기 전용 · 실행 연결 없음",
-      content:
-        "저장된 대화는 열었지만 실행 제어 연결은 복구되지 않았습니다. 기록 조회는 계속 사용할 수 있습니다. 이어서 작업하려면 해당 CLI에서 세션을 다시 열거나 앱의 세션 이어서 진행을 다시 시도하세요. 앱은 기존 CLI를 종료하거나 새 세션으로 대체하지 않습니다.",
-      tone: "neutral",
-      createdAt: nowLabel(),
-    };
-  }
-
-  private lifecycleUncertainNotice(sessionId: string): NoticeActivity {
-    return {
-      id: `lifecycle-uncertain-${sessionId}`,
-      kind: "notice",
-      sessionId,
-      title: "저장된 세션을 검증할 수 없습니다",
-      content:
-        "네트워크 연결 문제가 아니라 GJC의 로컬 lifecycle 기록이 저장 결과와 일치하지 않는 상태입니다. GJC를 재시작한 뒤 다시 열어 보세요. 계속 발생하면 이 세션은 GJC reconciliation이 필요합니다.",
-      tone: "warning",
-      createdAt: nowLabel(),
-    };
   }
 
   setSessionConfig(
@@ -2044,25 +2019,6 @@ export class GjcSdkController {
     return pushChanges(this.gitScope(), sessionId);
   }
 
-  private appendTranscript(item: TranscriptItem): void {
-    const items = this.transcripts.get(item.sessionId) ?? [];
-    items.push(item);
-    this.transcripts.set(item.sessionId, items);
-    if (item.kind === "tool") {
-      let indices = this.toolRowIndices.get(item.sessionId);
-      if (!indices) {
-        indices = new Map();
-        this.toolRowIndices.set(item.sessionId, indices);
-      }
-      indices.set(item.id, items.length - 1);
-    }
-    this.noteTranscriptEpoch(item.sessionId);
-    this.emitEvent({
-      type: "transcript.appended",
-      item: cloneTranscriptItem(item),
-    });
-  }
-
   private emitActivity(
     sessionId: string,
     category: Extract<AgentEvent, { type: "session.activity" }>["category"],
@@ -2070,42 +2026,16 @@ export class GjcSdkController {
     return emitActivity(this.host, sessionId, category);
   }
 
+  private appendTranscript(item: TranscriptItem): void {
+    return appendTranscript(this.host, item);
+  }
+
   private finalizeAssistantMessage(sessionId: string): void {
-    const messageId = this.activeAssistantMessages.get(sessionId);
-    if (!messageId) return;
-    const items = this.transcripts.get(sessionId) ?? [];
-    const message = items.find((item) => item.id === messageId);
-    if (message?.kind === "message") {
-      message.streaming = false;
-      this.noteTranscriptEpoch(sessionId);
-      this.emitEvent({
-        type: "message.delta",
-        sessionId,
-        messageId,
-        delta: "",
-        streaming: false,
-      });
-    }
-    this.activeAssistantMessages.delete(sessionId);
+    return finalizeAssistantMessage(this.host, sessionId);
   }
 
   private finalizeAllMessages(sessionId: string): void {
-    const items = this.transcripts.get(sessionId) ?? [];
-    let changed = false;
-    for (const item of items) {
-      if (item.kind !== "message" || !item.streaming) continue;
-      item.streaming = false;
-      changed = true;
-      this.emitEvent({
-        type: "message.delta",
-        sessionId,
-        messageId: item.id,
-        delta: "",
-        streaming: false,
-      });
-    }
-    if (changed) this.noteTranscriptEpoch(sessionId);
-    this.activeAssistantMessages.delete(sessionId);
+    return finalizeAllMessages(this.host, sessionId);
   }
 
   private currentRunRevision(sessionId: string): number {
