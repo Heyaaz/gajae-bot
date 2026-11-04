@@ -302,7 +302,7 @@ export default function App() {
     setSettingsOpen(false);
     setSettingsTab("gjc");
     setLoginOpen(true);
-  }, []);
+  }, [setLoginOpen]);
   const loginHint = useMemo(
     () => ({ needsSignIn, openLogin: onboardingBridge ? openLogin : undefined }),
     [needsSignIn, onboardingBridge, openLogin],
