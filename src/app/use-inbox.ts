@@ -42,7 +42,7 @@ export function useInbox(
     // user asked to see, so the drawer gets out of its way.
     setNavOpen(false);
     setCenterView((view) => (view === "inbox" ? "conversation" : "inbox"));
-  }, []);
+  }, [setCenterView, setNavOpen]);
   const inboxCount = useMemo(() => {
     const attention = summarizeSessionAttention(sessions);
     return attention.needsInput + attention.unreadCompleted;

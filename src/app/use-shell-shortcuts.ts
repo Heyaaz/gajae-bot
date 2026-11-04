@@ -184,7 +184,7 @@ export function useShellShortcuts(context: ShellShortcutsContext): void {
     }
     window.addEventListener("keydown", onApprovalShortcut);
     return () => window.removeEventListener("keydown", onApprovalShortcut);
-  }, [dismissibleSurfaceOpen, pendingApprovals, focusedApprovalId, resolveToolCall]);
+  }, [dismissibleSurfaceOpen, pendingApprovals, focusedApprovalId, resolveToolCall, surfaceRef]);
 
   // ⌘F: find within the open conversation. Distinct from ⌘K (sidebar's cross-session
   // global search, opened by focusing its own input) -- this one does not compete
@@ -201,7 +201,7 @@ export function useShellShortcuts(context: ShellShortcutsContext): void {
     }
     window.addEventListener("keydown", onFindShortcut);
     return () => window.removeEventListener("keydown", onFindShortcut);
-  }, []);
+  }, [selectedSessionRef, setFindOpen, surfaceRef]);
 
   useEffect(() => {
     function openGlobalSearch(event: globalThis.KeyboardEvent): void {
@@ -219,7 +219,7 @@ export function useShellShortcuts(context: ShellShortcutsContext): void {
     }
     window.addEventListener("keydown", openGlobalSearch);
     return () => window.removeEventListener("keydown", openGlobalSearch);
-  }, []);
+  }, [setSearchOpen, surfaceRef]);
 
   // ⌥⌘U, the shortcut Codex gives its activity view. Read from `code` because
   // Option turns the key into a dead key on macOS, so `key` is not "u".
@@ -239,5 +239,5 @@ export function useShellShortcuts(context: ShellShortcutsContext): void {
     }
     window.addEventListener("keydown", onInboxShortcut);
     return () => window.removeEventListener("keydown", onInboxShortcut);
-  }, [toggleInbox]);
+  }, [surfaceRef, toggleInbox]);
 }
