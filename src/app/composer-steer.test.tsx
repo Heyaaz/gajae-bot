@@ -113,7 +113,7 @@ describe("queued message Send now", () => {
     const test = await mount({ readOnly: true });
     try {
       const buttons = [...test.node.querySelectorAll<HTMLButtonElement>(".composer-queue-item button")];
-      expect(buttons.length).toBe(8);
+      expect(buttons.length).toBe(12);
       expect(buttons.every((button) => button.disabled)).toBe(true);
       expect(test.send).not.toHaveBeenCalled();
     } finally { await test.close(); }
