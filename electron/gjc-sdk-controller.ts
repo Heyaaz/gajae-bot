@@ -260,11 +260,13 @@ import {
   type CommandPaletteHost,
   publishSessionCommands,
   refreshSdkCommands,
+  refreshSessionContext,
   sdkOperations,
 } from "./gjc-sdk-command-palette.js";
 export {
   COMMAND_REFRESH_RETRY_BASE_MS,
   COMMAND_REFRESH_RETRY_MAX_MS,
+  SESSION_CONTEXT_REFRESH_TTL_MS,
 } from "./gjc-sdk-command-palette.js";
 import {
   hasAnswerableQuestion,
@@ -311,14 +313,6 @@ import {
 } from "./transcript-body-preview.js";
 
 export * from "./gjc-sdk-foundation.js";
-
-/**
- * How long a loaded command/todo context is reused before it is read again.
- *
- * Opening the palette is a user gesture, not a poll; a refresh costs two or more
- * CLI round trips, so a reopen seconds later must not repeat them.
- */
-export const SESSION_CONTEXT_REFRESH_TTL_MS = 15_000;
 
 export class GjcSdkController {
   private workspace: string;
@@ -1117,39 +1111,8 @@ export class GjcSdkController {
     return refreshTranscriptAttachment(this.host, sessionId);
   }
 
-  /**
-   * Loads the session's command palette and todo row once, when the user opens it.
-   *
-   * These live outside the transcript file and have no push channel of their own,
-   * but tying them to getTranscript made every 5-second safety-net read spawn CLI
-   * queries even when the transcript had not changed.
-   */
-  async refreshSessionContext(sessionId: string): Promise<void> {
-    const commands = this.sessionCommands.get(sessionId);
-    if (commands) this.publishSessionCommands(sessionId, commands);
-    // The palette asks for this whenever it opens. A session opened a moment ago
-    // has already paid for these CLI reads, and repeating them made every reopen
-    // spawn another pair of processes before the same palette could render.
-    const inFlight = this.sessionContextRefreshes.get(sessionId);
-    if (inFlight) return inFlight;
-    const refreshedAt = this.sessionContextRefreshedAt.get(sessionId);
-    if (
-      refreshedAt !== undefined &&
-      Date.now() - refreshedAt < SESSION_CONTEXT_REFRESH_TTL_MS
-    )
-      return;
-    const refresh = (async () => {
-      await Promise.all([
-        this.refreshSdkCommands(sessionId),
-        this.readTodoRecords(sessionId),
-      ]);
-      this.sessionContextRefreshedAt.set(sessionId, Date.now());
-    })().finally(() => {
-      if (this.sessionContextRefreshes.get(sessionId) === refresh)
-        this.sessionContextRefreshes.delete(sessionId);
-    });
-    this.sessionContextRefreshes.set(sessionId, refresh);
-    return refresh;
+  refreshSessionContext(sessionId: string): Promise<void> {
+    return refreshSessionContext(this.host, sessionId);
   }
 
   private publishSessionCommands(
