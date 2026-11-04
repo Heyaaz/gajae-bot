@@ -9,6 +9,8 @@ import {
   isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
   parkDraft,
+  canMoveRequest,
+  moveRequest,
   pullQueuedRequest,
   releaseRequests,
   resolveModelPreset,
@@ -906,6 +908,13 @@ export const Composer = memo(function Composer({
     setPendingQueue(remaining);
   }
 
+  function moveQueuedEntry(id: string, offset: -1 | 1): void {
+    if (releasingQueues.has(sessionId)) return;
+    const moved = moveRequest(pendingQueueRef.current, id, offset);
+    pendingQueueRef.current = moved;
+    setPendingQueue(moved);
+  }
+
   async function sendQueuedEntryNow(id: string): Promise<void> {
     if (readOnly || releasingQueues.has(sessionId)) return;
     const entry = pendingQueueRef.current.find((request) => request.id === id);
@@ -1422,6 +1431,11 @@ export const Composer = memo(function Composer({
           <div className="composer-queue-items">
             {pendingQueue.map((entry) => (
               <QueueChip key={entry.id} entry={entry}
+                reorderable={pendingQueue.length > 1}
+                onMoveUp={canMoveRequest(pendingQueue, entry.id, -1)
+                  ? () => moveQueuedEntry(entry.id, -1) : undefined}
+                onMoveDown={canMoveRequest(pendingQueue, entry.id, 1)
+                  ? () => moveQueuedEntry(entry.id, 1) : undefined}
                 onPull={() => pullQueuedEntry({ id: entry.id })}
                 onDiscard={() => discardQueuedEntry(entry.id)}
                 onSendNow={() => { void sendQueuedEntryNow(entry.id); }}

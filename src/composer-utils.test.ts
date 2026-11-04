@@ -13,6 +13,7 @@ import {
   SUBMISSION_DEDUPE_MS,
   IME_COMMIT_WINDOW_MS,
   imeCommitSubmits,
+  moveRequest,
   nextRequestToRelease,
   pullQueuedRequest,
   releaseRequests,
@@ -342,6 +343,45 @@ describe("appendPendingRequest", () => {
     expect(
       appendPendingRequest(once, request("b", "같은 말")).map((e) => e.id),
     ).toEqual(["a", "b"]);
+  });
+});
+
+describe("moveRequest", () => {
+  const entry = (id: string, blocked?: true): PendingRequest => ({
+    id, text: id, mode: "followUp", label: "Queued", images: [], files: [], ...(blocked && { blocked }),
+  });
+  const ids = (list: PendingRequest[]) => list.map((e) => e.id);
+  const queue = [entry("a"), entry("b"), entry("c")];
+
+  it("swaps an entry with its neighbour", () => {
+    expect(ids(moveRequest(queue, "b", -1))).toEqual(["b", "a", "c"]);
+    expect(ids(moveRequest(queue, "b", 1))).toEqual(["a", "c", "b"]);
+    expect(ids(queue)).toEqual(["a", "b", "c"]);
+  });
+
+  it("keeps the order when the move leaves the queue or the id is unknown", () => {
+    expect(ids(moveRequest(queue, "a", -1))).toEqual(["a", "b", "c"]);
+    expect(ids(moveRequest(queue, "c", 1))).toEqual(["a", "b", "c"]);
+    expect(ids(moveRequest(queue, "zzz", 1))).toEqual(["a", "b", "c"]);
+  });
+
+  it("never moves or jumps a blocked entry", () => {
+    const held = [entry("a", true), entry("b")];
+    expect(ids(moveRequest(held, "b", -1))).toEqual(["a", "b"]);
+    expect(ids(moveRequest(held, "a", 1))).toEqual(["a", "b"]);
+  });
+
+  it("changes which request a release sends first", async () => {
+    let live = moveRequest(queue, "c", -1);
+    live = moveRequest(live, "c", -1);
+    const sent: string[] = [];
+    await releaseRequests({
+      canSend: () => true,
+      read: () => live,
+      write: (next) => { live = next; },
+      send: async (request) => { sent.push(request.id); },
+    });
+    expect(sent).toEqual(["c", "a", "b"]);
   });
 });
 
