@@ -62,7 +62,6 @@ export interface TeardownHost {
   readonly publishedCommandKeys: Clearable;
   readonly questionAnswers: Clearable;
   readonly questionRefreshes: Clearable;
-  reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   readonly routeProbes: Clearable;
   readonly runRevisions: Clearable;
   readonly runStateTimers: Map<string, ReturnType<typeof setTimeout>>;
@@ -117,8 +116,6 @@ export function disposeController(host: TeardownHost): void {
   host.pendingPermissions.clear();
   host.permissionChannels.dispose();
   host.routeProbes.clear();
-  if (host.reconnectTimer) clearTimeout(host.reconnectTimer);
-  host.reconnectTimer = undefined;
   // No agent process is owned here, so disposal never kills a running session.
   for (const controller of host.tailControllers.values()) controller.abort();
   host.tailControllers.clear();

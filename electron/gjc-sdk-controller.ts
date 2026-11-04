@@ -642,8 +642,6 @@ export class GjcSdkController {
   private disposed = false;
   private nextLocalId = 1;
   private generation = 0;
-  private reconnectTimer?: ReturnType<typeof setTimeout>;
-  private reconnectAttempt = 0;
   private recovery?: Promise<void>;
   /** Sessions whose permission mode has been applied for this runtime generation. */
   private readonly permissionModeApplied = new Set<string>();
@@ -828,8 +826,6 @@ export class GjcSdkController {
     set cli(value) { controller.cli = value; },
     get startup() { return controller.startup; },
     set startup(value) { controller.startup = value; },
-    get reconnectTimer() { return controller.reconnectTimer; },
-    set reconnectTimer(value) { controller.reconnectTimer = value; },
     get questionAnswers() { return controller.questionAnswers; },
     get recovery() { return controller.recovery; },
     set recovery(value) { controller.recovery = value; },
@@ -1811,8 +1807,6 @@ export class GjcSdkController {
 
   async reconnect(): Promise<BackendConnection> {
     if (this.disposed) throw new Error("GJC controller is disposed");
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
     resetForReconnect(this.host);
     this.generation += 1;
     await this.ensureStarted();
@@ -1945,7 +1939,6 @@ export class GjcSdkController {
       modelPreset: this.modelPreset,
       generation,
     });
-    this.reconnectAttempt = 0;
     queueMicrotask(() => {
       void this.recoverOwnedSessions();
     });
@@ -1979,21 +1972,6 @@ export class GjcSdkController {
   /** The workspace a session's CLI calls must resolve against. */
   private repoFor(sessionId: string): string {
     return this.sessionCwds.get(sessionId) ?? this.workspace;
-  }
-
-  private scheduleReconnect(): void {
-    if (this.disposed || this.reconnectTimer) return;
-    const delay = Math.min(
-      30_000,
-      500 * 2 ** Math.min(this.reconnectAttempt, 6),
-    );
-    this.reconnectAttempt += 1;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = undefined;
-      void this.ensureStarted()
-        .then(() => this.recoverOwnedSessions())
-        .catch(() => this.scheduleReconnect());
-    }, delay);
   }
 
   private recoverOwnedSessions(): Promise<void> {
