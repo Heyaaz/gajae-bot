@@ -3652,6 +3652,34 @@ describe("runtime activity visibility", () => {
     expect(items).toHaveLength(2);
   });
 
+  it("shows the request a skill ran from as the user's turn, and the window's echo settles on it", () => {
+    const record = {
+      type: "custom_message",
+      id: "k1",
+      timestamp: "2026-01-01T00:00:00.000Z",
+      customType: "skill-prompt",
+      content: "Say hello politely.\n\nUser: Gajae",
+      display: true,
+      details: { name: "greet", path: "/w/.gjc/skills/greet/SKILL.md", args: "Gajae", lineCount: 1 },
+    };
+    const reply = { role: "assistant", content: [{ type: "text", text: "hello Gajae" }] };
+    const items = sharedTranscriptItems("s1", [record, reply]);
+    expect(items.map((item: any) => [item.kind, item.role ?? item.sourceType, item.content])).toEqual([
+      ["message", "user", "/skill:greet Gajae"],
+      ["system", "skill-prompt", "Say hello politely.\n\nUser: Gajae"],
+      ["message", "assistant", "hello Gajae"],
+    ]);
+    expect(sharedTranscriptItems("s1", [{ ...record, details: { name: "greet", args: "" } }])[0])
+      .toMatchObject({ role: "user", content: "/skill:greet" });
+
+    const { internals } = harness();
+    internals.transcripts.set("s1", [
+      { id: "local-prompt-1", kind: "message", sessionId: "s1", role: "user", content: "/skill:greet Gajae", createdAt: "now", streaming: false },
+    ]);
+    const installed = internals.installTranscript("s1", items) as Array<{ id: string }>;
+    expect(installed.map((item) => item.id)).toEqual(["shared-message-k1", "shared-system-k1", items[2]!.id]);
+  });
+
   it("shows an in-flight call as running even after an earlier turn was aborted", () => {
     const rows = [
       { role: "user", content: [{ type: "text", text: "first" }] },
