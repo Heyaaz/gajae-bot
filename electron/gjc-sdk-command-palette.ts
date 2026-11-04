@@ -121,8 +121,13 @@ async function rebuildSdkCommands(
     discovered === undefined
   ) {
     // Nothing to rebuild from: never publish an empty palette over a good cache.
-    // An empty answer is still an answer, so a previous failure stops retrying.
+    // An empty answer is still an answer, so a previous failure stops retrying,
+    // and a session with no palette yet gets an empty one instead of a wait.
     clearCommandRefreshRetry(host, sessionId);
+    if (!host.sessionCommands.has(sessionId)) {
+      host.sessionCommands.set(sessionId, []);
+      publishSessionCommands(host, sessionId, []);
+    }
     return;
   }
   const commands = [
@@ -289,14 +294,20 @@ export async function refreshSessionContext(host: CommandPaletteHost, sessionId:
   // The palette asks for this whenever it opens. A session opened a moment ago
   // has already paid for these CLI reads, and repeating them made every reopen
   // spawn another pair of processes before the same palette could render.
-  const inFlight = host.sessionContextRefreshes.get(sessionId);
-  if (inFlight) return inFlight;
   const refreshedAt = host.sessionContextRefreshedAt.get(sessionId);
-  if (
+  const fresh =
     refreshedAt !== undefined &&
-    Date.now() - refreshedAt < SESSION_CONTEXT_REFRESH_TTL_MS
-  )
-    return;
+    Date.now() - refreshedAt < SESSION_CONTEXT_REFRESH_TTL_MS;
+  const inFlight = host.sessionContextRefreshes.get(sessionId);
+  if (inFlight) await inFlight;
+  else if (!fresh) await startSessionContextRefresh(host, sessionId);
+  // The command read retries on its own after a failure. Until a palette exists the
+  // opener is told it failed, so it can say so instead of loading indefinitely.
+  if (!host.sessionCommands.has(sessionId) && host.commandRefreshTimers.has(sessionId))
+    throw new Error("GJC에서 명령 목록을 받지 못했습니다.");
+}
+
+function startSessionContextRefresh(host: CommandPaletteHost, sessionId: string): Promise<void> {
   const refresh = (async () => {
     await Promise.all([
       host.refreshSdkCommands(sessionId),
