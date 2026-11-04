@@ -48,10 +48,17 @@ export interface CliDeleteOptions {
   busyRetryMs?: number;
 }
 
+/**
+ * How far a run got: GJC's editor not ready yet, the command typed but no
+ * confirmation prompt, or confirmed with the transcript still on disk.
+ */
+export type CliDeleteStage = "starting" | "typed" | "confirmed";
+
 export class CliDeleteError extends Error {
   constructor(
     readonly reason: "timeout" | "exited" | "unexpected-dialog" | "busy",
     message: string,
+    readonly stage?: CliDeleteStage,
   ) {
     super(message);
     this.name = "CliDeleteError";
@@ -138,7 +145,7 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
   });
 
   return new Promise<void>((resolve, reject) => {
-    let stage: "starting" | "typed" | "confirmed" = "starting";
+    let stage: CliDeleteStage = "starting";
     // Output since the last key this side sent.
     let fresh = "";
     let lastOutputAt = Date.now();
@@ -201,7 +208,7 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
     const poll = setInterval(() => {
       if (settled || checking) return;
       if (Date.now() - startedAt > timeoutMs) {
-        finish(new CliDeleteError("timeout", `GJC가 ${Math.round(timeoutMs / 1000)}초 안에 세션 삭제를 끝내지 못했습니다.`));
+        finish(new CliDeleteError("timeout", `GJC가 ${Math.round(timeoutMs / 1000)}초 안에 세션 삭제를 끝내지 못했습니다.`, stage));
         return;
       }
       if (stage === "confirmed" && stripTerminalControls(fresh).includes(MIGRATION_BUSY)) {
