@@ -288,6 +288,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "수요일": "Wednesday",
   "스킬": "Skills",
   "스킬 및 명령어": "Skills and commands",
+  "스킬 목록을 불러오지 못했어요": "Could not load the skill list",
   "스킬 불러오는 중…": "Loading skills…",
   "스킬 지침": "Skill instructions",
   "{0} 지침": "{0} instructions",

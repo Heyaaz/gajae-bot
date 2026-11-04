@@ -84,6 +84,7 @@ import { useMentionFilesLoader, useSelectedMentionVisible } from "./use-mention-
 import { QueueList } from "./composer-queue-list";
 import { usePromptSuggestion } from "./use-prompt-suggestion";
 import { WorkspaceSwitcher } from "./composer-workspace-switcher";
+import type { CommandsLoad } from "./use-composer-model";
 
 export {
   acknowledgeComposerDraftRecoveries,
@@ -132,7 +133,7 @@ export interface ComposerProps {
   workspaces: string[];
   commands: AgentCommand[];
   /** The live command list has not arrived yet; the bundled entries are all there is. */
-  commandsPending?: boolean;
+  commandsLoad?: CommandsLoad;
   configOptions: AgentConfigOption[];
   modelDisplay?: string;
   thinking?: string;
@@ -165,7 +166,7 @@ export const Composer = memo(function Composer({
   workspace,
   workspaces,
   commands,
-  commandsPending = false,
+  commandsLoad = "ready",
   configOptions,
   modelDisplay,
   thinking,
@@ -1446,11 +1447,11 @@ export const Composer = memo(function Composer({
       )}
       </div>
       {(matchingCommands.length > 0 ||
-        (commandsPending && commandQuery !== null)) && (
+        (commandsLoad !== "ready" && commandQuery !== null)) && (
         <CommandList
           paletteRef={commandPaletteRef}
           commands={matchingCommands}
-          commandsPending={commandsPending}
+          commandsLoad={commandsLoad}
           commandIndex={commandIndex}
           onSelect={selectCommand}
         />

@@ -72,7 +72,7 @@ describe("composer slash palette loading", () => {
   });
 
   it("shows the pending load in the palette instead of an empty skill list", async () => {
-    const test = await mount({ commandsPending: true });
+    const test = await mount({ commandsLoad: "loading" });
     try {
       await type(test.node, "/");
       expect(test.node.querySelector(".command-palette")?.textContent).toContain(
@@ -127,6 +127,24 @@ describe("composer slash palette loading", () => {
       expect(
         test.node.querySelector(".composer-model button strong")?.textContent,
       ).toBe("Profile Two");
+    } finally {
+      await test.close();
+    }
+  });
+});
+
+describe("composer slash palette load failure", () => {
+  it("says the skill list could not be loaded instead of loading forever", async () => {
+    const test = await mount({ commandsLoad: "failed" });
+    try {
+      await type(test.node, "/");
+      const palette = test.node.querySelector(".command-palette")?.textContent ?? "";
+      expect(palette).toContain("스킬 목록을 불러오지 못했어요");
+      expect(palette).not.toContain("스킬 불러오는 중");
+      await type(test.node, "/skill:whip");
+      expect(
+        test.node.querySelector(".command-palette-loading")?.textContent,
+      ).toContain("스킬 목록을 불러오지 못했어요");
     } finally {
       await test.close();
     }

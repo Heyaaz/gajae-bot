@@ -659,7 +659,7 @@ export default function App() {
   });
   const {
     selectedCommands,
-    commandsPending,
+    commandsLoad,
     onCommandPaletteOpen,
     composerConfigOptions,
   } = useComposerModel(
@@ -996,7 +996,7 @@ export default function App() {
     clearSide,
     sideUnsupported,
     askSideFromComposer,
-  } = useSideChat(backend, selectedCommands, commandsPending, surfaceRef, selectedSessionRef);
+  } = useSideChat(backend, selectedCommands, commandsLoad !== "ready", surfaceRef, selectedSessionRef);
 
   // Streaming re-renders the shell on every joined delta. These callbacks stay
   // the same object so the memoized composer does not run again while a reply grows.
@@ -1334,7 +1334,7 @@ export default function App() {
                   workspace={selectedSession.workspace}
                   workspaces={recentWorkspaces}
                   commands={selectedCommands}
-                  commandsPending={commandsPending}
+                  commandsLoad={commandsLoad}
                   configOptions={composerConfigOptions}
                   modelDisplay={selectedSession.modelDisplay}
                   thinking={selectedSession.thinking}
