@@ -243,9 +243,11 @@ import {
 } from "./gjc-sdk-teardown.js";
 import {
   applyPermissionMode,
+  autoDecideToolCall,
   cancelPermissionsForSession,
   PermissionChannels,
   type PermissionApprovalHost,
+  recordAutoDecision,
   resolveToolCall,
   toolDecisionInfo,
 } from "./gjc-sdk-permissions.js";
@@ -290,6 +292,7 @@ export class GjcSdkController extends GjcSdkState {
   private modelPreset: AgentControlPreferences["modelPreset"];
   private permissionHandling: AgentControlPreferences["permissionHandling"];
   private readonly sessionMetadata?: SessionMetadataStore;
+  private readonly commandRules?: GjcControllerOptions["commandRules"];
   private readonly emitEvent: (event: AgentEvent) => void;
   private readonly artifactDirectory: string;
   private readonly permissionChannels = new PermissionChannels({
@@ -309,6 +312,8 @@ export class GjcSdkController extends GjcSdkState {
       pending.resolve({ outcome: { outcome: "cancelled" } });
       patchTool(this.host, toolId, { status: "pending", permissionOptions: undefined });
     },
+    autoDecide: (sessionId, toolCall) => autoDecideToolCall(this.host, sessionId, toolCall),
+    noteAutoDecision: (sessionId, toolCall, match) => recordAutoDecision(this.host, sessionId, toolCall, match),
   });
 
   private connectionState: BackendConnection;
@@ -334,6 +339,11 @@ export class GjcSdkController extends GjcSdkState {
     get permissionModeApplied() { return controller.permissionModeApplied; },
     get permissionChannels() { return controller.permissionChannels; },
     patchTool: (toolId, patch) => patchTool(controller.host, toolId, patch),
+    get commandRules() { return controller.commandRules; },
+    findTool: (sessionId, toolId) =>
+      controller.transcripts.get(sessionId)?.find(
+        (item): item is ToolActivity => item.kind === "tool" && item.id === toolId,
+      ),
     querySessionItems: (...args: Parameters<ControlHost["querySessionItems"]>) => querySessionItems(controller.host, ...args),
     get observedQuestions() { return controller.observedQuestions; },
     get acceptedQuestions() { return controller.acceptedQuestions; },
@@ -545,6 +555,7 @@ export class GjcSdkController extends GjcSdkState {
     this.modelPreset = options.modelPreset ?? DEFAULT_MODEL_PRESET;
     this.permissionHandling = options.permissionHandling ?? "prompt";
     this.sessionMetadata = options.sessionMetadata;
+    this.commandRules = options.commandRules;
     this.emitEvent = (event) => {
       switch (event.type) {
         case "transcript.appended":
