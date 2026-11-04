@@ -5,6 +5,7 @@ import type {
   TranscriptRequestSummary,
 } from "../shared/agent-contract.js";
 import { transcriptItemEqual } from "../shared/transcript-item-equal.js";
+import { mergeTranscriptItem } from "./transcript-utils.js";
 
 function currentItemsById(items: readonly TranscriptItem[]): Map<string, TranscriptItem> {
   const byId = new Map<string, TranscriptItem>();
@@ -172,19 +173,26 @@ export function mergeTranscriptPage(
   return [...prepended, ...current];
 }
 
-/** Replaces changed rows in place and appends rows the current window lacks. */
+/**
+ * Replaces changed rows in place and adds rows the current window lacks.
+ *
+ * A new row is merged like a live one: the durable copy of a request this window
+ * echoed locally takes the echo's place instead of standing beside it. The delta
+ * never mentions the echo, because the controller dropped it before the baseline
+ * could see it.
+ */
 export function mergeTranscriptPatch(
   current: readonly TranscriptItem[],
   patch: readonly TranscriptItem[],
 ): TranscriptItem[] {
   const currentById = currentItemsById(current);
   const patchById = new Map(patch.map((item) => [item.id, item]));
-  const next = current.map((item) => {
+  let next = current.map((item) => {
     const incoming = patchById.get(item.id);
     return incoming ? reuseEqualCurrentItem(incoming, currentById) : item;
   });
   for (const item of patch) {
-    if (!currentById.has(item.id)) next.push(item);
+    if (!currentById.has(item.id)) next = mergeTranscriptItem(next, item);
   }
   return next;
 }

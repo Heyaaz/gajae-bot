@@ -2166,6 +2166,47 @@ describe("GjcSdkController CLI seam", () => {
     } finally { controller.dispose(); }
   });
 
+  it("shows one user row per send from the echo through the recorded turn", () => {
+    const { controller, internals } = harness();
+    const userRows = () =>
+      (internals.transcripts.get("s1") ?? []).filter((row: any) => row.role === "user").map((row: any) => row.content);
+    const record = (id: string, text: string) => ({ type: "message", id, message: { role: "user", content: [{ type: "text", text }] } });
+    const reply = (id: string, text: string) => ({ type: "message", id, message: { role: "assistant", content: [{ type: "text", text }] } });
+    const input = (text: string) => ({ text, images: [], files: [] });
+    try {
+      internals.appendLocalUserMessage("s1", "이슈 올려", input("이슈 올려"));
+      expect(userRows()).toEqual(["이슈 올려"]);
+
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "이슈 올려")]));
+      expect(userRows()).toEqual(["이슈 올려"]);
+
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "이슈 올려"), reply("a1", "작업 중")]));
+      expect(userRows()).toEqual(["이슈 올려"]);
+
+      internals.appendLocalUserMessage("s1", "다음", input("다음"));
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "이슈 올려"), reply("a1", "작업 중"), record("u2", "다음")]));
+      expect(userRows()).toEqual(["이슈 올려", "다음"]);
+    } finally { controller.dispose(); }
+  });
+
+  it("keeps the same words sent twice as two rows while the second is not recorded yet", () => {
+    const { controller, internals } = harness();
+    const userRows = () =>
+      (internals.transcripts.get("s1") ?? []).filter((row: any) => row.role === "user").map((row: any) => row.id);
+    const record = (id: string, text: string) => ({ type: "message", id, message: { role: "user", content: [{ type: "text", text }] } });
+    const input = { text: "계속", images: [], files: [] };
+    try {
+      internals.appendLocalUserMessage("s1", "계속", input);
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "계속")]));
+      internals.appendLocalUserMessage("s1", "계속", input);
+      expect(userRows()).toHaveLength(2);
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "계속")]));
+      expect(userRows()).toHaveLength(2);
+      internals.installTranscript("s1", sharedTranscriptItems("s1", [record("u1", "계속"), record("u2", "계속")]));
+      expect(userRows()).toHaveLength(2);
+    } finally { controller.dispose(); }
+  });
+
   it("keeps live memory readable before an active prompt has a transcript file", async () => {
     const { controller, internals } = harness();
     internals.sessions.set("s1", { ...session(), status: "running" });

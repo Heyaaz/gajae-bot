@@ -152,6 +152,28 @@ describe("mergeTranscriptPatch", () => {
     const merged = mergeTranscriptPatch([first], [equal]);
     expect(merged[0]).toBe(first);
   });
+
+  it("settles a request on its recorded row instead of showing the echo beside it", () => {
+    const earlier = message("shared-message-1", "go", "user");
+    const echo = message("local-prompt-3", "go", "user");
+    const recorded = message("shared-message-2", "go", "user");
+    expect(ids(mergeTranscriptPatch([earlier, echo], [recorded]))).toEqual([
+      "shared-message-1",
+      "shared-message-2",
+    ]);
+  });
+
+  it("settles a request on the row recorded after the renderer's own echo", () => {
+    const echo = message("local-prompt-renderer-1", "go", "user");
+    const recorded = message("shared-message-2", "go", "user");
+    expect(ids(mergeTranscriptPatch([echo], [recorded]))).toEqual(["shared-message-2"]);
+  });
+
+  it("keeps an echo whose request the patch does not carry", () => {
+    const echo = message("local-prompt-3", "go", "user");
+    const other = message("shared-message-2", "other", "user");
+    expect(ids(mergeTranscriptPatch([echo], [other]))).toEqual(["local-prompt-3", "shared-message-2"]);
+  });
 });
 
 describe("refreshTranscriptWindow", () => {
