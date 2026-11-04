@@ -81,7 +81,7 @@ export {
   type TranscriptViewportAnchor,
 } from "./transcript-scroll";
 export { TodoCard } from "./transcript-todo";
-import { isEmptyTodoSnapshot } from "./transcript-todo";
+import { isEmptyTodoSnapshot } from "./todo-status";
 export { ToolCard, type ToolCardProps } from "./transcript-tool-card";
 
 export interface TranscriptProps {

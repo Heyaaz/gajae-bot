@@ -49,19 +49,6 @@ function todoObservedLabel(observedAt: string | undefined): string {
 }
 
 /**
- * A snapshot the runtime read back with nothing in it. A new session starts with one,
- * and a card saying "No todos" before anything was asked tells the person nothing.
- */
-export function isEmptyTodoSnapshot(item: TranscriptItem): boolean {
-  return (
-    item.kind === "system" &&
-    item.sourceType?.trim() === "todo.list" &&
-    item.todoPhases !== undefined &&
-    item.todoPhases.every((phase) => (phase.tasks ?? []).length === 0)
-  );
-}
-
-/**
  * The app-owned todo snapshot (`sourceType: "todo.list"`) as a checklist.
  *
  * The row used to render the controller's report of itself -- source, observation time,
