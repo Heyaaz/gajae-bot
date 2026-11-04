@@ -28,6 +28,8 @@ export interface BackendEventContext {
     incoming: readonly TranscriptItem[],
   ) => TranscriptItem[];
   refreshTranscript: (id: string) => void;
+  /** A turn ended without being cancelled or failing. */
+  onTurnCompleted?: (sessionId: string) => void;
 }
 
 export function createBackendEventHandler(
@@ -52,6 +54,7 @@ export function createBackendEventHandler(
     updateRequestSummaries,
     mergeLiveTranscriptItems,
     refreshTranscript,
+    onTurnCompleted,
   } = context;
   return (event: AgentEvent) => {
     if (event.type === "connection.updated") {
@@ -259,6 +262,7 @@ export function createBackendEventHandler(
         return next;
       });
     } else if (event.type === "session.activity") {
+      if (event.category === "completed") onTurnCompleted?.(event.sessionId);
       setSessions((current) =>
         current.map((s) =>
           s.id === event.sessionId

@@ -375,7 +375,19 @@ export default function App() {
     [selectSession],
   );
 
+  const [turnCompletion, setTurnCompletion] = useState<{ sessionId: string }>();
+  const onTurnCompleted = useCallback((sessionId: string) => {
+    // Only the session on screen can show a suggestion, so a background session
+    // finishing never costs a model call.
+    if (sessionId === selectedIdRef.current) setTurnCompletion({ sessionId });
+  }, []);
+  const suggestNextInput = useMemo(
+    () => (backend.suggestNextInput ? (sessionId: string) => backend.suggestNextInput!(sessionId) : undefined),
+    [backend],
+  );
+
   useSessionSync({
+    onTurnCompleted,
     backend,
     sessionsRef,
     selectedIdRef,
@@ -1330,6 +1342,8 @@ export default function App() {
                   onCycleThinking={onComposerCycleThinking}
                   onCommandPaletteOpen={onCommandPaletteOpen}
                   readOnly={remoteViewOnly}
+                  onSuggestNextInput={suggestNextInput}
+                  turnCompletion={turnCompletion}
                 />
               </div>
             </section>

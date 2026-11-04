@@ -62,6 +62,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "Tailscale 연결됨{0}": "Tailscale connected{0}",
   "Tailscale에 연결되어 있지 않습니다": "Not connected to Tailscale",
   "Tailscale이 설치되어 있지 않습니다": "Tailscale is not installed",
+  "Tab으로 받기 · Esc로 닫기": "Tab to accept · Esc to dismiss",
   "작업 공간 범위": "Workspace scope",
   "작업 공간": "Workspace",
   "사용량": "Usage",

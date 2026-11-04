@@ -39,6 +39,7 @@ const OPERATIONS: RemoteOperationName[] = [
   "steer",
   "queue-follow-up",
   "flush-follow-ups",
+  "suggest-next-input",
   "cancel-run",
   "resolve-tool-call",
   "pending-questions",
@@ -113,6 +114,10 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
     async flushQueuedNow() {
       return true;
     },
+    async suggestNextInput(sessionId: string) {
+      calls.push(`suggest:${sessionId}`);
+      return "테스트도 돌려줘";
+    },
     async cancelRun(sessionId: string) {
       calls.push(`cancel:${sessionId}`);
     },
@@ -153,6 +158,7 @@ describe("remote operation surface", () => {
       [
         "cancel-run",
         "flush-follow-ups",
+        "suggest-next-input",
         "mark-read",
         "queue-follow-up",
         "answer-question",
@@ -198,6 +204,10 @@ describe("remote operation surface", () => {
     await expect(runRemoteOperation(host, "send-message", { sessionId: "s-1" }, {})).rejects.toThrow(
       "Message input is required",
     );
+    await expect(
+      runRemoteOperation(host, "suggest-next-input", { sessionId: "s-1" }, undefined),
+    ).resolves.toBe("테스트도 돌려줘");
+    expect(host.calls).toContain("suggest:s-1");
     await runRemoteOperation(host, "pending-questions", { sessionId: "s-1" }, undefined);
     expect(host.calls).toContain("questions:s-1");
     await runRemoteOperation(

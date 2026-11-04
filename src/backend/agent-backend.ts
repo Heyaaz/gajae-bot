@@ -80,6 +80,11 @@ export interface AgentBackend {
    * A backend without it sends `/btw` as an ordinary command.
    */
   askSideQuestion?(sessionId: string, question: string): Promise<string>;
+  /**
+   * The user's likely next message for the composer's ghost text, or null. A
+   * backend without it never shows a suggestion.
+   */
+  suggestNextInput?(sessionId: string): Promise<string | null>;
   /** Skips GJC's wait before retrying a failed model call, or stops retrying. */
   controlRetry?(sessionId: string, action: "now" | "abort"): Promise<void>;
   compactSession(sessionId: string): Promise<void>;

@@ -51,6 +51,7 @@ export interface SessionSyncContext {
   updateRequestSummaries: TranscriptStore["updateRequestSummaries"];
   mergeLiveTranscriptItems: TranscriptStore["mergeLiveTranscriptItems"];
   refreshTranscriptPage: TranscriptStore["refreshTranscriptPage"];
+  onTurnCompleted?: (sessionId: string) => void;
 }
 
 export function useSessionSync(context: SessionSyncContext): void {
@@ -81,6 +82,7 @@ export function useSessionSync(context: SessionSyncContext): void {
     updateRequestSummaries,
     mergeLiveTranscriptItems,
     refreshTranscriptPage,
+    onTurnCompleted,
   } = context;
   // The subscription and the polling below live as long as `backend`. These run the
   // latest render's functions each time they fire, not the ones from the render
@@ -107,6 +109,7 @@ export function useSessionSync(context: SessionSyncContext): void {
         noteTranscriptEvent,
         updateRequestSummaries,
         mergeLiveTranscriptItems,
+        onTurnCompleted,
         ...local,
       })(event),
   );

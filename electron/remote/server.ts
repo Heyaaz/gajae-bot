@@ -1012,6 +1012,7 @@ const SESSION_ROUTES: Record<string, RemoteOperationName> = {
   steer: "steer",
   "follow-ups": "queue-follow-up",
   "follow-ups/flush": "flush-follow-ups",
+  suggestion: "suggest-next-input",
   cancel: "cancel-run",
   read: "mark-read",
 };

@@ -188,6 +188,7 @@ export type RemoteOperationName =
   | "steer"
   | "queue-follow-up"
   | "flush-follow-ups"
+  | "suggest-next-input"
   | "cancel-run"
   | "resolve-tool-call"
   | "pending-questions"
@@ -212,6 +213,7 @@ export const REMOTE_OPERATION_ACCESS: Record<RemoteOperationName, RemotePermissi
   steer: "control",
   "queue-follow-up": "control",
   "flush-follow-ups": "control",
+  "suggest-next-input": "control",
   "cancel-run": "control",
   "resolve-tool-call": "control",
   "pending-questions": "view",
@@ -260,6 +262,7 @@ export const REMOTE_API = {
   steer: (sessionId: string) => `${REMOTE_API.session(sessionId)}/steer`,
   followUps: (sessionId: string) => `${REMOTE_API.session(sessionId)}/follow-ups`,
   flushFollowUps: (sessionId: string) => `${REMOTE_API.session(sessionId)}/follow-ups/flush`,
+  suggestNextInput: (sessionId: string) => `${REMOTE_API.session(sessionId)}/suggestion`,
   cancel: (sessionId: string) => `${REMOTE_API.session(sessionId)}/cancel`,
   read: (sessionId: string) => `${REMOTE_API.session(sessionId)}/read`,
   toolCallDecision: (toolId: string) =>

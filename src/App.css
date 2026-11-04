@@ -4356,6 +4356,34 @@ button.diff-line-number:hover {
 .composer textarea::placeholder {
   color: var(--text-tertiary);
 }
+.composer-field {
+  position: relative;
+}
+/* The prediction sits where the placeholder would. It is not the textarea's value,
+   so it can never be sent, edited or read back as the draft. */
+.composer-ghost {
+  position: absolute;
+  inset: 0 auto auto 0;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 15px 150px 8px 16px;
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 13.5px;
+  line-height: 1.55;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.composer-ghost-hint {
+  position: absolute;
+  top: 17px;
+  right: 14px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+}
 .composer-images {
   display: flex;
   gap: 7px;
@@ -7495,6 +7523,13 @@ button.diff-line-number:hover {
    * Shrink the chip labels, not the send button. A scrolling toolbar clips the
    * popovers above it, so menus are anchored to the composer instead of a chip.
    */
+  .composer-ghost {
+    padding: 11px 12px 6px;
+    font-size: 16px;
+  }
+  .composer-ghost-hint {
+    display: none;
+  }
   .composer textarea {
     padding: 11px 12px 6px;
     /* iOS Safari zooms focused inputs below 16px, panning the toolbar and send
