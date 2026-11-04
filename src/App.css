@@ -1780,6 +1780,9 @@
   line-height: 1.62;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* Korean otherwise breaks between any two syllables and splits words; whole
+     words wrap, and a run too long for a line still breaks (overflow-wrap). */
+  word-break: keep-all;
 }
 .message--assistant .message-body {
   padding-left: 31px;
@@ -1787,6 +1790,7 @@
 .markdown-body {
   white-space: normal;
   overflow-wrap: anywhere;
+  word-break: keep-all;
 }
 .markdown-body > :first-child {
   margin-top: 0;
@@ -5179,9 +5183,6 @@ button.diff-line-number:hover {
   font-size: 12.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
-  /* The panel is narrow enough that Korean breaking between any two syllables
-     split most words; whole words wrap, and a run too long for a line still breaks. */
-  word-break: keep-all;
 }
 .side-exchange-answer h1 {
   font-size: 16px;
@@ -5202,9 +5203,55 @@ button.diff-line-number:hover {
   margin-bottom: 0;
 }
 .side-exchange-pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
   margin: 0;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: 12px;
+}
+.side-exchange-pending small {
+  flex-basis: 100%;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.side-exchange-elapsed {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.side-exchange-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+.side-exchange-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: side-exchange-dot 1.2s ease-in-out infinite;
+}
+.side-exchange-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.side-exchange-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes side-exchange-dot {
+  0%, 60%, 100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .side-exchange-dots span {
+    animation: none;
+    opacity: 0.6;
+  }
 }
 .side-exchange-failed {
   display: grid;
