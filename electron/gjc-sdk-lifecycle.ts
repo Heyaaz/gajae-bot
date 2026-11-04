@@ -22,7 +22,7 @@ import {
   uncertainLifecycleOutcomeError,
 } from "./gjc-sdk-foundation.js";
 import { remotesWithBranch } from "./gjc-sdk-git.js";
-import { CliDeleteError } from "./gjc-cli-session-delete.js";
+import { CliDeleteError, type CliDeleteStage } from "./gjc-cli-session-delete.js";
 import type { GjcHostProcess } from "./gjc-host-process.js";
 import path from "node:path";
 
@@ -655,7 +655,11 @@ async function performDeleteSession(
         session.attachment = "recovering";
         host.emitEvent({ type: "session.updated", session: { ...session } });
       }
-      throw new Error(CLI_DELETE_FAILURES[error.reason]);
+      throw new Error(
+        error.reason === "timeout" && error.stage
+          ? `${CLI_DELETE_FAILURES.timeout} (${CLI_DELETE_TIMEOUT_STAGES[error.stage]})`
+          : CLI_DELETE_FAILURES[error.reason],
+      );
     }
     if (lifecycleInputRefused(error) || lifecycleLegacyHistoryAmbiguous(error)) {
       // Neither admission refusal settles earlier effects. Preserve every
@@ -783,6 +787,12 @@ const CLI_DELETE_FAILURES: Record<CliDeleteError["reason"], string> = {
     "GJC가 세션 저장소 작업을 끝내지 않아 여러 번 시도했지만 삭제하지 못했습니다. 기록은 그대로 남아 있습니다. 잠시 뒤 다시 삭제해 보세요.",
   "unexpected-dialog":
     "GJC CLI가 예상하지 못한 확인 창을 띄워 삭제를 멈췄습니다. 기록은 그대로 남아 있습니다. 다시 삭제해 보세요.",
+};
+
+const CLI_DELETE_TIMEOUT_STAGES: Record<CliDeleteStage, string> = {
+  starting: "GJC 입력창이 준비되지 않음",
+  typed: "명령을 입력했지만 삭제 확인 창이 뜨지 않음",
+  confirmed: "삭제를 확인했지만 기록이 남아 있음",
 };
 
 /**
