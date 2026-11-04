@@ -14,6 +14,7 @@ import { homedir } from "node:os";
 import type { Stats } from "node:fs";
 import {
   type ArtifactContent,
+  type DiffSnapshot,
   type GeneratedFilePreview,
   TRANSCRIPT_BODY_ARTIFACT_PREFIX,
   type TranscriptItem,
@@ -65,6 +66,12 @@ export interface FilesHost {
   readonly sessionCwds: Map<string, string>;
   readonly workspace: string;
   readonly sharedSessionFiles: Map<string, string>;
+  querySessionItems(
+    sessionId: string,
+    query: string,
+    input?: Record<string, unknown>,
+    options?: { strict?: boolean },
+  ): Promise<unknown[]>;
   readonly sharedTranscriptReads: Map<
     string,
     {
@@ -501,5 +508,40 @@ function rememberTranscriptRead(
     const oldest = host.sharedTranscriptReads.keys().next();
     if (oldest.done) break;
     host.sharedTranscriptReads.delete(oldest.value);
+  }
+}
+
+export async function getDiff(host: FilesHost, sessionId: string): Promise<DiffSnapshot> {
+  const workspace = host.sessionCwds.get(sessionId) ?? host.workspace;
+  try {
+    await host.ensureAttached(sessionId, false);
+    const files: DiffSnapshot["files"] = [];
+    for (const row of await host.querySessionItems(
+      sessionId,
+      "diff.list_files",
+    ))
+      if (row && typeof row === "object") {
+        const value = row as Record<string, unknown>;
+        if (typeof value.path === "string")
+          files.push({
+            id: typeof value.id === "string" ? value.id : value.path,
+            path: value.path,
+            patch: typeof value.body === "string" ? value.body : "",
+          });
+      }
+    return {
+      sessionId,
+      workspace,
+      files,
+      refreshedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    return {
+      sessionId,
+      workspace,
+      files: [],
+      refreshedAt: new Date().toISOString(),
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }

@@ -225,6 +225,7 @@ import {
 } from "./gjc-sdk-run-state.js";
 import {
   type FilesHost,
+  getDiff,
   locateSharedTranscriptFile,
   persistArtifact,
   previewFile,
@@ -251,6 +252,7 @@ import {
   clearTodoPoll,
   getGoal,
   type GoalTodoHost,
+  listSubagents,
   operateGoal,
   readTodoRecords,
   requestProgressRefresh,
@@ -1505,60 +1507,12 @@ export class GjcSdkController {
     return operateGoal(this.host, sessionId, operation);
   }
 
-  /**
-   * The subagents a session launched, read from the task tool's own arguments.
-   *
-   * This used to also query `runtime.jobs.list` and merge anything whose kind matched
-   * /subagent|task/. Verified against gjc/0.18.11, that query answers a single wrapper
-   * row shaped `{running, recent, delivery}` whose entries are background *tool* runs
-   * with `type` set to the tool name ("bash"). No entry is ever a subagent and no
-   * top-level row has a `kind`, so the filter matched nothing: the merge was dead code
-   * whose only live effect was making this method require a live runtime, so a
-   * session whose subagents were already in the transcript failed to list them
-   * whenever the runtime was unreachable.
-   */
-  async listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {
-    const declaredById = new Map<string, SubagentSnapshot>();
-    for (const agent of (this.transcripts.get(sessionId) ?? []).flatMap(
-      (item) => (item.kind === "tool" ? (item.subagents ?? []) : []),
-    ))
-      declaredById.set(agent.id, agent);
-    return [...declaredById.values()];
+  listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {
+    return listSubagents(this.host, sessionId);
   }
 
-  async getDiff(sessionId: string): Promise<DiffSnapshot> {
-    const workspace = this.sessionCwds.get(sessionId) ?? this.workspace;
-    try {
-      await this.ensureAttached(sessionId, false);
-      const files: DiffSnapshot["files"] = [];
-      for (const row of await this.querySessionItems(
-        sessionId,
-        "diff.list_files",
-      ))
-        if (row && typeof row === "object") {
-          const value = row as Record<string, unknown>;
-          if (typeof value.path === "string")
-            files.push({
-              id: typeof value.id === "string" ? value.id : value.path,
-              path: value.path,
-              patch: typeof value.body === "string" ? value.body : "",
-            });
-        }
-      return {
-        sessionId,
-        workspace,
-        files,
-        refreshedAt: new Date().toISOString(),
-      };
-    } catch (error) {
-      return {
-        sessionId,
-        workspace,
-        files: [],
-        refreshedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      };
-    }
+  getDiff(sessionId: string): Promise<DiffSnapshot> {
+    return getDiff(this.host, sessionId);
   }
 
   refreshRuntimeState(sessionId: string): Promise<EffectiveRuntimeState> {
