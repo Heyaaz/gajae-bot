@@ -88,7 +88,13 @@ case "$1" in
     printf "\\nOpen this URL in your browser:\\nhttps://z.ai/manage-apikey/apikey-list\\nCopy your API key from the dashboard\\n\\n"
     printf "Paste your Z.AI API key (sk-...):: "
     read key
-    [ "$key" = "sk-smoke" ] || { echo "Error: Invalid API key" >&2; exit 1; }
+    if [ "$key" != "sk-smoke" ]; then
+      # GJC 0.19.3's stderr for a rejected key: the error, a stack, then the crash log pointer last.
+      echo '[Uncaught Exception] Error: Z.AI API key validation failed (401): {"error":{"code":"401","message":"token expired or incorrect"}}' >&2
+      echo '    at validateZaiApiKey (/$bunfs/root/gjc:120:11)' >&2
+      echo "[Uncaught Exception] crash recorded at $agent/gjc-crash.log" >&2
+      exit 1
+    fi
     mkdir -p "$agent" && : > "$agent/credential"
     echo "Credentials saved to ~/.gjc/agent/agent.db" ;;
   *) echo "fake gjc: $*" >&2; exit 3 ;;
@@ -191,11 +197,23 @@ function drive() {
         assert(opened[0] === 'https://z.ai/manage-apikey/apikey-list', 'API key page handed to the browser')
         step('key field type', await run('document.querySelector(".onboarding-answer input").type'))
         await shot('3-api-key')
-        await run(`(() => {
-          const input = document.querySelector(".onboarding-answer input");
-          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, "sk-smoke");
-          input.dispatchEvent(new Event("input", { bubbles: true }));
-        })()`)
+        const typeKey = (key) =>
+          run(`(() => {
+            const input = document.querySelector(".onboarding-answer input");
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(input, ${JSON.stringify(key)});
+            input.dispatchEvent(new Event("input", { bubbles: true }));
+          })()`)
+        await typeKey('sk-wrong')
+        assert(await click('확인'), 'submit wrong key')
+        await until(async () => (await text()).includes('로그인하지 못했습니다'), 'wrong key rejected')
+        const rejection = await text()
+        assert(rejection.includes('API 키가 맞지 않습니다'), `rejected key explained, got: ${rejection}`)
+        assert(!rejection.includes('crash recorded'), 'the crash log pointer is not shown')
+        step('wrong key message', rejection)
+        await shot('3b-wrong-key')
+        assert(await click('다시 시도'), 'retry sign-in')
+        await until(() => run('Boolean(document.querySelector(".onboarding-answer input"))'), 'API key field again')
+        await typeKey('sk-smoke')
         assert(await click('확인'), 'submit key')
         await until(async () => (await text()).includes('준비됐습니다'), 'ready after sign-in')
         await shot('4-ready')

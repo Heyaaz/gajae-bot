@@ -70,6 +70,7 @@ export class OnboardingService {
       this.signIn = new GjcSignIn({
         executable,
         provider: provider.id,
+        method: provider.method,
         env: this.options.environment(),
         spawn: this.options.spawn,
         onEvent: (event) => {

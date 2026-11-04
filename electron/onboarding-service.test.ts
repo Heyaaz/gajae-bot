@@ -103,9 +103,14 @@ describe('OnboardingService', () => {
   it('keeps setup open when the login fails', async () => {
     const { onboarding, calls, isDone } = service({
       gjc: '/Users/me/.local/bin/gjc',
-      loginScript: 'echo "Error: Invalid API key" >&2; exit 1',
+      loginScript: [
+        'echo "[Uncaught Exception] Error: Z.AI API key validation failed (401): token expired or incorrect" >&2',
+        'echo "    at login (cli.js:1:1)" >&2',
+        'echo "[Uncaught Exception] crash recorded at /Users/me/.gjc/agent/gjc-crash.log" >&2',
+        'exit 1',
+      ].join('; '),
     })
-    await expect(onboarding.startSignIn('zai', () => undefined)).rejects.toThrow('Invalid API key')
+    await expect(onboarding.startSignIn('zai', () => undefined)).rejects.toThrow('API 키가 맞지 않습니다')
     expect(calls).toEqual([])
     expect(isDone()).toBe(false)
   })

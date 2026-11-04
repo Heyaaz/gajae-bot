@@ -38,6 +38,7 @@ try {
   const signIn = new GjcSignIn({
     executable: gjc,
     provider: 'anthropic',
+    method: 'browser',
     env,
     onEvent: (event) => {
       events.push(event.type)
