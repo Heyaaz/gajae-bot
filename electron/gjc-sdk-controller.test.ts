@@ -461,6 +461,29 @@ describe("0.18.12 tool stream", () => {
     } finally { controller.dispose(); }
   });
 
+  it("keeps a tool waiting on approval on its card when the session file is read again", async () => {
+    const { controller, internals, event, tool } = streamHarness();
+    try {
+      event("tool_execution_start", { args: { command: "echo hi" } });
+      const options = [
+        { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+      ] as const;
+      const decided = internals.permissionChannels.host.requestPermission({
+        sessionId: "s1",
+        toolCall: { toolCallId: "t1", toolName: "bash", title: "echo hi", command: "echo hi" },
+        options,
+      });
+      expect(tool()).toMatchObject({ status: "approval-required" });
+      internals.installTranscript("s1", [{ ...tool(), status: "running", permissionOptions: undefined, output: undefined }]);
+      expect(tool()).toMatchObject({ status: "approval-required", permissionOptions: options });
+      await controller.resolveToolCall("t1", { optionId: "allow_once" });
+      await expect(decided).resolves.toMatchObject({ outcome: { outcome: "selected", optionId: "allow_once" } });
+      internals.installTranscript("s1", [{ ...tool(), status: "running", permissionOptions: undefined }]);
+      expect(tool()).toMatchObject({ status: "running" });
+    } finally { controller.dispose(); }
+  });
+
   it("projects SDK turn_stream snapshots without duplication or terminal regression", () => {
     const { controller, internals } = streamHarness();
     const frame = (text: string, phase = "live", sessionId = "s1") =>

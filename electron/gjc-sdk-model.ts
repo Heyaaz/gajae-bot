@@ -9,6 +9,7 @@ import type {
   AgentControlPreferences,
   ImageAttachment,
   PermissionOption,
+  ToolActivity,
 } from "../shared/agent-contract.js";
 import { DEFAULT_MODEL_PRESET } from "../shared/agent-contract.js";
 import type { CommandRuleDecision, CommandRuleMatch } from "../shared/command-rules.js";
@@ -301,6 +302,17 @@ export interface PendingPermission {
     }>;
   };
   resolve: (response: PermissionResponse) => void;
+}
+
+/**
+ * What a tool row shows while its request waits. The request, not the row, is the
+ * source: a read of the session file rebuilds the row without it.
+ */
+export function awaitingApproval(pending: PendingPermission): Pick<ToolActivity, "status" | "permissionOptions"> {
+  return {
+    status: "approval-required",
+    permissionOptions: pending.request.options.map(({ optionId, kind, name }) => ({ optionId, kind, name })),
+  };
 }
 
 export interface PermissionResponse {
