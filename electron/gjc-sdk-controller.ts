@@ -594,7 +594,7 @@ export class GjcSdkController {
       if (!pending) return;
       this.pendingPermissions.delete(toolId);
       pending.resolve({ outcome: { outcome: "cancelled" } });
-      this.patchTool(toolId, { status: "pending", permissionOptions: undefined });
+      patchTool(this.host, toolId, { status: "pending", permissionOptions: undefined });
     },
   });
   private readonly artifactWrites = new Map<string, Promise<void>>();
@@ -684,26 +684,26 @@ export class GjcSdkController {
     deleteSession: (sessionId) => controller.deleteSession(sessionId),
     renameSession: (sessionId, title) => controller.renameSession(sessionId, title),
     compactSession: (sessionId) => controller.compactSession(sessionId),
-    sessionConfigRow: (sessionId) => controller.sessionConfigRow(sessionId),
-    hasAnswerableQuestion: (sessionId) => controller.hasAnswerableQuestion(sessionId),
+    sessionConfigRow: (sessionId) => sessionConfigRow(controller.host, sessionId),
+    hasAnswerableQuestion: (sessionId) => hasAnswerableQuestion(controller.host, sessionId),
     get configuredExecutable() { return controller.configuredExecutable; },
     set configuredExecutable(value) { controller.configuredExecutable = value; },
     get connectionState() { return controller.connectionState; },
     set connectionState(value) { controller.connectionState = value; },
     resolveExecutable: () => controller.resolveExecutable(),
     recoverOwnedSessions: () => controller.recoverOwnedSessions(),
-    noteBrokerIndex: (rows, before, after) => controller.noteBrokerIndex(rows, before, after),
+    noteBrokerIndex: (rows, before, after) => noteBrokerIndex(controller.host, rows, before, after),
     get permissionHandling() { return controller.permissionHandling; },
     set permissionHandling(value) { controller.permissionHandling = value; },
     get permissionModeApplied() { return controller.permissionModeApplied; },
     get permissionChannels() { return controller.permissionChannels; },
-    patchTool: (toolId, patch) => controller.patchTool(toolId, patch),
+    patchTool: (toolId, patch) => patchTool(controller.host, toolId, patch),
     querySessionItems: (...args: Parameters<ControlHost["querySessionItems"]>) => querySessionItems(controller.host, ...args),
     get observedQuestions() { return controller.observedQuestions; },
     get acceptedQuestions() { return controller.acceptedQuestions; },
     get transcripts() { return controller.transcripts; },
     get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
-    noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
+    noteTranscriptEpoch: (sessionId) => noteTranscriptEpoch(controller.host, sessionId),
     get emitEvent() { return controller.emitEvent; },
     markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
     emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
@@ -735,7 +735,7 @@ export class GjcSdkController {
     set modelPresetThinking(value) { controller.modelPresetThinking = value; },
     get explicitSessionThinking() { return controller.explicitSessionThinking; },
     get sessionConfig() { return controller.sessionConfig; },
-    requireCli: () => controller.requireCli(),
+    requireCli: () => requireCli(controller.host),
     repoFor: (sessionId) => controller.repoFor(sessionId),
     get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
     get contextUsageQueries() { return controller.contextUsageQueries; },
@@ -782,10 +782,10 @@ export class GjcSdkController {
     get terminalOnlySessions() { return controller.terminalOnlySessions; },
     get lastLiveFingerprint() { return controller.lastLiveFingerprint; },
     set lastLiveFingerprint(value) { controller.lastLiveFingerprint = value; },
-    syncRunStateWatchers: (sessionIds) => controller.syncRunStateWatchers(sessionIds),
+    syncRunStateWatchers: (sessionIds) => syncRunStateWatchers(controller.host, sessionIds),
     discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
-    liveEvidenceQuiet: (sessionId) => controller.liveEvidenceQuiet(sessionId),
-    settleQuietRunningRow: (sessionId, transcriptStatus, currentSession) => controller.settleQuietRunningRow(sessionId, transcriptStatus, currentSession),
+    liveEvidenceQuiet: (sessionId) => liveEvidenceQuiet(controller.host, sessionId),
+    settleQuietRunningRow: (sessionId, transcriptStatus, currentSession) => settleQuietRunningRow(controller.host, sessionId, transcriptStatus, currentSession),
     sessionParentId: (sessionId) => controller.sessionParentId(sessionId),
     get routeProbes() { return controller.routeProbes; },
     get startupSessionRows() { return controller.startupSessionRows; },
@@ -797,7 +797,7 @@ export class GjcSdkController {
     get sessionParents() { return controller.sessionParents; },
     get toolRowIndices() { return controller.toolRowIndices; },
     get messageKeys() { return controller.messageKeys; },
-    invalidateBrokerIndexCache: () => controller.invalidateBrokerIndexCache(),
+    invalidateBrokerIndexCache: () => invalidateBrokerIndexCache(controller.host),
     get windowHostedSessions() { return controller.windowHostedSessions; },
     applyPermissionMode: (sessionId) => applyPermissionMode(controller.host, sessionId),
     startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
@@ -827,9 +827,9 @@ export class GjcSdkController {
     get echoedPromptTexts() { return controller.echoedPromptTexts; },
     get sessionContextRefreshes() { return controller.sessionContextRefreshes; },
     get sessionContextRefreshedAt() { return controller.sessionContextRefreshedAt; },
-    clearCommandRefreshRetry: (sessionId) => controller.clearCommandRefreshRetry(sessionId),
-    clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
-    clearProgress: (sessionId) => controller.clearProgress(sessionId),
+    clearCommandRefreshRetry: (sessionId) => clearCommandRefreshRetry(controller.host, sessionId),
+    clearTodoPoll: (sessionId) => clearTodoPoll(controller.host, sessionId),
+    clearProgress: (sessionId) => clearProgress(controller.host, sessionId),
     get sessionPlans() { return controller.sessionPlans; },
     get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
     cancelPermissionsForSession: (sessionId) => cancelPermissionsForSession(controller.host, sessionId),
@@ -837,13 +837,13 @@ export class GjcSdkController {
     get historySummaryCache() { return controller.historySummaryCache; },
     resumeSession: (sessionId) => controller.resumeSession(sessionId),
     readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
-    markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
+    markTerminalOnly: (sessionId) => markTerminalOnly(controller.host, sessionId),
     installTranscript: (sessionId, items) => controller.installTranscript(sessionId, items),
-    invalidateDesktopTranscript: (sessionId) => controller.invalidateDesktopTranscript(sessionId),
+    invalidateDesktopTranscript: (sessionId) => invalidateDesktopTranscript(controller.host, sessionId),
     get attachAttempts() { return controller.attachAttempts; },
     refreshSessionSettings: (sessionId) => controller.refreshSessionSettings(sessionId),
     readSharedTranscript: (sessionId) => controller.readSharedTranscript(sessionId),
-    finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
+    finalizeAllMessages: (sessionId) => finalizeAllMessages(controller.host, sessionId),
     get watchedTranscripts() { return controller.watchedTranscripts; },
     get detachTimers() { return controller.detachTimers; },
     get cli() { return controller.cli; },
@@ -856,50 +856,50 @@ export class GjcSdkController {
     refreshTranscriptAttachment: (sessionId) => controller.refreshTranscriptAttachment(sessionId),
     get transcriptEpoch() { return controller.transcriptEpoch; },
     readTranscriptEnvelopes: (filePath, info) => controller.readTranscriptEnvelopes(filePath, info),
-    reconciledAsyncJobIds: (sessionId, jobIds) => controller.reconciledAsyncJobIds(sessionId, jobIds),
-    patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
-    recordPendingAsyncWork: (sessionId, jobIds) => controller.recordPendingAsyncWork(sessionId, jobIds),
-    transcriptStartedNewWork: (sessionId, size, transcriptRunning) => controller.transcriptStartedNewWork(sessionId, size, transcriptRunning),
+    reconciledAsyncJobIds: (sessionId, jobIds) => reconciledAsyncJobIds(controller.host, sessionId, jobIds),
+    patchSessionRuntime: (sessionId, patch) => patchSessionRuntime(controller.host, sessionId, patch),
+    recordPendingAsyncWork: (sessionId, jobIds) => recordPendingAsyncWork(controller.host, sessionId, jobIds),
+    transcriptStartedNewWork: (sessionId, size, transcriptRunning) => transcriptStartedNewWork(controller.host, sessionId, size, transcriptRunning),
     publishTranscriptSync: (sessionId, previous, items) => controller.publishTranscriptSync(sessionId, previous, items),
     republishRunState: (sessionId) => controller.republishRunState(sessionId),
     get toolSnapshots() { return controller.toolSnapshots; },
     get imageDataUrls() { return controller.imageDataUrls; },
     set watchedTranscripts(value) { controller.watchedTranscripts = value; },
-    scheduleDetach: (sessionId) => controller.scheduleDetach(sessionId),
-    persistedCompactionCount: (sessionId) => controller.persistedCompactionCount(sessionId),
+    scheduleDetach: (sessionId) => scheduleDetach(controller.host, sessionId),
+    persistedCompactionCount: (sessionId) => persistedCompactionCount(controller.host, sessionId),
     appendLocalUserMessage: (sessionId, text, input) => controller.appendLocalUserMessage(sessionId, text, input),
     get pendingSteers() { return controller.pendingSteers; },
     get flushingSessions() { return controller.flushingSessions; },
     executeSdkSlashCommand: (sessionId, input, options) => controller.executeSdkSlashCommand(sessionId, input, options),
-    finalizeThought: (sessionId) => controller.finalizeThought(sessionId),
+    finalizeThought: (sessionId) => finalizeThought(controller.host, sessionId),
     awaitPromptSettlement: (sessionId, operationRef, isCurrent, kind) => controller.awaitPromptSettlement(sessionId, operationRef, isCurrent, kind),
-    finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
+    finalizeAssistantMessage: (sessionId) => finalizeAssistantMessage(controller.host, sessionId),
     appendTranscript: (item) => controller.appendTranscript(item),
     get cancellationPromises() { return controller.cancellationPromises; },
     fireAbort: (sessionId) => controller.fireAbort(sessionId),
-    settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
+    settleOpenQuestions: (sessionId, status) => settleOpenQuestions(controller.host, sessionId, status),
     get tailReads() { return controller.tailReads; },
     get tailControllers() { return controller.tailControllers; },
     get toolObservers() { return controller.toolObservers; },
     get tailCheckpoints() { return controller.tailCheckpoints; },
     get tailEventPositions() { return controller.tailEventPositions; },
-    refreshWorkflowQuestions: (sessionId) => controller.refreshWorkflowQuestions(sessionId),
+    refreshWorkflowQuestions: (sessionId) => refreshWorkflowQuestions(controller.host, sessionId),
     projectToolStream: (sessionId, kind, payload) => controller.projectToolStream(sessionId, kind, payload),
     projectMessageChunk: (sessionId, role, update) => controller.projectMessageChunk(sessionId, role, update),
     refreshTranscriptFromFile: (sessionId) => controller.refreshTranscriptFromFile(sessionId),
-    projectWorkflowGate: (sessionId, payload) => controller.projectWorkflowGate(sessionId, payload),
-    requestProgressRefresh: (sessionId) => controller.requestProgressRefresh(sessionId),
+    projectWorkflowGate: (sessionId, payload) => projectWorkflowGate(controller.host, sessionId, payload),
+    requestProgressRefresh: (sessionId) => requestProgressRefresh(controller.host, sessionId),
     upsertTool: (sessionId, update) => controller.upsertTool(sessionId, update),
     handleSessionUpdate: (notification) => controller.handleSessionUpdate(notification),
-    captureSessionState: (sessionId, options, mode) => controller.captureSessionState(sessionId, options, mode),
-    refreshModelCapabilities: (sessionId) => controller.refreshModelCapabilities(sessionId),
+    captureSessionState: (sessionId, options, mode) => captureSessionState(controller.host, sessionId, options, mode),
+    refreshModelCapabilities: (sessionId) => refreshModelCapabilities(controller.host, sessionId),
     persistArtifact: (sessionId, artifactId, value) => controller.persistArtifact(sessionId, artifactId, value),
     readTodoRecords: (sessionId) => controller.readTodoRecords(sessionId),
-    resolveToolImages: (items) => controller.resolveToolImages(items),
+    resolveToolImages: (items) => resolveToolImages(controller.host, items),
     get pendingPermissions() { return controller.pendingPermissions; },
-    recordLiveEvidence: (sessionId) => controller.recordLiveEvidence(sessionId),
-    rememberLiveRunningTranscriptSize: (sessionId) => controller.rememberLiveRunningTranscriptSize(sessionId),
-    clearRunningLatches: (sessionId) => controller.clearRunningLatches(sessionId),
+    recordLiveEvidence: (sessionId) => recordLiveEvidence(controller.host, sessionId),
+    rememberLiveRunningTranscriptSize: (sessionId) => rememberLiveRunningTranscriptSize(controller.host, sessionId),
+    clearRunningLatches: (sessionId) => clearRunningLatches(controller.host, sessionId),
   }))(this);
 
   constructor(options: GjcControllerOptions) {
@@ -1005,10 +1005,6 @@ export class GjcSdkController {
   private readonly runStateWatchers = new Map<string, FSWatcher>();
   private readonly runStateTimers = new Map<string, NodeJS.Timeout>();
 
-  private syncRunStateWatchers(sessionIds: readonly string[]): Promise<void> {
-    return syncRunStateWatchers(this.host, sessionIds);
-  }
-
   private republishRunState(sessionId: string): Promise<void> {
     return republishRunState(this.host, sessionId);
   }
@@ -1046,48 +1042,6 @@ export class GjcSdkController {
     return discoveredRunState(this.host, sessionId);
   }
 
-  private transcriptStartedNewWork(
-    sessionId: string,
-    size: number,
-    transcriptRunning: boolean,
-  ): boolean {
-    return transcriptStartedNewWork(this.host, sessionId, size, transcriptRunning);
-  }
-
-  private recordLiveEvidence(sessionId: string): void {
-    return recordLiveEvidence(this.host, sessionId);
-  }
-
-  private liveEvidenceQuiet(sessionId: string): boolean {
-    return liveEvidenceQuiet(this.host, sessionId);
-  }
-
-  private clearRunningLatches(sessionId: string): void {
-    return clearRunningLatches(this.host, sessionId);
-  }
-
-  private settleQuietRunningRow(
-    sessionId: string,
-    transcriptStatus: AgentSession["status"] | undefined,
-    currentSession: AgentSession | undefined,
-  ): boolean {
-    return settleQuietRunningRow(this.host, sessionId, transcriptStatus, currentSession);
-  }
-
-  private recordPendingAsyncWork(
-    sessionId: string,
-    jobIds: readonly string[],
-  ): void {
-    return recordPendingAsyncWork(this.host, sessionId, jobIds);
-  }
-
-  private reconciledAsyncJobIds(
-    sessionId: string,
-    jobIds: readonly string[],
-  ): Promise<string[]> {
-    return reconciledAsyncJobIds(this.host, sessionId, jobIds);
-  }
-
   private brokerSessions(options?: {
     scope?: "repo" | "cwd" | "worktree" | "all";
     initialDiscovery?: boolean;
@@ -1096,20 +1050,8 @@ export class GjcSdkController {
     return brokerSessions(this.host, options);
   }
 
-  private invalidateBrokerIndexCache(): void {
-    return invalidateBrokerIndexCache(this.host);
-  }
-
   private brokerIndexRevision(): Promise<string | undefined> {
     return brokerIndexRevision();
-  }
-
-  private noteBrokerIndex(
-    rows: readonly SdkSessionRow[],
-    before: string | undefined,
-    after: string | undefined,
-  ): void {
-    return noteBrokerIndex(this.host, rows, before, after);
   }
 
   createSession(input: CreateSessionInput): Promise<AgentSession> {
@@ -1130,19 +1072,8 @@ export class GjcSdkController {
     return refreshSessionContext(this.host, sessionId);
   }
 
-  private publishSessionCommands(
-    sessionId: string,
-    commands: readonly AgentCommand[],
-  ): void {
-    return publishSessionCommands(this.host, sessionId, commands);
-  }
-
   watchTranscripts(sessionIds: readonly string[]): void {
     return watchTranscripts(this.host, sessionIds);
-  }
-
-  private scheduleDetach(sessionId: string): void {
-    return scheduleDetach(this.host, sessionId);
   }
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
@@ -1171,16 +1102,8 @@ export class GjcSdkController {
     return markTranscriptRowDirty(this.host, sessionId, rowId);
   }
 
-  private invalidateDesktopTranscript(sessionId: string): void {
-    return invalidateDesktopTranscript(this.host, sessionId);
-  }
-
   getTranscriptRevision(sessionId: string): Promise<string | undefined> {
     return getTranscriptRevision(this.host, sessionId);
-  }
-
-  private noteTranscriptEpoch(sessionId: string): void {
-    return noteTranscriptEpoch(this.host, sessionId);
   }
 
   private readSharedTranscript(
@@ -1214,10 +1137,6 @@ export class GjcSdkController {
     return publishTranscriptSync(this.host, sessionId, previous, items);
   }
 
-  private resolveToolImages(items: TranscriptItem[]): Promise<void> {
-    return resolveToolImages(this.host, items);
-  }
-
   setSessionConfig(
     sessionId: string,
     configId: string,
@@ -1240,22 +1159,6 @@ export class GjcSdkController {
 
   askSideQuestion(sessionId: string, question: string): Promise<string> {
     return askSideQuestion(this.host, sessionId, question);
-  }
-
-  private markTerminalOnly(sessionId: string): void {
-    return markTerminalOnly(this.host, sessionId);
-  }
-
-  private rememberLiveRunningTranscriptSize(
-    sessionId: string,
-  ): Promise<void> {
-    return rememberLiveRunningTranscriptSize(this.host, sessionId);
-  }
-
-  private persistedCompactionCount(
-    sessionId: string,
-  ): Promise<number | undefined> {
-    return persistedCompactionCount(this.host, sessionId);
   }
 
   compactSession(sessionId: string): Promise<void> {
@@ -1287,10 +1190,6 @@ export class GjcSdkController {
       streaming: false,
     };
     this.appendTranscript(message);
-  }
-
-  private consumePromptEcho(sessionId: string, text: string): boolean {
-    return consumePromptEcho(this.host, sessionId, text);
   }
 
   // Waiting work is hidden from the transcript only while it is still waiting.
@@ -1445,10 +1344,6 @@ export class GjcSdkController {
     return refreshSdkCommands(this.host, sessionId, advertised);
   }
 
-  private clearCommandRefreshRetry(sessionId: string): void {
-    return clearCommandRefreshRetry(this.host, sessionId);
-  }
-
   private sdkOperations(
     sessionId: string,
     options?: { strict?: boolean },
@@ -1458,14 +1353,6 @@ export class GjcSdkController {
 
   getGoal(sessionId: string): Promise<GoalSnapshot> {
     return getGoal(this.host, sessionId);
-  }
-
-  private requestProgressRefresh(sessionId: string): void {
-    return requestProgressRefresh(this.host, sessionId);
-  }
-
-  private clearProgress(sessionId: string): void {
-    return clearProgress(this.host, sessionId);
   }
 
   operateGoal(
@@ -1520,7 +1407,7 @@ export class GjcSdkController {
   }
 
   private async deleteThroughGjcCli(cwd: string, sessionPath: string): Promise<void> {
-    const cli = await this.requireCli();
+    const cli = await requireCli(this.host);
     await deleteSessionThroughCli({ executable: cli.executable, env: cli.env, cwd, sessionPath });
   }
 
@@ -1538,10 +1425,6 @@ export class GjcSdkController {
     if (this.disposed) return;
     this.disposed = true;
     disposeController(this.host);
-  }
-
-  private requireCli(): Promise<GjcSdkCli> {
-    return requireCli(this.host);
   }
 
   /** The workspace a session's CLI calls must resolve against. */
@@ -1599,37 +1482,6 @@ export class GjcSdkController {
     return questionById(this.host, sessionId, gateId);
   }
 
-  private hasAnswerableQuestion(sessionId: string): boolean {
-    return hasAnswerableQuestion(this.host, sessionId);
-  }
-
-  private refreshWorkflowQuestions(sessionId: string): Promise<void> {
-    return refreshWorkflowQuestions(this.host, sessionId);
-  }
-
-  private settleOpenQuestions(
-    sessionId: string,
-    status: "cancelled" | "timeout",
-  ): void {
-    return settleOpenQuestions(this.host, sessionId, status);
-  }
-
-  private projectWorkflowGate(
-    sessionId: string,
-    payload: Record<string, unknown>,
-  ): void {
-    return projectWorkflowGate(this.host, sessionId, payload);
-  }
-
-  private submitQuestionAnswer(
-    sessionId: string,
-    gateId: string,
-    submission: QuestionSubmission,
-    idempotencyKey: string,
-  ): Promise<void> {
-    return submitQuestionAnswer(this.host, sessionId, gateId, submission, idempotencyKey);
-  }
-
   private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
     return projectToolStream(this.host, sessionId, kind, payload);
   }
@@ -1665,19 +1517,11 @@ export class GjcSdkController {
     return projectThoughtChunk(this.host, sessionId, update);
   }
 
-  private finalizeThought(sessionId: string): void {
-    return finalizeThought(this.host, sessionId);
-  }
-
   private installTranscript(
     sessionId: string,
     items: TranscriptItem[],
   ): TranscriptItem[] {
     return installTranscript(this.host, sessionId, items);
-  }
-
-  private clearTodoPoll(sessionId: string): void {
-    return clearTodoPoll(this.host, sessionId);
   }
 
   private readTodoRecords(
@@ -1686,30 +1530,12 @@ export class GjcSdkController {
     return readTodoRecords(this.host, sessionId);
   }
 
-  private captureSessionState(
-    sessionId: string,
-    options: SessionConfigOption[],
-    mode?: string | null,
-  ): void {
-    return captureSessionState(this.host, sessionId, options, mode);
-  }
-
   private refreshSessionConfigOptions(sessionId: string): Promise<void> {
     return refreshSessionConfigOptions(this.host, sessionId);
   }
 
-  private sessionConfigRow(
-    sessionId: string,
-  ): Promise<Record<string, unknown> | undefined> {
-    return sessionConfigRow(this.host, sessionId);
-  }
-
   private refreshSessionSettings(sessionId: string): Promise<void> {
     return refreshSessionSettings(this.host, sessionId);
-  }
-
-  private refreshModelCapabilities(sessionId: string): Promise<void> {
-    return refreshModelCapabilities(this.host, sessionId);
   }
 
   private refreshContextUsage(
@@ -1717,26 +1543,6 @@ export class GjcSdkController {
     options?: { force?: boolean },
   ): Promise<void> {
     return refreshContextUsage(this.host, sessionId, options);
-  }
-
-  private patchSessionRuntime(
-    sessionId: string,
-    patch: Partial<
-      Pick<
-        AgentSession,
-        | "phase"
-        | "status"
-        | "mode"
-        | "model"
-        | "modelDisplay"
-        | "thinking"
-        | "serviceTier"
-        | "usagePercent"
-        | "usagePending"
-      >
-    >,
-  ): void {
-    return patchSessionRuntime(this.host, sessionId, patch);
   }
 
   private projectMessageChunk(
@@ -1761,7 +1567,7 @@ export class GjcSdkController {
       this.suppressedUserMessageKeys.get(sessionId)?.has(userMessageKey)
     )
       return;
-    if (role === "user" && text && this.consumePromptEcho(sessionId, text)) {
+    if (role === "user" && text && consumePromptEcho(this.host, sessionId, text)) {
       if (userMessageKey) {
         const suppressed =
           this.suppressedUserMessageKeys.get(sessionId) ?? new Set<string>();
@@ -1790,7 +1596,7 @@ export class GjcSdkController {
       message.content += text;
       if (image) message.images = [...(message.images ?? []), image];
       message.streaming = role === "assistant";
-      this.noteTranscriptEpoch(sessionId);
+      noteTranscriptEpoch(this.host, sessionId);
       if (image)
         this.emitEvent({
           type: "message.updated",
@@ -1843,10 +1649,6 @@ export class GjcSdkController {
     value: unknown,
   ): Promise<void> {
     return persistArtifact(this.host, sessionId, artifactId, value);
-  }
-
-  private patchTool(toolId: string, patch: Partial<ToolActivity>): void {
-    return patchTool(this.host, toolId, patch);
   }
 
   private patchSessionInfo(
@@ -1903,14 +1705,6 @@ export class GjcSdkController {
 
   private appendTranscript(item: TranscriptItem): void {
     return appendTranscript(this.host, item);
-  }
-
-  private finalizeAssistantMessage(sessionId: string): void {
-    return finalizeAssistantMessage(this.host, sessionId);
-  }
-
-  private finalizeAllMessages(sessionId: string): void {
-    return finalizeAllMessages(this.host, sessionId);
   }
 
   private currentRunRevision(sessionId: string): number {
