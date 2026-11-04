@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
  * watchers at 161ms. Polling a hidden window only discovers sessions nobody can
  * see yet, at 240 broker scans an hour.
  */
-const source = ["shell.tsx", "use-session-sync.ts", "use-inbox.ts"]
+const source = ["shell.tsx", "use-session-sync.ts", "use-inbox.ts", "use-live-subagents.ts"]
   .map((file) => readFileSync(path.join(import.meta.dirname, file), "utf8"))
   .join("\n");
 

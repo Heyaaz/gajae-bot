@@ -2,7 +2,6 @@ import gajaeIconUrl from "../assets/gajae-icon-ui.png";
 import type {
   GoalOperation,
   HistorySession,
-  SubagentSnapshot,
 } from "../../shared/agent-contract";
 import type {
   AgentCommand,
@@ -42,6 +41,8 @@ import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { SideQuestionPanel } from "./side-question-panel";
 import { sideQuestionText, type SideExchange } from "./side-questions";
 import { useSideChat } from "./use-side-chat";
+import { useLiveSubagents } from "./use-live-subagents";
+import { useParallelGroups } from "./use-parallel-groups";
 import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
@@ -73,7 +74,6 @@ import { useShellShortcuts } from "./use-shell-shortcuts";
 import { useSessionSync } from "./use-session-sync";
 import { Sidebar } from "./sidebar";
 import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
-import type { ParallelGroup } from "../../shared/parallel-run";
 import {
   ALL_PROJECTS_ID,
 } from "./project-model";
@@ -156,7 +156,6 @@ export default function App() {
   const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
 
-  const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
   // Each open is its own request: a second prefill while the dialog is up
   // remounts it with the new values instead of being dropped.
   const [newSessionRequest, setNewSessionRequest] = useState<{
@@ -192,7 +191,6 @@ export default function App() {
   const [centerView, setCenterView] = useState<CenterView>("conversation");
   // Best-of-N groups as the main process holds them, and the one the comparison
   // view shows when the center area is on it.
-  const [parallelGroups, setParallelGroups] = useState<ParallelGroup[]>([]);
   const [parallelGroupId, setParallelGroupId] = useState<string | null>(null);
   const [surface, setSurface] = useState<"chat" | "terminal">("chat");
   const [terminalMounted, setTerminalMounted] = useState(false);
@@ -476,37 +474,7 @@ export default function App() {
     selectedSessionStatus,
   );
 
-  useEffect(() => {
-    if (!selectedSessionId || !inspectorOpen) {
-      queueMicrotask(() => setLiveSubagents([]));
-      return;
-    }
-    let active = true;
-    const refresh = (): void => {
-      void backend
-        .listSubagents(selectedSessionId)
-        .then((jobs) => {
-          if (active) setLiveSubagents(jobs);
-        })
-        .catch(() => undefined);
-    };
-    queueMicrotask(refresh);
-    // Subagent rows only change when a delegated job starts or finishes, and the
-    // inspector is the only surface that shows them -- so a hidden window polls for
-    // rows nobody is looking at.
-    const timer = window.setInterval(() => {
-      if (!document.hidden) refresh();
-    }, 4_000);
-    const refreshOnVisible = (): void => {
-      if (!document.hidden) refresh();
-    };
-    document.addEventListener("visibilitychange", refreshOnVisible);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshOnVisible);
-    };
-  }, [backend, inspectorOpen, selectedSessionId]);
+  const liveSubagents = useLiveSubagents(backend, selectedSessionId, inspectorOpen);
 
   const { toggleInbox, inboxCount } = useInbox(
     backend,
@@ -578,24 +546,7 @@ export default function App() {
     window.agentControlDesktop?.repo ?? null;
   const parallelBridge: ParallelDesktopBridge | null =
     window.agentControlDesktop?.parallel ?? null;
-  useEffect(() => {
-    if (!parallelBridge) return;
-    let active = true;
-    const unsubscribe = parallelBridge.onChanged((groups) => {
-      active = false;
-      setParallelGroups(groups);
-    });
-    void parallelBridge
-      .list()
-      .then((groups) => {
-        if (active) setParallelGroups(groups);
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
-      unsubscribe();
-    };
-  }, [parallelBridge]);
+  const parallelGroups = useParallelGroups(parallelBridge);
   const sessionGrouping = useSessionGrouping();
   const {
     projectGroups,
