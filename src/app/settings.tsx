@@ -55,6 +55,8 @@ export interface SettingsDialogProps {
   onInstallUpdate: () => void;
   /** The tab to open on; the launch environment check opens on its own tab. */
   initialTab?: SettingsTab;
+  /** Opens the AI sign-in flow; absent where the host cannot run GJC's login. */
+  onLogin?: () => void;
 }
 
 export type SettingsTab =
@@ -202,6 +204,7 @@ export function SettingsDialog({
   onCheckUpdate,
   onInstallUpdate,
   initialTab = "gjc",
+  onLogin,
 }: SettingsDialogProps) {
   const detectedPreset = connection.modelPreset ?? DEFAULT_MODEL_PRESET;
   const fallbackPreferences: AgentControlPreferences = {
@@ -844,7 +847,7 @@ export function SettingsDialog({
             <GjcSettingsPanel bridge={settingsBridge} />
           )}
           {tab === "environment" && (
-            <EnvironmentCheckPanel bridge={settingsBridge} />
+            <EnvironmentCheckPanel bridge={settingsBridge} onLogin={onLogin} />
           )}
 
           {tab === "gjc" && (
@@ -863,6 +866,23 @@ export function SettingsDialog({
                   <Check size={13} /> {connectionStateLabel(connection.state)}
                 </span>
               </article>
+              {onLogin && (
+                <div className="settings-panel">
+                  <div className="gjc-update-row">
+                    <span>
+                      <strong>{t("AI 로그인 / 제공자 추가")}</strong>
+                      <small>
+                        {t("ChatGPT·Claude 같은 구독 계정이나 API 키로 로그인합니다. 다른 AI를 더하거나 로그인이 만료됐을 때도 여기서 하세요.")}
+                      </small>
+                    </span>
+                    <span className="gjc-update-actions">
+                      <button type="button" onClick={onLogin}>
+                        {t("AI 로그인")}
+                      </button>
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="settings-panel">
                 <label>
                   <span>

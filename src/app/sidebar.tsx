@@ -328,6 +328,10 @@ export function SessionRow({
 export interface SidebarProps {
   sessions: AgentSession[];
   connection: BackendConnection;
+  /** GJC is connected but has no signed-in AI provider, so no session can work. */
+  needsSignIn?: boolean;
+  /** Opens the AI sign-in flow; absent where the host cannot run it. */
+  onLogin?: () => void;
   selectedId: string | null;
   /** Every project the rail can filter by, in selector order. */
   projects: ProjectGroup[];
@@ -386,6 +390,8 @@ export interface SidebarProps {
 function SidebarView({
   sessions,
   connection,
+  needsSignIn = false,
+  onLogin,
   selectedId,
   projects,
   projectId,
@@ -813,9 +819,23 @@ function SidebarView({
             ) : (
               <strong>{workspaceLabel}</strong>
             )}
-            <small>
-              {connection.label} · {connectionStateLabel(connection.state)}
-            </small>
+            {needsSignIn && onLogin && connection.state === "connected" ? (
+              <small>
+                {connection.label} ·{" "}
+                <button
+                  type="button"
+                  className="profile-login-link"
+                  title={t("AI에 로그인합니다")}
+                  onClick={onLogin}
+                >
+                  {t("로그인 필요")}
+                </button>
+              </small>
+            ) : (
+              <small>
+                {connection.label} · {connectionStateLabel(connection.state)}
+              </small>
+            )}
           </span>
           {!editingWorkspace && (
             <button
@@ -847,7 +867,11 @@ function SidebarView({
               </button>
             ) : (
               <span
-                className={`connection-dot connection-dot--${connection.state}`}
+                className={`connection-dot connection-dot--${
+                  needsSignIn && onLogin && connection.state === "connected"
+                    ? "connecting"
+                    : connection.state
+                }`}
                 title={connection.detail}
               />
             )}

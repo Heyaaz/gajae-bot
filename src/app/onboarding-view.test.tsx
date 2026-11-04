@@ -4,7 +4,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { OnboardingDesktopBridge, OnboardingEvent, OnboardingStep } from "../../shared/onboarding";
+import type { OnboardingDesktopBridge, OnboardingEvent, OnboardingStep, SignInResult } from "../../shared/onboarding";
 import { OnboardingView } from "./onboarding-view";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -30,12 +30,13 @@ function deferred<T>() {
 function fakeBridge() {
   let listener: ((event: OnboardingEvent) => void) | undefined;
   const install = deferred<{ version: string }>();
-  let signIn = deferred<void>();
+  let signIn = deferred<SignInResult>();
   const bridge = {
     pendingStep: vi.fn(async () => null),
+    needsSignIn: vi.fn(async () => false),
     installGjc: vi.fn(() => install.promise),
     signIn: vi.fn(() => {
-      signIn = deferred<void>();
+      signIn = deferred<SignInResult>();
       return signIn.promise;
     }),
     answer: vi.fn(async () => undefined),
@@ -56,14 +57,14 @@ function fakeBridge() {
   };
 }
 
-async function render(bridge: OnboardingDesktopBridge, step: OnboardingStep) {
+async function render(bridge: OnboardingDesktopBridge, step: OnboardingStep, reentry = false) {
   const container = document.createElement("div");
   document.body.append(container);
   const onClose = vi.fn();
   const onStartConversation = vi.fn();
   root = createRoot(container);
   await act(async () => {
-    root!.render(createElement(OnboardingView, { bridge, step, onClose, onStartConversation }));
+    root!.render(createElement(OnboardingView, { bridge, step, reentry, onClose, onStartConversation }));
   });
   return { container, onClose, onStartConversation };
 }
@@ -109,7 +110,7 @@ describe("OnboardingView", () => {
     expect(fake.bridge.answer).toHaveBeenCalledWith("sk-test");
     expect(input.value).toBe("");
 
-    await act(async () => fake.signIn().resolve());
+    await act(async () => fake.signIn().resolve({ switchedModel: true }));
     expect(container.textContent).toContain("준비됐습니다");
     expect(container.textContent).toContain("glm-medium");
     await click(container, "첫 대화 시작");
@@ -141,5 +142,28 @@ describe("OnboardingView", () => {
     await click(container, "나중에 직접 설정할게요");
     expect(fake.bridge.dismiss).toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it("reopens later as a plain sign-in that closes without ending first-run setup", async () => {
+    const fake = fakeBridge();
+    const { container, onClose, onStartConversation } = await render(fake.bridge, "sign-in", true);
+    expect(container.textContent).toContain("어떤 AI를 쓰시나요?");
+    await click(container, "닫기");
+    expect(fake.bridge.cancelSignIn).toHaveBeenCalled();
+    expect(fake.bridge.dismiss).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+    expect(onStartConversation).not.toHaveBeenCalled();
+  });
+
+  it("tells a later sign-in that kept the user's model, and just closes", async () => {
+    const fake = fakeBridge();
+    const { container, onClose, onStartConversation } = await render(fake.bridge, "sign-in", true);
+    await click(container, "Claude Pro/Max");
+    await act(async () => fake.signIn().resolve({ switchedModel: false }));
+    expect(container.textContent).toContain("Claude Pro/Max에 로그인했습니다");
+    expect(container.textContent).not.toContain("claude-opus");
+    await click(container, "확인");
+    expect(onClose).toHaveBeenCalled();
+    expect(onStartConversation).not.toHaveBeenCalled();
   });
 });

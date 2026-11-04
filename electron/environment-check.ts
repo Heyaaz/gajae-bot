@@ -13,6 +13,7 @@ import {
 } from "../shared/environment-check.js";
 import { compareGjcVersions } from "../shared/gjc-version.js";
 import { SIGN_IN_PROVIDERS } from "../shared/onboarding.js";
+import { hasNoSignedInProvider } from "./provider-login.js";
 import {
   findExecutable,
   firstExecutable,
@@ -168,6 +169,21 @@ export const ENVIRONMENT_CHECKS: readonly EnvironmentCheck[] = [
       "too-old": "gjc update",
       unreadable: GJC_INSTALL,
     },
+  }),
+  defineCheck({
+    id: "provider-login",
+    // Without a signed-in provider every session fails, so this is a blocker, not
+    // advice. The row is only about a GJC that is there: a missing one is the gjc
+    // row's problem.
+    required: true,
+    applies: async (context) => Boolean(await context.locateGjc()),
+    probe: async (context): Promise<Finding<"no-provider">> => {
+      const gjc = await context.locateGjc();
+      return gjc && (await hasNoSignedInProvider(context.run, gjc))
+        ? { problem: "no-provider" }
+        : {};
+    },
+    fixes: { "no-provider": "gjc auth-broker login <provider>" },
   }),
   defineCheck({
     id: "model-preset",

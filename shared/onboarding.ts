@@ -34,8 +34,15 @@ export type OnboardingEvent =
   | { type: "open-url"; url: string; instructions?: string }
   | { type: "prompt"; message: string };
 
+/** What a finished sign-in changed. */
+export interface SignInResult {
+  /** The provider's recommended model profile became the app's default. */
+  switchedModel: boolean;
+}
+
 export const ONBOARDING_IPC = {
   pendingStep: "agent-control:onboarding:pending-step",
+  needsSignIn: "agent-control:onboarding:needs-sign-in",
   installGjc: "agent-control:onboarding:install-gjc",
   signIn: "agent-control:onboarding:sign-in",
   answer: "agent-control:onboarding:answer",
@@ -46,10 +53,12 @@ export const ONBOARDING_IPC = {
 
 export interface OnboardingDesktopBridge {
   pendingStep(): Promise<OnboardingStep | null>;
+  /** GJC is installed but has no signed-in provider, whether or not first-run setup was dismissed. */
+  needsSignIn(): Promise<boolean>;
   /** Resolves with the installed version once the runtime has reconnected to it. */
   installGjc(): Promise<{ version: string }>;
-  /** Resolves once GJC saved the credential and the app switched to its model profile. */
-  signIn(providerId: string): Promise<void>;
+  /** Resolves once GJC saved the credential. */
+  signIn(providerId: string): Promise<SignInResult>;
   answer(text: string): Promise<void>;
   cancelSignIn(): Promise<void>;
   /** The user chose to set GJC up on their own; first-run setup does not open again. */

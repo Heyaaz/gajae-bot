@@ -1,10 +1,8 @@
-import { SIGN_IN_PROVIDERS, type OnboardingEvent, type OnboardingStep } from '../shared/onboarding.js'
+import { SIGN_IN_PROVIDERS, type OnboardingEvent, type OnboardingStep, type SignInResult } from '../shared/onboarding.js'
 import type { CommandRunner } from './environment-check.js'
 import type { GjcInstallProgress, GjcInstallResult } from './gjc-installer.js'
 import { GjcSignIn, type SpawnSignIn } from './gjc-sign-in.js'
-
-// What `gjc models` prints when no provider has a credential.
-const NO_MODELS = /No models available/u
+import { hasNoSignedInProvider } from './provider-login.js'
 
 export interface OnboardingServiceOptions {
   /** False for scripted smokes: nobody is setting anything up. */
@@ -40,13 +38,18 @@ export class OnboardingService {
     if (!this.options.enabled || this.options.isDone()) return null
     const gjc = await this.options.locateGjc()
     if (!gjc) return 'install'
-    const listing = await this.options.run(gjc, ['models'])
-    if (listing.found && listing.exitCode === 0 && NO_MODELS.test(`${listing.stdout}\n${listing.stderr}`))
-      return 'sign-in'
+    if ((await hasNoSignedInProvider(this.options.run, gjc)) === true) return 'sign-in'
     // Signed in already, or a GJC this setup cannot help with; the environment
     // check in settings covers the latter.
     this.options.markDone()
     return null
+  }
+
+  /** Whether GJC is installed but has no provider to talk to. False when setup is off or GJC cannot be asked. */
+  async needsSignIn(): Promise<boolean> {
+    if (!this.options.enabled) return false
+    const gjc = await this.options.locateGjc()
+    return gjc ? (await hasNoSignedInProvider(this.options.run, gjc)) === true : false
   }
 
   async installGjc(emit: (event: OnboardingEvent) => void): Promise<{ version: string }> {
@@ -58,14 +61,22 @@ export class OnboardingService {
     return { version }
   }
 
-  async startSignIn(providerId: string, emit: (event: OnboardingEvent) => void): Promise<void> {
+  /**
+   * Signs in to one provider. The provider's model profile becomes the default only
+   * when this gives GJC its first provider; a later sign-in (another provider, or a
+   * renewed token) must not change a model the user already chose.
+   */
+  async startSignIn(providerId: string, emit: (event: OnboardingEvent) => void): Promise<SignInResult> {
     const provider = SIGN_IN_PROVIDERS.find((candidate) => candidate.id === providerId)
     if (!provider) throw new Error('Unknown sign-in provider')
     if (this.signingIn) throw new Error('A sign-in is already in progress')
     this.signingIn = true
+    let switchModel = false
     try {
       const executable = await this.options.locateGjc()
       if (!executable) throw new Error('GJC is not installed')
+      if (this.cancelRequested) throw new Error('Sign-in cancelled')
+      switchModel = !this.options.isDone() || (await hasNoSignedInProvider(this.options.run, executable)) !== false
       if (this.cancelRequested) throw new Error('Sign-in cancelled')
       this.signIn = new GjcSignIn({
         executable,
@@ -84,8 +95,9 @@ export class OnboardingService {
       this.signingIn = false
       this.cancelRequested = false
     }
-    await this.options.applyModelPreset(provider.preset)
+    if (switchModel) await this.options.applyModelPreset(provider.preset)
     this.options.markDone()
+    return { switchedModel: switchModel }
   }
 
   answer(text: string): void {

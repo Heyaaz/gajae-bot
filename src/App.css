@@ -1094,6 +1094,16 @@
   color: var(--text-tertiary);
   font-size: 10px;
 }
+.profile-login-link {
+  padding: 0;
+  color: var(--warning);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
 .gjc-version-warning {
   margin-top: 2px;
   padding: 7px 8px;

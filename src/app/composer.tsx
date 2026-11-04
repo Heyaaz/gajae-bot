@@ -146,6 +146,8 @@ export interface ComposerProps {
   onFlushQueued: () => Promise<void>;
   onCompact: () => void;
   onNewSession: () => void;
+  /** Opens the AI sign-in flow for `/login`; without it `/login` is not offered. */
+  onLogin?: () => void;
   onWorkspaceChange: (workspace: string) => void;
   onConfigChange: (configId: string, value: string) => void;
   onCycleThinking: () => void;
@@ -178,6 +180,7 @@ export const Composer = memo(function Composer({
   onFlushQueued,
   onCompact,
   onNewSession,
+  onLogin,
   onWorkspaceChange,
   onConfigChange,
   onCycleThinking,
@@ -286,8 +289,10 @@ export const Composer = memo(function Composer({
   const matchingCommands =
     commandQuery === null
       ? []
-      : commands.filter((command) =>
-          command.name.toLowerCase().includes(commandQuery),
+      : commands.filter(
+          (command) =>
+            (onLogin || command.name !== "login") &&
+            command.name.toLowerCase().includes(commandQuery),
         );
   const paletteOpen = commandQuery !== null;
   const mentionsEnabled = Boolean(workspaceBridge) && !readOnly;
@@ -875,6 +880,14 @@ export const Composer = memo(function Composer({
       void releasePendingQueue();
       return;
     }
+    // The app's own sign-in, not GJC's: sent on, the model answers that /login is a
+    // terminal command.
+    if (onLogin && /^\/login(?:\s|$)/iu.test(content) && images.length === 0 && files.length === 0) {
+      if (textareaRef.current) textareaRef.current.value = "";
+      setValue("");
+      onLogin();
+      return;
+    }
     const modelCommand = content.match(/^\/(?:model|models)(?:\s+(.+))?$/iu);
     if (modelCommand && images.length === 0 && files.length === 0) {
       const query = modelCommand[1]?.trim();
@@ -1040,6 +1053,11 @@ export const Composer = memo(function Composer({
     if (command.name === "new") {
       setValue("");
       onNewSession();
+      return;
+    }
+    if (command.name === "login" && onLogin) {
+      setValue("");
+      onLogin();
       return;
     }
     if (command.name === "model") {

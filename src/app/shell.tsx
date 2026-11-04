@@ -58,6 +58,7 @@ import { createTranscriptNavigation } from "./transcript-navigation";
 import { createSessionActions } from "./session-actions";
 import { useGjcUpdate, useRemoteStatus } from "./use-host-status";
 import { ChatHeader } from "./chat-header";
+import { LoginHintContext } from "./login-hint";
 import { OnboardingView } from "./onboarding-view";
 import type { OnboardingStep } from "../../shared/onboarding";
 import { useComposerCallbacks } from "./use-composer-callbacks";
@@ -288,6 +289,24 @@ export default function App() {
       active = false;
     };
   }, [onboardingBridge, settingsBridge]);
+
+  // The sign-in flow outside first-run setup: from settings, `/login`, the sidebar
+  // and a failed turn. Setup opening itself takes precedence over it.
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [needsSignIn, setNeedsSignIn] = useState(false);
+  const refreshNeedsSignIn = useCallback(() => {
+    void onboardingBridge?.needsSignIn().then(setNeedsSignIn, () => undefined);
+  }, [onboardingBridge]);
+  useEffect(refreshNeedsSignIn, [refreshNeedsSignIn, connection.state]);
+  const openLogin = useCallback(() => {
+    setSettingsOpen(false);
+    setSettingsTab("gjc");
+    setLoginOpen(true);
+  }, []);
+  const loginHint = useMemo(
+    () => ({ needsSignIn, openLogin: onboardingBridge ? openLogin : undefined }),
+    [needsSignIn, onboardingBridge, openLogin],
+  );
 
   const { updateStatus, updateBusy, updateError, checkForUpdate, installUpdate } =
     useGjcUpdate(settingsBridge, connection.state, setSettingsOpen);
@@ -1084,6 +1103,7 @@ export default function App() {
   }
 
   return (
+    <LoginHintContext.Provider value={loginHint}>
     <div className={`app-shell ${navOpen ? "is-nav-open" : ""}`}>
       <button
         className="nav-toggle"
@@ -1110,6 +1130,8 @@ export default function App() {
       <Sidebar
         sessions={filteredSessions}
         connection={connection}
+        needsSignIn={needsSignIn}
+        onLogin={onboardingBridge ? openLogin : undefined}
         selectedId={selectedId}
         projects={projectGroups}
         projectId={activeProjectId}
@@ -1346,6 +1368,7 @@ export default function App() {
                   onFlushQueued={onComposerFlushQueued}
                   onCompact={onComposerCompact}
                   onNewSession={onComposerNewSession}
+                  onLogin={onboardingBridge ? openLogin : undefined}
                   onWorkspaceChange={onComposerWorkspaceChange}
                   onConfigChange={onComposerConfigChange}
                   onCycleThinking={onComposerCycleThinking}
@@ -1493,16 +1516,23 @@ export default function App() {
           onCheckUpdate={() => void checkForUpdate()}
           onInstallUpdate={() => void installUpdate()}
           initialTab={settingsTab}
+          onLogin={onboardingBridge ? openLogin : undefined}
         />
       )}
-      {onboardingStep && onboardingBridge && (
+      {(onboardingStep || loginOpen) && onboardingBridge && (
         <OnboardingView
           bridge={onboardingBridge}
-          step={onboardingStep}
-          onClose={() => setOnboardingStep(null)}
+          step={onboardingStep ?? "sign-in"}
+          reentry={!onboardingStep}
+          onClose={() => {
+            setOnboardingStep(null);
+            setLoginOpen(false);
+            refreshNeedsSignIn();
+          }}
           onStartConversation={() => openNewSessionDialog()}
         />
       )}
     </div>
+    </LoginHintContext.Provider>
   );
 }

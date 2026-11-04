@@ -651,6 +651,7 @@ const parallel: ParallelDesktopBridge = Object.freeze({
 });
 const onboarding: OnboardingDesktopBridge = Object.freeze({
   pendingStep: () => ipcRenderer.invoke(ONBOARDING_IPC.pendingStep),
+  needsSignIn: () => ipcRenderer.invoke(ONBOARDING_IPC.needsSignIn),
   installGjc: () => ipcRenderer.invoke(ONBOARDING_IPC.installGjc),
   signIn: (providerId: string) => ipcRenderer.invoke(ONBOARDING_IPC.signIn, providerId),
   answer: (text: string) => ipcRenderer.invoke(ONBOARDING_IPC.answer, text),

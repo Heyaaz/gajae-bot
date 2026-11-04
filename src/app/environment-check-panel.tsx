@@ -14,6 +14,7 @@ import { MessageCopyButton } from "./primitives";
 const CHECK_LABELS: Record<EnvironmentCheckId, () => string> = {
   bun: () => "Bun",
   gjc: () => "GJC",
+  "provider-login": () => t("로그인한 AI 제공자"),
   "model-preset": () => t("기본 모델 프로필"),
   gh: () => t("GitHub CLI 로그인"),
   tailscale: () => "Tailscale",
@@ -28,6 +29,7 @@ const PROBLEM_TEXT: Record<EnvironmentProblem, (row: EnvironmentCheckRow) => str
     t("models.yml에 없는 프로필입니다. GJC 내장 프로필이면 그대로 동작합니다"),
   "signed-out": () => t("로그인되어 있지 않습니다"),
   "not-running": () => t("설치되어 있지만 연결되어 있지 않습니다"),
+  "no-provider": () => t("로그인한 AI 제공자가 없어 대화를 시작할 수 없습니다"),
 };
 
 const STATUS_ICONS = {
@@ -36,7 +38,7 @@ const STATUS_ICONS = {
   warning: CircleAlert,
 } as const;
 
-function EnvironmentRow({ row }: { row: EnvironmentCheckRow }) {
+function EnvironmentRow({ row, onLogin }: { row: EnvironmentCheckRow; onLogin?: () => void }) {
   const Icon = STATUS_ICONS[row.status];
   return (
     <div className={`environment-row environment-row--${row.status}`}>
@@ -48,12 +50,19 @@ function EnvironmentRow({ row }: { row: EnvironmentCheckRow }) {
         </strong>
         {row.status !== "ok" && <small>{PROBLEM_TEXT[row.problem](row)}</small>}
         {row.detail && <code className="environment-row-detail">{row.detail}</code>}
-        {row.status !== "ok" && (
-          <span className="environment-row-fix">
-            <code>{row.fix}</code>
-            <MessageCopyButton text={row.fix} />
-          </span>
-        )}
+        {row.status !== "ok" &&
+          (row.problem === "no-provider" && onLogin ? (
+            <span className="environment-row-fix">
+              <button type="button" className="button-primary" onClick={onLogin}>
+                {t("AI 로그인")}
+              </button>
+            </span>
+          ) : (
+            <span className="environment-row-fix">
+              <code>{row.fix}</code>
+              <MessageCopyButton text={row.fix} />
+            </span>
+          ))}
       </span>
     </div>
   );
@@ -62,14 +71,17 @@ function EnvironmentRow({ row }: { row: EnvironmentCheckRow }) {
 /**
  * Whether this Mac has what Gajae runs on, with the command for anything missing.
  *
- * This panel only looks: every fix is a command for the user to run. The one
- * install the app does itself, GJC on a Mac without it, is first-run setup's
- * explicit step with its own progress.
+ * This panel only looks: every fix is a command for the user to run, except
+ * signing in, which opens the app's own flow. The one install the app does itself,
+ * GJC on a Mac without it, is first-run setup's explicit step with its own progress.
  */
 export function EnvironmentCheckPanel({
   bridge,
+  onLogin,
 }: {
   bridge: Pick<SettingsDesktopBridge, "checkEnvironment"> | undefined;
+  /** Opens the sign-in flow; the one fix here that is not a command to copy. */
+  onLogin?: () => void;
 }) {
   const [report, setReport] = useState<EnvironmentReport | null>(null);
   const [checking, setChecking] = useState(Boolean(bridge));
@@ -128,7 +140,7 @@ export function EnvironmentCheckPanel({
             </button>
           </span>
         </div>
-        {report?.rows.map((row) => <EnvironmentRow key={row.id} row={row} />)}
+        {report?.rows.map((row) => <EnvironmentRow key={row.id} row={row} onLogin={onLogin} />)}
       </div>
       <p className="settings-note">
         {t("필요한 명령을 복사해 터미널에서 실행한 뒤 다시 점검하세요.")}

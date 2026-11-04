@@ -6,6 +6,7 @@ export const BUN_MINIMUM_VERSION = "1.4.0";
 export type EnvironmentCheckId =
   | "bun"
   | "gjc"
+  | "provider-login"
   | "model-preset"
   | "gh"
   | "tailscale";
@@ -17,6 +18,7 @@ export type EnvironmentProblem =
   | "unreadable"
   | "unknown-preset"
   | "signed-out"
+  | "no-provider"
   | "not-running";
 
 export const ENVIRONMENT_MINIMUM_VERSIONS: Partial<

@@ -161,6 +161,27 @@ function headings(markup: string): string[] {
   );
 }
 
+describe("Sidebar sign-in status", () => {
+  it("does not call a GJC with no signed-in provider connected, and opens the sign-in", () => {
+    const signedOut = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)], { needsSignIn: true, onLogin: noop })),
+    );
+    expect(signedOut).toContain("로그인 필요");
+    expect(signedOut).not.toContain("연결됨");
+    expect(signedOut).toContain("connection-dot--connecting");
+
+    const signedIn = renderToStaticMarkup(createElement(Sidebar, props([session(0)])));
+    expect(signedIn).toContain("연결됨");
+    expect(signedIn).not.toContain("로그인 필요");
+
+    // Without a host that can run the sign-in the status stays the plain one.
+    const remote = renderToStaticMarkup(
+      createElement(Sidebar, props([session(0)], { needsSignIn: true })),
+    );
+    expect(remote).toContain("연결됨");
+  });
+});
+
 describe("Sidebar runtime version warning", () => {
   it("warns about a runtime older than the minimum and stays quiet otherwise", () => {
     const old = renderToStaticMarkup(

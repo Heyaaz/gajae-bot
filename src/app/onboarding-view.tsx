@@ -27,7 +27,7 @@ type Stage =
       answering: boolean;
       error?: string;
     }
-  | { stage: "ready"; provider: SignInProvider };
+  | { stage: "ready"; provider: SignInProvider; switchedModel: boolean };
 
 function initialStage(step: OnboardingStep): Stage {
   return step === "install" ? { stage: "install", running: false } : { stage: "choose" };
@@ -44,15 +44,21 @@ const megabytes = (bytes: number): string => (bytes / 1_000_000).toFixed(0);
 /**
  * First-run setup for someone who has never used GJC: install it, sign in to one
  * provider, start a conversation. Nothing here needs a terminal.
+ *
+ * `reentry` opens the same provider list and sign-in later, from settings, `/login`
+ * or the sidebar, to add a provider or renew a token. It is not setup, so closing
+ * it only closes it: first-run setup stays as the user left it.
  */
 export function OnboardingView({
   bridge,
   step,
+  reentry = false,
   onClose,
   onStartConversation,
 }: {
   bridge: OnboardingDesktopBridge;
   step: OnboardingStep;
+  reentry?: boolean;
   onClose: () => void;
   onStartConversation: () => void;
 }) {
@@ -87,7 +93,7 @@ export function OnboardingView({
     setAnswer("");
     setStage({ stage: "sign-in", provider, answering: false });
     bridge.signIn(provider.id).then(
-      () => setStage({ stage: "ready", provider }),
+      ({ switchedModel }) => setStage({ stage: "ready", provider, switchedModel }),
       (cause: unknown) =>
         setStage((current) =>
           current.stage === "sign-in" && current.provider.id === provider.id
@@ -116,7 +122,8 @@ export function OnboardingView({
   }
 
   function dismiss(): void {
-    void bridge.dismiss();
+    if (reentry) void bridge.cancelSignIn();
+    else void bridge.dismiss();
     onClose();
   }
 
@@ -271,24 +278,28 @@ export function OnboardingView({
             </span>
             <h1 id="onboarding-title">{t("준비됐습니다")}</h1>
             <p className="onboarding-lead">
-              {t`${stage.provider.name}의 추천 모델(${stage.provider.preset})로 설정했습니다. 작업할 폴더를 고르고 첫 대화를 시작하세요.`}
+              {!stage.switchedModel
+                ? t`${stage.provider.name}에 로그인했습니다. 모델 선택에서 이 제공자의 모델을 고를 수 있습니다.`
+                : reentry
+                  ? t`${stage.provider.name}의 추천 모델(${stage.provider.preset})로 설정했습니다.`
+                  : t`${stage.provider.name}의 추천 모델(${stage.provider.preset})로 설정했습니다. 작업할 폴더를 고르고 첫 대화를 시작하세요.`}
             </p>
             <button
               className="button-primary onboarding-primary"
               type="button"
               onClick={() => {
                 onClose();
-                onStartConversation();
+                if (!reentry) onStartConversation();
               }}
             >
-              {t("첫 대화 시작")}
+              {reentry ? t("확인") : t("첫 대화 시작")}
             </button>
           </>
         )}
 
         {stage.stage !== "ready" && (
           <button className="onboarding-text-button onboarding-skip" type="button" onClick={dismiss}>
-            {t("나중에 직접 설정할게요")}
+            {reentry ? t("닫기") : t("나중에 직접 설정할게요")}
           </button>
         )}
       </div>

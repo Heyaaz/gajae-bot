@@ -6,6 +6,7 @@ const LOCAL_COMPOSER_COMMANDS = new Set([
   "abort",
   "compact",
   "new",
+  "login",
   "model",
   "effort",
 ]);

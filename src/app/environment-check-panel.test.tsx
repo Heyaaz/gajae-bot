@@ -52,12 +52,12 @@ const cleanMac: EnvironmentReport = {
   ],
 };
 
-async function render(checkEnvironment: () => Promise<EnvironmentReport>) {
+async function render(checkEnvironment: () => Promise<EnvironmentReport>, onLogin?: () => void) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(createElement(EnvironmentCheckPanel, { bridge: { checkEnvironment } }));
+    root!.render(createElement(EnvironmentCheckPanel, { bridge: { checkEnvironment }, onLogin }));
   });
   return container;
 }
@@ -85,6 +85,35 @@ describe("EnvironmentCheckPanel", () => {
       "gh auth login",
     ]);
     expect(container.querySelectorAll(".environment-row--ok .environment-row-fix")).toHaveLength(0);
+  });
+
+  it("offers the app's own sign-in, not a terminal command, when no AI provider is signed in", async () => {
+    const onLogin = vi.fn();
+    const container = await render(
+      async () => ({
+        ready: false,
+        checkedAtMs: 1,
+        rows: [
+          { id: "gjc", required: true, status: "ok", detail: "0.19.3 · /Users/me/.local/bin/gjc" },
+          {
+            id: "provider-login",
+            required: true,
+            status: "warning",
+            problem: "no-provider",
+            fix: "gjc auth-broker login <provider>",
+          },
+        ],
+      }),
+      onLogin,
+    );
+    const [row] = rowText(container, "warning");
+    expect(row).toContain("로그인한 AI 제공자");
+    expect(row).toContain("로그인한 AI 제공자가 없어 대화를 시작할 수 없습니다");
+    expect(container.textContent).toContain("필수 항목 중 준비되지 않은 것이 있습니다");
+    expect(container.querySelector(".environment-row-fix code")).toBeNull();
+    const login = [...container.querySelectorAll("button")].find((button) => button.textContent === "AI 로그인");
+    await act(async () => login!.click());
+    expect(onLogin).toHaveBeenCalledTimes(1);
   });
 
   it("copies the exact fix command", async () => {
