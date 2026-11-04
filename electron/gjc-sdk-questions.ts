@@ -13,6 +13,7 @@ import { cloneTranscriptItem, nowLabel, sameTranscriptItem, transcriptTime } fro
 export interface QuestionHost {
   readonly sessionQuestions: Map<string, Map<string, QuestionActivity>>;
   readonly questionRefreshes: Map<string, Promise<void>>;
+  readonly questionAnswers: Map<string, Promise<void>>;
   readonly disposed: boolean;
   querySessionItems(
     sessionId: string,
@@ -406,4 +407,49 @@ export async function submitQuestionAnswer(
     });
     syncQuestionWait(host, sessionId);
   }
+}
+
+/**
+ * Pending and rejected ask cards for one session.
+ *
+ * `workflow.gates.list` is the source of truth. The stdio `workflow_gate`
+ * event only wakes this read.
+ */
+export async function listPendingQuestions(host: QuestionHost, sessionId: string): Promise<QuestionActivity[]> {
+  await refreshWorkflowQuestions(host, sessionId);
+  return [...(host.sessionQuestions.get(sessionId)?.values() ?? [])].filter(
+    (question) =>
+      question.answerable &&
+      (question.status === "pending" || question.status === "rejected"),
+  );
+}
+
+/**
+ * Answers one ask gate through `workflow.gate_answer`.
+ *
+ * The first submission for a gate wins. A second caller waits for that
+ * attempt and then sees the settled card, so a desktop click and a remote
+ * click cannot both commit. A `rejected` resolution stays on the card.
+ */
+export function answerQuestion(
+  host: QuestionHost,
+  sessionId: string,
+  gateId: string,
+  submission: QuestionSubmission,
+  idempotencyKey: string,
+): Promise<void> {
+  const key = questionKey(sessionId, gateId);
+  const inflight = host.questionAnswers.get(key);
+  if (inflight) return inflight;
+  const run = submitQuestionAnswer(
+    host,
+    sessionId,
+    gateId,
+    submission,
+    idempotencyKey,
+  );
+  host.questionAnswers.set(key, run);
+  return run.finally(() => {
+    if (host.questionAnswers.get(key) === run) host.questionAnswers.delete(key);
+  });
 }

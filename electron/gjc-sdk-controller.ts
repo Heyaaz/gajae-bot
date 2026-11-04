@@ -269,7 +269,9 @@ export {
   SESSION_CONTEXT_REFRESH_TTL_MS,
 } from "./gjc-sdk-command-palette.js";
 import {
+  answerQuestion,
   hasAnswerableQuestion,
+  listPendingQuestions,
   projectWorkflowGate,
   questionById,
   type QuestionHost,
@@ -1471,47 +1473,17 @@ export class GjcSdkController {
     return resolveToolCall(this.host, toolId, decision);
   }
 
-  /**
-   * Pending and rejected ask cards for one session.
-   *
-   * `workflow.gates.list` is the source of truth. The stdio `workflow_gate`
-   * event only wakes this read.
-   */
-  async listPendingQuestions(sessionId: string): Promise<QuestionActivity[]> {
-    await this.refreshWorkflowQuestions(sessionId);
-    return [...(this.sessionQuestions.get(sessionId)?.values() ?? [])].filter(
-      (question) =>
-        question.answerable &&
-        (question.status === "pending" || question.status === "rejected"),
-    );
+  listPendingQuestions(sessionId: string): Promise<QuestionActivity[]> {
+    return listPendingQuestions(this.host, sessionId);
   }
 
-  /**
-   * Answers one ask gate through `workflow.gate_answer`.
-   *
-   * The first submission for a gate wins. A second caller waits for that
-   * attempt and then sees the settled card, so a desktop click and a remote
-   * click cannot both commit. A `rejected` resolution stays on the card.
-   */
   answerQuestion(
     sessionId: string,
     gateId: string,
     submission: QuestionSubmission,
     idempotencyKey: string,
   ): Promise<void> {
-    const key = this.questionKey(sessionId, gateId);
-    const inflight = this.questionAnswers.get(key);
-    if (inflight) return inflight;
-    const run = this.submitQuestionAnswer(
-      sessionId,
-      gateId,
-      submission,
-      idempotencyKey,
-    );
-    this.questionAnswers.set(key, run);
-    return run.finally(() => {
-      if (this.questionAnswers.get(key) === run) this.questionAnswers.delete(key);
-    });
+    return answerQuestion(this.host, sessionId, gateId, submission, idempotencyKey);
   }
 
   async markSessionRead(sessionId: string): Promise<void> {
