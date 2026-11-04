@@ -1831,6 +1831,15 @@
 .markdown-body li::marker {
   color: var(--text-tertiary);
 }
+/* A GFM task item's checkbox takes the bullet's place, so wrapped lines hang
+   under the text rather than under a bullet and a box side by side. */
+.markdown-body li.task-list-item {
+  list-style: none;
+}
+.markdown-body li.task-list-item > input[type="checkbox"] {
+  margin: 0 7px 0 -20px;
+  vertical-align: -2px;
+}
 .markdown-body blockquote {
   margin: 12px 0;
   padding: 2px 0 2px 12px;
@@ -5170,6 +5179,21 @@ button.diff-line-number:hover {
   font-size: 12.5px;
   line-height: 1.6;
   overflow-wrap: anywhere;
+  /* The panel is narrow enough that Korean breaking between any two syllables
+     split most words; whole words wrap, and a run too long for a line still breaks. */
+  word-break: keep-all;
+}
+.side-exchange-answer h1 {
+  font-size: 16px;
+}
+.side-exchange-answer h2 {
+  font-size: 14.5px;
+}
+.side-exchange-answer h3 {
+  font-size: 13.5px;
+}
+.side-exchange-answer h4 {
+  font-size: 12.5px;
 }
 .side-exchange-answer > :first-child {
   margin-top: 0;

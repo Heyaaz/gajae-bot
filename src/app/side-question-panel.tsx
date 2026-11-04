@@ -105,7 +105,7 @@ export function SideQuestionPanel({
                   </button>
                 </div>
               ) : (
-                <div className="side-exchange-answer">
+                <div className="side-exchange-answer markdown-body">
                   <MarkdownBody>{exchange.answer}</MarkdownBody>
                 </div>
               )}

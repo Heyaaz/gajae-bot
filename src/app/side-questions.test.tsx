@@ -183,6 +183,8 @@ describe("SideQuestionPanel", () => {
       { onRetry },
     );
     expect(host.querySelector(".side-exchange-answer strong")?.textContent).toBe("done");
+    // The shared markdown styles (tables, task lists, headings) key on this class.
+    expect(host.querySelector(".side-exchange-answer")?.classList.contains("markdown-body")).toBe(true);
     expect(host.querySelector('[role="status"]')?.textContent).toBe("답을 기다리는 중…");
     act(() => host.querySelector<HTMLButtonElement>(".side-exchange-failed button")!.click());
     expect(onRetry).toHaveBeenCalledWith("b");
