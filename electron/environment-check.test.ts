@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { EnvironmentCheckRow } from "../shared/environment-check.js";
+import { launchCheckSatisfied, type EnvironmentCheckRow } from "../shared/environment-check.js";
 import {
   checkEnvironment,
   configuredProfileIds,
@@ -138,6 +138,21 @@ describe("checkEnvironment", () => {
       status: "warning",
       problem: "no-provider",
     });
+  });
+
+  it("lets the launch check rest once the tools work, with sign-in still to do", async () => {
+    const unsigned = await checkEnvironment(
+      context({
+        ...ready,
+        answers: {
+          ...ready.answers,
+          "/Users/me/.local/bin/gjc models": ok("No models available. Set API keys in environment variables.\n"),
+        },
+      }),
+    );
+    expect(launchCheckSatisfied(unsigned.rows)).toBe(true);
+    const clean = await checkEnvironment(context({ executables: {}, answers: {} }));
+    expect(launchCheckSatisfied(clean.rows)).toBe(false);
   });
 
   it("does not guess at a provider when GJC cannot list its models", async () => {

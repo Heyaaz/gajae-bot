@@ -84,6 +84,7 @@ import { imageAttachments } from "./settings-ipc-handlers.js";
 import { QuickInputShortcut } from "./quick-input.js";
 import { QuickInputWindow, type QuickInputHandoff } from "./quick-input-window.js";
 import { quickInputProjects } from "../shared/quick-input.js";
+import { launchCheckSatisfied } from "../shared/environment-check.js";
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
 const {
@@ -533,7 +534,7 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
             process.env.AGENT_CONTROL_GJC_PRESET?.trim() || current.modelPreset,
         }),
       );
-      if (report.ready && !desktopState.get().environmentReady)
+      if (launchCheckSatisfied(report.rows) && !desktopState.get().environmentReady)
         desktopState.update({ environmentReady: true });
       return report;
     },

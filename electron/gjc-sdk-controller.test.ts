@@ -3296,6 +3296,50 @@ describe("SDK slash commands", () => {
     controller.dispose();
   });
 
+  it("hands a session whose runtime lists nothing an empty palette instead of a wait", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue([]);
+    await controller.refreshSessionContext("s1");
+    expect(
+      emit.mock.calls.filter(([event]) => event.type === "session.commands").map(([event]) => event.commands),
+    ).toEqual([[]]);
+    controller.dispose();
+  });
+
+  it("tells the palette the command read failed until a retry brings the list", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    let down = true;
+    (cli.queryItems as any).mockImplementation(async (_id: string, query: string) => {
+      if (query !== "runtime.capabilities") return [];
+      if (down) throw new Error("capabilities down");
+      return capabilityRows("session.metadata");
+    });
+    try {
+      await expect(controller.refreshSessionContext("s1")).rejects.toThrow("명령 목록을 받지 못했습니다");
+      await expect(controller.refreshSessionContext("s1")).rejects.toThrow("명령 목록을 받지 못했습니다");
+      down = false;
+      await vi.advanceTimersByTimeAsync(COMMAND_REFRESH_RETRY_BASE_MS);
+      expect(
+        emit.mock.calls.some(
+          ([event]) =>
+            event.type === "session.commands" &&
+            event.commands.some((command: { name: string }) => command.name === "session"),
+        ),
+      ).toBe(true);
+      await expect(controller.refreshSessionContext("s1")).resolves.toBeUndefined();
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("opens the model picker with its profiles from one read pass", async () => {
     const emit = vi.fn();
     const { controller, cli, internals } = harness({ emit });

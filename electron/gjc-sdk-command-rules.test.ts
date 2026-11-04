@@ -101,9 +101,9 @@ describe("remembering a rule with a tool decision", () => {
     ask();
     const info = controller.toolDecisionInfo("call-1", { optionId: "allow_once", rule: { prefix: "git status" } });
     expect(info.requiresConfirmation).toBe(true);
-    expect(info.name).toContain("Allow once");
+    expect(info.name).toContain("이번만 허용");
     expect(info.name).toContain('"git status"');
-    expect(controller.toolDecisionInfo("call-1", { optionId: "allow_once" }).name).toBe("Allow once");
+    expect(controller.toolDecisionInfo("call-1", { optionId: "allow_once" }).name).toBe("이번만 허용");
   });
 });
 
