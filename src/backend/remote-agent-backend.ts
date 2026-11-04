@@ -258,6 +258,10 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.client.flushFollowUps(sessionId);
   }
 
+  suggestNextInput(sessionId: string): Promise<string | null> {
+    return this.client.suggestNextInput(sessionId);
+  }
+
   async cancelRun(sessionId: string): Promise<void> {
     await this.client.cancelRun(sessionId);
   }

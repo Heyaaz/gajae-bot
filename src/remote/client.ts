@@ -672,6 +672,10 @@ export class RemoteClient {
     return this.control<boolean>(REMOTE_API.flushFollowUps(sessionId));
   }
 
+  suggestNextInput(sessionId: string) {
+    return this.control<string | null>(REMOTE_API.suggestNextInput(sessionId));
+  }
+
   cancelRun(sessionId: string) {
     return this.control<void>(REMOTE_API.cancel(sessionId));
   }
