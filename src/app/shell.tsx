@@ -40,7 +40,8 @@ import {
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
 import { SideQuestionPanel } from "./side-question-panel";
-import { sideQuestionText, useSideQuestions, type SideExchange } from "./side-questions";
+import { sideQuestionText, type SideExchange } from "./side-questions";
+import { useSideChat } from "./use-side-chat";
 import { WorkflowStatusCards } from "./workflow-status";
 import { RemoteGate, RemoteStrip, remoteGateNeeded } from "./remote";
 import {
@@ -154,15 +155,6 @@ export default function App() {
   );
   const [findOpen, setFindOpen] = useState(false);
   const [diffOpen, setDiffOpen] = useState(false);
-  const [sideOpen, setSideOpen] = useState(false);
-  const askSideBackend = useMemo(
-    () =>
-      backend.askSideQuestion
-        ? (sessionId: string, question: string) => backend.askSideQuestion!(sessionId, question)
-        : undefined,
-    [backend],
-  );
-  const { threads: sideThreads, askSide, retrySide, clearSide } = useSideQuestions(askSideBackend);
 
   const [liveSubagents, setLiveSubagents] = useState<SubagentSnapshot[]>([]);
   // Each open is its own request: a second prefill while the dialog is up
@@ -998,27 +990,6 @@ export default function App() {
   const openConversation = useCallback(() => setCenterView("conversation"), []);
   const openGroup = parallelGroups.find((group) => group.id === parallelGroupId);
   const openInboxSession = selectSession;
-  // ⌘⇧B: the side chat panel.
-  useEffect(() => {
-    if (!askSideBackend) return;
-    function onSideShortcut(event: globalThis.KeyboardEvent): void {
-      if (
-        !event.metaKey ||
-        !event.shiftKey ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.code !== "KeyB" ||
-        surfaceRef.current === "terminal" ||
-        !selectedSessionRef.current
-      )
-        return;
-      event.preventDefault();
-      setSideOpen((open) => !open);
-    }
-    window.addEventListener("keydown", onSideShortcut);
-    return () => window.removeEventListener("keydown", onSideShortcut);
-  }, [askSideBackend]);
-
   const openRepositoryFor = useCallback((projectId: string) => {
     setSelectedProjectId(projectId);
     setCenterView("repository");
@@ -1048,18 +1019,17 @@ export default function App() {
   }, [repoBridge, projectRoot]);
   const updateBusyFlag = Boolean(updateBusy);
 
-  // GJC advertises `/btw` only when it has `btw.ask`. Until the list arrives the
-  // question is tried and any refusal is shown in the panel.
-  const sideUnsupported =
-    askSideBackend !== undefined &&
-    !commandsPending &&
-    !selectedCommands.some((command) => command.name === "btw");
-  const askSideFromComposer = askSideBackend
-    ? (sessionId: string, question: string) => {
-        setSideOpen(true);
-        if (!sideUnsupported) askSide(sessionId, question);
-      }
-    : undefined;
+  const {
+    askSideBackend,
+    sideOpen,
+    setSideOpen,
+    sideThreads,
+    askSide,
+    retrySide,
+    clearSide,
+    sideUnsupported,
+    askSideFromComposer,
+  } = useSideChat(backend, selectedCommands, commandsPending, surfaceRef, selectedSessionRef);
 
   // Streaming re-renders the shell on every joined delta. These callbacks stay
   // the same object so the memoized composer does not run again while a reply grows.
