@@ -31,7 +31,14 @@ const MAX_PREFIX_LENGTH = 200;
 const COMPOUND = /[;&|`<>\n\r]|\$[({]/u;
 // Besides the shell's separators, a subshell or substitution opens a new command.
 const SEGMENT_SEPARATOR = /[;&|\n\r`()]|\$[({]/u;
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/u;
+
+/** Control characters other than tab and newline; the newline is already a chaining character. */
+function hasControlCharacter(text: string): boolean {
+  return [...text].some((character) => {
+    const code = character.charCodeAt(0);
+    return (code < 32 && code !== 9 && code !== 10) || code === 127;
+  });
+}
 
 function tokens(text: string): string[] {
   return text.split(/[ \t]+/u).filter(Boolean);
@@ -51,7 +58,7 @@ function segments(command: string): string[] {
 
 /** The prefix as it is stored: single spaces, no chaining characters. */
 export function normalizeRulePrefix(prefix: string): string | undefined {
-  if (COMPOUND.test(prefix) || CONTROL.test(prefix)) return undefined;
+  if (COMPOUND.test(prefix) || hasControlCharacter(prefix)) return undefined;
   const normalized = tokens(prefix).join(" ");
   if (!normalized || normalized.length > MAX_PREFIX_LENGTH) return undefined;
   return normalized;
