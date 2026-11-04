@@ -889,13 +889,17 @@ export function SettingsDialog({
                 <label>
                   <span>
                     <strong>{t("도구 승인")}</strong>
-                    <small>{t("위험한 작업을 GJC가 처리하는 방식")}</small>
+                    <small>
+                      {preferences.permissionHandling === "prompt"
+                        ? t("명령 실행은 매번 묻습니다. 파일 수정은 묻지 않고 바로 적용합니다.")
+                        : t("명령 실행과 파일 수정을 묻지 않고 바로 진행합니다.")}
+                    </small>
                   </span>
                   <Dropdown
                     value={preferences.permissionHandling}
                     ariaLabel={t("도구 승인")}
                     options={[
-                      { value: "prompt", label: t("매번 확인") },
+                      { value: "prompt", label: t("명령 실행만 확인") },
                       { value: "auto", label: t("GJC 스마트 정책") },
                       { value: "always-allow", label: t("항상 허용") },
                     ]}
