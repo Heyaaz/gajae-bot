@@ -7,6 +7,7 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 import { getLanguage, t } from "../i18n";
+import { isDefaultSessionTitle } from "../../shared/session-title";
 import type { ParallelGroup } from "../../shared/parallel-run";
 
 
@@ -150,7 +151,7 @@ export function directoryName(value: string): string {
 
 /** The backend stores the default draft title in Korean; display it in the UI language. */
 export function sessionTitleText(title: string): string {
-  return title === "새 Gajae 세션" ? t("새 Gajae 세션") : title;
+  return isDefaultSessionTitle(title) ? t("새 세션") : title;
 }
 
 export function toolDisplayName(name: string): string {

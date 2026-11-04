@@ -1,4 +1,5 @@
 import type { AppUpdateStatus } from "./app-update.js";
+import type { WorkspaceInspection } from "./settings-ipc.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
 import type { CommandRuleMatch, ProjectCommandRules } from "./command-rules.js";
 import type { EnvironmentReport } from "./environment-check.js";
@@ -1100,6 +1101,7 @@ export interface GjcDesktopBridge {
 export interface SettingsDesktopBridge {
   getPreferences(): Promise<AgentControlPreferences>;
   chooseWorkspace(currentPath: string): Promise<string | null>;
+  inspectWorkspace(workspace: string): Promise<WorkspaceInspection>;
   isNativeFile(file: File): boolean;
   prepareImages(files: File[]): Promise<ImageAttachment[]>;
   prepareFiles(files: File[]): Promise<FileAttachment[]>;

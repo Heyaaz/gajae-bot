@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { DEFAULT_SESSION_TITLE } from "../../shared/session-title";
 import type { MutableRefObject } from "react";
 import type { AgentSession } from "../backend/types";
 import type { NewSessionInput } from "./dialogs";
@@ -39,13 +40,13 @@ export function useComposerCallbacks(
     const session = composerActionsRef.current.session;
     if (!session) return;
     composerActionsRef.current.createSession({
-      title: "새 Gajae 세션",
+      title: DEFAULT_SESSION_TITLE,
       workspace: session.workspace,
     });
   }, []);
   const onComposerWorkspaceChange = useCallback((workspace: string) => {
     composerActionsRef.current.createSession({
-      title: "새 Gajae 세션",
+      title: DEFAULT_SESSION_TITLE,
       workspace,
     });
   }, []);

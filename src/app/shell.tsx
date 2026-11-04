@@ -1,4 +1,5 @@
 import gajaeIconUrl from "../assets/gajae-icon-ui.png";
+import { DEFAULT_SESSION_TITLE } from "../../shared/session-title";
 import type {
   GoalOperation,
   HistorySession,
@@ -1294,7 +1295,7 @@ export default function App() {
                   modelDisplay: selectedSession.modelDisplay,
                   recentWorkspaces,
                   onWorkspaceChange: (workspace) =>
-                    createSession({ title: "새 Gajae 세션", workspace }),
+                    createSession({ title: DEFAULT_SESSION_TITLE, workspace }),
                 }}
               />
               <div className="composer-wrap">

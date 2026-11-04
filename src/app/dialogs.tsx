@@ -5,7 +5,8 @@ import type {
   SessionWorkLink,
   WorktreePull,
 } from "../../shared/agent-contract";
-import type { NewSessionPrefill } from "../../shared/settings-ipc";
+import type { NewSessionPrefill, WorkspaceInspection } from "../../shared/settings-ipc";
+import { DEFAULT_SESSION_TITLE } from "../../shared/session-title";
 import {
   FileSearch,
   FolderOpen,
@@ -57,7 +58,7 @@ export function NewSessionDialog({
   onCancel,
   onCreate,
 }: NewSessionDialogProps) {
-  const defaultTitle = t("새 Gajae 세션");
+  const defaultTitle = t("새 세션");
   const terminal = kind === "terminal" && !prefill;
   const [title, setTitle] = useState(prefill?.title || defaultTitle);
   const [workspace, setWorkspace] = useState(
@@ -73,8 +74,32 @@ export function NewSessionDialog({
   const [workspaceError, setWorkspaceError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
+  const [inspection, setInspection] = useState<
+    { workspace: string; info: WorkspaceInspection } | undefined
+  >(undefined);
   const settingsBridge = window.agentControlDesktop?.settings;
   const images = prefill?.images ?? [];
+
+  useEffect(() => {
+    if (!workspace || !settingsBridge) return;
+    let current = true;
+    settingsBridge.inspectWorkspace(workspace).then(
+      (info) => {
+        if (current) setInspection({ workspace, info });
+      },
+      () => undefined,
+    );
+    return () => {
+      current = false;
+    };
+  }, [workspace, settingsBridge]);
+
+  // An answer for a folder the user has since left must not decide anything.
+  const info = inspection?.workspace === workspace ? inspection.info : undefined;
+  const broad = !terminal && info?.broad === true;
+  const showIsolation =
+    !terminal &&
+    (info?.git === true || isolation === "worktree" || prefill?.mainCheckout === true);
 
   function cancel(): void {
     // The images were issued to this window for the new session; a dismissed
@@ -103,6 +128,13 @@ export function NewSessionDialog({
 
   function submit(event: FormEvent): void {
     event.preventDefault();
+    // Enter in the name field must not start the agent in a broad folder; that
+    // takes the explicit "이 폴더에서 그대로 시작" button.
+    if (broad) return;
+    create();
+  }
+
+  function create(): void {
     if (!workspace) return;
     const trimmedTitle = title.trim();
     if (terminal) {
@@ -131,7 +163,7 @@ export function NewSessionDialog({
     onCreate({
       title:
         !trimmedTitle || trimmedTitle === defaultTitle
-          ? "새 Gajae 세션"
+          ? DEFAULT_SESSION_TITLE
           : trimmedTitle,
       workspace,
       isolation,
@@ -156,7 +188,7 @@ export function NewSessionDialog({
     <div className="modal-backdrop" role="presentation" onMouseDown={cancel}>
       <form
         className="new-session-dialog"
-        aria-label={terminal ? t("새 터미널 세션") : t("새 GJC 세션")}
+        aria-label={terminal ? t("새 터미널 세션") : t("새 세션")}
         onSubmit={submit}
         onMouseDown={(event) => event.stopPropagation()}
       >
@@ -165,7 +197,7 @@ export function NewSessionDialog({
             <Plus size={18} />
           </span>
           <div>
-            <h2>{terminal ? t("새 터미널 세션") : t("새 GJC 세션")}</h2>
+            <h2>{terminal ? t("새 터미널 세션") : t("새 세션")}</h2>
             <p>
               {terminal
                 ? t("터미널을 열 폴더를 선택하세요.")
@@ -184,23 +216,25 @@ export function NewSessionDialog({
             onChange={(event) => setTitle(event.target.value)}
           />
         </label>
-        {!terminal && (
+        {showIsolation && (
           <fieldset className="isolation-options">
-            <legend>{t("작업 격리")}</legend>
+            <legend>{t("작업 방식")}</legend>
             <label>
               <input
                 type="radio"
                 checked={isolation === "workspace"}
                 onChange={() => setIsolation("workspace")}
               />{" "}
-              {t("현재 workspace에서 작업")} </label>
-            <label>
+              {t("지금 폴더에서 바로 작업")} </label>
+            <label
+              title={t("저장소를 새 폴더에 복사해 그곳에서만 작업합니다(git worktree). 지금 폴더의 파일은 바뀌지 않아 안전하게 시도할 수 있습니다.")}
+            >
               <input
                 type="radio"
                 checked={isolation === "worktree"}
                 onChange={() => setIsolation("worktree")}
               />{" "}
-              {t("별도 worktree 생성")} </label>
+              {t("별도 복사본에서 작업")} </label>
             {isolation === "worktree" && (
               <input
                 placeholder={t("안전한 브랜치 (선택)")}
@@ -212,7 +246,7 @@ export function NewSessionDialog({
               isolation === "workspace" &&
               workspace === prefill.workspace && (
                 <p className="isolation-options__note">
-                  {t("이 폴더는 저장소의 기본 작업 폴더입니다. 커밋하지 않은 변경이 있으면 세션의 수정과 섞입니다. 따로 두려면 별도 worktree를 고르세요.")}
+                  {t("이 폴더는 저장소의 기본 작업 폴더입니다. 커밋하지 않은 변경이 있으면 세션의 수정과 섞입니다. 따로 두려면 별도 복사본을 고르세요.")}
                 </p>
               )}
           </fieldset>
@@ -234,6 +268,11 @@ export function NewSessionDialog({
             </button>
           </div>
         </label>
+        {broad && (
+          <p className="broad-workspace-warning" role="alert">
+            {t("홈·문서·바탕화면처럼 넓은 폴더입니다. 에이전트가 이 폴더 안의 모든 파일을 읽고 바꿀 수 있습니다. 작업할 프로젝트 폴더를 따로 고르는 것을 권장합니다.")}
+          </p>
+        )}
         {workspaceError && <p role="alert">{workspaceError}</p>}
         {submitError && <p role="alert">{submitError}</p>}
         {images.length > 0 && (
@@ -251,13 +290,33 @@ export function NewSessionDialog({
         <footer>
           <button type="button" className="button-secondary" onClick={cancel}>
             {t("취소")} </button>
-          <button
-            type="submit"
-            className="button-primary"
-            disabled={!workspace || submitting}
-          >
-            <Plus size={15} /> {t("세션 만들기")}{" "}
-          </button>
+          {broad ? (
+            <>
+              <button
+                type="button"
+                className="button-secondary"
+                onClick={create}
+              >
+                {t("이 폴더에서 그대로 시작")}
+              </button>
+              <button
+                type="button"
+                className="button-primary"
+                disabled={choosing}
+                onClick={() => void chooseWorkspace()}
+              >
+                <FolderOpen size={15} /> {t("폴더 선택…")}
+              </button>
+            </>
+          ) : (
+            <button
+              type="submit"
+              className="button-primary"
+              disabled={!workspace || submitting}
+            >
+              <Plus size={15} /> {t("세션 만들기")}{" "}
+            </button>
+          )}
         </footer>
       </form>
     </div>

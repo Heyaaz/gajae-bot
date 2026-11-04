@@ -127,7 +127,7 @@ describe("Sidebar memoization", () => {
       .split(/\s+(?![^(]*\))/u);
     const buttons = row!.match(/<button/gu) ?? [];
     expect(buttons.length + 1).toBe(columns?.length);
-    expect(row).toContain('title="새 Gajae 세션"');
+    expect(row).toContain('title="새 세션"');
     expect(row).toContain('title="Inbox (⌥⌘U)"');
     // Resume moved to the footer, where a label fits.
     expect(row).not.toContain("지난 세션");
@@ -141,10 +141,10 @@ describe("Sidebar memoization", () => {
     const markup = renderToStaticMarkup(
       createElement(Sidebar, props([session(0)])),
     );
-    const occurrences = markup.split("새 Gajae 세션").length - 1;
+    const occurrences = markup.split("새 세션").length - 1;
     expect(occurrences).toBe(1);
     // And the survivor is the header button the whole app targets by title.
-    expect(markup).toContain('title="새 Gajae 세션"');
+    expect(markup).toContain('title="새 세션"');
   });
 
   it("still renders every session it is given", () => {

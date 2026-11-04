@@ -237,7 +237,8 @@ export async function createSession(host: LifecycleHost, input: CreateSessionInp
       managed: true,
     };
   }
-  await excludeGjcState(sessionWorkspace);
+  // Not awaited: hiding the folder must never delay or fail the session.
+  void excludeGjcState(sessionWorkspace);
   const knownSessionIds = new Set([
     ...host.sessions.keys(),
     ...(await host.brokerSessions())?.map((session) => session.sessionId) ??

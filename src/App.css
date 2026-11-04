@@ -2479,6 +2479,15 @@
   font-size: 10px;
   line-height: 1.45;
 }
+.broad-workspace-warning {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
+}
 .isolation-options input[type="text"],
 .isolation-options input:not([type]) {
   padding: 7px;

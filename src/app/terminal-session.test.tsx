@@ -55,10 +55,16 @@ describe("new session dialog", () => {
 
   it("asks only for the name, isolation, and folder of a GJC session", async () => {
     const onCreate = vi.fn<(input: NewSessionInput) => void>();
+    Object.assign(window, {
+      agentControlDesktop: {
+        settings: { inspectWorkspace: async () => ({ broad: false, git: true }) },
+      },
+    });
     const node = await mount(
       createElement(NewSessionDialog, { defaultWorkspace: "/repo", onCancel: noop, onCreate }),
     );
-    expect(node.querySelector("h2")?.textContent).toBe("새 GJC 세션");
+    Reflect.deleteProperty(window, "agentControlDesktop");
+    expect(node.querySelector("h2")?.textContent).toBe("새 세션");
     expect(node.querySelector("fieldset.isolation-options")).not.toBeNull();
     expect(node.querySelector("textarea")).toBeNull();
     expect(node.querySelector("fieldset.parallel-options")).toBeNull();
@@ -66,7 +72,7 @@ describe("new session dialog", () => {
 
     await submit(node);
     expect(onCreate).toHaveBeenCalledExactlyOnceWith({
-      title: "새 Gajae 세션",
+      title: "새 세션",
       workspace: "/repo",
       isolation: "workspace",
       worktreeBranch: undefined,
@@ -107,7 +113,7 @@ describe("new session dialog", () => {
         onCreate,
       }),
     );
-    expect(node.querySelector("h2")?.textContent).toBe("새 GJC 세션");
+    expect(node.querySelector("h2")?.textContent).toBe("새 세션");
 
     await submit(node);
     expect(onCreate.mock.calls[0]![0]).toMatchObject({ initialPrompt: "CI를 고쳐 줘" });

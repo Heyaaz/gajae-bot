@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { excludeGjcState, isGitRepository } from './git-exclude'
+import { excludeGjcState, isGitRepository } from './git-exclude.js'
 
 const sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'gajae-exclude-')))
 

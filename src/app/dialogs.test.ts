@@ -15,6 +15,7 @@ vi.mock("react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react")>();
   return {
     ...actual,
+    useEffect: () => undefined,
     useState: (initial: unknown) => {
       const slot = hookState.cursor++;
       if (!(slot in hookState.slots)) hookState.slots[slot] = initial;
@@ -270,7 +271,7 @@ describe("NewSessionDialog prefill", () => {
     const tree = renderNewSessionDialog({ onCreate });
     findElement(tree, (element) => element.type === "form").props.onSubmit(submitEvent);
     expect(onCreate).toHaveBeenCalledExactlyOnceWith({
-      title: "새 Gajae 세션",
+      title: "새 세션",
       workspace: "/original/project",
       isolation: "workspace",
       worktreeBranch: undefined,

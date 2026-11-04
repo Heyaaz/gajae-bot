@@ -25,6 +25,7 @@ const ENGLISH: Readonly<Record<string, string>> = {
   "GJC 종료 후 삭제": "Stop GJC and delete",
   "GJC 설정을 바꿀까요?": "Change these GJC settings?",
   "터미널의 GJC에도 같이 적용됩니다.": "They apply to GJC in the terminal too.",
+  "프로젝트 폴더 선택": "Choose project folder",
   "취소": "Cancel",
   "계속": "Continue",
   "삭제": "Delete",

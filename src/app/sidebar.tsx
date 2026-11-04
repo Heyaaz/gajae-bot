@@ -595,7 +595,7 @@ function SidebarView({
         <button
           className="icon-button"
           type="button"
-          title={t("새 Gajae 세션")}
+          title={t("새 세션")}
           onClick={onCreate}
         >
           <Plus size={18} />

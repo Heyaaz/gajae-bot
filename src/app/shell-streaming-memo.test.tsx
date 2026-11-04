@@ -331,7 +331,15 @@ describe("session shortcuts from the main process", () => {
     ];
     // Every settings call stays pending: these tests only drive the shortcut
     // channel, and a resolved undefined would replace the shell's preferences.
-    const pending = new Proxy({}, { get: () => () => new Promise(() => undefined) });
+    const pending = new Proxy(
+      {},
+      {
+        get: (_target, name) =>
+          name === "inspectWorkspace"
+            ? async (workspace: string) => ({ broad: workspace === "/home/kim/Documents", git: false })
+            : () => new Promise(() => undefined),
+      },
+    );
     Object.assign(window, {
       agentControlDesktop: {
         settings: pending,
@@ -439,6 +447,14 @@ describe("session shortcuts from the main process", () => {
     expect(discardAttachments).toHaveBeenCalledExactlyOnceWith(["a".repeat(43)]);
   });
 
+  it("opens the dialog instead of creating at once when the folder is broad", async () => {
+    probe.sessions = probe.sessions.map((session) => ({ ...session, workspace: "/home/kim/Documents" }));
+    await mountApp();
+    await act(async () => shortcut!({ type: "new" }));
+    expect(probe.createSession).not.toHaveBeenCalled();
+    expect(probe.newSessionDialog).not.toBeNull();
+  });
+
   it("creates at once for a plain new and waits for confirmation with a prefill", async () => {
     await mountApp();
     await act(async () => shortcut!({ type: "new" }));
@@ -454,7 +470,7 @@ describe("session shortcuts from the main process", () => {
 
     await act(async () =>
       (probe.newSessionDialog!.onCreate as (input: unknown) => void)({
-        title: "새 Gajae 세션",
+        title: "새 세션",
         workspace: "/tmp/other",
         isolation: "workspace",
         initialPrompt: "이슈 내용",

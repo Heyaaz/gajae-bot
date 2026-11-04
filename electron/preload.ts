@@ -449,6 +449,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
   getPreferences: () => ipcRenderer.invoke(SETTINGS_IPC.getPreferences),
   chooseWorkspace: (currentPath: string) =>
     ipcRenderer.invoke(SETTINGS_IPC.chooseWorkspace, currentPath),
+  inspectWorkspace: (workspace: string) =>
+    ipcRenderer.invoke(SETTINGS_IPC.inspectWorkspace, workspace),
   isNativeFile: (file: File) => Boolean(webUtils.getPathForFile(file)),
   prepareImages: (files: File[]) =>
     ipcRenderer.invoke(SETTINGS_IPC.prepareImages, files.map((file) => ({
