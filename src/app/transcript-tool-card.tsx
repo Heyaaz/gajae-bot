@@ -1,5 +1,6 @@
 import type { ArtifactContent } from "../../shared/agent-contract";
 import type { ToolActivity } from "../backend/types";
+import { defaultRulePrefix, normalizeRulePrefix } from "../../shared/command-rules";
 import { compactToolCommand, compactToolText } from "../composer-utils";
 import { ChevronDown, ShieldCheck, TerminalSquare } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -9,8 +10,12 @@ import { t } from "../i18n";
 
 export interface ToolCardProps {
   tool: ToolActivity;
-  /** `comment` goes with a rejection, as what the agent should do instead. */
-  onResolve: (toolId: string, optionId: string, comment?: string) => void;
+  /**
+   * `comment` goes with a rejection, as what the agent should do instead. `rule`
+   * also remembers the command prefix for the project, as an allow or a reject
+   * rule to match the chosen option.
+   */
+  onResolve: (toolId: string, optionId: string, comment?: string, rule?: { prefix: string }) => void;
   onReadArtifact?: (artifactId: string) => Promise<ArtifactContent>;
   /**
    * Shown on a denied call when the current permission mode is what denied it,
@@ -57,6 +62,7 @@ export function ToolCard({
   const isSubagentCall = SUBAGENT_TOOL_NAME.test(tool.name);
   const [expanded, setExpanded] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
+  const [editedRulePrefix, setEditedRulePrefix] = useState<string>();
   const [inputBody, setInputBody] = useState<ToolBodyState>();
   const [outputBody, setOutputBody] = useState<ToolBodyState>();
   const [inputRetry, setInputRetry] = useState(0);
@@ -87,6 +93,11 @@ export function ToolCard({
   manualExpandedRef.current = expanded;
   const retryVersionRef = useRef({ input: 0, output: 0 });
   const command = tool.command ? compactToolCommand(tool.command) : undefined;
+  const rulableCommand = tool.name === "bash" ? command?.fullText : undefined;
+  const rulePrefix = editedRulePrefix ?? (rulableCommand ? defaultRulePrefix(rulableCommand) : "");
+  const validRulePrefix = normalizeRulePrefix(rulePrefix);
+  const allowOnce = tool.permissionOptions?.find((option) => option.kind === "allow_once");
+  const rejectOnce = tool.permissionOptions?.find((option) => option.kind === "reject_once");
   const output = tool.output
     ? compactToolText(humanRuntimeText(tool.output))
     : undefined;
@@ -432,6 +443,16 @@ export function ToolCard({
             )}
           </footer>
         )}
+        {tool.autoDecision && (
+          <footer className="tool-card-auto-decision">
+            <span>
+              <ShieldCheck size={14} />{" "}
+              {tool.autoDecision.decision === "allow"
+                ? t("프로젝트 규칙 \"{0}\"로 자동 허용됨", { 0: tool.autoDecision.prefix })
+                : t("프로젝트 규칙 \"{0}\"로 자동 거절됨", { 0: tool.autoDecision.prefix })}
+            </span>
+          </footer>
+        )}
         {approvalRequired && (
           <footer>
             <span>
@@ -464,6 +485,40 @@ export function ToolCard({
               placeholder={t("거절할 때 에이전트에게 남길 말 (선택)")}
               onChange={(event) => setRejectComment(event.target.value)}
             />
+          </footer>
+        )}
+        {approvalRequired && rulableCommand && (allowOnce || rejectOnce) && (
+          <footer className="tool-card-rule">
+            <input
+              value={rulePrefix}
+              maxLength={200}
+              aria-label={t("규칙으로 저장할 명령 앞부분")}
+              aria-invalid={!validRulePrefix}
+              onChange={(event) => setEditedRulePrefix(event.target.value)}
+            />
+            {allowOnce && (
+              <button
+                type="button"
+                className="button-primary"
+                disabled={!validRulePrefix}
+                onClick={() => validRulePrefix && onResolve(tool.id, allowOnce.optionId, undefined, { prefix: validRulePrefix })}
+              >
+                {t("앞부분 항상 허용")}
+              </button>
+            )}
+            {rejectOnce && (
+              <button
+                type="button"
+                className="button-secondary"
+                disabled={!validRulePrefix}
+                onClick={() =>
+                  validRulePrefix &&
+                  onResolve(tool.id, rejectOnce.optionId, rejectComment.trim() || undefined, { prefix: validRulePrefix })
+                }
+              >
+                {t("앞부분 항상 거부")}
+              </button>
+            )}
           </footer>
         )}
       </article>

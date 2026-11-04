@@ -55,6 +55,8 @@ export function transcriptItemEqual(
         left.outputArtifactId === right.outputArtifactId &&
         left.diff === right.diff &&
         left.targetPath === right.targetPath &&
+        left.autoDecision?.decision === right.autoDecision?.decision &&
+        left.autoDecision?.prefix === right.autoDecision?.prefix &&
         sameList(left.artifactRefs, right.artifactRefs, (ref, other) => ref === other) &&
         sameList(
           left.permissionOptions,

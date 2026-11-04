@@ -122,6 +122,70 @@ describe("GJC settings channel", () => {
   });
 });
 
+describe("command rules channel", () => {
+  const rule = { tool: "bash", prefix: "git status", decision: "allow", createdAt: "2026-11-04T00:00:00.000Z" };
+  const store = () => {
+    const rules = [{ root: "/repo", rules: [rule] }];
+    return {
+      list: vi.fn(() => rules.map((project) => ({ ...project }))),
+      remove: vi.fn((root: string, prefix: string) => {
+        if (root === "/repo" && prefix === "git status") rules.splice(0);
+      }),
+    };
+  };
+  function registerRules(commandRules?: ReturnType<typeof store>): () => void {
+    const directory = mkdtempSync(path.join(tmpdir(), "gajae-settings-ipc-"));
+    created.push(directory);
+    const security = {
+      guarded: (handler: (...args: unknown[]) => unknown) => handler,
+    } as unknown as IpcSecurity;
+    return registerSettingsIpcHandlers(
+      new SettingsStore(directory, directory), {} as AttachmentStore, security,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      commandRules as never,
+    );
+  }
+
+  it("lists the saved rules and returns what remains after deleting one", async () => {
+    const rules = store();
+    const dispose = registerRules(rules);
+    try {
+      expect(await handled.get(SETTINGS_IPC.listCommandRules)?.({})).toEqual([{ root: "/repo", rules: [rule] }]);
+      expect(await handled.get(SETTINGS_IPC.removeCommandRule)?.({}, "/repo", "git status")).toEqual([]);
+      expect(rules.remove).toHaveBeenCalledWith("/repo", "git status");
+    } finally {
+      dispose();
+    }
+  });
+
+  it.each([
+    [["", "git status"]],
+    [["/repo", ""]],
+    [[7, "git status"]],
+    [["/repo", null]],
+    [["/repo", "x".repeat(201)]],
+  ])("refuses to delete with %j", async (args) => {
+    const rules = store();
+    const dispose = registerRules(rules);
+    try {
+      expect(() => handled.get(SETTINGS_IPC.removeCommandRule)?.({}, ...args)).toThrow();
+      expect(rules.remove).not.toHaveBeenCalled();
+    } finally {
+      dispose();
+    }
+  });
+
+  it("offers no channel when the host keeps no rules", () => {
+    const dispose = registerRules();
+    try {
+      expect(handled.has(SETTINGS_IPC.listCommandRules)).toBe(false);
+      expect(handled.has(SETTINGS_IPC.removeCommandRule)).toBe(false);
+    } finally {
+      dispose();
+    }
+  });
+});
+
 describe("imageAttachments", () => {
   it("revokes the tokens already issued when a later image fails", async () => {
     const directory = mkdtempSync(path.join(tmpdir(), "gajae-images-"));

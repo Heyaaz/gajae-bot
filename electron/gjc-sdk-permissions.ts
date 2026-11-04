@@ -1,12 +1,23 @@
-import type {
-  AgentControlPreferences,
-  AgentEvent,
-  AgentSession,
-  ToolActivity,
-  ToolDecision,
+import {
+  projectPathOf,
+  type AgentControlPreferences,
+  type AgentEvent,
+  type AgentSession,
+  type ToolActivity,
+  type ToolDecision,
 } from "../shared/agent-contract.js";
+import {
+  normalizeRulePrefix,
+  type CommandRuleDecision,
+  type CommandRuleMatch,
+} from "../shared/command-rules.js";
 import type { GjcSdkCli } from "./gjc-sdk-cli.js";
-import type { PendingPermission, PermissionResponse } from "./gjc-sdk-model.js";
+import type {
+  GjcControllerOptions,
+  PendingPermission,
+  PermissionResponse,
+  SessionUpdate,
+} from "./gjc-sdk-model.js";
 import { openRelay, type Relay, type RelayTransport } from "./gjc-sdk-relay.js";
 
 /**
@@ -19,6 +30,10 @@ import { openRelay, type Relay, type RelayTransport } from "./gjc-sdk-relay.js";
  * (its 60 s wait ran out, the turn was aborted, the host restarted) leaves the
  * list, and the card stops waiting. One relay per watched session carries the
  * polling, because a CLI call per poll costs a process.
+ *
+ * A project command rule (see `shared/command-rules.ts`) can decide a request
+ * before it reaches a card: the poll answers it directly and leaves a note on the
+ * tool row.
  */
 
 const POLL_MS = 750;
@@ -31,11 +46,19 @@ export interface PermissionChannelHost {
   requestPermission(request: PendingPermission["request"]): Promise<PermissionResponse>;
   /** GJC withdrew the request before anyone decided. */
   dropPermission(toolCallId: string): void;
+  /** A rule that decides the request without a card, when one applies. */
+  autoDecide(sessionId: string, toolCall: PendingPermission["request"]["toolCall"]): Promise<CommandRuleMatch | undefined>;
+  /** The request was answered by a rule; leaves a note on its tool row. */
+  noteAutoDecision(
+    sessionId: string,
+    toolCall: PendingPermission["request"]["toolCall"],
+    match: CommandRuleMatch,
+  ): void;
 }
 
 interface ListedRequest {
   id: string;
-  toolCall: { toolCallId: string; title?: string };
+  toolCall: PendingPermission["request"]["toolCall"];
   options: PendingPermission["request"]["options"];
 }
 
@@ -129,6 +152,10 @@ export class PermissionChannels {
   }
 
   private async ask(sessionId: string, watch: Watch, request: ListedRequest): Promise<void> {
+    if (await this.answerByRule(sessionId, watch, request)) return;
+    // The rule lookup is async: GJC may have withdrawn the request meanwhile, and
+    // a card for it would wait forever.
+    if (!watch.shown.has(request.id)) return;
     const response = await this.host.requestPermission({
       sessionId,
       toolCall: request.toolCall,
@@ -137,18 +164,63 @@ export class PermissionChannels {
     const { outcome } = response;
     if (outcome.outcome !== "selected" || !outcome.optionId) return;
     try {
-      const relay = this.relayFor(sessionId, watch);
-      await relay.ready;
-      await relay.control("permission.respond", {
-        sessionId,
-        id: request.id,
-        optionId: outcome.optionId,
-        ...(response.comment ? { comment: response.comment } : {}),
-      });
+      await this.respond(sessionId, watch, request.id, outcome.optionId, response.comment);
     } catch {
       // Expired or already answered: GJC refuses without granting anything, and
       // the tool's own result reports what happened.
     }
+  }
+
+  private async respond(
+    sessionId: string,
+    watch: Watch,
+    requestId: string,
+    optionId: string,
+    comment?: string,
+  ): Promise<void> {
+    const relay = this.relayFor(sessionId, watch);
+    await relay.ready;
+    await relay.control("permission.respond", {
+      sessionId,
+      id: requestId,
+      optionId,
+      ...(comment ? { comment } : {}),
+    });
+  }
+
+  /**
+   * Answers the request from a project rule. False means it still needs a card:
+   * no rule applies, the rule could not be read, GJC did not offer the matching
+   * once-only option, or the answer did not go through.
+   */
+  private async answerByRule(sessionId: string, watch: Watch, request: ListedRequest): Promise<boolean> {
+    let match: CommandRuleMatch | undefined;
+    try {
+      match = await this.host.autoDecide(sessionId, request.toolCall);
+    } catch {
+      return false;
+    }
+    if (!match) return false;
+    const kind = match.decision === "allow" ? "allow_once" : "reject_once";
+    const option = request.options.find((candidate) => candidate.kind === kind);
+    if (!option) return false;
+    try {
+      await this.respond(
+        sessionId,
+        watch,
+        request.id,
+        option.optionId,
+        match.decision === "reject" ? `프로젝트 규칙 "${match.prefix}"에 따라 거절했습니다` : undefined,
+      );
+    } catch {
+      return false;
+    }
+    try {
+      this.host.noteAutoDecision(sessionId, request.toolCall, match);
+    } catch {
+      // The tool is already decided; a missing note must not bring the card back.
+    }
+    return true;
   }
 }
 
@@ -160,6 +232,7 @@ function listedRequests(value: unknown): ListedRequest[] {
     if (!row || typeof row !== "object") return [];
     const { id, toolCall, options } = row as Record<string, unknown>;
     const call = toolCall as Record<string, unknown> | undefined;
+    const rawInput = call?.rawInput as Record<string, unknown> | null | undefined;
     if (typeof id !== "string" || typeof call?.toolCallId !== "string" || !Array.isArray(options)) return [];
     const offered = options.flatMap((option): ListedRequest["options"] => {
       const { optionId, name, kind } = (option ?? {}) as Record<string, unknown>;
@@ -170,7 +243,12 @@ function listedRequests(value: unknown): ListedRequest[] {
     if (offered.length === 0) return [];
     return [{
       id,
-      toolCall: { toolCallId: call.toolCallId, ...(typeof call.title === "string" ? { title: call.title } : {}) },
+      toolCall: {
+        toolCallId: call.toolCallId,
+        ...(typeof call.title === "string" ? { title: call.title } : {}),
+        ...(typeof call.toolName === "string" ? { toolName: call.toolName } : {}),
+        ...(typeof rawInput?.command === "string" ? { command: rawInput.command } : {}),
+      },
       options: offered,
     }];
   });
@@ -188,6 +266,50 @@ export interface PermissionApprovalHost {
   repoFor(sessionId: string): string;
   sdkOperations(sessionId: string, options?: { strict?: boolean }): Promise<Set<string>>;
   patchTool(toolId: string, patch: Partial<ToolActivity>): void;
+  readonly commandRules?: GjcControllerOptions["commandRules"];
+  findTool(sessionId: string, toolId: string): ToolActivity | undefined;
+  upsertTool(
+    sessionId: string,
+    update: Extract<SessionUpdate, { sessionUpdate: "tool_call" | "tool_call_update" }>,
+  ): void;
+}
+
+/** The project rule that decides this request, when its session has a project and rules are on. */
+export async function autoDecideToolCall(
+  host: PermissionApprovalHost,
+  sessionId: string,
+  toolCall: PendingPermission["request"]["toolCall"],
+): Promise<CommandRuleMatch | undefined> {
+  const session = host.sessions.get(sessionId);
+  if (!host.commandRules || !session || toolCall.toolName !== "bash" || toolCall.command === undefined)
+    return undefined;
+  return host.commandRules.decide(projectPathOf(session), toolCall.toolName, toolCall.command);
+}
+
+/**
+ * Leaves the rule's decision on the call's tool row. The call may already be
+ * running by now, so a row that has moved past waiting keeps its own status.
+ */
+export function recordAutoDecision(
+  host: PermissionApprovalHost,
+  sessionId: string,
+  toolCall: PendingPermission["request"]["toolCall"],
+  match: CommandRuleMatch,
+): void {
+  const existing = host.findTool(sessionId, toolCall.toolCallId);
+  if (!existing)
+    host.upsertTool(sessionId, {
+      sessionUpdate: "tool_call_update",
+      toolCallId: toolCall.toolCallId,
+      status: "pending",
+      ...(toolCall.title ? { title: toolCall.title } : {}),
+      ...(toolCall.command !== undefined ? { rawInput: { command: toolCall.command } } : {}),
+    });
+  const waiting = !existing || existing.status === "pending" || existing.status === "approval-required";
+  host.patchTool(toolCall.toolCallId, {
+    autoDecision: match,
+    ...(waiting ? { status: match.decision === "allow" ? "approved" : "denied" } : {}),
+  });
 }
 
 /**
@@ -244,9 +366,13 @@ export function toolDecisionInfo(
   decision: ToolDecision,
 ): { name: string; requiresConfirmation: boolean } {
   const option = permissionOption(host, toolId, decision);
+  const allows = option.kind.startsWith("allow");
   return {
-    name: option.name,
-    requiresConfirmation: option.kind.startsWith("allow"),
+    name:
+      decision.rule && allows
+        ? `${option.name}\n"${decision.rule.prefix}"로 시작하는 명령은 이 프로젝트에서 앞으로 묻지 않고 허용합니다.`
+        : option.name,
+    requiresConfirmation: allows,
   };
 }
 
@@ -262,6 +388,12 @@ function permissionOption(host: PermissionApprovalHost, toolId: string, decision
   return option;
 }
 
+/**
+ * Settles the waiting request, and with `decision.rule` remembers the prefix for
+ * the call's project first. A rule that cannot be saved must not leave GJC
+ * waiting out its 60 s, so the request is settled either way and the save error
+ * is thrown afterwards for the caller to show.
+ */
 export async function resolveToolCall(
   host: PermissionApprovalHost,
   toolId: string,
@@ -269,14 +401,37 @@ export async function resolveToolCall(
 ): Promise<void> {
   const pending = host.pendingPermissions.get(toolId)!;
   const option = permissionOption(host, toolId, decision);
+  const allows = option.kind.startsWith("allow");
+  let ruleFailure: unknown;
+  if (decision.rule) {
+    try {
+      await saveRule(host, pending, decision.rule.prefix, allows ? "allow" : "reject");
+    } catch (error) {
+      ruleFailure = error;
+    }
+  }
+  if (host.pendingPermissions.get(toolId) !== pending)
+    throw new Error(`No pending permission for tool call ${toolId}`);
   host.pendingPermissions.delete(toolId);
   pending.resolve({
     outcome: { outcome: "selected", optionId: option.optionId },
     ...(decision.comment ? { comment: decision.comment } : {}),
   });
-  host.patchTool(toolId, {
-    status: option.kind.startsWith("allow") ? "approved" : "denied",
-  });
+  host.patchTool(toolId, { status: allows ? "approved" : "denied" });
+  if (ruleFailure) throw ruleFailure;
+}
+
+async function saveRule(
+  host: PermissionApprovalHost,
+  pending: PendingPermission,
+  prefix: string,
+  decision: CommandRuleDecision,
+): Promise<void> {
+  const session = host.sessions.get(pending.request.sessionId);
+  if (!host.commandRules || !session) throw new Error("Command rules are unavailable for this session");
+  if (pending.request.toolCall.toolName !== "bash") throw new Error("Command rules apply to bash calls only");
+  if (!normalizeRulePrefix(prefix)) throw new Error("Command rule prefix is invalid");
+  await host.commandRules.add(projectPathOf(session), prefix, decision);
 }
 
 export function cancelPermissionsForSession(host: PermissionApprovalHost, sessionId: string): void {

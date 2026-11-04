@@ -12,6 +12,7 @@ import type { IpcSecurity } from './ipc-security.js'
 import { checkGjcUpdate, installGjcUpdate } from './gjc-updater.js'
 import { applyGjcSettings, listGjcSettings } from './gjc-config.js'
 import type { GjcSettingChange } from '../shared/gjc-settings.js'
+import type { CommandRuleStore } from './command-rule-store.js'
 import type { AppUpdateMonitor } from './app-update.js'
 import type { EnvironmentReport } from '../shared/environment-check.js'
 import type { QuickInputShortcutStatus } from '../shared/quick-input.js'
@@ -126,6 +127,7 @@ export function registerSettingsIpcHandlers(
   quickInputShortcut?: { status(): QuickInputShortcutStatus },
   onLanguage?: (language: UiLanguage) => void,
   onGjcSettingsApplied?: (changes: readonly GjcSettingChange[]) => Promise<void>,
+  commandRules?: Pick<CommandRuleStore, 'list' | 'remove'>,
 ): () => void {
   ipcMain.handle(SETTINGS_IPC.getPreferences, security.guarded(() => store.get()))
   ipcMain.handle(SETTINGS_IPC.chooseWorkspace, security.guarded(async (event, currentPath: unknown) => {
@@ -258,6 +260,15 @@ export function registerSettingsIpcHandlers(
     await onGjcSettingsApplied?.(parsed)
     return listing
   }))
+  if (commandRules) {
+    ipcMain.handle(SETTINGS_IPC.listCommandRules, security.guarded(() => commandRules.list()))
+    ipcMain.handle(SETTINGS_IPC.removeCommandRule, security.guarded((_event, root: unknown, prefix: unknown) => {
+      if (typeof root !== 'string' || !root || root.length > 4096) throw new Error('Command rule project is invalid')
+      if (typeof prefix !== 'string' || !prefix || prefix.length > 200) throw new Error('Command rule prefix is invalid')
+      commandRules.remove(root, prefix)
+      return commandRules.list()
+    }))
+  }
   ipcMain.handle(SETTINGS_IPC.installGjcUpdate, security.guarded(async (event) => {
     await security.authorizeDestructive(event, {
       message: 'GJC를 업데이트할까요? 업데이트 후 GJC runtime이 다시 연결됩니다.',

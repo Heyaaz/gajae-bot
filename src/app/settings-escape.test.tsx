@@ -37,6 +37,8 @@ async function mount(onClose: () => void) {
   bridge.agentControlDesktop = {
     settings: {
       getPreferences: async () => loaded,
+      listCommandRules: async () => [],
+      removeCommandRule: async () => [],
       getAppUpdateStatus: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
       checkAppUpdate: async () => ({ state: "unchecked", currentVersion: "0.1.0" }),
       quickInputShortcutStatus: async () => ({ state: "registered", accelerator: "Control+Alt+Space" }),

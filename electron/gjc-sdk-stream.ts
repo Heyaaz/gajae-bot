@@ -889,7 +889,8 @@ export function requestPermission(
   const { toolCall } = request;
   host.upsertTool(request.sessionId, {
     sessionUpdate: "tool_call_update",
-    ...toolCall,
+    toolCallId: toolCall.toolCallId,
+    ...(toolCall.title !== undefined ? { title: toolCall.title } : {}),
     status: "pending",
   });
   patchTool(host, toolCall.toolCallId, { status: "approval-required" });

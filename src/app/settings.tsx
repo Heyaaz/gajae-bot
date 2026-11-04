@@ -30,6 +30,7 @@ import { AppUpdateRow } from "./app-update-row";
 import { QuickInputShortcutRow } from "./quick-input-shortcut-row";
 import { EnvironmentCheckPanel } from "./environment-check-panel";
 import { GjcSettingsPanel } from "./gjc-settings-panel";
+import { CommandRulesPanel } from "./command-rules-panel";
 const RemoteAccessPanel = lazy(() =>
   import("./remote-access-panel").then((mod) => ({ default: mod.RemoteAccessPanel })),
 );
@@ -1004,6 +1005,7 @@ export function SettingsDialog({
                   </span>
                 </div>
               </div>
+              <CommandRulesPanel bridge={settingsBridge} />
             </div>
           )}
           {["mcp", "skills", "usage"].includes(tab) && (

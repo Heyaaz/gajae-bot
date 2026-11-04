@@ -492,6 +492,9 @@ const settings: SettingsDesktopBridge = Object.freeze({
   checkEnvironment: () => ipcRenderer.invoke(SETTINGS_IPC.checkEnvironment),
   listGjcSettings: () => ipcRenderer.invoke(SETTINGS_IPC.listGjcSettings),
   applyGjcSettings: (changes: GjcSettingChange[]) => ipcRenderer.invoke(SETTINGS_IPC.applyGjcSettings, changes),
+  listCommandRules: () => ipcRenderer.invoke(SETTINGS_IPC.listCommandRules),
+  removeCommandRule: (root: string, prefix: string) =>
+    ipcRenderer.invoke(SETTINGS_IPC.removeCommandRule, root, prefix),
   environmentCheckDue: () => ipcRenderer.invoke(SETTINGS_IPC.environmentCheckDue),
   quickInputShortcutStatus: () =>
     ipcRenderer.invoke(SETTINGS_IPC.quickInputShortcutStatus),

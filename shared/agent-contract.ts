@@ -1,5 +1,6 @@
 import type { AppUpdateStatus } from "./app-update.js";
 import type { DesktopIntegrationPreferences } from "./desktop-integration.js";
+import type { CommandRuleMatch, ProjectCommandRules } from "./command-rules.js";
 import type { EnvironmentReport } from "./environment-check.js";
 import type { GjcSetting, GjcSettingChange } from "./gjc-settings.js";
 import type { QuickInputShortcutStatus } from "./quick-input.js";
@@ -442,6 +443,8 @@ export interface ToolActivity {
   outputArtifactId?: string;
   artifactRefs?: string[];
   permissionOptions?: PermissionOption[];
+  /** A project command rule decided this call without asking. */
+  autoDecision?: CommandRuleMatch;
   diff?: string;
   targetPath?: string;
   images?: ToolImage[];
@@ -894,6 +897,11 @@ export interface ToolDecision {
   optionId: string;
   /** With a rejection: what the agent should do instead. */
   comment?: string;
+  /**
+   * Also remember this command prefix for the call's project. The rule's decision
+   * follows the chosen option: allow_* allows, reject_* rejects.
+   */
+  rule?: { prefix: string };
 }
 
 export interface QueuedMessage {
@@ -1145,6 +1153,10 @@ export interface SettingsDesktopBridge {
   listGjcSettings(): Promise<GjcSetting[]>;
   /** Writes the changes with `gjc config set` after one confirmation, then lists again. */
   applyGjcSettings(changes: GjcSettingChange[]): Promise<GjcSetting[]>;
+  /** The saved bash allow and reject rules of every project. Desktop only. */
+  listCommandRules(): Promise<ProjectCommandRules[]>;
+  /** Forgets one rule and returns the rules that remain. */
+  removeCommandRule(root: string, prefix: string): Promise<ProjectCommandRules[]>;
   /** Whether the environment check should open at launch. */
   environmentCheckDue(): Promise<boolean>;
   /** Whether the quick input shortcut is registered right now. */
