@@ -12,6 +12,7 @@ import {
   type CommandRuleMatch,
 } from "../shared/command-rules.js";
 import type { GjcSdkCli } from "./gjc-sdk-cli.js";
+import { permissionOptionLabel } from "../shared/permission-options.js";
 import type {
   GjcControllerOptions,
   PendingPermission,
@@ -367,11 +368,12 @@ export function toolDecisionInfo(
 ): { name: string; requiresConfirmation: boolean } {
   const option = permissionOption(host, toolId, decision);
   const allows = option.kind.startsWith("allow");
+  const label = permissionOptionLabel(option);
   return {
     name:
       decision.rule && allows
-        ? `${option.name}\n"${decision.rule.prefix}"로 시작하는 명령은 이 프로젝트에서 앞으로 묻지 않고 허용합니다.`
-        : option.name,
+        ? `${label}\n"${decision.rule.prefix}"로 시작하는 명령은 이 프로젝트에서 앞으로 묻지 않고 허용합니다.`
+        : label,
     requiresConfirmation: allows,
   };
 }

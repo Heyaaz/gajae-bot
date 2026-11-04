@@ -1201,7 +1201,7 @@ export function Transcript({
           <div className="empty-conversation__meta">
             <dl>
               <div>
-                <dt>workspace</dt>
+                <dt>{t("작업 폴더")}</dt>
                 <dd title={emptyStateMeta.workspace}>
                   {directoryName(emptyStateMeta.workspace)}
                 </dd>

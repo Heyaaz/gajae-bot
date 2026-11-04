@@ -8,6 +8,7 @@ import { humanRuntimeText, toolDisplayName, toolStatusLabel } from "./format";
 import { DiffView } from "./primitives";
 import { summarizeTool } from "./tool-summary";
 import { t } from "../i18n";
+import { permissionOptionLabel } from "../../shared/permission-options";
 
 export interface ToolCardProps {
   tool: ToolActivity;
@@ -477,7 +478,7 @@ export function ToolCard({
                       onResolve(tool.id, option.optionId, reject ? rejectComment.trim() || undefined : undefined)
                     }
                   >
-                    {option.name}
+                    {t(permissionOptionLabel(option))}
                   </button>
                 );
               })}
