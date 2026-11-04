@@ -125,6 +125,8 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "대기 중": "Queued",
   "대기 중인 지시를 지금 실행 (빈 Enter와 같음)": "Run the queued instruction now (same as empty Enter)",
   "대기 항목 버리기": "Discard queued item",
+  "앞으로 옮기기": "Move earlier",
+  "뒤로 옮기기": "Move later",
   "대화 인덱스를 검색하는 중…": "Searching conversation index…",
   "대화 표시 방식": "Conversation display",
   "대화로 돌아가기": "Back to conversation",

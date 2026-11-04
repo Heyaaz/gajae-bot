@@ -3234,6 +3234,22 @@ button.diff-line-number:hover {
   color: var(--text-secondary);
 }
 .composer-queue-discard { order: 3; }
+.composer-queue-reorder {
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  /* Two stacked arrows are taller than one line; keep the chip at its usual height. */
+  margin-block: -6px;
+}
+.composer-queue-reorder button {
+  display: inline-flex;
+  padding: 0;
+  color: var(--text-tertiary);
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+.composer-queue-reorder button:hover:not(:disabled) { color: var(--text-secondary); }
 .composer-queue-send,
 .composer-queue-edit {
   display: inline-flex;

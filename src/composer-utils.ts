@@ -277,6 +277,34 @@ export function appendPendingRequest(
   return [...pending, request];
 }
 
+/**
+ * Whether one held request can swap with its neighbour. A blocked entry never
+ * moves and is never jumped: it holds every release until the user reviews it.
+ */
+export function canMoveRequest(
+  pending: readonly PendingRequest[],
+  id: string,
+  offset: -1 | 1,
+): boolean {
+  const from = pending.findIndex((entry) => entry.id === id);
+  const to = from + offset;
+  return from >= 0 && to >= 0 && to < pending.length &&
+    !pending[from]!.blocked && !pending[to]!.blocked;
+}
+
+/** Swap one held request with its neighbour so it is released earlier or later. */
+export function moveRequest(
+  pending: readonly PendingRequest[],
+  id: string,
+  offset: -1 | 1,
+): PendingRequest[] {
+  const moved = [...pending];
+  if (!canMoveRequest(pending, id, offset)) return moved;
+  const from = pending.findIndex((entry) => entry.id === id);
+  [moved[from], moved[from + offset]] = [moved[from + offset]!, moved[from]!];
+  return moved;
+}
+
 /** Which held request a pull gesture takes: an end of the queue, or one clicked chip. */
 export type QueuePullTarget = "newest" | "oldest" | { id: string };
 

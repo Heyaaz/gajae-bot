@@ -557,6 +557,28 @@ describe("Composer queue pull-back", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it("renders reorder buttons only for a multi-entry queue and wires each direction", () => {
+    const moves: string[] = [];
+    const props = {
+      entry: heldRequest("b", "둘째 지시"),
+      onPull: () => undefined,
+      onDiscard: () => undefined,
+      onMoveUp: () => moves.push("up"),
+    };
+    const single = renderToStaticMarkup(createElement(QueueChip, props));
+    expect(single).not.toContain("앞으로 옮기기");
+
+    const markup = renderToStaticMarkup(createElement(QueueChip, { ...props, reorderable: true }));
+    expect(markup).toContain('aria-label="앞으로 옮기기"');
+    expect(markup).toMatch(/<button type="button" disabled="" aria-label="뒤로 옮기기"/);
+
+    const chip = QueueChip({ ...props, reorderable: true }) as unknown as TestElement;
+    const [reorder] = chip.props.children as TestElement[];
+    const [up] = childButtons(reorder!);
+    up?.props.onClick!();
+    expect(moves).toEqual(["up"]);
+  });
+
   it("discards only the entry a chip's × addresses", () => {
     const pulls: string[] = [];
     const discards: string[] = [];
