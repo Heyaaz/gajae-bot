@@ -1,4 +1,13 @@
 import type { UiLanguage } from "../shared/agent-contract.js";
+import { ENDABLE_WORKFLOWS } from "../shared/session-progress.js";
+
+export const END_WORKFLOW_DETAIL =
+  "진행 상태가 지워지고, 진행 중인 응답이 있으면 함께 중지됩니다.";
+
+/** The confirmation for ending one workflow; a skill name cannot be translated as a variable. */
+export function endWorkflowMessage(skill: string): string {
+  return `${skill} 워크플로를 끝낼까요?`;
+}
 
 /**
  * The handful of host-authored strings that reach a host dialog or the menu bar.
@@ -72,6 +81,15 @@ const ENGLISH: Readonly<Record<string, string>> = {
     "A new version is out. Click to open the release page.",
   "채택하지 않은 시도를 정리할까요?": "Clean up the attempts that were not adopted?",
   "병렬 실행 시도를 모두 정리할까요?": "Clean up every attempt of this parallel run?",
+  [END_WORKFLOW_DETAIL]:
+    "Its progress is cleared, and any response still running stops with it.",
+  "끝내기": "End",
+  ...Object.fromEntries(
+    ENDABLE_WORKFLOWS.map((skill) => [
+      endWorkflowMessage(skill),
+      `End the ${skill} workflow?`,
+    ]),
+  ),
 };
 
 let language: UiLanguage = "ko";

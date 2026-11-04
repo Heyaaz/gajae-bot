@@ -1093,6 +1093,11 @@ export interface GjcDesktopBridge {
     sessionId: string,
     operation: GoalOperation,
   ): Promise<GoalSnapshot>;
+  /**
+   * Ends one active workflow (deep-interview, ralplan, ...) after the host's
+   * confirmation, stops the turn still working for it, and returns the fresh snapshot.
+   */
+  endWorkflow(sessionId: string, skill: string): Promise<GoalSnapshot>;
   listSubagents(sessionId: string): Promise<SubagentSnapshot[]>;
   refreshRuntimeState(sessionId: string): Promise<EffectiveRuntimeState>;
   reconnect(): Promise<BackendConnection>;

@@ -417,6 +417,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
     sessionId: string,
     operation: import("../shared/agent-contract.js").GoalOperation,
   ) => ipcRenderer.invoke(GJC_IPC.operateGoal, sessionId, operation),
+  endWorkflow: (sessionId: string, skill: string) =>
+    ipcRenderer.invoke(GJC_IPC.endWorkflow, sessionId, skill),
   listSubagents: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.listSubagents, sessionId),
   refreshRuntimeState: (sessionId: string) =>

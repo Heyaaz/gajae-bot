@@ -53,6 +53,53 @@ afterEach(async () => {
   );
 });
 
+describe("ending a workflow", () => {
+  function setup(confirmation: "allow" | "deny" = "allow") {
+    const endWorkflow = vi.fn().mockResolvedValue({ enabled: false, completed: 0, total: 0 });
+    const confirm = vi.fn().mockImplementation(async () => {
+      if (confirmation === "deny") throw new Error("Operation cancelled");
+    });
+    registerGjcIpcHandlers(
+      { endWorkflow } as unknown as GjcSdkController,
+      new AttachmentStore(),
+      {
+        guarded: vi.fn((handler: (...args: unknown[]) => unknown) => async (...args: unknown[]) => handler(...args)),
+        owner: vi.fn(),
+        authorizeDestructive: confirm,
+      } as unknown as IpcSecurity,
+    );
+    return { endWorkflow, confirm };
+  }
+  const event = { sender: { id: 7 } };
+
+  it("asks first, naming the workflow, and then ends it", async () => {
+    const { endWorkflow, confirm } = setup();
+    await handled.get(GJC_IPC.endWorkflow)!(event, "session-a", "deep-interview");
+    expect(confirm).toHaveBeenCalledExactlyOnceWith(
+      event,
+      expect.objectContaining({ message: "deep-interview 워크플로를 끝낼까요?", danger: true }),
+    );
+    expect(endWorkflow).toHaveBeenCalledExactlyOnceWith("session-a", "deep-interview");
+  });
+
+  it("ends nothing when the user declines", async () => {
+    const { endWorkflow } = setup("deny");
+    await expect(
+      handled.get(GJC_IPC.endWorkflow)!(event, "session-a", "ralplan"),
+    ).rejects.toThrow("Operation cancelled");
+    expect(endWorkflow).not.toHaveBeenCalled();
+  });
+
+  it("rejects a skill GJC cannot clear before it asks", async () => {
+    const { endWorkflow, confirm } = setup();
+    await expect(
+      handled.get(GJC_IPC.endWorkflow)!(event, "session-a", "rm -rf"),
+    ).rejects.toThrow("Workflow skill is invalid");
+    expect(confirm).not.toHaveBeenCalled();
+    expect(endWorkflow).not.toHaveBeenCalled();
+  });
+});
+
 describe("destructive message policy", () => {
   function setup(confirmation: "allow" | "deny" = "allow") {
     const send = vi.fn().mockResolvedValue("prompt");

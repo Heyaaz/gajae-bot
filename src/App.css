@@ -4404,6 +4404,27 @@ button.diff-line-number:hover {
   border: 1px solid var(--border);
   border-radius: 4px;
 }
+.workflow-status-end {
+  margin-left: auto;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.workflow-status-verdict + .workflow-status-end {
+  margin-left: 0;
+}
+.workflow-status-end:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+.workflow-status-end:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
 .workflow-status-summary,
 .workflow-status-more {
   margin: 0;

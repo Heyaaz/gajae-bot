@@ -190,12 +190,14 @@ import {
 import {
   clearProgress,
   clearTodoPoll,
+  endWorkflow,
   getGoal,
   type GoalTodoHost,
   listSubagents,
   operateGoal,
   readTodoRecords,
   requestProgressRefresh,
+  type WorkflowEndHost,
 } from "./gjc-sdk-goal-todo.js";
 export {
   TODO_EVENT_POLL_BASE_MS,
@@ -272,6 +274,7 @@ type ControllerHost =
   QuestionHost &
   CommandPaletteHost &
   GoalTodoHost &
+  WorkflowEndHost &
   SessionConfigHost &
   FilesHost &
   RunStateHost &
@@ -977,6 +980,10 @@ export class GjcSdkController extends GjcSdkState {
     operation: GoalOperation,
   ): Promise<GoalSnapshot> {
     return operateGoal(this.host, sessionId, operation);
+  }
+
+  endWorkflow(sessionId: string, skill: string): Promise<GoalSnapshot> {
+    return endWorkflow(this.host, sessionId, skill, () => this.cancelRun(sessionId));
   }
 
   listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {

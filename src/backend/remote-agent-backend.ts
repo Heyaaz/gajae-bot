@@ -355,6 +355,10 @@ export class RemoteAgentBackend implements AgentBackend {
     return this.desktopOnly();
   }
 
+  endWorkflow(_sessionId: string, _skill: string): Promise<GoalSnapshot> {
+    return this.desktopOnly();
+  }
+
   refreshRuntimeState(_sessionId: string): Promise<EffectiveRuntimeState> {
     return this.desktopOnly();
   }

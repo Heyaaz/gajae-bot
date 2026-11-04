@@ -37,6 +37,7 @@ import {
 import {
   EMPTY_TRANSCRIPT,
   humanErrorMessage,
+  isDeclinedConfirmation,
   sessionTitleText,
 } from "./format";
 import { DiffPanel, GoalProgressRow, Inspector } from "./inspector";
@@ -571,6 +572,28 @@ export default function App() {
       setGoalBusySessionId((current) =>
         current === sessionId ? null : current,
       );
+    }
+  }
+
+  const [endingWorkflow, setEndingWorkflow] = useState<{
+    sessionId: string;
+    skill: string;
+  } | null>(null);
+  async function endWorkflow(skill: string): Promise<void> {
+    const sessionId = selectedId;
+    if (!sessionId || endingWorkflow) return;
+    setEndingWorkflow({ sessionId, skill });
+    try {
+      const snapshot = await backend.endWorkflow(sessionId, skill);
+      if (selectedIdRef.current === sessionId) {
+        setGoal(snapshot);
+        goalRescheduleRef.current(snapshot);
+      }
+    } catch (error) {
+      if (selectedIdRef.current === sessionId && !isDeclinedConfirmation(error))
+        setAppError(humanErrorMessage(error));
+    } finally {
+      setEndingWorkflow(null);
     }
   }
 
@@ -1340,7 +1363,15 @@ export default function App() {
                   }}
                   onFocusChange={setFocusedApprovalId}
                 />
-                <WorkflowStatusCards progress={goal.progress} />
+                <WorkflowStatusCards
+                  progress={goal.progress}
+                  onEnd={(skill) => void endWorkflow(skill)}
+                  endingSkill={
+                    endingWorkflow?.sessionId === selectedSession.id
+                      ? endingWorkflow.skill
+                      : null
+                  }
+                />
                 <GoalProgressRow
                   goal={goal}
                   busy={goalBusySessionId === selectedSession.id}

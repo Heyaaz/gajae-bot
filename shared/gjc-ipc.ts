@@ -52,6 +52,7 @@ export const GJC_IPC = {
   attachWorkspaceFiles: "agent-control:gjc:attach-workspace-files",
   getGoal: "agent-control:gjc:get-goal",
   operateGoal: "agent-control:gjc:operate-goal",
+  endWorkflow: "agent-control:gjc:end-workflow",
   listSubagents: "agent-control:gjc:list-subagents",
   refreshRuntimeState: "agent-control:gjc:refresh-runtime-state",
   reconnect: "agent-control:gjc:reconnect",

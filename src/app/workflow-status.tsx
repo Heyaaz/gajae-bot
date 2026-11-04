@@ -1,11 +1,21 @@
 import type { SessionProgress } from "../../shared/agent-contract";
+import { endableWorkflow } from "../../shared/session-progress";
 import { t, useLanguage } from "../i18n";
 
 /**
  * One compact card per active workflow HUD (ralplan, autoresearch, ...) from
  * `session.progress`: phase, summary, chips by severity, and the review verdict.
+ * A workflow GJC can end carries an end button while `onEnd` is given.
  */
-export function WorkflowStatusCards({ progress }: { progress?: SessionProgress }) {
+export function WorkflowStatusCards({
+  progress,
+  onEnd,
+  endingSkill,
+}: {
+  progress?: SessionProgress;
+  onEnd?: (skill: string) => void;
+  endingSkill?: string | null;
+}) {
   useLanguage();
   if (!progress || progress.workflows.length === 0) return null;
   return (
@@ -27,6 +37,17 @@ export function WorkflowStatusCards({ progress }: { progress?: SessionProgress }
                 <span className="workflow-status-verdict">
                   {t`리뷰 ${workflow.verdict}`}
                 </span>
+              )}
+              {onEnd && endableWorkflow(workflow.skill) && (
+                <button
+                  type="button"
+                  className="workflow-status-end"
+                  disabled={endingSkill !== null && endingSkill !== undefined}
+                  aria-label={t`${workflow.skill} 워크플로 끝내기`}
+                  onClick={() => onEnd(workflow.skill)}
+                >
+                  {endingSkill === workflow.skill ? t("끝내는 중…") : t("워크플로 끝내기")}
+                </button>
               )}
             </p>
             {workflow.summary && (

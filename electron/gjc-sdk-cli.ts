@@ -635,6 +635,36 @@ export class GjcSdkCli {
   }
 
   /**
+   * `gjc state clear --mode <skill> --session-id <id>`: ends one workflow for the
+   * session. The running host reads the state back at once -- `session.progress`
+   * lists no workflow right after -- so its stop gate stops continuing the turn.
+   * Verified against gjc/0.19.3, whose reply is `{ok:true, active:false, ...}`.
+   */
+  async clearWorkflow(
+    sessionId: string,
+    skill: string,
+    options?: { repo?: string },
+  ): Promise<void> {
+    let reply: Record<string, unknown> | undefined;
+    try {
+      const stdout = await this.exec(
+        this.options.executable,
+        ["state", "clear", "--mode", skill, "--session-id", sessionId, "--json"],
+        {
+          cwd: this.repoFor(options?.repo),
+          env: this.options.env,
+          timeoutMs: this.timeoutMs,
+        },
+      );
+      reply = asRecord(JSON.parse(stdout));
+    } catch {
+      reply = undefined;
+    }
+    if (reply?.ok !== true || reply.active !== false)
+      throw new Error("GJC가 워크플로 상태를 지우지 못했습니다.");
+  }
+
+  /**
    * `gjc sdk session send <id> --text ... --op-ref <fresh>`.
    *
    * An operation reference is never reused: a reused ref is rejected as
