@@ -60,8 +60,12 @@ function hasMultipleTopLevelMembers(json: string): boolean {
  * Accepts only an object whose sole key is `suggestion` holding a non-empty,
  * single-line string of at most 240 characters, which is returned trimmed.
  * Anything else, `{"suggestion": null}` included, is no suggestion.
+ *
+ * `btw.ask` frames the request as a side-chat question, where a model may wrap
+ * its JSON in one code fence; that fence alone is unwrapped.
  */
-export function parsePromptSuggestion(reply: string): string | null {
+export function parsePromptSuggestion(answer: string): string | null {
+  const reply = /^\s*```(?:json)?[ \t]*\n([\s\S]*?)\n```\s*$/u.exec(answer)?.[1] ?? answer;
   let parsed: unknown;
   try {
     parsed = JSON.parse(reply);
