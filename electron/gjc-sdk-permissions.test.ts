@@ -62,6 +62,8 @@ afterEach(async () => {
   await rm(directory, { recursive: true, force: true });
 });
 
+// Each poll talks to a spawned relay; a loaded test run needs more than the 1 s default.
+const WAIT = { timeout: 10_000 };
 const setState = (value: unknown) => writeFile(state, JSON.stringify(value));
 const controls = async () =>
   (await readFile(log, "utf8")).split("\n").filter(Boolean)
@@ -87,7 +89,7 @@ describe("GJC's approval channel", () => {
     await setState({ enabled: true, requests: [REQUEST] });
     const { channels, asked } = harness();
     channels.watch("s1");
-    await vi.waitFor(() => expect(asked).toHaveLength(1));
+    await vi.waitFor(() => expect(asked).toHaveLength(1), WAIT);
     expect(asked[0]!.request).toEqual({
       sessionId: "s1",
       toolCall: { toolCallId: "call-1", title: "rm -rf build" },
@@ -99,7 +101,7 @@ describe("GJC's approval channel", () => {
       expect((await controls()).map((frame) => frame.input)).toEqual([
         { sessionId: "s1", id: "req-1", optionId: "reject_once", comment: "Keep the build folder" },
       ]),
-    );
+    WAIT);
     // Still listed until GJC settles it: asked once, not again.
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(asked).toHaveLength(1);
@@ -109,9 +111,9 @@ describe("GJC's approval channel", () => {
     await setState({ enabled: true, requests: [REQUEST] });
     const { channels, asked, dropped } = harness();
     channels.watch("s1");
-    await vi.waitFor(() => expect(asked).toHaveLength(1));
+    await vi.waitFor(() => expect(asked).toHaveLength(1), WAIT);
     await setState({ enabled: true, requests: [] });
-    await vi.waitFor(() => expect(dropped).toEqual(["call-1"]));
+    await vi.waitFor(() => expect(dropped).toEqual(["call-1"]), WAIT);
     asked[0]!.decide({ outcome: { outcome: "cancelled" } });
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(await controls()).toEqual([]);
@@ -123,7 +125,7 @@ describe("GJC's approval channel", () => {
     channels.watch("s1");
     await vi.waitFor(async () =>
       expect((await controls())[0]).toMatchObject({ operation: "permission.channel.set", input: { enabled: true } }),
-    );
+    WAIT);
   });
 
   it("does not poll a session that is not running", async () => {
