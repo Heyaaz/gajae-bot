@@ -276,7 +276,14 @@ import {
 } from "./gjc-sdk-questions.js";
 import { askSideQuestion, executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
-import { PermissionChannels } from "./gjc-sdk-permissions.js";
+import {
+  applyPermissionMode,
+  cancelPermissionsForSession,
+  PermissionChannels,
+  type PermissionApprovalHost,
+  resolveToolCall,
+  toolDecisionInfo,
+} from "./gjc-sdk-permissions.js";
 import { gjcHostProcess, stopGjcHostProcess, type GjcHostProcess } from "./gjc-host-process.js";
 import {
   commitChanges,
@@ -659,10 +666,14 @@ export class GjcSdkController {
   /** The latest streamed tool rows, kept over a stale durable read. */
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
-  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost = ((controller: GjcSdkController) => ({
+  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost = ((controller: GjcSdkController) => ({
     get sessionQuestions() { return controller.sessionQuestions; },
     get questionRefreshes() { return controller.questionRefreshes; },
     get disposed() { return controller.disposed; },
+    get permissionHandling() { return controller.permissionHandling; },
+    get permissionModeApplied() { return controller.permissionModeApplied; },
+    get permissionChannels() { return controller.permissionChannels; },
+    patchTool: (toolId, patch) => controller.patchTool(toolId, patch),
     querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
     get observedQuestions() { return controller.observedQuestions; },
     get acceptedQuestions() { return controller.acceptedQuestions; },
@@ -760,7 +771,7 @@ export class GjcSdkController {
     get messageKeys() { return controller.messageKeys; },
     invalidateBrokerIndexCache: () => controller.invalidateBrokerIndexCache(),
     get windowHostedSessions() { return controller.windowHostedSessions; },
-    applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
+    applyPermissionMode: (sessionId) => applyPermissionMode(controller.host, sessionId),
     startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
     refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
     refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
@@ -793,7 +804,7 @@ export class GjcSdkController {
     clearProgress: (sessionId) => controller.clearProgress(sessionId),
     get sessionPlans() { return controller.sessionPlans; },
     get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
-    cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
+    cancelPermissionsForSession: (sessionId) => cancelPermissionsForSession(controller.host, sessionId),
     sdkOperations: (sessionId, options?: { strict?: boolean }) => controller.sdkOperations(sessionId, options),
     get historySummaryCache() { return controller.historySummaryCache; },
     resumeSession: (sessionId) => controller.resumeSession(sessionId),
@@ -1563,36 +1574,11 @@ export class GjcSdkController {
     toolId: string,
     decision: ToolDecision,
   ): { name: string; requiresConfirmation: boolean } {
-    const option = this.permissionOption(toolId, decision);
-    return {
-      name: option.name,
-      requiresConfirmation: option.kind.startsWith("allow"),
-    };
+    return toolDecisionInfo(this.host, toolId, decision);
   }
 
-  private permissionOption(toolId: string, decision: ToolDecision) {
-    const pending = this.pendingPermissions.get(toolId);
-    if (!pending)
-      throw new Error(`No pending permission for tool call ${toolId}`);
-    const option = pending.request.options.find(
-      (candidate) => candidate.optionId === decision.optionId,
-    );
-    if (!option)
-      throw new Error(`Unknown permission option ${decision.optionId}`);
-    return option;
-  }
-
-  async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
-    const pending = this.pendingPermissions.get(toolId)!;
-    const option = this.permissionOption(toolId, decision);
-    this.pendingPermissions.delete(toolId);
-    pending.resolve({
-      outcome: { outcome: "selected", optionId: option.optionId },
-      ...(decision.comment ? { comment: decision.comment } : {}),
-    });
-    this.patchTool(toolId, {
-      status: option.kind.startsWith("allow") ? "approved" : "denied",
-    });
+  resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
+    return resolveToolCall(this.host, toolId, decision);
   }
 
   /**
@@ -2162,54 +2148,6 @@ export class GjcSdkController {
     return this.sessionCwds.get(sessionId) ?? this.workspace;
   }
 
-  /**
-   * Applies the configured permission handling to a session.
-   *
-   * The old permission environment variable applied only to the removed child
-   * protocol process. A broker-hosted session host instead keeps a per-session SDK
-   * permission mode, set through the `permission_mode.set` control operation and
-   * defaulting to `allow`.
-   *
-   * `prompt` turns on GJC's external approval channel (gjc/0.19.3) where the
-   * session advertises it: a tool call that needs approval waits as a request the
-   * window lists and answers (see `PermissionChannels`). A GJC without the channel
-   * leaves a `prompt` session rejecting tool calls with "no permission provider is
-   * connected", so there `prompt` is mapped to the host's `deny` instead, which
-   * refuses with a decision the transcript records rather than silently granting
-   * what the user did not approve. `always-allow` and `auto` map to `allow`, and an
-   * explicit allow outranks a channel left on from an earlier `prompt`.
-   */
-  private async applyPermissionMode(sessionId: string): Promise<void> {
-    if (this.permissionModeApplied.has(sessionId)) return;
-    const allow =
-      this.permissionHandling === "always-allow" ||
-      this.permissionHandling === "auto";
-    const cli = await this.requireCli();
-    const repo = this.repoFor(sessionId);
-    if (!allow && (await this.sdkOperations(sessionId)).has("permission.channel.set")) {
-      await cli.rawControl(sessionId, "permission.channel.set", { enabled: true }, { repo });
-      this.permissionChannels.watch(sessionId);
-      this.markApprovalChannel(sessionId, true);
-    } else {
-      await cli.rawControl(
-        sessionId,
-        "permission_mode.set",
-        { mode: allow ? "always-allow" : "deny" },
-        { repo },
-      );
-      this.markApprovalChannel(sessionId, false);
-    }
-    this.permissionModeApplied.add(sessionId);
-  }
-
-  private markApprovalChannel(sessionId: string, on: boolean): void {
-    const session = this.sessions.get(sessionId);
-    if (!session || Boolean(session.approvalChannel) === on) return;
-    if (on) session.approvalChannel = true;
-    else delete session.approvalChannel;
-    this.emitEvent({ type: "session.updated", session: { ...session } });
-  }
-
   private scheduleReconnect(): void {
     if (this.disposed || this.reconnectTimer) return;
     const delay = Math.min(
@@ -2747,21 +2685,6 @@ export class GjcSdkController {
       }
       this.emitEvent({ type: "tool.updated", tool: { ...item } });
     }
-  }
-
-  private cancelPermissionsForSession(sessionId: string): void {
-    for (const [toolId, pending] of this.pendingPermissions) {
-      if (pending.request.sessionId !== sessionId) continue;
-      pending.resolve({ outcome: { outcome: "cancelled" } });
-      this.pendingPermissions.delete(toolId);
-    }
-  }
-
-  private cancelAllPermissions(): void {
-    for (const pending of this.pendingPermissions.values()) {
-      pending.resolve({ outcome: { outcome: "cancelled" } });
-    }
-    this.pendingPermissions.clear();
   }
 
   private setConnection(connection: BackendConnection): void {
