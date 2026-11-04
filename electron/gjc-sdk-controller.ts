@@ -287,7 +287,7 @@ import {
   settleOpenQuestions,
   submitQuestionAnswer,
 } from "./gjc-sdk-questions.js";
-import { askSideQuestion, executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
+import { askSideQuestion, executeSdkSlashCommand, type SlashCommandHost } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
 import {
   type ConnectionHost,
@@ -673,10 +673,14 @@ export class GjcSdkController {
   /** The latest streamed tool rows, kept over a stale durable read. */
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
-  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost & TeardownHost & ConnectionHost = ((controller: GjcSdkController) => ({
+  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost & TeardownHost & ConnectionHost & SlashCommandHost = ((controller: GjcSdkController) => ({
     get sessionQuestions() { return controller.sessionQuestions; },
     get questionRefreshes() { return controller.questionRefreshes; },
     get disposed() { return controller.disposed; },
+    deleteSession: (sessionId) => controller.deleteSession(sessionId),
+    renameSession: (sessionId, title) => controller.renameSession(sessionId, title),
+    compactSession: (sessionId) => controller.compactSession(sessionId),
+    sessionConfigRow: (sessionId) => controller.sessionConfigRow(sessionId),
     hasAnswerableQuestion: (sessionId) => controller.hasAnswerableQuestion(sessionId),
     get configuredExecutable() { return controller.configuredExecutable; },
     set configuredExecutable(value) { controller.configuredExecutable = value; },
@@ -793,7 +797,7 @@ export class GjcSdkController {
     get windowHostedSessions() { return controller.windowHostedSessions; },
     applyPermissionMode: (sessionId) => applyPermissionMode(controller.host, sessionId),
     startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
-    refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
+    refreshSdkCommands: (...args: Parameters<LifecycleHost["refreshSdkCommands"]>) => controller.refreshSdkCommands(...args),
     refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
     refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
     watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
@@ -1232,15 +1236,7 @@ export class GjcSdkController {
   }
 
   askSideQuestion(sessionId: string, question: string): Promise<string> {
-    return askSideQuestion(
-      {
-        sdkOperations: (id) => this.sdkOperations(id),
-        controlSession: (id, operation, input, options) =>
-          this.controlSession(id, operation, input, options),
-      },
-      sessionId,
-      question,
-    );
+    return askSideQuestion(this.host, sessionId, question);
   }
 
   // A session proven uncontrollable is recorded so the row stops advertising a
@@ -1353,55 +1349,12 @@ export class GjcSdkController {
     return flushQueuedNow(this.host, sessionId);
   }
 
-  private appendSdkCommandOutput(
-    sessionId: string,
-    content: string,
-  ): void {
-    const message: ChatMessage = {
-      id: `sdk-command-${this.nextLocalId++}`,
-      kind: "message",
-      sessionId,
-      role: "assistant",
-      content,
-      createdAt: nowLabel(),
-      streaming: false,
-    };
-    this.appendTranscript(message);
-    const session = this.sessions.get(sessionId);
-    if (session)
-      this.emitEvent({ type: "session.updated", session: { ...session } });
-  }
-
   private executeSdkSlashCommand(
     sessionId: string,
     input: ResolvedMessageInput,
     options?: SendMessageOptions,
   ): Promise<boolean> {
-    return executeSdkSlashCommand(
-      {
-        workspace: this.workspace,
-        sessions: this.sessions,
-        sessionCwds: this.sessionCwds,
-        sessionMetadata: this.sessionMetadata,
-        emitEvent: (event) => this.emitEvent(event),
-        sdkOperations: (id) => this.sdkOperations(id),
-        appendSdkCommandOutput: (id, content) => this.appendSdkCommandOutput(id, content),
-        querySessionItems: (id, query, queryInput, queryOptions) =>
-          this.querySessionItems(id, query, queryInput, queryOptions),
-        controlSession: (id, operation, controlInput, controlOptions) =>
-          this.controlSession(id, operation, controlInput, controlOptions),
-        deleteSession: (id) => this.deleteSession(id),
-        sessionConfigRow: (id) => this.sessionConfigRow(id),
-        patchSessionRuntime: (id, patch) => this.patchSessionRuntime(id, patch),
-        refreshSdkCommands: (id) => this.refreshSdkCommands(id),
-        refreshSessionConfigOptions: (id) => this.refreshSessionConfigOptions(id),
-        compactSession: (id) => this.compactSession(id),
-        renameSession: (id, title) => this.renameSession(id, title),
-      },
-      sessionId,
-      input,
-      options,
-    );
+    return executeSdkSlashCommand(this.host, sessionId, input, options);
   }
 
   sendMessage(
