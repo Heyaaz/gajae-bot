@@ -793,6 +793,18 @@
   color: var(--text-tertiary);
   font-size: 12px;
 }
+/* Without these the button keeps the browser's own face, which in the dark theme is
+   a mid gray the inherited tertiary text color disappears into. */
+.sidebar-empty button {
+  padding: 5px 12px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--overlay) 6%, var(--bg-sidebar));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.sidebar-empty button:hover {
+  background: var(--bg-hover);
+}
 
 .composer-files {
   display: flex;
