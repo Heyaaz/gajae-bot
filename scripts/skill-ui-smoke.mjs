@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const timeout = setTimeout(() => { console.error('Skill UI smoke timed out'); app.exit(1); }, 30_000);
+// The catch destroys the only window before it exits; the default quit would exit 0 first.
+app.on('window-all-closed', () => {});
 app.whenReady().then(async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'gajae-skill-ui-'));
   const preload = path.join(directory, 'preload.cjs');
@@ -58,7 +60,10 @@ window.agentControlDesktop = {
       const wait = ms => new Promise(done => setTimeout(done, ms));
       window.__until = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await wait(20); } throw Error('Skill UI condition timed out'); };
       window.__assert = (value, message) => { if (!value) throw Error(message); };
-      await __until(() => document.querySelector('.skill-activity') && document.querySelector('.skill-invocation'));
+      await __until(() => document.querySelector('.skill-invocation') && document.querySelector('.turn-fold button'));
+      __assert(!document.querySelector('.skill-activity'), 'a finished turn must fold its skill instructions');
+      document.querySelector('.turn-fold button').click();
+      await __until(() => document.querySelector('.skill-activity'));
       const details = document.querySelector('.skill-activity');
       __assert(!details.open, 'instructions must start collapsed');
       __assert(!details.querySelector('.markdown-body'), 'collapsed instructions mounted full markdown');
