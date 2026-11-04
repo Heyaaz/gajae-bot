@@ -277,9 +277,14 @@ import {
 import { askSideQuestion, executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
 import {
+  type ConnectionHost,
+  getConnection,
+  reconfigure,
+  reconnect,
+  requireCli,
+} from "./gjc-sdk-connection.js";
+import {
   disposeController,
-  resetForReconnect,
-  resetForRuntimeChange,
   type TeardownHost,
 } from "./gjc-sdk-teardown.js";
 import {
@@ -670,11 +675,19 @@ export class GjcSdkController {
   /** The latest streamed tool rows, kept over a stale durable read. */
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
-  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost & TeardownHost = ((controller: GjcSdkController) => ({
+  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost & TeardownHost & ConnectionHost = ((controller: GjcSdkController) => ({
     get sessionQuestions() { return controller.sessionQuestions; },
     get questionRefreshes() { return controller.questionRefreshes; },
     get disposed() { return controller.disposed; },
+    get configuredExecutable() { return controller.configuredExecutable; },
+    set configuredExecutable(value) { controller.configuredExecutable = value; },
+    get connectionState() { return controller.connectionState; },
+    set connectionState(value) { controller.connectionState = value; },
+    resolveExecutable: () => controller.resolveExecutable(),
+    recoverOwnedSessions: () => controller.recoverOwnedSessions(),
+    noteBrokerIndex: (rows, before, after) => controller.noteBrokerIndex(rows, before, after),
     get permissionHandling() { return controller.permissionHandling; },
+    set permissionHandling(value) { controller.permissionHandling = value; },
     get permissionModeApplied() { return controller.permissionModeApplied; },
     get permissionChannels() { return controller.permissionChannels; },
     patchTool: (toolId, patch) => controller.patchTool(toolId, patch),
@@ -710,7 +723,9 @@ export class GjcSdkController {
     get todoReads() { return controller.todoReads; },
     get modelProfiles() { return controller.modelProfiles; },
     get modelPreset() { return controller.modelPreset; },
+    set modelPreset(value) { controller.modelPreset = value; },
     get modelPresetThinking() { return controller.modelPresetThinking; },
+    set modelPresetThinking(value) { controller.modelPresetThinking = value; },
     get explicitSessionThinking() { return controller.explicitSessionThinking; },
     get sessionConfig() { return controller.sessionConfig; },
     requireCli: () => controller.requireCli(),
@@ -728,6 +743,7 @@ export class GjcSdkController {
     set nextLocalId(value) { controller.nextLocalId = value; },
     get sessionCwds() { return controller.sessionCwds; },
     get workspace() { return controller.workspace; },
+    set workspace(value) { controller.workspace = value; },
     get sharedSessionFiles() { return controller.sharedSessionFiles; },
     get sharedTranscriptReads() { return controller.sharedTranscriptReads; },
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
@@ -750,6 +766,7 @@ export class GjcSdkController {
     get runStateTimers() { return controller.runStateTimers; },
     get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
     get generation() { return controller.generation; },
+    set generation(value) { controller.generation = value; },
     get lastDiscovered() { return controller.lastDiscovered; },
     set lastDiscovered(value) { controller.lastDiscovered = value; },
     brokerSessions: (options) => controller.brokerSessions(options),
@@ -929,41 +946,12 @@ export class GjcSdkController {
     };
   }
 
-  async getConnection(): Promise<BackendConnection> {
-    try {
-      await this.ensureStarted();
-    } catch (error) {
-      this.setConnection({
-        state: "error",
-        backend: "gjc",
-        label: "GJC unavailable",
-        detail: error instanceof Error ? error.message : String(error),
-        workspace: this.workspace,
-        modelPreset: this.modelPreset,
-      });
-    }
-    return { ...this.connectionState };
+  getConnection(): Promise<BackendConnection> {
+    return getConnection(this.host);
   }
 
-  async reconfigure(preferences: AgentControlPreferences): Promise<boolean> {
-    const workspace = canonicalWorkspace(preferences.workspace);
-    const executable = preferences.gjcExecutable || undefined;
-    const runtimeChanged =
-      this.configuredExecutable !== executable ||
-      this.modelPreset !== preferences.modelPreset ||
-      this.permissionHandling !== preferences.permissionHandling;
-    this.workspace = workspace;
-    this.configuredExecutable = executable;
-    this.modelPreset = preferences.modelPreset;
-    this.permissionHandling = preferences.permissionHandling;
-    if (!runtimeChanged) {
-      this.setConnection({ ...this.connectionState, workspace });
-      return false;
-    }
-
-    resetForRuntimeChange(this.host);
-    await this.ensureStarted();
-    return true;
+  reconfigure(preferences: AgentControlPreferences): Promise<boolean> {
+    return reconfigure(this.host, preferences);
   }
 
   /** The title the session list shows, cut to one readable line. */
@@ -1805,13 +1793,8 @@ export class GjcSdkController {
     return runtimeState;
   }
 
-  async reconnect(): Promise<BackendConnection> {
-    if (this.disposed) throw new Error("GJC controller is disposed");
-    resetForReconnect(this.host);
-    this.generation += 1;
-    await this.ensureStarted();
-    await this.recoverOwnedSessions();
-    return { ...this.connectionState };
+  reconnect(): Promise<BackendConnection> {
+    return reconnect(this.host);
   }
 
   hideSession(sessionId: string): void {
@@ -1863,110 +1846,8 @@ export class GjcSdkController {
     disposeController(this.host);
   }
 
-  private async ensureStarted(): Promise<void> {
-    if (this.cli) return;
-    if (this.startup) return this.startup;
-    if (this.disposed) throw new Error("GJC controller is disposed");
-
-    this.startup = this.start().finally(() => {
-      this.startup = undefined;
-    });
-    return this.startup;
-  }
-
-  /**
-   * Prepares the CLI client.
-   *
-   * There is nothing to connect to: the broker is started on demand by the CLI
-   * itself, and every operation is its own process. "Ready" therefore means the
-   * executable resolves and the broker answers a session list -- proof the app can
-   * actually reach the runtime, without holding anything open. A runtime crash or
-   * upgrade can no longer take the window's connection down with it, because there
-   * is no connection to lose.
-   */
-  private async start(): Promise<void> {
-    const generation = ++this.generation;
-    this.startupSessionRows = undefined;
-    this.invalidateBrokerIndexCache();
-    this.setConnection({
-      state: "connecting",
-      backend: "gjc",
-      label: "GJC",
-      detail: "Reaching the GJC broker",
-      workspace: this.workspace,
-      modelPreset: this.modelPreset,
-    });
-    const executable = await this.resolveExecutable();
-    let profileThinking: string | undefined;
-    try {
-      const modelsFile = path.join(
-        path.resolve(
-          process.env.GJC_CODING_AGENT_DIR ??
-            path.join(homedir(), ".gjc/agent"),
-        ),
-        "models.yml",
-      );
-      profileThinking = configuredProfileDefaultThinking(
-        await readFile(modelsFile, "utf8"),
-        this.modelPreset,
-      );
-    } catch {
-      /* built-in profiles resolve their own defaults */
-    }
-    this.modelPresetThinking = profileThinking;
-    const cli = new GjcSdkCli({
-      executable,
-      repo: this.workspace,
-      env: runtimeEnvironment(),
-      timeoutMs: STARTUP_TIMEOUT_MS,
-    });
-    // The broker index doubles as the reachability check: it fails closed with a
-    // typed operational error when the broker cannot be started at all.
-    const beforeIndex = await this.brokerIndexRevision();
-    const rows = await cli.listSessions({ scope: "all" });
-    const afterIndex = await this.brokerIndexRevision();
-    if (generation !== this.generation || this.disposed) return;
-    this.noteBrokerIndex(rows, beforeIndex, afterIndex);
-    this.startupSessionRows = rows;
-    this.cli = cli;
-    this.permissionModeApplied.clear();
-    this.setConnection({
-      state: "connected",
-      backend: "gjc",
-      label: "GJC",
-      detail: `SDK session CLI · ${this.modelPreset}`,
-      workspace: this.workspace,
-      modelPreset: this.modelPreset,
-      generation,
-    });
-    queueMicrotask(() => {
-      void this.recoverOwnedSessions();
-    });
-    // Version is informational. Waiting for it held the first paint behind a
-    // second process after the broker had already answered.
-    void this.publishRuntimeVersion(cli, generation);
-  }
-
-  private async publishRuntimeVersion(
-    cli: GjcSdkCli,
-    generation: number,
-  ): Promise<void> {
-    const version = await cli.version().catch(() => undefined);
-    if (!version || generation !== this.generation || this.disposed) return;
-    if (this.connectionState.state !== "connected") return;
-    this.setConnection({ ...this.connectionState, version });
-  }
-
-  /**
-   * The CLI client, starting it if this is the first use.
-   *
-   * Replaces the old `requireConnection`: there is no liveness to check because no
-   * process is held between calls.
-   */
-  private async requireCli(): Promise<GjcSdkCli> {
-    await this.ensureStarted();
-    if (!this.cli) throw new Error("GJC SDK session CLI is unavailable");
-    return this.cli;
+  private requireCli(): Promise<GjcSdkCli> {
+    return requireCli(this.host);
   }
 
   /** The workspace a session's CLI calls must resolve against. */
@@ -2496,13 +2377,5 @@ export class GjcSdkController {
       }
       this.emitEvent({ type: "tool.updated", tool: { ...item } });
     }
-  }
-
-  private setConnection(connection: BackendConnection): void {
-    this.connectionState = connection;
-    this.emitEvent({
-      type: "connection.updated",
-      connection: { ...connection },
-    });
   }
 }
