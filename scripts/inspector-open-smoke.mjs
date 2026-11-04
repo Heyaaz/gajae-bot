@@ -319,7 +319,7 @@ const openModelMenuProbe = `(async (profiles) => {
   if (!header || !scroll) return { error: 'model menu has no header or option list' };
 
   const groups = [...scroll.querySelectorAll('.config-option-group')];
-  const rowsIn = () => scroll.querySelectorAll('.config-option-group > button').length;
+  const rowsIn = () => scroll.querySelectorAll('.config-option-group > .model-choice > button:first-child').length;
   if (groups.length === 0 || rowsIn() === 0) return { error: 'model menu has no options' };
   for (let i = 1, copies = Math.ceil(profiles / rowsIn()); i < copies; i += 1) {
     for (const group of groups) scroll.append(group.cloneNode(true));
@@ -366,7 +366,7 @@ const readModelMenuProbe = `(async () => {
   if (!menu) return { error: 'model menu closed while scrolling' };
   const header = menu.querySelector('header');
   const scroll = menu.querySelector('.config-option-scroll');
-  const rows = [...scroll.querySelectorAll('.config-option-group > button')];
+  const rows = [...scroll.querySelectorAll('.config-option-group > .model-choice > button:first-child')];
   if (rows.length === 0) return { error: 'model list is empty' };
   const lastBox = rows[rows.length - 1].getBoundingClientRect();
   const menuBox = menu.getBoundingClientRect();
