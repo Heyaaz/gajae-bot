@@ -93,7 +93,7 @@ describe("thought card", () => {
     // source is checked instead so the state cannot come back unnoticed, and because
     // the button is the only other place the flag could hide.
     const source = readFileSync(
-      path.resolve(import.meta.dirname, "transcript.tsx"),
+      path.resolve(import.meta.dirname, "transcript-item-view.tsx"),
       "utf8",
     );
     const card = source.slice(
@@ -112,7 +112,7 @@ describe("thought card", () => {
     // The memo'd row is what makes a global toggle reach every card, so both props have
     // to be part of its input rather than a value read from somewhere else.
     const source = readFileSync(
-      path.resolve(import.meta.dirname, "transcript.tsx"),
+      path.resolve(import.meta.dirname, "transcript-item-view.tsx"),
       "utf8",
     );
     const view = source.slice(
