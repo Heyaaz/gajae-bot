@@ -114,13 +114,13 @@ export function formatDuration(ms: number): string {
 }
 
 export function statusLabel(status: AgentSession["status"], phase?: string): string {
-  if (phase === "compacting") return "Compacting";
-  if (status === "starting") return "Starting";
-  if (status === "running") return "Working";
-  if (status === "waiting") return "Needs input";
-  if (status === "failed") return "Failed";
+  if (phase === "compacting") return t("대화 정리 중");
+  if (status === "starting") return t("시작하는 중");
+  if (status === "running") return t("작업 중");
+  if (status === "waiting") return t("입력 필요");
+  if (status === "failed") return t("실패");
   if (status === "unknown") return t("상태 확인 불가");
-  return "Idle";
+  return t("쉬는 중");
 }
 
 export function parallelStateLabel(state: ParallelGroup["state"]): string {

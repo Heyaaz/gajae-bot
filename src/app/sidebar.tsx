@@ -714,7 +714,7 @@ function SidebarView({
               </header>
             ) : (
               <header>
-                <span>{group.label}</span>
+                <span>{t(group.label)}</span>
               </header>
             )}
             {group.rows.map(renderNode)}
@@ -841,7 +841,7 @@ function SidebarView({
             <button
               type="button"
               className="workspace-rename-button"
-              title={t("Workspace 이름 변경")}
+              title={t("작업 공간 이름 바꾸기")}
               onClick={() => {
                 setWorkspaceValue(workspaceLabel);
                 setEditingWorkspace(true);

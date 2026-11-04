@@ -209,7 +209,7 @@ export function SettingsDialog({
   const detectedPreset = connection.modelPreset ?? DEFAULT_MODEL_PRESET;
   const fallbackPreferences: AgentControlPreferences = {
     workspace: connection.workspace,
-    workspaceLabel: t("개인 Workspace"),
+    workspaceLabel: t("내 작업 공간"),
     modelPreset: detectedPreset,
     permissionHandling: "prompt",
     gjcExecutable: "",

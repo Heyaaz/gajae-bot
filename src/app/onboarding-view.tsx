@@ -334,8 +334,8 @@ export function OnboardingView({
               {!stage.switchedModel
                 ? t`${stage.provider.name}에 로그인했습니다. 모델 선택에서 이 제공자의 모델을 고를 수 있습니다.`
                 : reentry
-                  ? t`${stage.provider.name}의 추천 모델(${stage.provider.preset})로 설정했습니다.`
-                  : t`${stage.provider.name}의 추천 모델(${stage.provider.preset})로 설정했습니다. 작업할 폴더를 고르고 첫 대화를 시작하세요.`}
+                  ? t`${stage.provider.name} 추천 모델로 설정했습니다.`
+                  : t`${stage.provider.name} 추천 모델로 설정했습니다. 작업할 폴더를 고르고 첫 대화를 시작하세요.`}
             </p>
             <button
               className="button-primary onboarding-primary"

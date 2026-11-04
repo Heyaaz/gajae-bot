@@ -203,7 +203,7 @@ export default function App() {
   // one field through the bridge without touching the rest.
   const [preferences, setPreferences] = useState<AgentControlPreferences>({
     workspace: "",
-    workspaceLabel: t("개인 Workspace"),
+    workspaceLabel: t("내 작업 공간"),
     modelPreset: DEFAULT_MODEL_PRESET,
     permissionHandling: "prompt",
     gjcExecutable: "",
@@ -1427,7 +1427,7 @@ export default function App() {
           <span className="workspace-empty__mark">
             <img src={gajaeIconUrl} alt="" />
           </span>
-          <h1>{t("선택된 Gajae 세션이 없습니다")}</h1>
+          <h1>{t("선택된 세션이 없습니다")}</h1>
           <button
             className="button-primary"
             type="button"

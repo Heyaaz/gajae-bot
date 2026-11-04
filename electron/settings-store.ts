@@ -72,9 +72,11 @@ export function parsePreferences(value: unknown, defaultWorkspace: string): Agen
       : validDirectory(defaultWorkspace)
         ? path.resolve(defaultWorkspace)
         : homedir(),
-    workspaceLabel: typeof candidate.workspaceLabel === 'string' && candidate.workspaceLabel.trim()
+    // The old English default reads as unset, so it follows the current default.
+    workspaceLabel: typeof candidate.workspaceLabel === 'string' && candidate.workspaceLabel.trim() &&
+      candidate.workspaceLabel.trim() !== 'Private workspace'
       ? candidate.workspaceLabel.trim().slice(0, 60)
-      : 'Private workspace',
+      : '내 작업 공간',
     modelPreset: validModelPreset(candidate.modelPreset)
       ? candidate.modelPreset.trim()
       : DEFAULT_MODEL_PRESET,

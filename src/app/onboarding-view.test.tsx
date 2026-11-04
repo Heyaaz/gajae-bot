@@ -112,7 +112,8 @@ describe("OnboardingView", () => {
 
     await act(async () => fake.signIn().resolve({ switchedModel: true }));
     expect(container.textContent).toContain("준비됐습니다");
-    expect(container.textContent).toContain("glm-medium");
+    expect(container.textContent).toContain("추천 모델로 설정했습니다");
+    expect(container.textContent).not.toContain("glm-medium");
     await click(container, "첫 대화 시작");
     expect(onClose).toHaveBeenCalled();
     expect(onStartConversation).toHaveBeenCalled();

@@ -229,7 +229,7 @@ describe("Sidebar session groups", () => {
     );
     // Pin first, then attention order: a status heading list that reads like the
     // list model instead of like the order the backend happened to send.
-    expect(headings(markup)).toEqual(["고정됨", "Needs input", "Working", "Done"]);
+    expect(headings(markup)).toEqual(["고정됨", "입력 필요", "작업 중", "완료"]);
     expect(markup).not.toContain("최근 세션");
   });
 
@@ -276,7 +276,7 @@ describe("Sidebar project sections", () => {
         }),
       ),
     );
-    expect(headings(markup)).toEqual(["Needs input"]);
+    expect(headings(markup)).toEqual(["입력 필요"]);
     const projectHeaders = [
       ...markup.matchAll(/class="session-project-toggle"[^>]*>.*?<span>([^<]*)<\/span>/gu),
     ].map((match) => match[1]);
@@ -330,7 +330,7 @@ describe("Sidebar families", () => {
         ]),
       ),
     );
-    expect(headings(markup)).toEqual(["Needs input"]);
+    expect(headings(markup)).toEqual(["입력 필요"]);
     expect(markup).toContain("Session 0");
     expect(markup).toContain("Session 1");
   });
@@ -375,8 +375,8 @@ describe("Sidebar row state", () => {
     expect(markup).toContain('class="session-state-dot session-state-dot--waiting"');
     expect(markup).toContain('class="session-state-dot session-state-dot--running"');
     expect(markup).toContain('class="session-state-dot session-state-dot--compacting"');
-    expect(markup).toContain('aria-label="Needs input"');
-    expect(markup).toContain('title="Compacting"');
+    expect(markup).toContain('aria-label="입력 필요"');
+    expect(markup).toContain('title="대화 정리 중"');
   });
 });
 

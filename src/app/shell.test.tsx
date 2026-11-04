@@ -623,7 +623,7 @@ describe("session delete optimism", () => {
     const markup = renderApp();
     expect(actionProbe.sidebar!.sessions).toEqual([]);
     expect(actionProbe.sidebar!.selectedId).toBeNull();
-    expect(markup).toContain("선택된 Gajae 세션이 없습니다");
+    expect(markup).toContain("선택된 세션이 없습니다");
     expect(actionProbe.deleteSession).toHaveBeenCalledWith(row.id);
 
     removal.resolve();
