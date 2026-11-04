@@ -568,7 +568,7 @@ export class GjcSdkController {
       const status = this.sessions.get(sessionId)?.status;
       return status === "starting" || status === "running" || status === "waiting";
     },
-    requestPermission: (request) => requestPermission(this.streamHost, request),
+    requestPermission: (request) => requestPermission(this.host, request),
     dropPermission: (toolId) => {
       const pending = this.pendingPermissions.get(toolId);
       if (!pending) return;
@@ -659,7 +659,7 @@ export class GjcSdkController {
   /** The latest streamed tool rows, kept over a stale durable read. */
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
-  private readonly questionHost: QuestionHost = ((controller: GjcSdkController): QuestionHost => ({
+  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost = ((controller: GjcSdkController) => ({
     get sessionQuestions() { return controller.sessionQuestions; },
     get questionRefreshes() { return controller.questionRefreshes; },
     get disposed() { return controller.disposed; },
@@ -676,70 +676,36 @@ export class GjcSdkController {
     get cancellingSessions() { return controller.cancellingSessions; },
     updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
     controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
-  }))(this);
-
-  private readonly commandPaletteHost: CommandPaletteHost = ((controller: GjcSdkController): CommandPaletteHost => ({
     get commandRefreshes() { return controller.commandRefreshes; },
     get sessionAdvertisedCommands() { return controller.sessionAdvertisedCommands; },
     get sessionDiscoveredCommands() { return controller.sessionDiscoveredCommands; },
     get sessionCommands() { return controller.sessionCommands; },
-    get disposed() { return controller.disposed; },
-    get sessions() { return controller.sessions; },
     get commandRefreshTimers() { return controller.commandRefreshTimers; },
     get commandRefreshAttempts() { return controller.commandRefreshAttempts; },
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
     get sessionSdkOperations() { return controller.sessionSdkOperations; },
     get publishedCommandKeys() { return controller.publishedCommandKeys; },
-    get emitEvent() { return controller.emitEvent; },
-  }))(this);
-
-  private readonly goalTodoHost: GoalTodoHost = ((controller: GjcSdkController): GoalTodoHost => ({
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get sessionSdkOperations() { return controller.sessionSdkOperations; },
     get progressWatchedAt() { return controller.progressWatchedAt; },
     get sessionProgress() { return controller.sessionProgress; },
-    get disposed() { return controller.disposed; },
     get progressTimers() { return controller.progressTimers; },
     get progressReads() { return controller.progressReads; },
-    get sessions() { return controller.sessions; },
-    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
     get sessionTodoSnapshots() { return controller.sessionTodoSnapshots; },
     get attachedSessions() { return controller.attachedSessions; },
     get todoPollTimers() { return controller.todoPollTimers; },
     get todoPollAttempts() { return controller.todoPollAttempts; },
     get todoReads() { return controller.todoReads; },
-    markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
-    get transcripts() { return controller.transcripts; },
-    noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
-    get emitEvent() { return controller.emitEvent; },
-  }))(this);
-
-  private readonly sessionConfigHost: SessionConfigHost = ((controller: GjcSdkController): SessionConfigHost => ({
     get modelProfiles() { return controller.modelProfiles; },
     get modelPreset() { return controller.modelPreset; },
     get modelPresetThinking() { return controller.modelPresetThinking; },
     get explicitSessionThinking() { return controller.explicitSessionThinking; },
     get sessionConfig() { return controller.sessionConfig; },
-    get emitEvent() { return controller.emitEvent; },
-    get sessions() { return controller.sessions; },
     requireCli: () => controller.requireCli(),
     repoFor: (sessionId) => controller.repoFor(sessionId),
-    get disposed() { return controller.disposed; },
     get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
     get contextUsageQueries() { return controller.contextUsageQueries; },
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
     advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
     ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-  }))(this);
-
-  private readonly filesHost: FilesHost = ((controller: GjcSdkController): FilesHost => ({
-    get transcripts() { return controller.transcripts; },
     getTranscript: (sessionId) => controller.getTranscript(sessionId),
     get artifactDirectory() { return controller.artifactDirectory; },
-    requireCli: () => controller.requireCli(),
-    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-    repoFor: (sessionId) => controller.repoFor(sessionId),
     get deletingSessions() { return controller.deletingSessions; },
     get artifactSessionIds() { return controller.artifactSessionIds; },
     get artifactWrites() { return controller.artifactWrites; },
@@ -749,17 +715,12 @@ export class GjcSdkController {
     get workspace() { return controller.workspace; },
     get sharedSessionFiles() { return controller.sharedSessionFiles; },
     get sharedTranscriptReads() { return controller.sharedTranscriptReads; },
-  }))(this);
-
-  private readonly runStateHost: RunStateHost = ((controller: GjcSdkController): RunStateHost => ({
     locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
     get discoveredRunStates() { return controller.discoveredRunStates; },
     get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
     get asyncJobReconciliations() { return controller.asyncJobReconciliations; },
-    get sessions() { return controller.sessions; },
     get liveRunningSessions() { return controller.liveRunningSessions; },
     get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
-    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
     get idleTranscriptBaselines() { return controller.idleTranscriptBaselines; },
     get workingPhaseSessions() { return controller.workingPhaseSessions; },
@@ -770,48 +731,24 @@ export class GjcSdkController {
     get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
     get compactionStartedAt() { return controller.compactionStartedAt; },
     get activePromptSessions() { return controller.activePromptSessions; },
-    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    get emitEvent() { return controller.emitEvent; },
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get disposed() { return controller.disposed; },
     get runStateWatchers() { return controller.runStateWatchers; },
     get runStateTimers() { return controller.runStateTimers; },
     get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
     get generation() { return controller.generation; },
     get lastDiscovered() { return controller.lastDiscovered; },
     set lastDiscovered(value) { controller.lastDiscovered = value; },
-  }))(this);
-
-  private readonly discoveryHost: DiscoveryHost = ((controller: GjcSdkController): DiscoveryHost => ({
     brokerSessions: (options) => controller.brokerSessions(options),
-    get lastDiscovered() { return controller.lastDiscovered; },
-    set lastDiscovered(value) { controller.lastDiscovered = value; },
     get sessionMetadata() { return controller.sessionMetadata; },
     liveRouteReachable: (row) => controller.liveRouteReachable(row),
     get terminalOnlySessions() { return controller.terminalOnlySessions; },
-    get sessions() { return controller.sessions; },
     get lastLiveFingerprint() { return controller.lastLiveFingerprint; },
     set lastLiveFingerprint(value) { controller.lastLiveFingerprint = value; },
-    get workspace() { return controller.workspace; },
-    get activePromptSessions() { return controller.activePromptSessions; },
-    get liveRunningSessions() { return controller.liveRunningSessions; },
-    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
     syncRunStateWatchers: (sessionIds) => controller.syncRunStateWatchers(sessionIds),
     discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
-    get workingPhaseSessions() { return controller.workingPhaseSessions; },
     liveEvidenceQuiet: (sessionId) => controller.liveEvidenceQuiet(sessionId),
-    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
-    get attachedSessions() { return controller.attachedSessions; },
-    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
     settleQuietRunningRow: (sessionId, transcriptStatus, currentSession) => controller.settleQuietRunningRow(sessionId, transcriptStatus, currentSession),
-    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
-    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     sessionParentId: (sessionId) => controller.sessionParentId(sessionId),
-    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    get sessionCwds() { return controller.sessionCwds; },
     get routeProbes() { return controller.routeProbes; },
-    requireCli: () => controller.requireCli(),
-    get disposed() { return controller.disposed; },
     get startupSessionRows() { return controller.startupSessionRows; },
     set startupSessionRows(value) { controller.startupSessionRows = value; },
     get cachedBrokerRows() { return controller.cachedBrokerRows; },
@@ -819,38 +756,18 @@ export class GjcSdkController {
     get cachedBrokerRevision() { return controller.cachedBrokerRevision; },
     set cachedBrokerRevision(value) { controller.cachedBrokerRevision = value; },
     get sessionParents() { return controller.sessionParents; },
-  }))(this);
-
-  private readonly lifecycleHost: LifecycleHost = ((controller: GjcSdkController): LifecycleHost => ({
-    requireCli: () => controller.requireCli(),
-    get nextLocalId() { return controller.nextLocalId; },
-    set nextLocalId(value) { controller.nextLocalId = value; },
-    get sessions() { return controller.sessions; },
-    brokerSessions: (options) => controller.brokerSessions(options),
-    get modelPreset() { return controller.modelPreset; },
-    get sessionCwds() { return controller.sessionCwds; },
-    get transcripts() { return controller.transcripts; },
     get toolRowIndices() { return controller.toolRowIndices; },
     get messageKeys() { return controller.messageKeys; },
-    get startupSessionRows() { return controller.startupSessionRows; },
-    set startupSessionRows(value) { controller.startupSessionRows = value; },
     invalidateBrokerIndexCache: () => controller.invalidateBrokerIndexCache(),
     get windowHostedSessions() { return controller.windowHostedSessions; },
-    get sessionMetadata() { return controller.sessionMetadata; },
     applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
-    get emitEvent() { return controller.emitEvent; },
-    get attachedSessions() { return controller.attachedSessions; },
     startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
     refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
     refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
     refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
-    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
     watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
-    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
     get forkRecoveryIntervalMs() { return controller.forkRecoveryIntervalMs; },
     get deletionPromises() { return controller.deletionPromises; },
-    get deletingSessions() { return controller.deletingSessions; },
-    get workspace() { return controller.workspace; },
     stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
     removeSessionArtifacts: (sessionId) => controller.removeSessionArtifacts(sessionId),
     deleteThroughGjcCli: (cwd, sessionPath) => controller.deleteThroughGjcCli(cwd, sessionPath),
@@ -862,310 +779,87 @@ export class GjcSdkController {
     get desktopTranscriptBaselines() { return controller.desktopTranscriptBaselines; },
     get activeAssistantMessages() { return controller.activeAssistantMessages; },
     get activeThoughts() { return controller.activeThoughts; },
-    get activePromptSessions() { return controller.activePromptSessions; },
     get activePromptAdmissions() { return controller.activePromptAdmissions; },
     get cancellationWatermarks() { return controller.cancellationWatermarks; },
-    get liveRunningSessions() { return controller.liveRunningSessions; },
-    get liveRunningDigests() { return controller.liveRunningDigests; },
-    get liveEvidenceAt() { return controller.liveEvidenceAt; },
-    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
-    get workingPhaseSessions() { return controller.workingPhaseSessions; },
-    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
-    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
     get completionDeferredSessions() { return controller.completionDeferredSessions; },
-    get asyncJobReconciliations() { return controller.asyncJobReconciliations; },
     get runRevisions() { return controller.runRevisions; },
-    get discoveredRunStates() { return controller.discoveredRunStates; },
-    get idleTranscriptBaselines() { return controller.idleTranscriptBaselines; },
-    get compactingSessions() { return controller.compactingSessions; },
-    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
     get compactionRecordWatermark() { return controller.compactionRecordWatermark; },
-    get compactionStartedAt() { return controller.compactionStartedAt; },
     get suppressedUserMessageKeys() { return controller.suppressedUserMessageKeys; },
     get echoedPromptTexts() { return controller.echoedPromptTexts; },
-    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
-    get sessionCommands() { return controller.sessionCommands; },
-    get publishedCommandKeys() { return controller.publishedCommandKeys; },
-    get commandRefreshes() { return controller.commandRefreshes; },
     get sessionContextRefreshes() { return controller.sessionContextRefreshes; },
     get sessionContextRefreshedAt() { return controller.sessionContextRefreshedAt; },
     clearCommandRefreshRetry: (sessionId) => controller.clearCommandRefreshRetry(sessionId),
     clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
     clearProgress: (sessionId) => controller.clearProgress(sessionId),
-    get sessionAdvertisedCommands() { return controller.sessionAdvertisedCommands; },
-    get sessionDiscoveredCommands() { return controller.sessionDiscoveredCommands; },
     get sessionPlans() { return controller.sessionPlans; },
-    get sessionQuestions() { return controller.sessionQuestions; },
-    get sessionTodoSnapshots() { return controller.sessionTodoSnapshots; },
-    get todoReads() { return controller.todoReads; },
-    get sessionSdkOperations() { return controller.sessionSdkOperations; },
-    get sessionConfig() { return controller.sessionConfig; },
-    get terminalOnlySessions() { return controller.terminalOnlySessions; },
-    get routeProbes() { return controller.routeProbes; },
-    get modelProfiles() { return controller.modelProfiles; },
-    get explicitSessionThinking() { return controller.explicitSessionThinking; },
-    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
-    get runStateWatchers() { return controller.runStateWatchers; },
-    get runStateTimers() { return controller.runStateTimers; },
     get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
     cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
-    get lastLiveFingerprint() { return controller.lastLiveFingerprint; },
-    set lastLiveFingerprint(value) { controller.lastLiveFingerprint = value; },
-    get lastDiscovered() { return controller.lastDiscovered; },
-    set lastDiscovered(value) { controller.lastDiscovered = value; },
-    sdkOperations: (sessionId, options) => controller.sdkOperations(sessionId, options),
-    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
-  }))(this);
-
-  private readonly attachHost: AttachHost = ((controller: GjcSdkController): AttachHost => ({
-    brokerSessions: (options) => controller.brokerSessions(options),
+    sdkOperations: (sessionId, options?: { strict?: boolean }) => controller.sdkOperations(sessionId, options),
     get historySummaryCache() { return controller.historySummaryCache; },
-    get sessions() { return controller.sessions; },
-    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
-    get workspace() { return controller.workspace; },
-    get sessionMetadata() { return controller.sessionMetadata; },
-    get sessionCwds() { return controller.sessionCwds; },
-    get emitEvent() { return controller.emitEvent; },
-    get generation() { return controller.generation; },
     resumeSession: (sessionId) => controller.resumeSession(sessionId),
     readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
-    get disposed() { return controller.disposed; },
     markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
     installTranscript: (sessionId, items) => controller.installTranscript(sessionId, items),
-    discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
-    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
     invalidateDesktopTranscript: (sessionId) => controller.invalidateDesktopTranscript(sessionId),
-    get terminalOnlySessions() { return controller.terminalOnlySessions; },
-    stopTailFollower: (sessionId) => controller.stopTailFollower(sessionId),
-    get attachedSessions() { return controller.attachedSessions; },
     get attachAttempts() { return controller.attachAttempts; },
-    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
     refreshSessionSettings: (sessionId) => controller.refreshSessionSettings(sessionId),
-    startTailFollower: (sessionId) => controller.startTailFollower(sessionId),
-    requireCli: () => controller.requireCli(),
-    repoFor: (sessionId) => controller.repoFor(sessionId),
-    get messageKeys() { return controller.messageKeys; },
-    get modelPreset() { return controller.modelPreset; },
-    get windowHostedSessions() { return controller.windowHostedSessions; },
-    get sharedSessionFiles() { return controller.sharedSessionFiles; },
-    applyPermissionMode: (sessionId) => controller.applyPermissionMode(sessionId),
-    refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
-    refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
     readSharedTranscript: (sessionId) => controller.readSharedTranscript(sessionId),
     finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
     get watchedTranscripts() { return controller.watchedTranscripts; },
-    watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
-    refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
     get detachTimers() { return controller.detachTimers; },
-    get activePromptSessions() { return controller.activePromptSessions; },
-    get workingPhaseSessions() { return controller.workingPhaseSessions; },
-    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
-    get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
-    get transcripts() { return controller.transcripts; },
-    get toolRowIndices() { return controller.toolRowIndices; },
-    get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
-    get desktopTranscriptBaselines() { return controller.desktopTranscriptBaselines; },
-    get activeAssistantMessages() { return controller.activeAssistantMessages; },
-    get activeThoughts() { return controller.activeThoughts; },
-    get sessionSdkOperations() { return controller.sessionSdkOperations; },
-    get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
-    get transcriptAttachments() { return controller.transcriptAttachments; },
     get cli() { return controller.cli; },
     get recovery() { return controller.recovery; },
     set recovery(value) { controller.recovery = value; },
-  }))(this);
-
-  private readonly transcriptStoreHost: TranscriptStoreHost = ((controller: GjcSdkController): TranscriptStoreHost => ({
-    get activePromptSessions() { return controller.activePromptSessions; },
-    readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
-    installTranscript: (sessionId, items) => controller.installTranscript(sessionId, items),
-    get terminalOnlySessions() { return controller.terminalOnlySessions; },
-    readSharedTranscript: (sessionId) => controller.readSharedTranscript(sessionId),
     refreshTranscriptAttachment: (sessionId) => controller.refreshTranscriptAttachment(sessionId),
     terminalOnlyNotice: (sessionId) => controller.terminalOnlyNotice(sessionId),
-    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-    get sessions() { return controller.sessions; },
-    get emitEvent() { return controller.emitEvent; },
     lifecycleUncertainNotice: (sessionId) => controller.lifecycleUncertainNotice(sessionId),
-    removeLocalSession: (sessionId, hide) => controller.removeLocalSession(sessionId, hide),
-    get transcripts() { return controller.transcripts; },
-    getTranscript: (sessionId) => controller.getTranscript(sessionId),
-    get desktopTranscriptBaselines() { return controller.desktopTranscriptBaselines; },
-    get toolRowIndices() { return controller.toolRowIndices; },
-    get dirtyTranscriptRows() { return controller.dirtyTranscriptRows; },
-    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
     get transcriptEpoch() { return controller.transcriptEpoch; },
-    locateSharedTranscriptFile: (sessionId) => controller.locateSharedTranscriptFile(sessionId),
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
-    get generation() { return controller.generation; },
-    watchSharedTranscript: (sessionId, filePath) => controller.watchSharedTranscript(sessionId, filePath),
     readTranscriptEnvelopes: (filePath, info) => controller.readTranscriptEnvelopes(filePath, info),
-    get compactionRecordWatermark() { return controller.compactionRecordWatermark; },
     reconciledAsyncJobIds: (sessionId, jobIds) => controller.reconciledAsyncJobIds(sessionId, jobIds),
-    get asyncJobReconciliations() { return controller.asyncJobReconciliations; },
-    get workingPhaseSessions() { return controller.workingPhaseSessions; },
-    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
-    get compactingSessions() { return controller.compactingSessions; },
-    get compactionStartedAt() { return controller.compactionStartedAt; },
-    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
-    get liveRunningDigests() { return controller.liveRunningDigests; },
-    get liveRunningSessions() { return controller.liveRunningSessions; },
-    get liveEvidenceAt() { return controller.liveEvidenceAt; },
-    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
-    get discoveredRunStates() { return controller.discoveredRunStates; },
     patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
     recordPendingAsyncWork: (sessionId, jobIds) => controller.recordPendingAsyncWork(sessionId, jobIds),
     transcriptStartedNewWork: (sessionId, size, transcriptRunning) => controller.transcriptStartedNewWork(sessionId, size, transcriptRunning),
-    updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
-    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
-    get sharedSessionFiles() { return controller.sharedSessionFiles; },
-    get sharedSessionWatchers() { return controller.sharedSessionWatchers; },
-    get disposed() { return controller.disposed; },
-    get sharedSessionRefreshTimers() { return controller.sharedSessionRefreshTimers; },
     publishTranscriptSync: (sessionId, previous, items) => controller.publishTranscriptSync(sessionId, previous, items),
-    refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
     republishRunState: (sessionId) => controller.republishRunState(sessionId),
     get toolSnapshots() { return controller.toolSnapshots; },
     get imageDataUrls() { return controller.imageDataUrls; },
-    get sessionPlans() { return controller.sessionPlans; },
-    get sessionTodoSnapshots() { return controller.sessionTodoSnapshots; },
-    get activeAssistantMessages() { return controller.activeAssistantMessages; },
-    get activeThoughts() { return controller.activeThoughts; },
-    get sessionQuestions() { return controller.sessionQuestions; },
-    get watchedTranscripts() { return controller.watchedTranscripts; },
     set watchedTranscripts(value) { controller.watchedTranscripts = value; },
-    get detachTimers() { return controller.detachTimers; },
-    get attachedSessions() { return controller.attachedSessions; },
     scheduleDetach: (sessionId) => controller.scheduleDetach(sessionId),
-  }))(this);
-
-  private readonly controlHost: ControlHost = ((controller: GjcSdkController): ControlHost => ({
-    get sessions() { return controller.sessions; },
     persistedCompactionCount: (sessionId) => controller.persistedCompactionCount(sessionId),
-    get compactingSessions() { return controller.compactingSessions; },
-    get compactionStartedAt() { return controller.compactionStartedAt; },
-    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
-    patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
-    controlSession: (sessionId, operation, input, options) => controller.controlSession(sessionId, operation, input, options),
-    refreshContextUsage: (sessionId, options) => controller.refreshContextUsage(sessionId, options),
-    get echoedPromptTexts() { return controller.echoedPromptTexts; },
-    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     appendLocalUserMessage: (sessionId, text, input) => controller.appendLocalUserMessage(sessionId, text, input),
     get pendingSteers() { return controller.pendingSteers; },
-    ensureAttached: (sessionId, replay) => controller.ensureAttached(sessionId, replay),
-    get terminalOnlySessions() { return controller.terminalOnlySessions; },
-    requireCli: () => controller.requireCli(),
-    repoFor: (sessionId) => controller.repoFor(sessionId),
-    sdkOperations: (sessionId) => controller.sdkOperations(sessionId),
-    markTerminalOnly: (sessionId) => controller.markTerminalOnly(sessionId),
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
     get flushingSessions() { return controller.flushingSessions; },
-    discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
-    updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
     executeSdkSlashCommand: (sessionId, input, options) => controller.executeSdkSlashCommand(sessionId, input, options),
-    get activePromptSessions() { return controller.activePromptSessions; },
-    get generation() { return controller.generation; },
-    get activePromptAdmissions() { return controller.activePromptAdmissions; },
-    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
-    get activeAssistantMessages() { return controller.activeAssistantMessages; },
     finalizeThought: (sessionId) => controller.finalizeThought(sessionId),
     awaitPromptSettlement: (sessionId, operationRef, isCurrent, kind) => controller.awaitPromptSettlement(sessionId, operationRef, isCurrent, kind),
     finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
-    get nextLocalId() { return controller.nextLocalId; },
-    set nextLocalId(value) { controller.nextLocalId = value; },
     appendTranscript: (item) => controller.appendTranscript(item),
-    emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
-    get disposed() { return controller.disposed; },
-    republishRunState: (sessionId) => controller.republishRunState(sessionId),
-    get cancellationWatermarks() { return controller.cancellationWatermarks; },
     get cancellationPromises() { return controller.cancellationPromises; },
-    get cancellingSessions() { return controller.cancellingSessions; },
     fireAbort: (sessionId) => controller.fireAbort(sessionId),
-    finalizeAllMessages: (sessionId) => controller.finalizeAllMessages(sessionId),
-    get toolSnapshots() { return controller.toolSnapshots; },
     cancelOpenTools: (sessionId) => controller.cancelOpenTools(sessionId),
     settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
-    cancelPermissionsForSession: (sessionId) => controller.cancelPermissionsForSession(sessionId),
-    get liveRunningSessions() { return controller.liveRunningSessions; },
-    get liveRunningDigests() { return controller.liveRunningDigests; },
-    get liveEvidenceAt() { return controller.liveEvidenceAt; },
-    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
-    get workingPhaseSessions() { return controller.workingPhaseSessions; },
-    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
-    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
-    get discoveredRunStates() { return controller.discoveredRunStates; },
-    get transcripts() { return controller.transcripts; },
-  }))(this);
-
-  private readonly streamHost: StreamHost = ((controller: GjcSdkController): StreamHost => ({
-    get disposed() { return controller.disposed; },
     get tailReads() { return controller.tailReads; },
-    get attachedSessions() { return controller.attachedSessions; },
     get tailControllers() { return controller.tailControllers; },
-    clearTodoPoll: (sessionId) => controller.clearTodoPoll(sessionId),
     get toolObservers() { return controller.toolObservers; },
-    get toolSnapshots() { return controller.toolSnapshots; },
     get tailCheckpoints() { return controller.tailCheckpoints; },
     get tailEventPositions() { return controller.tailEventPositions; },
     refreshWorkflowQuestions: (sessionId) => controller.refreshWorkflowQuestions(sessionId),
-    requireCli: () => controller.requireCli(),
     projectToolStream: (sessionId, kind, payload) => controller.projectToolStream(sessionId, kind, payload),
-    repoFor: (sessionId) => controller.repoFor(sessionId),
     projectMessageChunk: (sessionId, role, update) => controller.projectMessageChunk(sessionId, role, update),
-    finalizeAssistantMessage: (sessionId) => controller.finalizeAssistantMessage(sessionId),
     refreshTranscriptFromFile: (sessionId) => controller.refreshTranscriptFromFile(sessionId),
-    get transcripts() { return controller.transcripts; },
-    noteTranscriptEpoch: (sessionId) => controller.noteTranscriptEpoch(sessionId),
-    get emitEvent() { return controller.emitEvent; },
-    appendTranscript: (item) => controller.appendTranscript(item),
     projectWorkflowGate: (sessionId, payload) => controller.projectWorkflowGate(sessionId, payload),
     requestProgressRefresh: (sessionId) => controller.requestProgressRefresh(sessionId),
     upsertTool: (sessionId, update) => controller.upsertTool(sessionId, update),
-    settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
     handleSessionUpdate: (notification) => controller.handleSessionUpdate(notification),
-    updateSessionStatus: (sessionId, status, options) => controller.updateSessionStatus(sessionId, status, options),
-    get generation() { return controller.generation; },
-    currentRunRevision: (sessionId) => controller.currentRunRevision(sessionId),
-    discoveredRunState: (sessionId) => controller.discoveredRunState(sessionId),
-    refreshSdkCommands: (sessionId, advertised) => controller.refreshSdkCommands(sessionId, advertised),
     captureSessionState: (sessionId, options, mode) => controller.captureSessionState(sessionId, options, mode),
-    get sessionConfig() { return controller.sessionConfig; },
-    get modelProfiles() { return controller.modelProfiles; },
-    refreshSessionConfigOptions: (sessionId) => controller.refreshSessionConfigOptions(sessionId),
     refreshModelCapabilities: (sessionId) => controller.refreshModelCapabilities(sessionId),
-    patchSessionRuntime: (sessionId, patch) => controller.patchSessionRuntime(sessionId, patch),
-    get contextUsageObservedAt() { return controller.contextUsageObservedAt; },
-    get activeThoughts() { return controller.activeThoughts; },
-    get nextLocalId() { return controller.nextLocalId; },
-    set nextLocalId(value) { controller.nextLocalId = value; },
-    get sessionPlans() { return controller.sessionPlans; },
-    markTranscriptRowDirty: (sessionId, rowId) => controller.markTranscriptRowDirty(sessionId, rowId),
-    get toolRowIndices() { return controller.toolRowIndices; },
-    get locallyAbortedSessions() { return controller.locallyAbortedSessions; },
     persistArtifact: (sessionId, artifactId, value) => controller.persistArtifact(sessionId, artifactId, value),
     readTodoRecords: (sessionId) => controller.readTodoRecords(sessionId),
     resolveToolImages: (items) => controller.resolveToolImages(items),
-    emitActivity: (sessionId, category) => controller.emitActivity(sessionId, category),
     get pendingPermissions() { return controller.pendingPermissions; },
-    get sessions() { return controller.sessions; },
-    get sessionMetadata() { return controller.sessionMetadata; },
-    get compactionRecordWatermark() { return controller.compactionRecordWatermark; },
-    get compactingSessions() { return controller.compactingSessions; },
-    get compactionStartedAt() { return controller.compactionStartedAt; },
-    get compactionRecordBaseline() { return controller.compactionRecordBaseline; },
-    get cancellationWatermarks() { return controller.cancellationWatermarks; },
     recordLiveEvidence: (sessionId) => controller.recordLiveEvidence(sessionId),
-    advanceRunRevision: (sessionId) => controller.advanceRunRevision(sessionId),
-    get workingPhaseSessions() { return controller.workingPhaseSessions; },
-    get runtimeIdleSessions() { return controller.runtimeIdleSessions; },
-    readPersistedTranscript: (sessionId) => controller.readPersistedTranscript(sessionId),
-    get liveRunningSessions() { return controller.liveRunningSessions; },
     rememberLiveRunningTranscriptSize: (sessionId) => controller.rememberLiveRunningTranscriptSize(sessionId),
-    get activePromptSessions() { return controller.activePromptSessions; },
-    get transcriptRunningSessions() { return controller.transcriptRunningSessions; },
-    get pendingAsyncWorkSessions() { return controller.pendingAsyncWorkSessions; },
     clearRunningLatches: (sessionId) => controller.clearRunningLatches(sessionId),
-    get cancellingSessions() { return controller.cancellingSessions; },
   }))(this);
 
   constructor(options: GjcControllerOptions) {
@@ -1330,24 +1024,24 @@ export class GjcSdkController {
   private lastLiveFingerprint: string | undefined;
 
   private discoverSessions(): Promise<AgentSession[]> {
-    return discoverSessions(this.discoveryHost);
+    return discoverSessions(this.host);
   }
 
   private readonly routeProbes = new Map<string, { at: number; reachable: boolean }>();
 
   private liveRouteReachable(row: SdkSessionRow): Promise<boolean> {
-    return liveRouteReachable(this.discoveryHost, row);
+    return liveRouteReachable(this.host, row);
   }
 
   private readonly runStateWatchers = new Map<string, FSWatcher>();
   private readonly runStateTimers = new Map<string, NodeJS.Timeout>();
 
   private syncRunStateWatchers(sessionIds: readonly string[]): Promise<void> {
-    return syncRunStateWatchers(this.runStateHost, sessionIds);
+    return syncRunStateWatchers(this.host, sessionIds);
   }
 
   private republishRunState(sessionId: string): Promise<void> {
-    return republishRunState(this.runStateHost, sessionId);
+    return republishRunState(this.host, sessionId);
   }
 
   /**
@@ -1374,13 +1068,13 @@ export class GjcSdkController {
   private sessionParentId(
     sessionId: string,
   ): Promise<string | undefined> {
-    return sessionParentId(this.discoveryHost, sessionId);
+    return sessionParentId(this.host, sessionId);
   }
 
   private discoveredRunState(
     sessionId: string,
   ): Promise<AgentSession["status"] | undefined> {
-    return discoveredRunState(this.runStateHost, sessionId);
+    return discoveredRunState(this.host, sessionId);
   }
 
   private transcriptStartedNewWork(
@@ -1388,19 +1082,19 @@ export class GjcSdkController {
     size: number,
     transcriptRunning: boolean,
   ): boolean {
-    return transcriptStartedNewWork(this.runStateHost, sessionId, size, transcriptRunning);
+    return transcriptStartedNewWork(this.host, sessionId, size, transcriptRunning);
   }
 
   private recordLiveEvidence(sessionId: string): void {
-    return recordLiveEvidence(this.runStateHost, sessionId);
+    return recordLiveEvidence(this.host, sessionId);
   }
 
   private liveEvidenceQuiet(sessionId: string): boolean {
-    return liveEvidenceQuiet(this.runStateHost, sessionId);
+    return liveEvidenceQuiet(this.host, sessionId);
   }
 
   private clearRunningLatches(sessionId: string): void {
-    return clearRunningLatches(this.runStateHost, sessionId);
+    return clearRunningLatches(this.host, sessionId);
   }
 
   private settleQuietRunningRow(
@@ -1408,21 +1102,21 @@ export class GjcSdkController {
     transcriptStatus: AgentSession["status"] | undefined,
     currentSession: AgentSession | undefined,
   ): boolean {
-    return settleQuietRunningRow(this.runStateHost, sessionId, transcriptStatus, currentSession);
+    return settleQuietRunningRow(this.host, sessionId, transcriptStatus, currentSession);
   }
 
   private recordPendingAsyncWork(
     sessionId: string,
     jobIds: readonly string[],
   ): void {
-    return recordPendingAsyncWork(this.runStateHost, sessionId, jobIds);
+    return recordPendingAsyncWork(this.host, sessionId, jobIds);
   }
 
   private reconciledAsyncJobIds(
     sessionId: string,
     jobIds: readonly string[],
   ): Promise<string[]> {
-    return reconciledAsyncJobIds(this.runStateHost, sessionId, jobIds);
+    return reconciledAsyncJobIds(this.host, sessionId, jobIds);
   }
 
   private brokerSessions(options?: {
@@ -1430,11 +1124,11 @@ export class GjcSdkController {
     initialDiscovery?: boolean;
     reuseUnchangedIndex?: boolean;
   }): Promise<SdkSessionRow[] | undefined> {
-    return brokerSessions(this.discoveryHost, options);
+    return brokerSessions(this.host, options);
   }
 
   private invalidateBrokerIndexCache(): void {
-    return invalidateBrokerIndexCache(this.discoveryHost);
+    return invalidateBrokerIndexCache(this.host);
   }
 
   private brokerIndexRevision(): Promise<string | undefined> {
@@ -1446,21 +1140,21 @@ export class GjcSdkController {
     before: string | undefined,
     after: string | undefined,
   ): void {
-    return noteBrokerIndex(this.discoveryHost, rows, before, after);
+    return noteBrokerIndex(this.host, rows, before, after);
   }
 
   createSession(input: CreateSessionInput): Promise<AgentSession> {
-    return createSession(this.lifecycleHost, input);
+    return createSession(this.host, input);
   }
 
   renameSession(sessionId: string, title: string): Promise<void> {
-    return renameSession(this.lifecycleHost, sessionId, title);
+    return renameSession(this.host, sessionId, title);
   }
 
   private readonly transcriptAttachments = new Map<string, Promise<void>>();
 
   private refreshTranscriptAttachment(sessionId: string): void {
-    return refreshTranscriptAttachment(this.attachHost, sessionId);
+    return refreshTranscriptAttachment(this.host, sessionId);
   }
 
   /**
@@ -1502,76 +1196,76 @@ export class GjcSdkController {
     sessionId: string,
     commands: readonly AgentCommand[],
   ): void {
-    return publishSessionCommands(this.commandPaletteHost, sessionId, commands);
+    return publishSessionCommands(this.host, sessionId, commands);
   }
 
   watchTranscripts(sessionIds: readonly string[]): void {
-    return watchTranscripts(this.transcriptStoreHost, sessionIds);
+    return watchTranscripts(this.host, sessionIds);
   }
 
   private scheduleDetach(sessionId: string): void {
-    return scheduleDetach(this.attachHost, sessionId);
+    return scheduleDetach(this.host, sessionId);
   }
 
   getTranscript(sessionId: string): Promise<TranscriptItem[]> {
-    return getTranscript(this.transcriptStoreHost, sessionId);
+    return getTranscript(this.host, sessionId);
   }
 
   getTranscriptPage(
     sessionId: string,
     request?: TranscriptPageRequest,
   ): Promise<TranscriptPage> {
-    return getTranscriptPage(this.transcriptStoreHost, sessionId, request);
+    return getTranscriptPage(this.host, sessionId, request);
   }
 
   getTranscriptChanges(sessionId: string): Promise<TranscriptChange> {
-    return getTranscriptChanges(this.transcriptStoreHost, sessionId);
+    return getTranscriptChanges(this.host, sessionId);
   }
 
   private reindexToolRows(
     sessionId: string,
     items: readonly TranscriptItem[],
   ): void {
-    return reindexToolRows(this.transcriptStoreHost, sessionId, items);
+    return reindexToolRows(this.host, sessionId, items);
   }
 
   private markTranscriptRowDirty(sessionId: string, rowId: string): void {
-    return markTranscriptRowDirty(this.transcriptStoreHost, sessionId, rowId);
+    return markTranscriptRowDirty(this.host, sessionId, rowId);
   }
 
   private invalidateDesktopTranscript(sessionId: string): void {
-    return invalidateDesktopTranscript(this.transcriptStoreHost, sessionId);
+    return invalidateDesktopTranscript(this.host, sessionId);
   }
 
   getTranscriptRevision(sessionId: string): Promise<string | undefined> {
-    return getTranscriptRevision(this.transcriptStoreHost, sessionId);
+    return getTranscriptRevision(this.host, sessionId);
   }
 
   private noteTranscriptEpoch(sessionId: string): void {
-    return noteTranscriptEpoch(this.transcriptStoreHost, sessionId);
+    return noteTranscriptEpoch(this.host, sessionId);
   }
 
   private readSharedTranscript(
     sessionId: string,
   ): Promise<TranscriptItem[]> {
-    return readSharedTranscript(this.transcriptStoreHost, sessionId);
+    return readSharedTranscript(this.host, sessionId);
   }
 
   private readTranscriptEnvelopes(
     filePath: string,
     info: Stats,
   ): Promise<Record<string, unknown>[]> {
-    return readTranscriptEnvelopes(this.filesHost, filePath, info);
+    return readTranscriptEnvelopes(this.host, filePath, info);
   }
 
   private readPersistedTranscript(
     sessionId: string,
   ): Promise<TranscriptItem[] | undefined> {
-    return readPersistedTranscript(this.transcriptStoreHost, sessionId);
+    return readPersistedTranscript(this.host, sessionId);
   }
 
   private watchSharedTranscript(sessionId: string, filePath: string): void {
-    return watchSharedTranscript(this.transcriptStoreHost, sessionId, filePath);
+    return watchSharedTranscript(this.host, sessionId, filePath);
   }
 
   private publishTranscriptSync(
@@ -1579,11 +1273,11 @@ export class GjcSdkController {
     previous: TranscriptItem[] | undefined,
     items: TranscriptItem[],
   ): void {
-    return publishTranscriptSync(this.transcriptStoreHost, sessionId, previous, items);
+    return publishTranscriptSync(this.host, sessionId, previous, items);
   }
 
   private resolveToolImages(items: TranscriptItem[]): Promise<void> {
-    return resolveToolImages(this.transcriptStoreHost, items);
+    return resolveToolImages(this.host, items);
   }
 
   private terminalOnlyNotice(sessionId: string): NoticeActivity {
@@ -1617,11 +1311,11 @@ export class GjcSdkController {
     configId: string,
     value: string,
   ): Promise<void> {
-    return setSessionConfig(this.sessionConfigHost, sessionId, configId, value);
+    return setSessionConfig(this.host, sessionId, configId, value);
   }
 
   cycleThinking(sessionId: string): Promise<string | undefined> {
-    return cycleThinking(this.sessionConfigHost, sessionId);
+    return cycleThinking(this.host, sessionId);
   }
 
   /**
@@ -1651,7 +1345,7 @@ export class GjcSdkController {
   }
 
   controlRetry(sessionId: string, action: "now" | "abort"): Promise<void> {
-    return controlRetry(this.controlHost, sessionId, action);
+    return controlRetry(this.host, sessionId, action);
   }
 
   askSideQuestion(sessionId: string, question: string): Promise<string> {
@@ -1689,17 +1383,17 @@ export class GjcSdkController {
   private rememberLiveRunningTranscriptSize(
     sessionId: string,
   ): Promise<void> {
-    return rememberLiveRunningTranscriptSize(this.transcriptStoreHost, sessionId);
+    return rememberLiveRunningTranscriptSize(this.host, sessionId);
   }
 
   private persistedCompactionCount(
     sessionId: string,
   ): Promise<number | undefined> {
-    return persistedCompactionCount(this.transcriptStoreHost, sessionId);
+    return persistedCompactionCount(this.host, sessionId);
   }
 
   compactSession(sessionId: string): Promise<void> {
-    return compactSession(this.controlHost, sessionId);
+    return compactSession(this.host, sessionId);
   }
 
   private appendLocalUserMessage(
@@ -1730,7 +1424,7 @@ export class GjcSdkController {
   }
 
   private consumePromptEcho(sessionId: string, text: string): boolean {
-    return consumePromptEcho(this.controlHost, sessionId, text);
+    return consumePromptEcho(this.host, sessionId, text);
   }
 
   // Waiting work is hidden from the transcript only while it is still waiting.
@@ -1749,14 +1443,14 @@ export class GjcSdkController {
     input: ResolvedMessageInput,
     options?: { echo?: boolean },
   ): Promise<MessageDelivery> {
-    return steerSession(this.controlHost, sessionId, input, options);
+    return steerSession(this.host, sessionId, input, options);
   }
 
   queueFollowUp(
     sessionId: string,
     input: ResolvedMessageInput,
   ): Promise<MessageDelivery> {
-    return queueFollowUp(this.controlHost, sessionId, input);
+    return queueFollowUp(this.host, sessionId, input);
   }
 
   private controlSession(
@@ -1765,15 +1459,15 @@ export class GjcSdkController {
     input: Record<string, unknown>,
     options?: { confirm?: boolean; idempotencyKey?: string; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined> {
-    return controlSession(this.controlHost, sessionId, operation, input, options);
+    return controlSession(this.host, sessionId, operation, input, options);
   }
 
   listQueuedMessages(sessionId: string): Promise<QueuedMessage[]> {
-    return listQueuedMessages(this.controlHost, sessionId);
+    return listQueuedMessages(this.host, sessionId);
   }
 
   flushQueuedNow(sessionId: string): Promise<boolean> {
-    return flushQueuedNow(this.controlHost, sessionId);
+    return flushQueuedNow(this.host, sessionId);
   }
 
   private appendSdkCommandOutput(
@@ -1832,7 +1526,7 @@ export class GjcSdkController {
     input: ResolvedMessageInput,
     options?: SendMessageOptions,
   ): Promise<MessageDelivery> {
-    return sendMessage(this.controlHost, sessionId, input, options);
+    return sendMessage(this.host, sessionId, input, options);
   }
 
   private awaitPromptSettlement(
@@ -1845,24 +1539,24 @@ export class GjcSdkController {
     | "unknown"
     | { kind: "not_executed"; detail: string }
   > {
-    return awaitPromptSettlement(this.controlHost, sessionId, operationRef, isCurrent, kind);
+    return awaitPromptSettlement(this.host, sessionId, operationRef, isCurrent, kind);
   }
 
   cancelRun(sessionId: string): Promise<void> {
-    return cancelRun(this.controlHost, sessionId);
+    return cancelRun(this.host, sessionId);
   }
 
   private fireAbort(
     sessionId: string,
   ): Promise<"owned" | "plain" | "no_active_turn"> {
-    return fireAbort(this.controlHost, sessionId);
+    return fireAbort(this.host, sessionId);
   }
 
   private appendCancelledNotice(
     sessionId: string,
     ownedWorkUnconfirmed = false,
   ): void {
-    return appendCancelledNotice(this.controlHost, sessionId, ownedWorkUnconfirmed);
+    return appendCancelledNotice(this.host, sessionId, ownedWorkUnconfirmed);
   }
 
   toolDecisionInfo(
@@ -1957,7 +1651,7 @@ export class GjcSdkController {
     sessionId: string,
     artifactId: string,
   ): Promise<ArtifactContent> {
-    return readArtifact(this.filesHost, sessionId, artifactId);
+    return readArtifact(this.host, sessionId, artifactId);
   }
 
   listWorkspaceFiles(sessionId: string): Promise<WorkspaceFileIndex> {
@@ -1973,7 +1667,7 @@ export class GjcSdkController {
     sessionId: string,
     requestedPath: string,
   ): Promise<GeneratedFilePreview> {
-    return previewFile(this.filesHost, sessionId, requestedPath);
+    return previewFile(this.host, sessionId, requestedPath);
   }
 
   private async querySessionItems(
@@ -1997,37 +1691,37 @@ export class GjcSdkController {
     sessionId: string,
     advertised?: AgentCommand[],
   ): Promise<void> {
-    return refreshSdkCommands(this.commandPaletteHost, sessionId, advertised);
+    return refreshSdkCommands(this.host, sessionId, advertised);
   }
 
   private clearCommandRefreshRetry(sessionId: string): void {
-    return clearCommandRefreshRetry(this.commandPaletteHost, sessionId);
+    return clearCommandRefreshRetry(this.host, sessionId);
   }
 
   private sdkOperations(
     sessionId: string,
     options?: { strict?: boolean },
   ): Promise<Set<string>> {
-    return sdkOperations(this.commandPaletteHost, sessionId, options);
+    return sdkOperations(this.host, sessionId, options);
   }
 
   getGoal(sessionId: string): Promise<GoalSnapshot> {
-    return getGoal(this.goalTodoHost, sessionId);
+    return getGoal(this.host, sessionId);
   }
 
   private requestProgressRefresh(sessionId: string): void {
-    return requestProgressRefresh(this.goalTodoHost, sessionId);
+    return requestProgressRefresh(this.host, sessionId);
   }
 
   private clearProgress(sessionId: string): void {
-    return clearProgress(this.goalTodoHost, sessionId);
+    return clearProgress(this.host, sessionId);
   }
 
   operateGoal(
     sessionId: string,
     operation: GoalOperation,
   ): Promise<GoalSnapshot> {
-    return operateGoal(this.goalTodoHost, sessionId, operation);
+    return operateGoal(this.host, sessionId, operation);
   }
 
   /**
@@ -2186,11 +1880,11 @@ export class GjcSdkController {
   }
 
   hideSession(sessionId: string): void {
-    return hideSession(this.lifecycleHost, sessionId);
+    return hideSession(this.host, sessionId);
   }
 
   deleteSession(sessionId: string, options?: DeleteSessionOptions): Promise<void> {
-    return deleteSession(this.lifecycleHost, sessionId, options);
+    return deleteSession(this.host, sessionId, options);
   }
 
   /** Another GJC holding the session open, which deleting it would have to stop. */
@@ -2198,11 +1892,11 @@ export class GjcSdkController {
     sessionId: string,
     options?: { reuseUnchangedIndex?: boolean },
   ): Promise<GjcHostProcess | undefined> {
-    return sessionHostElsewhere(this.lifecycleHost, sessionId, options);
+    return sessionHostElsewhere(this.host, sessionId, options);
   }
 
   private removeSessionArtifacts(sessionId: string): Promise<void> {
-    return removeSessionArtifacts(this.filesHost, sessionId);
+    return removeSessionArtifacts(this.host, sessionId);
   }
 
   private gjcHostProcess(pid: number): Promise<GjcHostProcess | undefined> {
@@ -2221,11 +1915,11 @@ export class GjcSdkController {
   private locateSharedTranscriptFile(
     sessionId: string,
   ): Promise<string | undefined> {
-    return locateSharedTranscriptFile(this.filesHost, sessionId);
+    return locateSharedTranscriptFile(this.host, sessionId);
   }
 
   private removeLocalSession(sessionId: string, hide: boolean): void {
-    return removeLocalSession(this.lifecycleHost, sessionId, hide);
+    return removeLocalSession(this.host, sessionId, hide);
   }
 
   dispose(): void {
@@ -2532,7 +2226,7 @@ export class GjcSdkController {
   }
 
   private recoverOwnedSessions(): Promise<void> {
-    return recoverOwnedSessions(this.attachHost);
+    return recoverOwnedSessions(this.host);
   }
 
   private async resolveExecutable(): Promise<string> {
@@ -2540,34 +2234,34 @@ export class GjcSdkController {
   }
 
   listHistorySessions(): Promise<HistorySession[]> {
-    return listHistorySessions(this.attachHost);
+    return listHistorySessions(this.host);
   }
 
   openHistorySession(sessionId: string): Promise<AgentSession> {
-    return openHistorySession(this.attachHost, sessionId);
+    return openHistorySession(this.host, sessionId);
   }
 
   resumeSession(sessionId: string): Promise<AgentSession> {
-    return resumeSession(this.attachHost, sessionId);
+    return resumeSession(this.host, sessionId);
   }
 
   private ensureAttached(
     sessionId: string,
     replay: boolean,
   ): Promise<void> {
-    return ensureAttached(this.attachHost, sessionId, replay);
+    return ensureAttached(this.host, sessionId, replay);
   }
 
   private startTailFollower(sessionId: string): void {
-    return startTailFollower(this.streamHost, sessionId);
+    return startTailFollower(this.host, sessionId);
   }
 
   private stopTailFollower(sessionId: string): void {
-    return stopTailFollower(this.streamHost, sessionId);
+    return stopTailFollower(this.host, sessionId);
   }
 
   private startToolObserver(sessionId: string): void {
-    return startToolObserver(this.streamHost, sessionId);
+    return startToolObserver(this.host, sessionId);
   }
 
   private questionKey(sessionId: string, gateId: string): string {
@@ -2578,29 +2272,29 @@ export class GjcSdkController {
     sessionId: string,
     gateId: string,
   ): QuestionActivity | undefined {
-    return questionById(this.questionHost, sessionId, gateId);
+    return questionById(this.host, sessionId, gateId);
   }
 
   private hasAnswerableQuestion(sessionId: string): boolean {
-    return hasAnswerableQuestion(this.questionHost, sessionId);
+    return hasAnswerableQuestion(this.host, sessionId);
   }
 
   private refreshWorkflowQuestions(sessionId: string): Promise<void> {
-    return refreshWorkflowQuestions(this.questionHost, sessionId);
+    return refreshWorkflowQuestions(this.host, sessionId);
   }
 
   private settleOpenQuestions(
     sessionId: string,
     status: "cancelled" | "timeout",
   ): void {
-    return settleOpenQuestions(this.questionHost, sessionId, status);
+    return settleOpenQuestions(this.host, sessionId, status);
   }
 
   private projectWorkflowGate(
     sessionId: string,
     payload: Record<string, unknown>,
   ): void {
-    return projectWorkflowGate(this.questionHost, sessionId, payload);
+    return projectWorkflowGate(this.host, sessionId, payload);
   }
 
   private submitQuestionAnswer(
@@ -2609,11 +2303,11 @@ export class GjcSdkController {
     submission: QuestionSubmission,
     idempotencyKey: string,
   ): Promise<void> {
-    return submitQuestionAnswer(this.questionHost, sessionId, gateId, submission, idempotencyKey);
+    return submitQuestionAnswer(this.host, sessionId, gateId, submission, idempotencyKey);
   }
 
   private projectToolStream(sessionId: string, kind: string, payload: Record<string, unknown>): void {
-    return projectToolStream(this.streamHost, sessionId, kind, payload);
+    return projectToolStream(this.host, sessionId, kind, payload);
   }
 
   private projectTailItems(
@@ -2625,47 +2319,47 @@ export class GjcSdkController {
       seq?: number;
     }>,
   ): void {
-    return projectTailItems(this.streamHost, sessionId, items);
+    return projectTailItems(this.host, sessionId, items);
   }
 
   private refreshTranscriptFromFile(sessionId: string): Promise<void> {
-    return refreshTranscriptFromFile(this.transcriptStoreHost, sessionId);
+    return refreshTranscriptFromFile(this.host, sessionId);
   }
 
   private reconcileTailTerminalState(sessionId: string): Promise<void> {
-    return reconcileTailTerminalState(this.streamHost, sessionId);
+    return reconcileTailTerminalState(this.host, sessionId);
   }
 
   private handleSessionUpdate(notification: SessionNotification): void {
-    return handleSessionUpdate(this.streamHost, notification);
+    return handleSessionUpdate(this.host, notification);
   }
 
   private projectThoughtChunk(
     sessionId: string,
     update: Extract<SessionUpdate, { sessionUpdate: "agent_thought_chunk" }>,
   ): void {
-    return projectThoughtChunk(this.streamHost, sessionId, update);
+    return projectThoughtChunk(this.host, sessionId, update);
   }
 
   private finalizeThought(sessionId: string): void {
-    return finalizeThought(this.streamHost, sessionId);
+    return finalizeThought(this.host, sessionId);
   }
 
   private installTranscript(
     sessionId: string,
     items: TranscriptItem[],
   ): TranscriptItem[] {
-    return installTranscript(this.transcriptStoreHost, sessionId, items);
+    return installTranscript(this.host, sessionId, items);
   }
 
   private clearTodoPoll(sessionId: string): void {
-    return clearTodoPoll(this.goalTodoHost, sessionId);
+    return clearTodoPoll(this.host, sessionId);
   }
 
   private readTodoRecords(
     sessionId: string,
   ): Promise<unknown[] | undefined> {
-    return readTodoRecords(this.goalTodoHost, sessionId);
+    return readTodoRecords(this.host, sessionId);
   }
 
   private captureSessionState(
@@ -2673,32 +2367,32 @@ export class GjcSdkController {
     options: SessionConfigOption[],
     mode?: string | null,
   ): void {
-    return captureSessionState(this.sessionConfigHost, sessionId, options, mode);
+    return captureSessionState(this.host, sessionId, options, mode);
   }
 
   private refreshSessionConfigOptions(sessionId: string): Promise<void> {
-    return refreshSessionConfigOptions(this.sessionConfigHost, sessionId);
+    return refreshSessionConfigOptions(this.host, sessionId);
   }
 
   private sessionConfigRow(
     sessionId: string,
   ): Promise<Record<string, unknown> | undefined> {
-    return sessionConfigRow(this.sessionConfigHost, sessionId);
+    return sessionConfigRow(this.host, sessionId);
   }
 
   private refreshSessionSettings(sessionId: string): Promise<void> {
-    return refreshSessionSettings(this.sessionConfigHost, sessionId);
+    return refreshSessionSettings(this.host, sessionId);
   }
 
   private refreshModelCapabilities(sessionId: string): Promise<void> {
-    return refreshModelCapabilities(this.sessionConfigHost, sessionId);
+    return refreshModelCapabilities(this.host, sessionId);
   }
 
   private refreshContextUsage(
     sessionId: string,
     options?: { force?: boolean },
   ): Promise<void> {
-    return refreshContextUsage(this.sessionConfigHost, sessionId, options);
+    return refreshContextUsage(this.host, sessionId, options);
   }
 
   private patchSessionRuntime(
@@ -2718,7 +2412,7 @@ export class GjcSdkController {
       >
     >,
   ): void {
-    return patchSessionRuntime(this.sessionConfigHost, sessionId, patch);
+    return patchSessionRuntime(this.host, sessionId, patch);
   }
 
   private projectMessageChunk(
@@ -2816,7 +2510,7 @@ export class GjcSdkController {
       { sessionUpdate: "tool_call" | "tool_call_update" }
     >,
   ): void {
-    return upsertTool(this.streamHost, sessionId, update);
+    return upsertTool(this.host, sessionId, update);
   }
 
   private persistArtifact(
@@ -2824,25 +2518,25 @@ export class GjcSdkController {
     artifactId: string,
     value: unknown,
   ): Promise<void> {
-    return persistArtifact(this.filesHost, sessionId, artifactId, value);
+    return persistArtifact(this.host, sessionId, artifactId, value);
   }
 
   private patchTool(toolId: string, patch: Partial<ToolActivity>): void {
-    return patchTool(this.streamHost, toolId, patch);
+    return patchTool(this.host, toolId, patch);
   }
 
   private patchSessionInfo(
     sessionId: string,
     update: Extract<SessionUpdate, { sessionUpdate: "session_info_update" }>,
   ): void {
-    return patchSessionInfo(this.streamHost, sessionId, update);
+    return patchSessionInfo(this.host, sessionId, update);
   }
 
   forkSession(input: {
     sourceSessionId: string;
     title?: string;
   }): Promise<AgentSession> {
-    return forkSession(this.lifecycleHost, input);
+    return forkSession(this.host, input);
   }
 
   private recoverForkedSession(
@@ -2850,7 +2544,7 @@ export class GjcSdkController {
     knownSessionIds: ReadonlySet<string>,
     startedAt: number,
   ): Promise<string | undefined> {
-    return recoverForkedSession(this.lifecycleHost, cwd, knownSessionIds, startedAt);
+    return recoverForkedSession(this.host, cwd, knownSessionIds, startedAt);
   }
 
   private gitScope(): GitScope {
