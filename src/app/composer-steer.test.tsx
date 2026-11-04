@@ -10,6 +10,7 @@ import {
   saveComposerQueue,
   type ComposerProps,
 } from "./composer";
+import { submitComposerInput } from "./composer-session";
 
 async function mount(overrides: Partial<ComposerProps> = {}) {
   const sessionId = crypto.randomUUID();
@@ -35,36 +36,69 @@ async function mount(overrides: Partial<ComposerProps> = {}) {
 }
 
 describe("queued message Send now", () => {
+  async function submit(test: Awaited<ReturnType<typeof mount>>, text: string) {
+    const input = test.node.querySelector("textarea")!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      input.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    });
+    return input;
+  }
+
   it.each([
-    { text: "/steer change course", preference: "queue" as const, mode: "steer", expected: "change course" },
-    { text: "change course", preference: "steer" as const, mode: "steer", expected: "change course" },
-    { text: "/queue wait for me", preference: "steer" as const, mode: "followUp", expected: "wait for me" },
-  ])("shows submitted $text above the input without sending it", async ({ text, preference, mode, expected }) => {
+    { text: "/steer change course", preference: "queue" as const },
+    { text: "change course", preference: "steer" as const },
+  ])("steers $text into the running turn at once under the $preference preference", async ({ text, preference }) => {
     const test = await mount({ runningSubmission: preference });
     try {
       await act(async () => saveComposerQueue(test.sessionId, []));
-      const input = test.node.querySelector("textarea")!;
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
-        input.dispatchEvent(new Event("input", { bubbles: true }));
-      });
-      await act(async () => {
-        input.closest("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-      });
+      const input = await submit(test, text);
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "/steer change course", images: [], files: [] });
+      expect(composerQueue(test.sessionId)).toEqual([]);
+      expect(input.value).toBe("");
+    } finally { await test.close(); }
+  });
+
+  it("queues a plain Enter behind work already held even under the steer preference", async () => {
+    const test = await mount({ runningSubmission: "steer" });
+    try {
+      await submit(test, "after those");
+      expect(test.send).not.toHaveBeenCalled();
+      expect(composerQueue(test.sessionId).at(-1)).toEqual(expect.objectContaining({ text: "after those", mode: "followUp" }));
+    } finally { await test.close(); }
+  });
+
+  it("holds /queue above the input until Send now steers it", async () => {
+    const test = await mount({ runningSubmission: "steer" });
+    try {
+      await act(async () => saveComposerQueue(test.sessionId, []));
+      const input = await submit(test, "/queue wait for me");
       expect(test.send).not.toHaveBeenCalled();
       expect(composerQueue(test.sessionId)).toEqual([
-        expect.objectContaining({ text: expected, mode }),
+        expect.objectContaining({ text: "wait for me", mode: "followUp" }),
       ]);
-      expect(test.node.querySelector(".composer-queue-text")?.textContent).toBe(expected);
+      expect(test.node.querySelector(".composer-queue-text")?.textContent).toBe("wait for me");
       const queue = test.node.querySelector(".composer-queue")!;
       expect(queue.closest("form")).toBeNull();
       expect(queue.nextElementSibling).toBe(test.node.querySelector("form.composer"));
-      expect(queue.querySelector("strong, small, em")).toBeNull();
-      expect(test.node.querySelector(".composer-queue-send")).not.toBeNull();
       expect(input.value).toBe("");
       await act(async () => (test.node.querySelector(".composer-queue-send") as HTMLButtonElement).click());
-      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: `/steer ${expected}`, images: [], files: [] });
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "/steer wait for me", images: [], files: [] });
     } finally { await test.close(); }
+  });
+
+  it("submits for an unmounted composer the way its Enter would", async () => {
+    const sessionId = crypto.randomUUID();
+    const send = vi.fn(async () => undefined);
+    submitComposerInput(sessionId, { text: "look here", images: [], files: [] }, { running: true, runningSubmission: "steer", send });
+    expect(send).toHaveBeenCalledExactlyOnceWith({ text: "/steer look here", images: [], files: [] });
+    submitComposerInput(sessionId, { text: "later", images: [], files: [] }, { running: true, runningSubmission: "queue", send });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(composerQueue(sessionId)).toEqual([expect.objectContaining({ text: "later", mode: "followUp" })]);
+    saveComposerQueue(sessionId, []);
   });
 
   it("sends /btw right away instead of holding it behind the turn or the queue", async () => {

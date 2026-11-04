@@ -51,6 +51,7 @@ import {
   parkComposerSession,
   publishComposerDraftRecovery,
   heldComposerRequest,
+  immediateSteerText,
   releasingQueues,
   requestQueueReleaseRetry,
   restoreRejectedDraft,
@@ -911,14 +912,17 @@ export const Composer = memo(function Composer({
     // `/btw` asks beside the turn rather than into it, even before the runtime's
     // command list has said whether it can answer.
     const sideQuestion = /^\/btw(?:\s|$)/iu.test(content) && images.length === 0 && files.length === 0;
-    const holdForTurn = liveTurn && !immediateSdkCommand && !sideQuestion;
+    const steer = immediateSteerText(content, {
+      running,
+      runningSubmission,
+      hasPending: pendingQueue.length > 0,
+    });
+    const holdForTurn = liveTurn && !immediateSdkCommand && !sideQuestion && !steer;
     if (holdForTurn) {
-      // Steer intent is held visibly too. Only Send now releases an individual
-      // instruction into the running turn; submitting must not skip this row.
       setPendingQueue((current) =>
         appendPendingRequest(
           current,
-          heldComposerRequest(content, files, images, runningSubmission),
+          heldComposerRequest(content, files, images),
         ),
       );
     } else {
@@ -930,7 +934,7 @@ export const Composer = memo(function Composer({
       // than creating an unhandled renderer rejection.
       const owner = sessionId;
       const input = { text: content, images, files };
-      void onSend(input).catch(() => {
+      void onSend(steer ? { ...input, text: steer } : input).catch(() => {
         if (submission && lastSubmissionRef.current === submission)
           lastSubmissionRef.current = { text: "", at: 0 };
         restoreRejectedSubmission(owner, input);

@@ -217,16 +217,33 @@ export async function releaseQueuedSession(
   }
 }
 
+/**
+ * The text to send into the running turn at once, or undefined when the
+ * submission is held instead. A steer, chosen by `/steer` or by the
+ * Enter-while-running preference, goes in immediately; holding it made the steer
+ * preference behave like queue. Anything already held keeps its order, so a
+ * plain submission then joins the queue instead of overtaking it.
+ */
+export function immediateSteerText(
+  content: string,
+  options: { running: boolean; runningSubmission: LiveTurnSubmissionMode; hasPending: boolean },
+): string | undefined {
+  if (!options.running) return undefined;
+  if (liveTurnSubmissionMode(content, options.runningSubmission, options.hasPending) !== "steer")
+    return undefined;
+  return /^\/steer(?:\s|$)/u.test(content.trim()) ? content : `/steer ${content}`;
+}
+
 /** The held row a submission becomes while a turn is live. */
 export function heldComposerRequest(
   content: string,
   files: FileAttachment[],
   images: ImageAttachment[],
-  runningSubmission: LiveTurnSubmissionMode,
 ): PendingRequest {
   const preview = composerQueuePreview(content, files, images);
-  const mode = liveTurnSubmissionMode(content, runningSubmission, false) === "steer"
-    ? "steer" : "followUp";
+  // Only an explicit `/steer` is still held as a steer: one typed while the turn
+  // was between states, which Send now delivers.
+  const mode = liveTurnSubmissionMode(content, "queue", true) === "steer" ? "steer" : "followUp";
   return {
     id: `local-${crypto.randomUUID()}`,
     text: preview.text,
@@ -239,8 +256,9 @@ export function heldComposerRequest(
 
 /**
  * Submit for a session exactly as Enter in its composer would, whether or not
- * that composer is mounted. A live turn, or work already held, makes it a held
- * row in the session's queue; otherwise it is sent, and a rejected send returns
+ * that composer is mounted. A steer goes into the running turn; otherwise a live
+ * turn, or work already held, makes it a held row in the session's queue; else it
+ * is sent. A rejected send returns
  * to the session's draft with the same notice Enter gives.
  */
 export function submitComposerInput(
@@ -253,17 +271,17 @@ export function submitComposerInput(
   },
 ): void {
   const pending = composerQueue(sessionId);
-  if (options.running || pending.length > 0) {
+  const steer = immediateSteerText(input.text, { ...options, hasPending: pending.length > 0 });
+  if (!steer && (options.running || pending.length > 0)) {
     saveComposerQueue(
       sessionId,
-      appendPendingRequest(
-        pending,
-        heldComposerRequest(input.text, input.files, input.images, options.runningSubmission),
-      ),
+      appendPendingRequest(pending, heldComposerRequest(input.text, input.files, input.images)),
     );
     return;
   }
-  void options.send(input).catch(() => publishComposerDraftRecovery(sessionId, input));
+  void options
+    .send(steer ? { ...input, text: steer } : input)
+    .catch(() => publishComposerDraftRecovery(sessionId, input));
 }
 
 /** Whether any release for this session is already handing requests over. */

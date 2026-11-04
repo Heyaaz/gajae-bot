@@ -1033,7 +1033,7 @@ export default function App() {
     return current.sendMessage(session.id, input);
   }, []);
   // A diff review is submitted as if typed into that session's composer, so a
-  // live turn holds it as a row instead of sending it.
+  // live turn holds or steers it exactly as Enter would.
   const submitReview = useCallback((sessionId: string, text: string) => {
     submitComposerInput(sessionId, { text, images: [], files: [] }, {
       running: composerTurnLive(
