@@ -9,7 +9,6 @@ import {
   isImmediateSdkCommandSubmission,
   isDuplicateSubmission,
   parkDraft,
-  canMoveRequest,
   moveRequest,
   pullQueuedRequest,
   releaseRequests,
@@ -25,7 +24,6 @@ import {
   rankMentionCandidates,
   withoutMention,
 } from "../composer-mentions";
-import type { MentionCandidates } from "../composer-mentions";
 import type {
   LiveTurnSubmissionMode,
   PendingRequest,
@@ -33,22 +31,13 @@ import type {
 } from "../composer-utils";
 import {
   ArrowUp,
-  Check,
-  ChevronDown,
   CircleStop,
-  Command,
-  FolderGit2,
-  FileText,
   FolderOpen,
   Paperclip,
-  Sparkles,
-  Zap,
-  X,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent } from "react";
-import { directoryName, httpUrls, humanErrorMessage } from "./format";
-import { ModelPicker } from "./composer-model-picker";
+import { httpUrls, humanErrorMessage } from "./format";
 import { LinkPreviewCard } from "./primitives";
 import { t } from "../i18n";
 import {
@@ -75,13 +64,18 @@ import {
 import type { ComposerDraft } from "./composer-session";
 import {
   FAST_SERVICE_TIERS,
-  FastTierControls,
   fastTierBusy,
   requestFastTier,
 } from "./composer-fast-tier";
 import type { FastTierRequest } from "./composer-fast-tier";
 import { handleComposerEnter, selectedCommandDraft } from "./composer-enter";
-import { QueueChip } from "./composer-queue-chip";
+import { ComposerAttachments } from "./composer-attachments";
+import { CommandList } from "./composer-command-list";
+import { MentionList } from "./composer-mention-list";
+import type { MentionFiles } from "./composer-mention-list";
+import { ModelControls } from "./composer-model-controls";
+import { QueueList } from "./composer-queue-list";
+import { WorkspaceSwitcher } from "./composer-workspace-switcher";
 
 export {
   acknowledgeComposerDraftRecoveries,
@@ -119,14 +113,6 @@ export { handleComposerEnter, selectedCommandDraft } from "./composer-enter";
 export type { ComposerEnterEffects, ComposerEnterEvent } from "./composer-enter";
 export { QueueChip } from "./composer-queue-chip";
 export type { QueueChipProps } from "./composer-queue-chip";
-
-/**
- * The last workspace listing behind the `@` popup, for the session it was read
- * for. No entry for the current session means it is still loading.
- */
-type MentionFiles =
-  | { sessionId: string; status: "ready"; candidates: MentionCandidates; truncated: boolean }
-  | { sessionId: string; status: "failed"; message: string };
 
 const MENTION_RESULT_LIMIT = 30;
 
@@ -1427,76 +1413,36 @@ export const Composer = memo(function Composer({
   return (
     <>
       {pendingQueue.length > 0 && (
-        <div className={`composer-queue${pendingQueue[0]?.blocked ? " composer-queue--blocked" : ""}`}>
-          <div className="composer-queue-items">
-            {pendingQueue.map((entry) => (
-              <QueueChip key={entry.id} entry={entry}
-                reorderable={pendingQueue.length > 1}
-                onMoveUp={canMoveRequest(pendingQueue, entry.id, -1)
-                  ? () => moveQueuedEntry(entry.id, -1) : undefined}
-                onMoveDown={canMoveRequest(pendingQueue, entry.id, 1)
-                  ? () => moveQueuedEntry(entry.id, 1) : undefined}
-                onPull={() => pullQueuedEntry({ id: entry.id })}
-                onDiscard={() => discardQueuedEntry(entry.id)}
-                onSendNow={() => { void sendQueuedEntryNow(entry.id); }}
-                disabled={readOnly} />
-            ))}
-          </div>
-          {pendingQueue[0]?.blocked && <small role="status">
-            {t("이미 처리됐을 수 있습니다. 대화 기록을 확인한 뒤 항목을 꺼내거나 버리세요.")}
-          </small>}
-        </div>
+        <QueueList
+          queue={pendingQueue}
+          readOnly={readOnly}
+          onMove={moveQueuedEntry}
+          onPull={(id) => pullQueuedEntry({ id })}
+          onDiscard={discardQueuedEntry}
+          onSendNow={sendQueuedEntryNow}
+        />
       )}
     <form
       ref={composerRef}
       className={`composer ${dragActive ? "is-dragging" : ""}`}
       onSubmit={handleSubmit}
     >
-      {images.length > 0 && (
-        <div className="composer-images">
-          {images.map((image) => (
-            <span key={image.id}>
-              <img
-                src={`data:${image.mimeType};base64,${image.data}`}
-                alt={image.name}
-              />
-              <button
-                type="button"
-                aria-label={`Remove ${image.name}`}
-                onClick={() => {
-                  discardPrepared([image]);
-                  setImages((current) =>
-                    current.filter((item) => item.id !== image.id),
-                  );
-                }}
-              >
-                <X size={12} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-      {files.length > 0 && (
-        <div className="composer-files">
-          {files.map((file) => (
-            <span className="attachment-chip" key={file.id}>
-              <span title={file.label}>{file.label ?? file.name}</span>
-              <button
-                type="button"
-                aria-label={`Remove ${file.name}`}
-                onClick={() => {
-                  discardPrepared([file]);
-                  setFiles((current) =>
-                    current.filter((item) => item.id !== file.id),
-                  );
-                }}
-              >
-                <X size={12} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
+      <ComposerAttachments
+        images={images}
+        files={files}
+        onRemoveImage={(image) => {
+          discardPrepared([image]);
+          setImages((current) =>
+            current.filter((item) => item.id !== image.id),
+          );
+        }}
+        onRemoveFile={(file) => {
+          discardPrepared([file]);
+          setFiles((current) =>
+            current.filter((item) => item.id !== file.id),
+          );
+        }}
+      />
       {readOnly && (
         <small className="composer-readonly">
           {t("보기 전용 기기입니다. 이 기기에서는 대화 조회만 가능합니다.")} </small>
@@ -1554,91 +1500,22 @@ export const Composer = memo(function Composer({
       />
       {(matchingCommands.length > 0 ||
         (commandsPending && commandQuery !== null)) && (
-        <div className="command-palette" ref={commandPaletteRef}>
-          <header>
-            <Sparkles size={14} /> {t("스킬 및 명령어")} <span className="command-palette-count">{matchingCommands.length}</span>
-            <span className="command-palette-help">
-              {commandsPending
-                ? t("스킬 불러오는 중…")
-                : t("↑↓ 선택 · Enter 적용")}
-            </span>
-          </header>
-          {matchingCommands.map((command, index) => (
-            <button
-              key={command.name}
-              type="button"
-              data-command-index={index}
-              className={`command-palette-item${index === commandIndex ? " is-selected" : ""}${command.name.startsWith("skill:") ? " is-skill" : ""}`}
-              aria-label={`/${command.name}${command.description ? ` — ${command.description}` : ""}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => selectCommand(command)}
-            >
-              <span className="command-palette-icon" aria-hidden>
-                {command.name.startsWith("skill:") ? <Sparkles size={15} /> : <Command size={15} />}
-              </span>
-              <span className="command-palette-copy">
-                <strong>{command.name.startsWith("skill:") ? command.name.slice(6) : `/${command.name}`}</strong>
-                <small title={command.description}>{command.description}</small>
-              </span>
-              <span className="command-palette-meta">
-                {command.name.startsWith("skill:") && <span className="command-skill-badge">{t("스킬")}</span>}
-                {command.hint && <code>{command.hint}</code>}
-              </span>
-            </button>
-          ))}
-          {matchingCommands.length === 0 && commandsPending && (
-            <small className="command-palette-loading">
-              {t("스킬 불러오는 중…")}
-            </small>
-          )}
-        </div>
+        <CommandList
+          paletteRef={commandPaletteRef}
+          commands={matchingCommands}
+          commandsPending={commandsPending}
+          commandIndex={commandIndex}
+          onSelect={selectCommand}
+        />
       )}
       {mentionOpen && (
-        <div className="command-palette mention-palette" ref={mentionPaletteRef}
-          role="listbox" aria-label={t("워크스페이스 파일")}>
-          <header>
-            <FileText size={14} /> {t("워크스페이스 파일")}
-            <span className="command-palette-count">{mentionMatches.length}</span>
-            <span className="command-palette-help">{t("↑↓ 선택 · Enter 첨부 · Esc 닫기")}</span>
-          </header>
-          {mentionMatches.map((relativePath, index) => {
-            const slash = relativePath.lastIndexOf("/");
-            return (
-              <button
-                key={relativePath}
-                type="button"
-                role="option"
-                aria-selected={index === mentionIndex}
-                data-mention-index={index}
-                className={`command-palette-item${index === mentionIndex ? " is-selected" : ""}`}
-                title={relativePath}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => void chooseMention(relativePath)}
-              >
-                <span className="command-palette-icon" aria-hidden>
-                  <FileText size={15} />
-                </span>
-                <span className="command-palette-copy">
-                  <strong>{relativePath.slice(slash + 1)}</strong>
-                  <small>{slash > 0 ? relativePath.slice(0, slash) : "./"}</small>
-                </span>
-              </button>
-            );
-          })}
-          {sessionMentionFiles?.status !== "ready" ? (
-            <small className="command-palette-loading">
-              {sessionMentionFiles?.status === "failed"
-                ? sessionMentionFiles.message
-                : t("파일 목록을 불러오는 중…")}
-            </small>
-          ) : mentionMatches.length === 0 ? (
-            <small className="command-palette-loading">{t("일치하는 파일이 없습니다")}</small>
-          ) : sessionMentionFiles.truncated ? (
-            <small className="command-palette-loading">
-              {t("파일이 많아 일부만 검색합니다")}
-            </small>
-          ) : null}
-        </div>
+        <MentionList
+          paletteRef={mentionPaletteRef}
+          matches={mentionMatches}
+          mentionIndex={mentionIndex}
+          files={sessionMentionFiles}
+          onChoose={chooseMention}
+        />
       )}
       <div className="composer-toolbar">
         <div>
@@ -1676,131 +1553,33 @@ export const Composer = memo(function Composer({
           >
             <FolderOpen size={16} />
           </button>
-          <span className="workspace-switcher">
-            <button
-              className="composer-context"
-              type="button"
-              title={workspace}
-              onClick={() => setWorkspaceOpen((open) => !open)}
-            >
-              <FolderGit2 size={15} /> {directoryName(workspace)}{" "}
-              <ChevronDown size={13} />
-            </button>
-            {workspaceOpen && (
-              <span className="workspace-menu">
-                <strong>{t("세션을 시작할 workspace")}</strong>
-                {workspaces.map((candidate) => (
-                  <button
-                    type="button"
-                    key={candidate}
-                    className={candidate === workspace ? "is-current" : ""}
-                    onClick={() => {
-                      setWorkspaceOpen(false);
-                      if (candidate !== workspace) onWorkspaceChange(candidate);
-                    }}
-                  >
-                    <FolderGit2 size={14} />
-                    <span>
-                      {directoryName(candidate)}
-                      <small>{candidate}</small>
-                    </span>
-                    {candidate === workspace && <Check size={13} />}
-                  </button>
-                ))}
-                <button type="button" onClick={() => void browseWorkspace()}>
-                  <FolderOpen size={14} />
-                  <span>{t("다른 폴더 선택…")}</span>
-                </button>
-              </span>
-            )}
-          </span>
+          <WorkspaceSwitcher
+            workspace={workspace}
+            workspaces={workspaces}
+            open={workspaceOpen}
+            onToggle={() => setWorkspaceOpen((open) => !open)}
+            onClose={() => setWorkspaceOpen(false)}
+            onChange={onWorkspaceChange}
+            onBrowse={browseWorkspace}
+          />
           {modelOption && (
-            <span className="composer-model">
-              {/* Left enabled during a run: this popover is where the Fast tier is
-                  switched, and the runtime applies a tier to the open session. A
-                  model change mid-turn is refused by the runtime and surfaced by the
-                  shell, which is better than hiding both controls until the turn ends. */}
-              <button
-                type="button"
-                title="Model: /model · Effort: ⇧⇥"
-                onClick={() =>
-                  setConfigMenu((open) =>
-                    open === modelOption.id ? null : modelOption.id,
-                  )
-                }
-              >
-                <strong>
-                  {modelOption.options?.find(
-                    (choice) => choice.value === modelOption.currentValue,
-                  )?.name ??
-                    modelDisplay ??
-                    String(modelOption.currentValue)}
-                </strong>
-                <i />
-                <span>{currentEffort}</span>
-                <i />
-                <span>
-                  {usagePercent === undefined
-                    ? "—"
-                    : `${usagePercent.toFixed(1)}%`}
-                </span>
-                {fastMode && (
-                  <>
-                    <i />
-                    <span
-                      className="composer-fast-mode"
-                      title={t("Fast 모드 켜짐")}
-                      aria-label={t("Fast 모드 켜짐")}
-                    >
-                      <Zap size={10} aria-hidden="true" />
-                      Fast
-                    </span>
-                  </>
-                )}
-              </button>
-              {configMenu === modelOption.id && (
-                <ModelPicker
-                  option={modelOption}
-                  header={
-                    <FastTierControls
-                      commands={commands}
-                      fastMode={fastMode}
-                      busy={fastBusy}
-                      readOnly={readOnly}
-                      onSelect={(fast) => void setFastTier(fast)}
-                    />
-                  }
-                  onSelect={(value) => selectConfig(modelOption.id, value)}
-                />
-              )}
-              {thinkingOption && configMenu === thinkingOption.id && (
-                <span className="config-option-menu config-option-menu--effort">
-                  <header>
-                    <strong>{t("추론 Effort")}</strong>
-                    <small>⇧⇥</small>
-                  </header>
-                  {thinkingOption.options?.map((choice) => (
-                    <button
-                      key={choice.value}
-                      type="button"
-                      className={
-                        choice.value === thinkingOption.currentValue
-                          ? "is-current"
-                          : ""
-                      }
-                      onClick={() =>
-                        selectConfig(thinkingOption.id, choice.value)
-                      }
-                    >
-                      <span>{choice.name}</span>
-                      {choice.value === thinkingOption.currentValue && (
-                        <Check size={12} />
-                      )}
-                    </button>
-                  ))}
-                </span>
-              )}
-            </span>
+            <ModelControls
+              modelOption={modelOption}
+              thinkingOption={thinkingOption}
+              modelDisplay={modelDisplay}
+              currentEffort={currentEffort}
+              usagePercent={usagePercent}
+              fastMode={fastMode}
+              fastBusy={fastBusy}
+              readOnly={readOnly}
+              commands={commands}
+              configMenu={configMenu}
+              onToggleMenu={(id) =>
+                setConfigMenu((open) => (open === id ? null : id))
+              }
+              onSelectConfig={selectConfig}
+              onSetFastTier={setFastTier}
+            />
           )}
         </div>
         <div className="composer-submit-actions">
