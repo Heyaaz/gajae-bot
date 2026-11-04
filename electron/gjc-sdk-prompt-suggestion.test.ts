@@ -22,11 +22,16 @@ describe("parsePromptSuggestion", () => {
     expect(parsePromptSuggestion('{"suggestion":"  테스트도 돌려줘  "}')).toBe("테스트도 돌려줘");
   });
 
+  it("unwraps a single code fence around the JSON", () => {
+    expect(parsePromptSuggestion('```json\n{"suggestion":"hi"}\n```')).toBe("hi");
+    expect(parsePromptSuggestion('```\n{"suggestion":"hi"}\n```\n')).toBe("hi");
+  });
+
   it.each([
     ["null suggestion", '{"suggestion":null}'],
     ["empty after trim", '{"suggestion":"   "}'],
     ["not JSON", "run the tests"],
-    ["fenced JSON", '```json\n{"suggestion":"hi"}\n```'],
+    ["prose around fenced JSON", 'Sure:\n```json\n{"suggestion":"hi"}\n```'],
     ["array", '["hi"]'],
     ["wrong key", '{"text":"hi"}'],
     ["extra key", '{"suggestion":"hi","reason":"x"}'],
