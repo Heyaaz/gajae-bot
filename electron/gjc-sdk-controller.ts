@@ -145,6 +145,7 @@ import {
   flushQueuedNow,
   listQueuedMessages,
   queueFollowUp,
+  querySessionItems,
   type PromptSettlementKind,
   type SdkControlOperation,
   sendMessage,
@@ -696,7 +697,7 @@ export class GjcSdkController {
     get permissionModeApplied() { return controller.permissionModeApplied; },
     get permissionChannels() { return controller.permissionChannels; },
     patchTool: (toolId, patch) => controller.patchTool(toolId, patch),
-    querySessionItems: (sessionId, query, input, options) => controller.querySessionItems(sessionId, query, input, options),
+    querySessionItems: (...args: Parameters<ControlHost["querySessionItems"]>) => querySessionItems(controller.host, ...args),
     get observedQuestions() { return controller.observedQuestions; },
     get acceptedQuestions() { return controller.acceptedQuestions; },
     get transcripts() { return controller.transcripts; },
@@ -875,7 +876,6 @@ export class GjcSdkController {
     appendTranscript: (item) => controller.appendTranscript(item),
     get cancellationPromises() { return controller.cancellationPromises; },
     fireAbort: (sessionId) => controller.fireAbort(sessionId),
-    cancelOpenTools: (sessionId) => controller.cancelOpenTools(sessionId),
     settleOpenQuestions: (sessionId, status) => controller.settleOpenQuestions(sessionId, status),
     get tailReads() { return controller.tailReads; },
     get tailControllers() { return controller.tailControllers; },
@@ -1453,23 +1453,6 @@ export class GjcSdkController {
     return previewFile(this.host, sessionId, requestedPath);
   }
 
-  private async querySessionItems(
-    sessionId: string,
-    query: string,
-    input: Record<string, unknown> = {},
-    options?: { strict?: boolean },
-  ): Promise<unknown[]> {
-    try {
-      const cli = await this.requireCli();
-      return await cli.queryItems(sessionId, query, input, {
-        repo: this.repoFor(sessionId),
-      });
-    } catch (error) {
-      if (!options?.strict) return [];
-      throw error;
-    }
-  }
-
   private refreshSdkCommands(
     sessionId: string,
     advertised?: AgentCommand[],
@@ -1959,29 +1942,5 @@ export class GjcSdkController {
     options?: { announce?: boolean },
   ): void {
     return updateSessionStatus(this.host, sessionId, status, options);
-  }
-
-  /**
-   * Cancel every tool card a stopped turn could still be showing as open work.
-   *
-   * A queued call is included: it was waiting rather than running, and a cancelled
-   * turn never starts it -- leaving it `pending` kept a live card (and its spinner)
-   * in a transcript whose turn is over.
-   */
-  private cancelOpenTools(sessionId: string): void {
-    const items = this.transcripts.get(sessionId) ?? [];
-    for (const item of items) {
-      if (item.kind !== "tool") continue;
-      if (!LIVE_TOOL_STATUSES.has(item.status)) continue;
-      item.status = "cancelled";
-      if (item.subagents) {
-        item.subagents = item.subagents.map((agent) =>
-          agent.status === "running" || agent.status === "waiting"
-            ? { ...agent, status: "failed" }
-            : agent,
-        );
-      }
-      this.emitEvent({ type: "tool.updated", tool: { ...item } });
-    }
   }
 }
