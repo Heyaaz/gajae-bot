@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { Check, ChevronRight, Globe, KeyRound } from "lucide-react";
+import { Check, ChevronRight, CircleHelp, ExternalLink, Globe, KeyRound } from "lucide-react";
 import {
+  RECOMMENDED_SIGN_IN_PROVIDER_ID,
   SIGN_IN_PROVIDERS,
   type OnboardingDesktopBridge,
   type OnboardingStep,
@@ -18,6 +19,7 @@ type Stage =
       error?: string;
     }
   | { stage: "choose" }
+  | { stage: "help" }
   | {
       stage: "sign-in";
       provider: SignInProvider;
@@ -38,6 +40,9 @@ function errorText(cause: unknown): string {
   // Electron prefixes errors that cross IPC with where they were raised.
   return message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/u, "");
 }
+
+const RECOMMENDED_PROVIDER =
+  SIGN_IN_PROVIDERS.find((provider) => provider.id === RECOMMENDED_SIGN_IN_PROVIDER_ID) ?? SIGN_IN_PROVIDERS[0];
 
 const megabytes = (bytes: number): string => (bytes / 1_000_000).toFixed(0);
 
@@ -193,6 +198,43 @@ export function OnboardingView({
                 </li>
               ))}
             </ul>
+            <button className="onboarding-help-entry" type="button" onClick={() => setStage({ stage: "help" })}>
+              <CircleHelp size={15} aria-hidden="true" />
+              {t("잘 모르겠어요 / 구독이 없어요")}
+            </button>
+          </>
+        )}
+
+        {stage.stage === "help" && (
+          <>
+            <h1 id="onboarding-title">{t("어떤 AI를 가입하면 되나요?")}</h1>
+            <p className="onboarding-lead">
+              {t`아직 구독이 없다면 ${RECOMMENDED_PROVIDER.name}를 추천합니다. 가장 흔하고 설정이 쉬워서, 가입한 뒤 이 화면에서 바로 로그인하면 됩니다.`}
+            </p>
+            <a
+              className="button-primary onboarding-primary onboarding-signup"
+              href={RECOMMENDED_PROVIDER.signUpUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {t`${RECOMMENDED_PROVIDER.name} 가입하기`}
+              <ExternalLink size={14} aria-hidden="true" />
+            </a>
+            <details className="onboarding-details">
+              <summary>{t("다른 AI도 쓸 수 있어요")}</summary>
+              <ul className="onboarding-signup-list">
+                {SIGN_IN_PROVIDERS.filter((provider) => provider.id !== RECOMMENDED_PROVIDER.id).map((provider) => (
+                  <li key={provider.id}>
+                    <a href={provider.signUpUrl} target="_blank" rel="noreferrer">
+                      {provider.name}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </details>
+            <button className="onboarding-text-button" type="button" onClick={() => setStage({ stage: "choose" })}>
+              {t("가입했어요, 로그인할게요")}
+            </button>
           </>
         )}
 
@@ -213,57 +255,68 @@ export function OnboardingView({
                 </button>
               </>
             ) : (
-              <>
-                <p className="onboarding-lead">
-                  {stage.provider.method === "browser"
-                    ? t("브라우저에서 로그인을 마치면 자동으로 다음 단계로 넘어갑니다.")
-                    : t("열린 페이지에서 API 키를 복사해 아래에 붙여 넣으세요.")}
-                </p>
-                {!stage.url && !stage.prompt && (
-                  <p className="onboarding-hint" role="status">
-                    <span className="mini-spinner" /> {t("로그인을 준비하는 중…")}
+              stage.provider.method === "browser" ? (
+                <>
+                  <p className="onboarding-hint onboarding-waiting" role="status">
+                    <span className="mini-spinner" />{" "}
+                    {stage.url ? t("브라우저에서 로그인 중…") : t("로그인을 준비하는 중…")}
                   </p>
-                )}
-                {stage.url && (
-                  <a className="onboarding-link" href={stage.url} target="_blank" rel="noreferrer">
-                    {stage.provider.method === "browser"
-                      ? t("브라우저가 열리지 않았다면 여기를 누르세요")
-                      : t("API 키 페이지 다시 열기")}
-                  </a>
-                )}
-                {stage.prompt && (
-                  <form className="onboarding-answer" onSubmit={submitAnswer}>
-                    <label>
-                      <small>
-                        {stage.provider.method === "browser"
-                          ? t("브라우저가 이 앱으로 돌아오지 않으면 받은 코드를 붙여 넣으세요")
-                          : t("API 키")}
-                      </small>
-                      <input
-                        type={stage.provider.method === "api-key" ? "password" : "text"}
-                        value={answer}
-                        autoComplete="off"
-                        spellCheck={false}
-                        disabled={stage.answering}
-                        onChange={(event) => setAnswer(event.target.value)}
-                      />
-                    </label>
-                    <button
-                      className="button-primary"
-                      type="submit"
-                      disabled={stage.answering || !answer.trim()}
-                    >
-                      {stage.answering ? t("확인 중…") : t("확인")}
-                    </button>
-                  </form>
-                )}
-                {stage.instructions && (
                   <details className="onboarding-details">
-                    <summary>{t("GJC 안내 보기")}</summary>
-                    <small>{stage.instructions}</small>
+                    <summary>{t("브라우저가 돌아오지 않나요?")}</summary>
+                    {stage.url && (
+                      <a className="onboarding-link" href={stage.url} target="_blank" rel="noreferrer">
+                        {t("브라우저가 열리지 않았다면 여기를 누르세요")}
+                      </a>
+                    )}
+                    {stage.prompt ? (
+                      <AnswerForm
+                        label={t("브라우저가 이 앱으로 돌아오지 않으면 받은 코드를 붙여 넣으세요")}
+                        secret={false}
+                        stage={stage}
+                        answer={answer}
+                        setAnswer={setAnswer}
+                        onSubmit={submitAnswer}
+                      />
+                    ) : (
+                      <small>{t("로그인 주소를 받으면 여기에 코드를 붙여 넣는 칸이 나타납니다.")}</small>
+                    )}
+                    {stage.instructions && <small>{stage.instructions}</small>}
                   </details>
-                )}
-              </>
+                </>
+              ) : (
+                <>
+                  <p className="onboarding-lead">{t("열린 페이지에서 API 키를 복사해 아래에 붙여 넣으세요.")}</p>
+                  {!stage.url && !stage.prompt && (
+                    <p className="onboarding-hint" role="status">
+                      <span className="mini-spinner" /> {t("로그인을 준비하는 중…")}
+                    </p>
+                  )}
+                  {stage.url && (
+                    <a className="onboarding-link" href={stage.url} target="_blank" rel="noreferrer">
+                      {t("API 키 페이지 다시 열기")}
+                    </a>
+                  )}
+                  <a className="onboarding-link" href={stage.provider.signUpUrl} target="_blank" rel="noreferrer">
+                    {t`계정이 없나요? ${stage.provider.name} 가입하기`}
+                  </a>
+                  {stage.prompt && (
+                    <AnswerForm
+                      label={t("API 키")}
+                      secret
+                      stage={stage}
+                      answer={answer}
+                      setAnswer={setAnswer}
+                      onSubmit={submitAnswer}
+                    />
+                  )}
+                  {stage.instructions && (
+                    <details className="onboarding-details">
+                      <summary>{t("GJC 안내 보기")}</summary>
+                      <small>{stage.instructions}</small>
+                    </details>
+                  )}
+                </>
+              )
             )}
             <button className="onboarding-text-button" type="button" onClick={backToProviders}>
               {t("다른 AI 고르기")}
@@ -304,5 +357,40 @@ export function OnboardingView({
         )}
       </div>
     </div>
+  );
+}
+
+function AnswerForm({
+  label,
+  secret,
+  stage,
+  answer,
+  setAnswer,
+  onSubmit,
+}: {
+  label: string;
+  secret: boolean;
+  stage: { answering: boolean };
+  answer: string;
+  setAnswer: (value: string) => void;
+  onSubmit: (event: FormEvent) => void;
+}) {
+  return (
+    <form className="onboarding-answer" onSubmit={onSubmit}>
+      <label>
+        <small>{label}</small>
+        <input
+          type={secret ? "password" : "text"}
+          value={answer}
+          autoComplete="off"
+          spellCheck={false}
+          disabled={stage.answering}
+          onChange={(event) => setAnswer(event.target.value)}
+        />
+      </label>
+      <button className="button-primary" type="submit" disabled={stage.answering || !answer.trim()}>
+        {stage.answering ? t("확인 중…") : t("확인")}
+      </button>
+    </form>
   );
 }

@@ -166,4 +166,46 @@ describe("OnboardingView", () => {
     expect(onClose).toHaveBeenCalled();
     expect(onStartConversation).not.toHaveBeenCalled();
   });
+
+  it("tells someone with no subscription what to get, with a sign-up link, and returns to the list", async () => {
+    const fake = fakeBridge();
+    const { container } = await render(fake.bridge, "sign-in");
+    await click(container, "잘 모르겠어요 / 구독이 없어요");
+    expect(container.textContent).toContain("어떤 AI를 가입하면 되나요?");
+    expect(container.textContent).toContain("ChatGPT Plus/Pro를 추천합니다");
+    const signup = container.querySelector<HTMLAnchorElement>(".onboarding-signup");
+    expect(signup?.href).toBe("https://chatgpt.com/");
+    expect(signup?.target).toBe("_blank");
+    expect(fake.bridge.signIn).not.toHaveBeenCalled();
+    await click(container, "가입했어요, 로그인할게요");
+    expect(container.textContent).toContain("어떤 AI를 쓰시나요?");
+  });
+
+  it("only waits while a browser sign-in is running, with the paste-code field folded away", async () => {
+    const fake = fakeBridge();
+    const { container } = await render(fake.bridge, "sign-in");
+    await click(container, "Claude Pro/Max");
+    fake.emit({ type: "open-url", url: "https://claude.ai/oauth/authorize" });
+    expect(container.querySelector(".onboarding-waiting")?.textContent).toContain("브라우저에서 로그인 중…");
+    expect(container.textContent).not.toContain("자동으로 다음 단계");
+    fake.emit({ type: "prompt", message: "Paste the authorization code" });
+    const fold = container.querySelector<HTMLDetailsElement>(".onboarding-details")!;
+    expect(fold.querySelector("summary")?.textContent).toBe("브라우저가 돌아오지 않나요?");
+    expect(fold.open).toBe(false);
+    expect(fold.querySelector(".onboarding-answer input")).not.toBeNull();
+    expect(container.querySelectorAll(".onboarding-answer")).toHaveLength(1);
+  });
+
+  it("points an API-key sign-in without an account at the provider's sign-up page", async () => {
+    const fake = fakeBridge();
+    const { container } = await render(fake.bridge, "sign-in");
+    await click(container, "Z.AI GLM Coding Plan");
+    fake.emit({ type: "open-url", url: "https://z.ai/manage-apikey/apikey-list" });
+    const links = [...container.querySelectorAll<HTMLAnchorElement>(".onboarding-link")];
+    expect(links.map((link) => [link.textContent, link.href])).toEqual([
+      ["API 키 페이지 다시 열기", "https://z.ai/manage-apikey/apikey-list"],
+      ["계정이 없나요? Z.AI GLM Coding Plan 가입하기", "https://z.ai/subscribe"],
+    ]);
+  });
 });
+

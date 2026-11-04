@@ -6685,6 +6685,46 @@ button.diff-line-number:hover {
   color: var(--accent-bright);
   font-size: 12px;
 }
+.onboarding-help-entry {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: none;
+  border: 0;
+}
+.onboarding-help-entry:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.button-primary.onboarding-signup {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+.onboarding-signup-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.onboarding-signup-list a {
+  color: var(--accent-bright);
+  font-size: 12px;
+}
+.onboarding-details > .onboarding-link,
+.onboarding-details > .onboarding-answer {
+  display: block;
+  margin-top: 8px;
+}
+.onboarding-details > .onboarding-answer {
+  display: grid;
+}
 .onboarding-answer {
   display: grid;
   width: 100%;
