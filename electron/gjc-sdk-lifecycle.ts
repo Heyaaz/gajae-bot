@@ -719,6 +719,11 @@ async function brokerLifecycleDelete(
   // that a future owner-authorized history deletion must be refused locally.
   const cwd = row?.repo ?? host.sessionCwds.get(sessionId) ?? host.workspace;
   const sessionPath = await locatedSessionPath;
+  // GJC deletes a saved session by its transcript and refuses a request without
+  // one (`lifecycle_input_refused`). With the transcript gone and no host holding
+  // the session, nothing of it is left in GJC to delete: only this app's row is,
+  // and asking GJC would refuse that row's removal forever.
+  if (!sessionPath && row?.live !== true) return "deleted";
   try {
     await brokerLifecycle(host, "session.delete", {
       sessionId,
