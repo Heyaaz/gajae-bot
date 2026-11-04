@@ -277,6 +277,12 @@ import {
 import { askSideQuestion, executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
 import {
+  disposeController,
+  resetForReconnect,
+  resetForRuntimeChange,
+  type TeardownHost,
+} from "./gjc-sdk-teardown.js";
+import {
   applyPermissionMode,
   cancelPermissionsForSession,
   PermissionChannels,
@@ -666,7 +672,7 @@ export class GjcSdkController {
   /** The latest streamed tool rows, kept over a stale durable read. */
   private readonly toolSnapshots = new Map<string, Map<string, ToolActivity>>();
 
-  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost = ((controller: GjcSdkController) => ({
+  private readonly host: QuestionHost & CommandPaletteHost & GoalTodoHost & SessionConfigHost & FilesHost & RunStateHost & DiscoveryHost & LifecycleHost & AttachHost & TranscriptStoreHost & ControlHost & StreamHost & PermissionApprovalHost & TeardownHost = ((controller: GjcSdkController) => ({
     get sessionQuestions() { return controller.sessionQuestions; },
     get questionRefreshes() { return controller.questionRefreshes; },
     get disposed() { return controller.disposed; },
@@ -819,6 +825,12 @@ export class GjcSdkController {
     get watchedTranscripts() { return controller.watchedTranscripts; },
     get detachTimers() { return controller.detachTimers; },
     get cli() { return controller.cli; },
+    set cli(value) { controller.cli = value; },
+    get startup() { return controller.startup; },
+    set startup(value) { controller.startup = value; },
+    get reconnectTimer() { return controller.reconnectTimer; },
+    set reconnectTimer(value) { controller.reconnectTimer = value; },
+    get questionAnswers() { return controller.questionAnswers; },
     get recovery() { return controller.recovery; },
     set recovery(value) { controller.recovery = value; },
     refreshTranscriptAttachment: (sessionId) => controller.refreshTranscriptAttachment(sessionId),
@@ -953,49 +965,7 @@ export class GjcSdkController {
       return false;
     }
 
-    for (const pending of this.pendingPermissions.values())
-      pending.resolve({ outcome: { outcome: "cancelled" } });
-    this.pendingPermissions.clear();
-    this.permissionChannels.dispose();
-    // No resident process to stop: dropping the client is the whole teardown, and
-    // the next call rebuilds it against the new runtime.
-    this.cli = undefined;
-    this.startup = undefined;
-    this.routeProbes.clear();
-    this.permissionModeApplied.clear();
-    for (const sessionId of this.toolObservers.keys())
-      this.stopTailFollower(sessionId);
-    for (const sessionId of this.tailControllers.keys())
-      this.stopTailFollower(sessionId);
-    this.attachedSessions.clear();
-    this.windowHostedSessions.clear();
-    // The new runtime re-attaches from scratch, so last run's throttle stamps must
-    // not delay the first attempt against it.
-    this.attachAttempts.clear();
-    this.transcriptAttachments.clear();
-    this.activePromptSessions.clear();
-    this.activePromptAdmissions.clear();
-    this.cancellationWatermarks.clear();
-    this.liveRunningSessions.clear();
-    this.liveRunningDigests.clear();
-    this.liveEvidenceAt.clear();
-    this.transcriptRunningSessions.clear();
-    this.workingPhaseSessions.clear();
-    this.runtimeIdleSessions.clear();
-    this.pendingAsyncWorkSessions.clear();
-    this.completionDeferredSessions.clear();
-    this.asyncJobReconciliations.clear();
-    this.discoveredRunStates.clear();
-    this.idleTranscriptBaselines.clear();
-    this.compactingSessions.clear();
-    this.compactionRecordBaseline.clear();
-    this.compactionRecordWatermark.clear();
-    this.compactionStartedAt.clear();
-    this.activeAssistantMessages.clear();
-    this.activeThoughts.clear();
-    this.suppressedUserMessageKeys.clear();
-    this.echoedPromptTexts.clear();
-    this.sessionSdkOperations.clear();
+    resetForRuntimeChange(this.host);
     await this.ensureStarted();
     return true;
   }
@@ -1843,22 +1813,7 @@ export class GjcSdkController {
     if (this.disposed) throw new Error("GJC controller is disposed");
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
-    // Reconnect is a re-resolve, not a restart: there is no process to signal, so
-    // nothing owned by another window can be disturbed by it.
-    this.cli = undefined;
-    this.startup = undefined;
-    this.desktopTranscriptBaselines.clear();
-    this.routeProbes.clear();
-    this.permissionModeApplied.clear();
-    this.permissionChannels.dispose();
-    for (const sessionId of this.toolObservers.keys())
-      this.stopTailFollower(sessionId);
-    for (const sessionId of this.tailControllers.keys())
-      this.stopTailFollower(sessionId);
-    this.attachedSessions.clear();
-    this.sessionSdkOperations.clear();
-    this.transcriptAttachments.clear();
-    this.attachAttempts.clear();
+    resetForReconnect(this.host);
     this.generation += 1;
     await this.ensureStarted();
     await this.recoverOwnedSessions();
@@ -1911,129 +1866,7 @@ export class GjcSdkController {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    for (const pending of this.pendingPermissions.values()) {
-      pending.resolve({ outcome: { outcome: "cancelled" } });
-    }
-    this.pendingPermissions.clear();
-    this.permissionChannels.dispose();
-    this.routeProbes.clear();
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = undefined;
-    // No agent process is owned here, so disposal never kills a running session.
-    for (const controller of this.tailControllers.values()) controller.abort();
-    this.tailControllers.clear();
-    for (const observer of this.toolObservers.values()) observer.abort();
-    this.toolObservers.clear();
-    this.toolSnapshots.clear();
-    this.cli = undefined;
-    this.startup = undefined;
-    this.startupSessionRows = undefined;
-    this.invalidateBrokerIndexCache();
-    for (const timer of this.commandRefreshTimers.values()) clearTimeout(timer);
-    this.commandRefreshTimers.clear();
-    this.commandRefreshAttempts.clear();
-    for (const timer of this.todoPollTimers.values()) clearTimeout(timer);
-    this.todoPollTimers.clear();
-    this.todoPollAttempts.clear();
-    for (const timer of this.progressTimers.values()) clearTimeout(timer);
-    this.progressTimers.clear();
-    this.sessionProgress.clear();
-    this.progressReads.clear();
-    this.progressWatchedAt.clear();
-    this.publishedCommandKeys.clear();
-    this.transcriptAttachments.clear();
-    this.permissionModeApplied.clear();
-    this.windowHostedSessions.clear();
-    this.tailReads.clear();
-    this.tailCheckpoints.clear();
-    this.tailEventPositions.clear();
-    this.sessions.clear();
-    this.sessionCwds.clear();
-    this.attachedSessions.clear();
-    // Only a successful attach removes a session's throttle stamp, so sessions that
-    // never attach -- terminal-only rows, dead endpoints -- held one for the life of
-    // the process while every other map here was already being cleared.
-    this.attachAttempts.clear();
-    // Each entry holds a transcript's parsed envelopes, measured at 6.3MB apiece.
-    this.sharedTranscriptReads.clear();
-    this.sharedSessionFiles.clear();
-    this.sessionParents.clear();
-    this.historySummaryCache.clear();
-    for (const timer of this.detachTimers.values()) clearTimeout(timer);
-    this.detachTimers.clear();
-    this.watchedTranscripts = undefined;
-    this.transcripts.clear();
-    this.toolRowIndices.clear();
-    this.dirtyTranscriptRows.clear();
-    this.desktopTranscriptBaselines.clear();
-    this.messageKeys.clear();
-    this.activeAssistantMessages.clear();
-    this.activeThoughts.clear();
-    this.activePromptSessions.clear();
-    this.activePromptAdmissions.clear();
-    this.cancellationWatermarks.clear();
-    this.liveRunningSessions.clear();
-    this.liveRunningDigests.clear();
-    this.liveEvidenceAt.clear();
-    this.transcriptRunningSessions.clear();
-    this.workingPhaseSessions.clear();
-    this.runtimeIdleSessions.clear();
-    this.pendingAsyncWorkSessions.clear();
-    this.completionDeferredSessions.clear();
-    this.asyncJobReconciliations.clear();
-    this.runRevisions.clear();
-    this.transcriptEpoch.clear();
-    this.discoveredRunStates.clear();
-    this.idleTranscriptBaselines.clear();
-    this.compactingSessions.clear();
-    this.compactionRecordBaseline.clear();
-    this.compactionRecordWatermark.clear();
-    this.compactionStartedAt.clear();
-    this.suppressedUserMessageKeys.clear();
-    this.echoedPromptTexts.clear();
-    this.sessionCommands.clear();
-    this.commandRefreshes.clear();
-    this.sessionContextRefreshes.clear();
-    this.sessionContextRefreshedAt.clear();
-    this.sessionAdvertisedCommands.clear();
-    this.sessionDiscoveredCommands.clear();
-    this.sessionPlans.clear();
-    this.sessionQuestions.clear();
-    this.acceptedQuestions.clear();
-    this.observedQuestions.clear();
-    this.questionRefreshes.clear();
-    this.questionAnswers.clear();
-    this.sessionTodoSnapshots.clear();
-    this.todoReads.clear();
-    this.sessionSdkOperations.clear();
-    this.sessionConfig.clear();
-    this.terminalOnlySessions.clear();
-    this.modelProfiles.clear();
-    this.explicitSessionThinking.clear();
-    this.artifactWrites.clear();
-    this.artifactSessionIds.clear();
-    this.deletingSessions.clear();
-    this.deletionPromises.clear();
-    // In-flight bookkeeping. Each entry is normally removed in a `finally`, so what
-    // is left here is whatever a rejected or abandoned call did not reach. Teardown
-    // claims to release everything, so it has to include these too.
-    this.cancellingSessions.clear();
-    this.cancellationPromises.clear();
-    this.flushingSessions.clear();
-    this.pendingSteers.clear();
-    this.locallyAbortedSessions.clear();
-    this.imageDataUrls.clear();
-    this.contextUsageQueries.clear();
-    this.contextUsageObservedAt.clear();
-    for (const watcher of this.sharedSessionWatchers.values()) watcher.close();
-    for (const watcher of this.runStateWatchers.values()) watcher.close();
-    this.runStateWatchers.clear();
-    for (const timer of this.runStateTimers.values()) clearTimeout(timer);
-    this.runStateTimers.clear();
-    for (const timer of this.sharedSessionRefreshTimers.values())
-      clearTimeout(timer);
-    this.sharedSessionWatchers.clear();
-    this.sharedSessionRefreshTimers.clear();
+    disposeController(this.host);
   }
 
   private async ensureStarted(): Promise<void> {
