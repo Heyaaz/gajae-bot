@@ -1,11 +1,12 @@
 import path from "node:path";
-import type { AgentEvent, AgentSession } from "../shared/agent-contract.js";
+import type { AgentEvent, AgentSession, ChatMessage, TranscriptItem } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import {
   destructiveSlashAction,
   destructiveSlashMessage,
   markUpdated,
   MAX_TOOL_TEXT,
+  nowLabel,
   ResolvedMessageInput,
   SDK_FAST_SERVICE_TIERS,
   SDK_RELOAD_COMPONENTS,
@@ -40,7 +41,8 @@ export interface SlashCommandHost {
   readonly sessionMetadata?: SessionMetadataStore;
   emitEvent(event: AgentEvent): void;
   sdkOperations(sessionId: string): Promise<Set<string>>;
-  appendSdkCommandOutput(sessionId: string, content: string): void;
+  nextLocalId: number;
+  appendTranscript(item: TranscriptItem): void;
   querySessionItems(
     sessionId: string,
     query: string,
@@ -127,7 +129,7 @@ export async function executeSdkSlashCommand(
       );
   };
   const output = (content: string): true => {
-    host.appendSdkCommandOutput(sessionId, content);
+    appendSdkCommandOutput(host, sessionId, content);
     return true;
   };
   const query = async (
@@ -459,4 +461,24 @@ export async function executeSdkSlashCommand(
     default:
       return false;
   }
+}
+
+export function appendSdkCommandOutput(
+  host: SlashCommandHost,
+  sessionId: string,
+  content: string,
+): void {
+  const message: ChatMessage = {
+    id: `sdk-command-${host.nextLocalId++}`,
+    kind: "message",
+    sessionId,
+    role: "assistant",
+    content,
+    createdAt: nowLabel(),
+    streaming: false,
+  };
+  host.appendTranscript(message);
+  const session = host.sessions.get(sessionId);
+  if (session)
+    host.emitEvent({ type: "session.updated", session: { ...session } });
 }

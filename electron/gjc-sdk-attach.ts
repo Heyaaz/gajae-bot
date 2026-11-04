@@ -51,6 +51,8 @@ export interface AttachHost {
   advanceRunRevision(sessionId: string): number;
   invalidateDesktopTranscript(sessionId: string): void;
   readonly terminalOnlySessions: Set<string>;
+  lastLiveFingerprint: string | undefined;
+  lastDiscovered: AgentSession[];
   stopTailFollower(sessionId: string): void;
   readonly attachedSessions: Set<string>;
   readonly attachAttempts: Map<string, number>;
@@ -621,4 +623,24 @@ async function recoverOwnedSessionsOnce(host: AttachHost): Promise<void> {
       () => recoverOne(),
     ),
   );
+}
+
+// A session proven uncontrollable is recorded so the row stops advertising a
+// control surface it does not have, instead of failing again on the next action.
+export function markTerminalOnly(host: AttachHost, sessionId: string): void {
+  host.terminalOnlySessions.add(sessionId);
+  host.attachedSessions.delete(sessionId);
+  host.stopTailFollower(sessionId);
+  // The reuse fingerprint only covers broker liveness, which this discovery does
+  // not change. Without invalidating it the next scan replays the snapshot taken
+  // before the failure and the row goes back to advertising controls.
+  host.lastLiveFingerprint = undefined;
+  const session = host.sessions.get(sessionId);
+  if (!session) return;
+  session.attachment = "terminal-only";
+  session.ownership = "external";
+  host.lastDiscovered = host.lastDiscovered.map((row) =>
+    row.id === sessionId ? { ...session } : row,
+  );
+  host.emitEvent({ type: "session.updated", session: { ...session } });
 }

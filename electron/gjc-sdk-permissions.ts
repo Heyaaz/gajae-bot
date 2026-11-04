@@ -1,3 +1,11 @@
+import type {
+  AgentControlPreferences,
+  AgentEvent,
+  AgentSession,
+  ToolActivity,
+  ToolDecision,
+} from "../shared/agent-contract.js";
+import type { GjcSdkCli } from "./gjc-sdk-cli.js";
 import type { PendingPermission, PermissionResponse } from "./gjc-sdk-model.js";
 import { openRelay, type Relay, type RelayTransport } from "./gjc-sdk-relay.js";
 
@@ -166,4 +174,115 @@ function listedRequests(value: unknown): ListedRequest[] {
       options: offered,
     }];
   });
+}
+
+/** The controller members the permission mode and tool decisions touch. */
+export interface PermissionApprovalHost {
+  readonly permissionHandling: AgentControlPreferences["permissionHandling"];
+  readonly permissionModeApplied: Set<string>;
+  readonly permissionChannels: PermissionChannels;
+  readonly pendingPermissions: Map<string, PendingPermission>;
+  readonly sessions: Map<string, AgentSession>;
+  readonly emitEvent: (event: AgentEvent) => void;
+  requireCli(): Promise<GjcSdkCli>;
+  repoFor(sessionId: string): string;
+  sdkOperations(sessionId: string, options?: { strict?: boolean }): Promise<Set<string>>;
+  patchTool(toolId: string, patch: Partial<ToolActivity>): void;
+}
+
+/**
+ * Applies the configured permission handling to a session.
+ *
+ * The old permission environment variable applied only to the removed child
+ * protocol process. A broker-hosted session host instead keeps a per-session SDK
+ * permission mode, set through the `permission_mode.set` control operation and
+ * defaulting to `allow`.
+ *
+ * `prompt` turns on GJC's external approval channel (gjc/0.19.3) where the
+ * session advertises it: a tool call that needs approval waits as a request the
+ * window lists and answers (see `PermissionChannels`). A GJC without the channel
+ * leaves a `prompt` session rejecting tool calls with "no permission provider is
+ * connected", so there `prompt` is mapped to the host's `deny` instead, which
+ * refuses with a decision the transcript records rather than silently granting
+ * what the user did not approve. `always-allow` and `auto` map to `allow`, and an
+ * explicit allow outranks a channel left on from an earlier `prompt`.
+ */
+export async function applyPermissionMode(host: PermissionApprovalHost, sessionId: string): Promise<void> {
+  if (host.permissionModeApplied.has(sessionId)) return;
+  const allow =
+    host.permissionHandling === "always-allow" ||
+    host.permissionHandling === "auto";
+  const cli = await host.requireCli();
+  const repo = host.repoFor(sessionId);
+  if (!allow && (await host.sdkOperations(sessionId)).has("permission.channel.set")) {
+    await cli.rawControl(sessionId, "permission.channel.set", { enabled: true }, { repo });
+    host.permissionChannels.watch(sessionId);
+    markApprovalChannel(host, sessionId, true);
+  } else {
+    await cli.rawControl(
+      sessionId,
+      "permission_mode.set",
+      { mode: allow ? "always-allow" : "deny" },
+      { repo },
+    );
+    markApprovalChannel(host, sessionId, false);
+  }
+  host.permissionModeApplied.add(sessionId);
+}
+
+function markApprovalChannel(host: PermissionApprovalHost, sessionId: string, on: boolean): void {
+  const session = host.sessions.get(sessionId);
+  if (!session || Boolean(session.approvalChannel) === on) return;
+  if (on) session.approvalChannel = true;
+  else delete session.approvalChannel;
+  host.emitEvent({ type: "session.updated", session: { ...session } });
+}
+
+export function toolDecisionInfo(
+  host: PermissionApprovalHost,
+  toolId: string,
+  decision: ToolDecision,
+): { name: string; requiresConfirmation: boolean } {
+  const option = permissionOption(host, toolId, decision);
+  return {
+    name: option.name,
+    requiresConfirmation: option.kind.startsWith("allow"),
+  };
+}
+
+function permissionOption(host: PermissionApprovalHost, toolId: string, decision: ToolDecision) {
+  const pending = host.pendingPermissions.get(toolId);
+  if (!pending)
+    throw new Error(`No pending permission for tool call ${toolId}`);
+  const option = pending.request.options.find(
+    (candidate) => candidate.optionId === decision.optionId,
+  );
+  if (!option)
+    throw new Error(`Unknown permission option ${decision.optionId}`);
+  return option;
+}
+
+export async function resolveToolCall(
+  host: PermissionApprovalHost,
+  toolId: string,
+  decision: ToolDecision,
+): Promise<void> {
+  const pending = host.pendingPermissions.get(toolId)!;
+  const option = permissionOption(host, toolId, decision);
+  host.pendingPermissions.delete(toolId);
+  pending.resolve({
+    outcome: { outcome: "selected", optionId: option.optionId },
+    ...(decision.comment ? { comment: decision.comment } : {}),
+  });
+  host.patchTool(toolId, {
+    status: option.kind.startsWith("allow") ? "approved" : "denied",
+  });
+}
+
+export function cancelPermissionsForSession(host: PermissionApprovalHost, sessionId: string): void {
+  for (const [toolId, pending] of host.pendingPermissions) {
+    if (pending.request.sessionId !== sessionId) continue;
+    pending.resolve({ outcome: { outcome: "cancelled" } });
+    host.pendingPermissions.delete(toolId);
+  }
 }

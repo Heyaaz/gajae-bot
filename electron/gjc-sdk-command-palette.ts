@@ -6,6 +6,14 @@ export const COMMAND_REFRESH_RETRY_BASE_MS = 1_000;
 
 export const COMMAND_REFRESH_RETRY_MAX_MS = 30_000;
 
+/**
+ * How long a loaded command/todo context is reused before it is read again.
+ *
+ * Opening the palette is a user gesture, not a poll; a refresh costs two or more
+ * CLI round trips, so a reopen seconds later must not repeat them.
+ */
+export const SESSION_CONTEXT_REFRESH_TTL_MS = 15_000;
+
 export function commandPublicationKey(commands: readonly AgentCommand[]): string {
   return commands
     .map(
@@ -34,6 +42,10 @@ export interface CommandPaletteHost {
   readonly sessionSdkOperations: Map<string, Set<string>>;
   readonly publishedCommandKeys: Map<string, string>;
   readonly emitEvent: (event: AgentEvent) => void;
+  readonly sessionContextRefreshes: Map<string, Promise<void>>;
+  readonly sessionContextRefreshedAt: Map<string, number>;
+  refreshSdkCommands(sessionId: string, advertised?: AgentCommand[]): Promise<void>;
+  readTodoRecords(sessionId: string): Promise<unknown[] | undefined>;
 }
 
 /**
@@ -262,4 +274,39 @@ export function publishSessionCommands(
     sessionId,
     commands: commands.map((command) => ({ ...command })),
   });
+}
+
+/**
+ * Loads the session's command palette and todo row once, when the user opens it.
+ *
+ * These live outside the transcript file and have no push channel of their own,
+ * but tying them to getTranscript made every 5-second safety-net read spawn CLI
+ * queries even when the transcript had not changed.
+ */
+export async function refreshSessionContext(host: CommandPaletteHost, sessionId: string): Promise<void> {
+  const commands = host.sessionCommands.get(sessionId);
+  if (commands) publishSessionCommands(host, sessionId, commands);
+  // The palette asks for this whenever it opens. A session opened a moment ago
+  // has already paid for these CLI reads, and repeating them made every reopen
+  // spawn another pair of processes before the same palette could render.
+  const inFlight = host.sessionContextRefreshes.get(sessionId);
+  if (inFlight) return inFlight;
+  const refreshedAt = host.sessionContextRefreshedAt.get(sessionId);
+  if (
+    refreshedAt !== undefined &&
+    Date.now() - refreshedAt < SESSION_CONTEXT_REFRESH_TTL_MS
+  )
+    return;
+  const refresh = (async () => {
+    await Promise.all([
+      host.refreshSdkCommands(sessionId),
+      host.readTodoRecords(sessionId),
+    ]);
+    host.sessionContextRefreshedAt.set(sessionId, Date.now());
+  })().finally(() => {
+    if (host.sessionContextRefreshes.get(sessionId) === refresh)
+      host.sessionContextRefreshes.delete(sessionId);
+  });
+  host.sessionContextRefreshes.set(sessionId, refresh);
+  return refresh;
 }

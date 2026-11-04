@@ -7,6 +7,7 @@ import {
   brokerFailureMessage,
   busyPromptError,
   cancelledOperationError,
+  LIVE_TOOL_STATUSES,
   messageTextWithFiles,
   normalizeQueuedRequestText,
   nowLabel,
@@ -195,7 +196,7 @@ export interface ControlHost {
   ): Promise<"owned" | "plain" | "no_active_turn">;
   finalizeAllMessages(sessionId: string): void;
   readonly toolSnapshots: Map<string, Map<string, ToolActivity>>;
-  cancelOpenTools(sessionId: string): void;
+  readonly emitEvent: (event: AgentEvent) => void;
   settleOpenQuestions(
     sessionId: string,
     status: "cancelled" | "timeout",
@@ -1011,7 +1012,7 @@ export async function cancelRun(host: ControlHost, sessionId: string): Promise<v
       host.finalizeAssistantMessage(sessionId);
       host.finalizeAllMessages(sessionId);
       host.toolSnapshots.delete(sessionId);
-      host.cancelOpenTools(sessionId);
+      cancelOpenTools(host, sessionId);
       host.settleOpenQuestions(sessionId, "cancelled");
       host.cancelPermissionsForSession(sessionId);
       appendCancelledNotice(host, sessionId, stop === "plain");
@@ -1204,4 +1205,46 @@ async function abortOwnedThroughControl(
   throw new Error(
     `GJC가 작업 중지를 확정하지 못했습니다. 응답: ${JSON.stringify(result ?? null)}`,
   );
+}
+
+/**
+ * Cancel every tool card a stopped turn could still be showing as open work.
+ *
+ * A queued call is included: it was waiting rather than running, and a cancelled
+ * turn never starts it -- leaving it `pending` kept a live card (and its spinner)
+ * in a transcript whose turn is over.
+ */
+export function cancelOpenTools(host: ControlHost, sessionId: string): void {
+  const items = host.transcripts.get(sessionId) ?? [];
+  for (const item of items) {
+    if (item.kind !== "tool") continue;
+    if (!LIVE_TOOL_STATUSES.has(item.status)) continue;
+    item.status = "cancelled";
+    if (item.subagents) {
+      item.subagents = item.subagents.map((agent) =>
+        agent.status === "running" || agent.status === "waiting"
+          ? { ...agent, status: "failed" }
+          : agent,
+      );
+    }
+    host.emitEvent({ type: "tool.updated", tool: { ...item } });
+  }
+}
+
+export async function querySessionItems(
+  host: ControlHost,
+  sessionId: string,
+  query: string,
+  input: Record<string, unknown> = {},
+  options?: { strict?: boolean },
+): Promise<unknown[]> {
+  try {
+    const cli = await host.requireCli();
+    return await cli.queryItems(sessionId, query, input, {
+      repo: host.repoFor(sessionId),
+    });
+  } catch (error) {
+    if (!options?.strict) return [];
+    throw error;
+  }
 }

@@ -16,6 +16,7 @@ import {
   lifecycleUncertainError,
   LIVE_TOOL_STATUSES,
   missingSessionError,
+  nowLabel,
   persistedModelState,
   persistedTurnState,
   precedingSharedRow,
@@ -44,14 +45,12 @@ export interface TranscriptStoreHost {
     sessionId: string,
   ): Promise<TranscriptItem[]>;
   refreshTranscriptAttachment(sessionId: string): void;
-  terminalOnlyNotice(sessionId: string): NoticeActivity;
   ensureAttached(
     sessionId: string,
     replay: boolean,
   ): Promise<void>;
   readonly sessions: Map<string, AgentSession>;
   readonly emitEvent: (event: AgentEvent) => void;
-  lifecycleUncertainNotice(sessionId: string): NoticeActivity;
   removeLocalSession(sessionId: string, hide: boolean): void;
   readonly transcripts: Map<string, TranscriptItem[]>;
   getTranscript(sessionId: string): Promise<TranscriptItem[]>;
@@ -172,10 +171,10 @@ export async function getTranscript(host: TranscriptStoreHost, sessionId: string
         return installed.map(cloneTranscriptItem);
       }
       if (host.terminalOnlySessions.has(sessionId))
-        return [host.terminalOnlyNotice(sessionId)];
+        return [terminalOnlyNotice(sessionId)];
     } catch {
       if (host.terminalOnlySessions.has(sessionId))
-        return [host.terminalOnlyNotice(sessionId)];
+        return [terminalOnlyNotice(sessionId)];
     }
   }
   try {
@@ -192,7 +191,7 @@ export async function getTranscript(host: TranscriptStoreHost, sessionId: string
         session.ownership = "external";
         host.emitEvent({ type: "session.updated", session: { ...session } });
       }
-      return [host.terminalOnlyNotice(sessionId)];
+      return [terminalOnlyNotice(sessionId)];
     }
     if (lifecycleUncertainError(error)) {
       const session = host.sessions.get(sessionId);
@@ -201,7 +200,7 @@ export async function getTranscript(host: TranscriptStoreHost, sessionId: string
         session.status = "failed";
         host.emitEvent({ type: "session.updated", session: { ...session } });
       }
-      return [host.lifecycleUncertainNotice(sessionId)];
+      return [lifecycleUncertainNotice(sessionId)];
     }
     if (!missingSessionError(error)) throw error;
     host.removeLocalSession(sessionId, true);
@@ -843,7 +842,7 @@ export function installTranscript(
       composed.push(cloneTranscriptItem(question));
   }
   if (host.terminalOnlySessions.has(sessionId) && !composed.some((item) => item.id === `terminal-only-${sessionId}`))
-    composed.push(host.terminalOnlyNotice(sessionId));
+    composed.push(terminalOnlyNotice(sessionId));
   host.transcripts.set(sessionId, composed);
   reindexToolRows(host, sessionId, composed);
   return composed;
@@ -922,4 +921,87 @@ export function watchTranscripts(host: TranscriptStoreHost, sessionIds: readonly
     if (next.has(sessionId)) continue;
     host.scheduleDetach(sessionId);
   }
+}
+
+export function terminalOnlyNotice(sessionId: string): NoticeActivity {
+  return {
+    id: `terminal-only-${sessionId}`,
+    kind: "notice",
+    sessionId,
+    title: "기록 보기 전용 · 실행 연결 없음",
+    content:
+      "저장된 대화는 열었지만 실행 제어 연결은 복구되지 않았습니다. 기록 조회는 계속 사용할 수 있습니다. 이어서 작업하려면 해당 CLI에서 세션을 다시 열거나 앱의 세션 이어서 진행을 다시 시도하세요. 앱은 기존 CLI를 종료하거나 새 세션으로 대체하지 않습니다.",
+    tone: "neutral",
+    createdAt: nowLabel(),
+  };
+}
+
+export function lifecycleUncertainNotice(sessionId: string): NoticeActivity {
+  return {
+    id: `lifecycle-uncertain-${sessionId}`,
+    kind: "notice",
+    sessionId,
+    title: "저장된 세션을 검증할 수 없습니다",
+    content:
+      "네트워크 연결 문제가 아니라 GJC의 로컬 lifecycle 기록이 저장 결과와 일치하지 않는 상태입니다. GJC를 재시작한 뒤 다시 열어 보세요. 계속 발생하면 이 세션은 GJC reconciliation이 필요합니다.",
+    tone: "warning",
+    createdAt: nowLabel(),
+  };
+}
+
+export function appendTranscript(host: TranscriptStoreHost, item: TranscriptItem): void {
+  const items = host.transcripts.get(item.sessionId) ?? [];
+  items.push(item);
+  host.transcripts.set(item.sessionId, items);
+  if (item.kind === "tool") {
+    let indices = host.toolRowIndices.get(item.sessionId);
+    if (!indices) {
+      indices = new Map();
+      host.toolRowIndices.set(item.sessionId, indices);
+    }
+    indices.set(item.id, items.length - 1);
+  }
+  noteTranscriptEpoch(host, item.sessionId);
+  host.emitEvent({
+    type: "transcript.appended",
+    item: cloneTranscriptItem(item),
+  });
+}
+
+export function finalizeAssistantMessage(host: TranscriptStoreHost, sessionId: string): void {
+  const messageId = host.activeAssistantMessages.get(sessionId);
+  if (!messageId) return;
+  const items = host.transcripts.get(sessionId) ?? [];
+  const message = items.find((item) => item.id === messageId);
+  if (message?.kind === "message") {
+    message.streaming = false;
+    noteTranscriptEpoch(host, sessionId);
+    host.emitEvent({
+      type: "message.delta",
+      sessionId,
+      messageId,
+      delta: "",
+      streaming: false,
+    });
+  }
+  host.activeAssistantMessages.delete(sessionId);
+}
+
+export function finalizeAllMessages(host: TranscriptStoreHost, sessionId: string): void {
+  const items = host.transcripts.get(sessionId) ?? [];
+  let changed = false;
+  for (const item of items) {
+    if (item.kind !== "message" || !item.streaming) continue;
+    item.streaming = false;
+    changed = true;
+    host.emitEvent({
+      type: "message.delta",
+      sessionId,
+      messageId: item.id,
+      delta: "",
+      streaming: false,
+    });
+  }
+  if (changed) noteTranscriptEpoch(host, sessionId);
+  host.activeAssistantMessages.delete(sessionId);
 }
