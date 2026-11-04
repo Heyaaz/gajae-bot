@@ -56,6 +56,7 @@ import {
   type TranscriptAnchorRow,
   type TranscriptViewportAnchor,
 } from "./transcript-scroll";
+import { SKILL_ARGS_VIEW } from "./skill-activity";
 import { TranscriptItemView } from "./transcript-item-view";
 import { ToolRunBlockView } from "./transcript-tool-run";
 import { NO_OPEN_FOLDS, TurnFoldRow } from "./transcript-turn-fold";
@@ -1322,7 +1323,7 @@ export function Transcript({
                   />
                 ) : block.kind === "item" ? (
                   <div className="transcript-entry" id={`transcript-${encodeURIComponent(block.item.id)}`}>
-                    <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onAnswerQuestion={onAnswerQuestion} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
+                    <TranscriptItemView item={block.item} thoughtsExpanded={effectiveThoughtsExpanded} skillArgsView={SKILL_ARGS_VIEW[toolViewMode]} onToggleThoughtsExpanded={onToggleThoughtsExpanded} onResolveTool={onResolveTool} onAnswerQuestion={onAnswerQuestion} onReadArtifact={onReadArtifact} autoDenyHint={autoDenyHint} onRetryLastRequest={onRetryLastRequest} onRevealInspector={onRevealInspector} />
                   </div>
                 ) : block.kind === "fold" ? (
                   <TurnFoldRow fold={block.fold} open={block.open} onToggle={setFoldOpen} />

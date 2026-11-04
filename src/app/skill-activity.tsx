@@ -1,50 +1,82 @@
 import { ChevronRight, Sparkles } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
-import type { TranscriptItem } from "../backend/types";
+import type { ToolViewMode, TranscriptItem } from "../backend/types";
 import { MARKDOWN_REMARK_PLUGINS } from "./markdown-plugins";
 import { MessageCopyButton } from "./primitives";
 import { t } from "../i18n";
 
 
+/** How much of a `/skill:` request's arguments the card shows. */
+export type SkillArgsView = "hidden" | "line" | "full";
+
+/** The transcript's display mode decides where each card starts. */
+export const SKILL_ARGS_VIEW: Record<ToolViewMode, SkillArgsView> = {
+  basic: "hidden",
+  reasoning: "line",
+  detailed: "full",
+};
+
 /**
- * A `/skill:` request as the user sent it. Long arguments (a verification brief
- * can run to a paragraph) start clamped so the reply below stays in view; the
- * toggle appears only when the clamp actually hides something.
+ * A `/skill:` request as the user sent it. A card's toggle overrides the mode's
+ * starting view for that card until the mode changes. The toggle appears only
+ * when folding would actually hide something.
  */
-export function SkillInvocation({ name, args }: { name: string; args: string }) {
-  const [expanded, setExpanded] = useState(false);
-  const [overflows, setOverflows] = useState(false);
+export function SkillInvocation({
+  name,
+  args,
+  initialView = "line",
+}: {
+  name: string;
+  args: string;
+  initialView?: SkillArgsView;
+}) {
+  const [choice, setChoice] = useState({ base: initialView, view: initialView });
+  // A mode change drops the card's own choice, so returning to a mode does not
+  // bring back what the card was toggled to before.
+  if (choice.base !== initialView) setChoice({ base: initialView, view: initialView });
+  const view = choice.base === initialView ? choice.view : initialView;
+  const folded: SkillArgsView = initialView === "full" ? "line" : initialView;
+  const [long, setLong] = useState(false);
   const argsRef = useRef<HTMLParagraphElement>(null);
   useLayoutEffect(() => {
     const element = argsRef.current;
-    if (!element || expanded) return;
-    const measure = () => setOverflows(element.scrollHeight > element.clientHeight + 1);
+    if (!element) return;
+    const measure = () => {
+      if (view === "line") {
+        setLong(element.scrollHeight > element.clientHeight + 1);
+        return;
+      }
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight) || 20;
+      setLong(element.clientHeight > lineHeight * 1.5);
+    };
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [args, expanded]);
+  }, [args, view]);
+  const expanded = view === "full";
+  const toggle = Boolean(args) && (view === "hidden" || folded === "hidden" || long);
   return (
     <div className="skill-invocation">
       <div className="skill-invocation-heading" aria-label={t`스킬 호출: ${name}`}>
         <Sparkles size={14} aria-hidden />
         <span className="skill-invocation-label">{t("스킬")}</span>
         <strong>{name}</strong>
-        {args && (overflows || expanded) && (
+        {toggle && (
           <button
             type="button"
             className="thought-toggle"
             aria-expanded={expanded}
-            onClick={() => setExpanded((open) => !open)}
+            onClick={() => setChoice({ base: initialView, view: expanded ? folded : "full" })}
           >
             {expanded ? t("접기") : t("펼치기")}
           </button>
         )}
       </div>
-      {args && (
-        <p ref={argsRef} className={`skill-invocation-args${expanded ? "" : " is-clamped"}`}>
+      {args && view !== "hidden" && (
+        <p ref={argsRef} className={`skill-invocation-args${view === "line" ? " is-clamped" : ""}`}>
           {args}
         </p>
       )}

@@ -10,7 +10,7 @@ import { Brain, Check, ListChecks, Paperclip } from "lucide-react";
 import { memo } from "react";
 import { httpUrls } from "./format";
 import { LinkPreviewCard, MessageCopyButton } from "./primitives";
-import { SkillInvocation, SkillPromptCard } from "./skill-activity";
+import { SkillInvocation, SkillPromptCard, type SkillArgsView } from "./skill-activity";
 import { t, useLanguage } from "../i18n";
 import { BranchSummaryCard, CompactionCard, SystemNoticeCard } from "./transcript-cards";
 import { MarkdownBody, StreamingMarkdown } from "./transcript-markdown";
@@ -68,6 +68,7 @@ export function ThoughtCard({
 export const TranscriptItemView = memo(function TranscriptItemView({
   item,
   thoughtsExpanded = false,
+  skillArgsView = "line",
   onToggleThoughtsExpanded,
   onResolveTool,
   onAnswerQuestion,
@@ -78,6 +79,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
 }: {
   item: TranscriptItem;
   thoughtsExpanded?: boolean;
+  skillArgsView?: SkillArgsView;
   onToggleThoughtsExpanded?: () => void;
   onResolveTool: TranscriptProps["onResolveTool"];
   onAnswerQuestion?: TranscriptProps["onAnswerQuestion"];
@@ -107,7 +109,7 @@ export const TranscriptItemView = memo(function TranscriptItemView({
             className={`message-body ${item.role === "assistant" ? "markdown-body" : ""}`}
           >
             {skill ? (
-              <SkillInvocation name={skill.name} args={skill.args} />
+              <SkillInvocation name={skill.name} args={skill.args} initialView={skillArgsView} />
             ) : item.content ? (
               item.role === "assistant" ? (
                 item.streaming ? (
