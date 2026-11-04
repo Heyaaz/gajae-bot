@@ -677,7 +677,7 @@ export function DiffPanel({
         </button>
         {git && (
           <span>
-            <strong>{git.branch || "detached"}</strong>
+            <strong>{git.branch || t("Git 저장소 아님")}</strong>
             {git.upstream && (
               <small>
                 {git.upstream} · ↑{git.ahead} ↓{git.behind}

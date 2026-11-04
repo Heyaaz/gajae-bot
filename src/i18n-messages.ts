@@ -183,6 +183,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "변경 파일 보기": "View changed files",
   "변경된 파일": "Changed files",
   "변경된 파일이 없습니다.": "No changed files.",
+  "Git 저장소 아님": "Not a Git repository",
   "별도 worktree 생성": "Create separate worktree",
   "별도 worktree에서 실행": "Run in a separate worktree",
   "병합 가능": "Mergeable",

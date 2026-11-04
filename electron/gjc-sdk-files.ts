@@ -20,7 +20,7 @@ import {
   type TranscriptItem,
 } from "../shared/agent-contract.js";
 import { GjcSdkCli } from "./gjc-sdk-cli.js";
-import { redactSensitiveText } from "./gjc-sdk-foundation.js";
+import { execFile, redactSensitiveText } from "./gjc-sdk-foundation.js";
 import { resolveTranscriptBodyArtifact } from "./transcript-body-preview.js";
 import path from "node:path";
 
@@ -511,37 +511,95 @@ function rememberTranscriptRead(
   }
 }
 
+/** GJC's `diff.list_files` rows: one `diff --git` section per file. */
+function changedFilesFromRows(rows: unknown[]): DiffSnapshot["files"] {
+  return rows.flatMap((row) => {
+    if (!row || typeof row !== "object") return [];
+    const value = row as Record<string, unknown>;
+    if (typeof value.path !== "string") return [];
+    return [{
+      id: typeof value.id === "string" ? value.id : value.path,
+      path: value.path,
+      patch: typeof value.body === "string" ? value.body : "",
+    }];
+  });
+}
+
+/** Splits `git diff` output into files the way GJC's `diff.list_files` does. */
+function changedFilesFromDiff(stdout: string): DiffSnapshot["files"] {
+  return stdout
+    .split(/^diff --git /mu)
+    .filter(Boolean)
+    .map((section) => {
+      const header = section.split("\n", 1)[0] ?? "";
+      const filePath = /a\/(.+?) b\/(.+)$/u.exec(header)?.[2] ?? header;
+      return { id: filePath, path: filePath, patch: `diff --git ${section}` };
+    });
+}
+
+const NESTED_REPOSITORY_LIMIT = 24;
+const NESTED_DIFF_MAX_BYTES = 1024 * 1024;
+
+/**
+ * The changes of the repositories directly inside a workspace that is not one.
+ *
+ * A folder of checkouts (one per app, say) is a common workspace, and GJC's diff
+ * runs `git diff` in the workspace alone, where it fails. This runs the same
+ * `git diff` in each child repository, with prefixes that keep every path relative
+ * to the workspace. Undefined means there is no child repository either.
+ */
+async function nestedRepositoryChanges(workspace: string): Promise<DiffSnapshot["files"] | undefined> {
+  const entries = await readdir(workspace, { withFileTypes: true }).catch(() => []);
+  const repositories: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    if (await access(path.join(workspace, entry.name, ".git")).then(() => true, () => false))
+      repositories.push(entry.name);
+  }
+  if (repositories.length === 0) return undefined;
+  const files: DiffSnapshot["files"] = [];
+  for (const name of repositories.sort().slice(0, NESTED_REPOSITORY_LIMIT)) {
+    const result = await execFile(
+      "git",
+      ["-C", path.join(workspace, name), "diff", "--no-ext-diff", `--src-prefix=a/${name}/`, `--dst-prefix=b/${name}/`],
+      { maxBuffer: NESTED_DIFF_MAX_BYTES },
+    ).catch(() => undefined);
+    if (result) files.push(...changedFilesFromDiff(result.stdout));
+  }
+  return files;
+}
+
+async function insideGitWorkTree(workspace: string): Promise<boolean> {
+  return execFile("git", ["-C", workspace, "rev-parse", "--is-inside-work-tree"]).then(
+    (result) => result.stdout.trim() === "true",
+    () => false,
+  );
+}
+
 export async function getDiff(host: FilesHost, sessionId: string): Promise<DiffSnapshot> {
   const workspace = host.sessionCwds.get(sessionId) ?? host.workspace;
+  const snapshot = (files: DiffSnapshot["files"], error?: string): DiffSnapshot => ({
+    sessionId,
+    workspace,
+    files,
+    refreshedAt: new Date().toISOString(),
+    ...(error ? { error } : {}),
+  });
+  // Decided here rather than from GJC's refusal: the CLI reports its
+  // not_git_repository error only as a generic operation failure.
+  if (!(await insideGitWorkTree(workspace))) {
+    const nested = await nestedRepositoryChanges(workspace);
+    return nested
+      ? snapshot(nested)
+      : snapshot([], "이 작업 폴더는 Git 저장소가 아니어서 변경 내용을 볼 수 없습니다.");
+  }
   try {
     await host.ensureAttached(sessionId, false);
-    const files: DiffSnapshot["files"] = [];
-    for (const row of await host.querySessionItems(
-      sessionId,
-      "diff.list_files",
-    ))
-      if (row && typeof row === "object") {
-        const value = row as Record<string, unknown>;
-        if (typeof value.path === "string")
-          files.push({
-            id: typeof value.id === "string" ? value.id : value.path,
-            path: value.path,
-            patch: typeof value.body === "string" ? value.body : "",
-          });
-      }
-    return {
-      sessionId,
-      workspace,
-      files,
-      refreshedAt: new Date().toISOString(),
-    };
+    // Strict: a failed query used to read as "no changed files".
+    return snapshot(changedFilesFromRows(
+      await host.querySessionItems(sessionId, "diff.list_files", {}, { strict: true }),
+    ));
   } catch (error) {
-    return {
-      sessionId,
-      workspace,
-      files: [],
-      refreshedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return snapshot([], error instanceof Error ? error.message : String(error));
   }
 }
