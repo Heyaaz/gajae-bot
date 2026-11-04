@@ -35,15 +35,6 @@ import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { resolveGjcExecutable } from "./runtime-path.js";
 import type { SdkSessionRow } from "./gjc-sdk-cli.js";
 
-/**
- * Transcript and event shapes.
- *
- * Gajae reads these updates from the session's own file under
- * `~/.gjc/agent/sessions/` and from `gjc sdk session tail` frames, so the shapes
- * are declared here instead of imported from a protocol package. The field names
- * match what GJC persists, which is what both sources carry.
- */
-
 import {
   GjcControllerOptions,
   ResolvedMessageInput,
