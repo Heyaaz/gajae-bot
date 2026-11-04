@@ -180,7 +180,7 @@ export const GJC_SETTING_TEXT: Readonly<
   "readHashLines": { ko: "read에 줄 해시 넣기", en: "Line Hashes in Read", description: "hashline 편집 모드용으로 read 출력에 줄 해시를 넣습니다 (LINE+ID|내용)" },
   "readLineNumbers": { ko: "read에 줄 번호 넣기", en: "Line Numbers in Read", description: "read 도구 출력 앞에 기본으로 줄 번호를 붙입니다" },
   "recipe.enabled": { ko: "레시피", en: "Recipe", description: "justfile, package.json, Cargo.toml, Makefile, Taskfile이 있으면 recipe 도구를 씁니다" },
-  "renderMermaid.enabled": { ko: "Mermaid 그리기", en: "Render Mermaid", description: "Mermaid를 ASCII로 그리는 render_mermaid 도구를 씁니다" },
+  "renderMermaid.enabled": { ko: "Mermaid 그리기", en: "Render Mermaid", description: "Mermaid를 ASCII로 그리는 GJC의 render_mermaid 도구를 씁니다. 채팅의 mermaid 코드 블록은 이 설정과 상관없이 앱이 다이어그램으로 그립니다" },
   "repeatToolDescriptions": { ko: "도구 설명 전체 넣기", en: "Full Tool Descriptions", description: "시스템 프롬프트에 도구 이름 목록 대신 도구 설명 전체를 넣습니다" },
   "repetitionPenalty": { ko: "repetition penalty", en: "Repetition Penalty", description: "반복되는 토큰에 주는 패널티 (-1이면 provider 기본값)" },
   "reportIssue.enabled": { ko: "도구 문제 기록", en: "Tool issue reporting", description: "도구가 설명과 다르게 동작하면 모델이 로컬 ~/.gjc/tool-issues.db에 기록합니다. 어디로도 보내지 않습니다" },
