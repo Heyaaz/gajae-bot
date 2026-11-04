@@ -1902,6 +1902,30 @@
 .code-block-copy.is-copied {
   color: var(--success);
 }
+.code-block-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.mermaid-scroll {
+  overflow-x: auto;
+  padding: 14px;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 0 0 8px 8px;
+}
+.mermaid-diagram svg {
+  display: block;
+  width: clamp(calc(var(--mermaid-width, 100%) * 0.7), 100%, var(--mermaid-width, 100%));
+  max-width: none;
+  height: auto;
+  margin: 0 auto;
+}
+.mermaid-note {
+  margin: -6px 0 12px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
 .markdown-body pre code {
   padding: 0;
   color: inherit;
