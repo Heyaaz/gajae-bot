@@ -34,6 +34,7 @@ import { DESKTOP_IPC, type SessionShortcut } from "../shared/settings-ipc.js";
 import { registerSettingsIpcHandlers } from "./settings-ipc-handlers.js";
 import { SettingsStore, validDirectory } from "./settings-store.js";
 import { SessionMetadataStore } from "./session-metadata-store.js";
+import { CommandRuleStore } from "./command-rule-store.js";
 import { TerminalSessionStore } from "./terminal-session-store.js";
 import { hostText, setHostLanguage } from "./host-text.js";
 import { ManagementService } from "./desktop-services.js";
@@ -150,6 +151,18 @@ const workspace = validDirectory(requestedWorkspace)
   ? path.resolve(requestedWorkspace)
   : preferences.workspace;
 const sessionMetadata = new SessionMetadataStore(userDataDirectory);
+// The repository screen reads Git and GitHub on demand. `gh` is resolved the way the
+// CLI itself would be, with GJC_BIN's precedent for a packaged app that has to name
+// an absolute path.
+const repoService = new RepoService({
+  ghExecutable: process.env.GAJA_GH_BIN || undefined,
+});
+// A rule belongs to the project's main working tree, so the sessions of a project
+// and of its worktrees share it.
+const commandRules = new CommandRuleStore(
+  userDataDirectory,
+  async (projectPath) => (await repoService.resolveProjects([projectPath]))[0]?.root ?? projectPath,
+);
 const attachmentStore = new AttachmentStore();
 let productivityService: ProductivityService | undefined;
 // Declared before the controller so the event fan-out below can reach it; the
@@ -417,6 +430,7 @@ const gjcController = new GjcSdkController({
   modelPreset,
   permissionHandling: preferences.permissionHandling,
   sessionMetadata,
+  commandRules,
   artifactDirectory: path.join(userDataDirectory, "artifacts"),
   emit: broadcastAgentEvent,
 });
@@ -536,6 +550,7 @@ const unregisterSettingsIpc = registerSettingsIpcHandlers(
   // otherwise only on a session change.
   () => renderDesktopStatus?.(desktopIntegration.state()),
   (changes) => gjcController.applyLiveSettings(changes),
+  commandRules,
 );
 const unregisterDesktopServicesIpc =
   registerDesktopServicesIpcHandlers(desktopManagement, ipcSecurity);
@@ -556,12 +571,6 @@ remoteAccess = new RemoteAccessService({
   log: (message) => console.log(`remote access: ${message}`),
 });
 const unregisterRemoteIpc = registerRemoteIpcHandlers(remoteAccess, ipcSecurity);
-// The repository screen reads Git and GitHub on demand. `gh` is resolved the way the
-// CLI itself would be, with GJC_BIN's precedent for a packaged app that has to name
-// an absolute path.
-const repoService = new RepoService({
-  ghExecutable: process.env.GAJA_GH_BIN || undefined,
-});
 const unregisterRepoIpc = registerRepoIpcHandlers(repoService, ipcSecurity);
 parallelRuns = new ParallelRunService({
   store: sessionMetadata,
