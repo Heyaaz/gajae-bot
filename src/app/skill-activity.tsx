@@ -1,5 +1,5 @@
 import { ChevronRight, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import type { TranscriptItem } from "../backend/types";
 import { MARKDOWN_REMARK_PLUGINS } from "./markdown-plugins";
@@ -7,15 +7,47 @@ import { MessageCopyButton } from "./primitives";
 import { t } from "../i18n";
 
 
+/**
+ * A `/skill:` request as the user sent it. Long arguments (a verification brief
+ * can run to a paragraph) start clamped so the reply below stays in view; the
+ * toggle appears only when the clamp actually hides something.
+ */
 export function SkillInvocation({ name, args }: { name: string; args: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+  const argsRef = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const element = argsRef.current;
+    if (!element || expanded) return;
+    const measure = () => setOverflows(element.scrollHeight > element.clientHeight + 1);
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [args, expanded]);
   return (
     <div className="skill-invocation">
       <div className="skill-invocation-heading" aria-label={t`스킬 호출: ${name}`}>
         <Sparkles size={14} aria-hidden />
         <span className="skill-invocation-label">{t("스킬")}</span>
         <strong>{name}</strong>
+        {args && (overflows || expanded) && (
+          <button
+            type="button"
+            className="thought-toggle"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((open) => !open)}
+          >
+            {expanded ? t("접기") : t("펼치기")}
+          </button>
+        )}
       </div>
-      {args && <p className="skill-invocation-args">{args}</p>}
+      {args && (
+        <p ref={argsRef} className={`skill-invocation-args${expanded ? "" : " is-clamped"}`}>
+          {args}
+        </p>
+      )}
     </div>
   );
 }

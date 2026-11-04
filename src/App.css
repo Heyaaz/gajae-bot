@@ -2034,6 +2034,12 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.skill-invocation-args.is-clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
 .message-images {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 230px));
