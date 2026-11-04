@@ -8,7 +8,6 @@ import type {
   AgentCommand,
   AgentConfigOption,
   AgentControlPreferences,
-  AgentEvent,
   AgentSession,
   BackendConnection,
   MessageInput,
@@ -17,9 +16,6 @@ import type {
 import { useAgentBackend } from "../backend/use-agent-backend";
 import {
   cacheTranscript,
-  initialSessionId,
-  discoveryRevisionIsFresh,
-  mergeDiscoveredSessions,
   pendingQuestions,
   pendingToolApprovals,
 } from "../transcript-utils";
@@ -27,12 +23,10 @@ import { getLanguage, t, useLanguage } from "../i18n";
 import { Menu, Plus, X } from "lucide-react";
 import { TerminalView } from "./terminal-view";
 import { TerminalSessionPane } from "./terminal-session-pane";
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Composer,
-  releaseQueuedSession,
   submitComposerInput,
-  subscribeComposerReleaseRetry,
 } from "./composer";
 import {
   GlobalSearchDialog,
@@ -69,11 +63,11 @@ import { useCreateSession } from "./use-create-session";
 import { useSessionRemoval } from "./use-session-removal";
 import { useProjectModel } from "./use-project-model";
 import { useSessionGrouping } from "./session-grouping";
-import { createBackendEventHandler, type BackendEventContext } from "./backend-events";
 import { useDiff, useGitStatus, useGoal } from "./use-selected-session";
 import { useTranscriptStore } from "./use-transcript-store";
 import { useMessageDelivery } from "./use-message-delivery";
 import { useSendMessage } from "./use-send-message";
+import { useSessionSync } from "./use-session-sync";
 import { Sidebar } from "./sidebar";
 import { parallelGroupIdOf } from "./sidebar-model";
 import type { ParallelDesktopBridge } from "../../shared/parallel-ipc";
@@ -360,207 +354,86 @@ export default function App() {
     };
   }, []);
 
-  // The subscription and the polling below live as long as `backend`. These run the
-  // latest render's functions each time they fire, not the ones from the render
-  // that subscribed.
-  const onBackendEvent = useEffectEvent(
-    (
-      event: AgentEvent,
-      local: Pick<BackendEventContext, "observeSessionRun" | "refreshTranscript">,
-    ): void =>
-      createBackendEventHandler({
-        setConnection,
-        setSessions,
-        setTranscripts,
-        setCommands,
-        setConfigOptions,
-        setMessageDeliveryRevision,
-        messageDeliveryTrackerRef,
-        transcriptsRef,
-        transcriptPageStatesRef,
-        transcriptRevisionsRef,
-        selectedIdRef,
-        forgetSession,
-        tracksTranscriptSession,
-        noteTranscriptEvent,
-        updateRequestSummaries,
-        mergeLiveTranscriptItems,
-        ...local,
-      })(event),
-  );
-  const openListedSession = useEffectEvent(
-    (sessionId: string, known: readonly AgentSession[]): void =>
-      openLinkedSession(sessionId, known),
-  );
-  const readTranscriptTail = useEffectEvent(
-    (id: string): Promise<void> => refreshTranscriptPage(id),
-  );
-
-  useEffect(() => {
-    let active = true;
-    void backend.getConnection().then((currentConnection) => {
-      if (active) setConnection(currentConnection);
+  /**
+   * Everything the shell holds for a session that is gone: its row, its cached
+   * transcript, and a selection still pointing at it.
+   *
+   * The backend's `session.deleted` event and the optimistic delete the user
+   * confirms both go through here, so the row leaves the sidebar the same way
+   * whichever one arrives first -- and the event that follows an optimistic delete
+   * finds nothing left to move.
+   */
+  const forgetSession = useCallback((sessionId: string): void => {
+    setSessions((current) => {
+      const remaining = current.filter((session) => session.id !== sessionId);
+      setSelectedId((selected) =>
+        selected === sessionId ? (remaining[0]?.id ?? null) : selected,
+      );
+      return remaining;
     });
-    // Run ends can happen while another screen is open and no composer exists.
-    // This tracker lives for the shell's lifetime, so a queue restored from a
-    // snapshot is still released when its session reports idle. A running report
-    // must have been seen first: an idle row right after a send, before the turn
-    // starts, is not evidence that queued work can be handed over.
-    const runStates = new Map<string, AgentSession["status"]>();
-    // Discovery is a slow read. A live update that advances the revision while
-    // the list request is in flight makes the older response stale: merging it
-    // already refuses to overwrite the row, but observing it would still turn a
-    // running -> idle transition into a queue release. Track the newest revision
-    // seen so the side effect follows the same rule as the rendered row.
-    const observedRevisions = new Map<string, number>();
-    const releaseSessionQueue = (sessionId: string): void => {
-      const selectedAtRelease = selectedIdRef.current;
-      void releaseQueuedSession(sessionId, async (request) => {
-        // Send directly: this request belongs to the session whose run ended, which
-        // may not be the one on screen. The composer's sent-request token would
-        // scroll an unrelated transcript.
-        await sendMessageRef.current!(sessionId, {
-          text: request.text,
-          images: request.images,
-          files: request.files,
-        }, { quiet: true });
-      }, () => selectedIdRef.current === selectedAtRelease)
-        .catch((error: unknown) => setAppError(humanErrorMessage(error)));
-    };
-    const observeSessionRun = (session: AgentSession): void => {
-      if (
-        !discoveryRevisionIsFresh(
-          observedRevisions.get(session.id),
-          session.runRevision,
-        )
-      )
-        return;
-      observedRevisions.set(session.id, session.runRevision ?? 0);
-      const previous = runStates.get(session.id);
-      runStates.set(session.id, session.status);
-      if (previous !== "running" || session.status !== "idle") return;
-      releaseSessionQueue(session.id);
-    };
-    // A flush that was awaiting the runtime can outlive its composer. The idle
-    // event then arrived while that instance held the release lock, so retry once
-    // the retiring instance hands the lock back -- but only while the session is
-    // still idle; otherwise its later idle transition will do it.
-    const unsubscribeReleaseRetry = subscribeComposerReleaseRetry((sessionId) => {
-      if (runStates.get(sessionId) === "idle") releaseSessionQueue(sessionId);
+    setTranscripts((current) => {
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
     });
+    transcriptRevisionsRef.current.delete(sessionId);
+  }, []);
 
-    // A GJC session started from the CLI after this window opened only shows up if
-    // discovery runs again, so the list refreshes instead of loading once.
-    let listing = false;
-    const loadSessions = (initial: boolean): void => {
-      if (listing || !active) return;
-      listing = true;
-      let listed: readonly AgentSession[] = [];
-      void backend
-        .listSessions()
-        .then((loadedSessions) => {
-          if (!active) return;
-          listed = loadedSessions.filter(
-            (session) => !removingSessionIdsRef.current.has(session.id),
-          );
-          for (const session of listed) observeSessionRun(session);
-          setSessions((current) =>
-            mergeDiscoveredSessions(current, listed, selectedIdRef.current),
-          );
-          if (initial)
-            setSelectedId((selected) =>
-              initialSessionId(listed, selected),
-            );
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          listing = false;
-          if (!initial || !active) return;
-          const link = sessionLinkRef.current;
-          link.listed = true;
-          if (link.waiting === undefined) return;
-          const sessionId = link.waiting;
-          link.waiting = undefined;
-          openListedSession(sessionId, [...sessionsRef.current, ...listed]);
-        });
-    };
-    // Poll only sessions already in the three-session transcript cache. A bounded page
-    // repairs missed watcher events without ever turning a historical view into a tail.
-    const refreshingTranscripts = new Set<string>();
-    const queuedTranscriptRefreshes = new Set<string>();
-    const refreshTranscript = (id: string): void => {
-      if (!active || !transcriptsRef.current[id]) return;
-      if (refreshingTranscripts.has(id)) {
-        queuedTranscriptRefreshes.add(id);
-        return;
-      }
-      refreshingTranscripts.add(id);
-      const startedAtVersion = transcriptEventVersionsRef.current.get(id) ?? 0;
-      void readTranscriptTail(id)
-        .catch(() => undefined)
-        .finally(() => {
-          refreshingTranscripts.delete(id);
-          const changedDuringRead =
-            (transcriptEventVersionsRef.current.get(id) ?? 0) !== startedAtVersion;
-          if (
-            active &&
-            (queuedTranscriptRefreshes.delete(id) || changedDuringRead)
-          )
-            window.setTimeout(() => refreshTranscript(id), 200);
-        });
-    };
-    const refreshSelectedTranscript = (): void => {
-      const id = selectedIdRef.current;
-      if (id) refreshTranscript(id);
-    };
-    const refreshVisibleState = (): void => {
-      loadSessions(false);
-      refreshSelectedTranscript();
-    };
-    loadSessions(true);
-    // A full scan costs seconds on a large broker index, so polling faster than
-    // that just queues overlapping scans. The controller skips `session list`
-    // while `sessions/index.jsonl` is unchanged; this beat still runs so a
-    // transcript-only run-state change can move the fingerprint. Focus refresh
-    // covers the case where the user switches to this window right after
-    // starting a CLI session.
-    //
-    // The scan is skipped while the window is hidden. Run state now arrives on its
-    // own from the transcript watchers, so the only thing polling still discovers is
-    // a session started elsewhere -- which nobody can see until this window is
-    // visible again, and the focus listener below already refreshes for that.
-    const discoveryTimer = window.setInterval(() => {
-      if (document.hidden) return;
-      refreshVisibleState();
-    }, 15_000);
-    // The event stream is still the primary path; this second beat only repairs a
-    // frozen selected conversation, so it can be shorter than session discovery.
-    const transcriptTimer = window.setInterval(() => {
-      if (!document.hidden) refreshSelectedTranscript();
-    }, 5_000);
-    const refreshOnFocus = (): void => refreshVisibleState();
-    window.addEventListener("focus", refreshOnFocus);
-    // `focus` does not fire when the window is merely un-occluded on macOS, so
-    // visibility is tracked separately to catch up after a hidden stretch.
-    const refreshOnVisible = (): void => {
-      if (!document.hidden) refreshVisibleState();
-    };
-    document.addEventListener("visibilitychange", refreshOnVisible);
-
-    const unsubscribe = backend.subscribe((event) =>
-      onBackendEvent(event, { observeSessionRun, refreshTranscript }),
+  const selectSession = useCallback((sessionId: string): void => {
+    navigationGenerationRef.current += 1;
+    setSelectedId(sessionId);
+    setNavOpen(false);
+    // A find query scoped to the previous conversation's content has nothing to
+    // do with the one just opened.
+    setFindOpen(false);
+    // Picking a session always returns to its conversation, and the project filter
+    // is left exactly as the user set it: the point of the project selector is
+    // that the context outlives any one session.
+    setCenterView("conversation");
+    setTranscripts((current) =>
+      current[sessionId]
+        ? cacheTranscript(current, sessionId, current[sessionId])
+        : current,
     );
+  }, []);
 
-    return () => {
-      active = false;
-      window.clearInterval(discoveryTimer);
-      window.clearInterval(transcriptTimer);
-      window.removeEventListener("focus", refreshOnFocus);
-      document.removeEventListener("visibilitychange", refreshOnVisible);
-      unsubscribeReleaseRetry();
-      unsubscribe();
-    };
-  }, [backend]);
+  const openLinkedSession = useCallback(
+    (sessionId: string, known: readonly AgentSession[]): void => {
+      if (known.some((session) => session.id === sessionId))
+        selectSession(sessionId);
+      else setAppError(invalidLinkMessage({ kind: "session" }));
+    },
+    [selectSession],
+  );
+
+  useSessionSync({
+    backend,
+    sessionsRef,
+    selectedIdRef,
+    sendMessageRef,
+    messageDeliveryTrackerRef,
+    removingSessionIdsRef,
+    sessionLinkRef,
+    setConnection,
+    setSessions,
+    setSelectedId,
+    setTranscripts,
+    setCommands,
+    setConfigOptions,
+    setMessageDeliveryRevision,
+    setAppError,
+    forgetSession,
+    openLinkedSession,
+    transcriptsRef,
+    transcriptPageStatesRef,
+    transcriptRevisionsRef,
+    transcriptEventVersionsRef,
+    tracksTranscriptSession,
+    noteTranscriptEvent,
+    updateRequestSummaries,
+    mergeLiveTranscriptItems,
+    refreshTranscriptPage,
+  });
 
   const selectedSession =
     sessions.find((session) => session.id === selectedId) ?? null;
@@ -881,33 +754,6 @@ export default function App() {
     [sessions],
   );
 
-  const selectSession = useCallback((sessionId: string): void => {
-    navigationGenerationRef.current += 1;
-    setSelectedId(sessionId);
-    setNavOpen(false);
-    // A find query scoped to the previous conversation's content has nothing to
-    // do with the one just opened.
-    setFindOpen(false);
-    // Picking a session always returns to its conversation, and the project filter
-    // is left exactly as the user set it: the point of the project selector is
-    // that the context outlives any one session.
-    setCenterView("conversation");
-    setTranscripts((current) =>
-      current[sessionId]
-        ? cacheTranscript(current, sessionId, current[sessionId])
-        : current,
-    );
-  }, []);
-
-  const openLinkedSession = useCallback(
-    (sessionId: string, known: readonly AgentSession[]): void => {
-      if (known.some((session) => session.id === sessionId))
-        selectSession(sessionId);
-      else setAppError(invalidLinkMessage({ kind: "session" }));
-    },
-    [selectSession],
-  );
-
   const newSessionRequestRef = useRef(newSessionRequest);
   newSessionRequestRef.current = newSessionRequest;
 
@@ -1207,31 +1053,6 @@ export default function App() {
       setAppError(error instanceof Error ? error.message : String(error));
     }
   }
-
-  /**
-   * Everything the shell holds for a session that is gone: its row, its cached
-   * transcript, and a selection still pointing at it.
-   *
-   * The backend's `session.deleted` event and the optimistic delete the user
-   * confirms both go through here, so the row leaves the sidebar the same way
-   * whichever one arrives first -- and the event that follows an optimistic delete
-   * finds nothing left to move.
-   */
-  const forgetSession = useCallback((sessionId: string): void => {
-    setSessions((current) => {
-      const remaining = current.filter((session) => session.id !== sessionId);
-      setSelectedId((selected) =>
-        selected === sessionId ? (remaining[0]?.id ?? null) : selected,
-      );
-      return remaining;
-    });
-    setTranscripts((current) => {
-      const next = { ...current };
-      delete next[sessionId];
-      return next;
-    });
-    transcriptRevisionsRef.current.delete(sessionId);
-  }, []);
 
   const { onHideSession, onDeleteSession } = useSessionRemoval(
     backend,
