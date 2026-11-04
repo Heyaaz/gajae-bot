@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useRef } from "react";
 import {
   composerAcceptsSuggestion,
   IDLE_SUGGESTION,
@@ -7,14 +7,12 @@ import {
   suggestionReducer,
   windowIsAttended,
 } from "./prompt-suggestion";
-import type { SuggestionContext, WindowActivity } from "./prompt-suggestion";
+import type { SuggestionContext } from "./prompt-suggestion";
 
 export interface PromptSuggestionOptions {
   context: SuggestionContext;
   /** Absent when the backend cannot suggest: nothing is ever requested. */
   request?: (sessionId: string) => Promise<string | null>;
-  /** Injected by tests; defaults to the document. */
-  activity?: () => WindowActivity;
 }
 
 export interface PromptSuggestion {
@@ -30,15 +28,10 @@ export interface PromptSuggestion {
 export function usePromptSuggestion({
   context,
   request,
-  activity = () => document,
 }: PromptSuggestionOptions): PromptSuggestion {
   const [state, dispatch] = useReducer(suggestionReducer, IDLE_SUGGESTION);
-  const contextRef = useRef(context);
-  contextRef.current = context;
-  const requestRef = useRef(request);
-  requestRef.current = request;
-  const activityRef = useRef(activity);
-  activityRef.current = activity;
+  // The async callbacks below read what the last committed render saw.
+  const latest = useRef({ context, request, text: null as string | null });
   const nextRequestId = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -52,10 +45,8 @@ export function usePromptSuggestion({
   useEffect(() => () => clearTimeout(timer.current), []);
 
   const trigger = useCallback(() => {
-    const ask = requestRef.current;
-    const current = contextRef.current;
-    if (!ask || !composerAcceptsSuggestion(current) || !windowIsAttended(activityRef.current()))
-      return;
+    const { context: current, request: ask } = latest.current;
+    if (!ask || !composerAcceptsSuggestion(current) || !windowIsAttended(document)) return;
     const requestId = (nextRequestId.current += 1);
     dispatch({ type: "request", sessionId: current.sessionId, requestId });
     clearTimeout(timer.current);
@@ -67,11 +58,12 @@ export function usePromptSuggestion({
   }, []);
 
   const text = state.kind === "shown" && !obsolete ? state.text : null;
-  const textRef = useRef(text);
-  textRef.current = text;
+  useLayoutEffect(() => {
+    latest.current = { context, request, text };
+  });
 
   const accept = useCallback((): string | null => {
-    const accepted = textRef.current;
+    const accepted = latest.current.text;
     if (accepted !== null) dispatch({ type: "drop" });
     return accepted;
   }, []);

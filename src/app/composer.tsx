@@ -81,6 +81,7 @@ import {
 } from "./use-composer-dom-effects";
 import { useMentionFilesLoader, useSelectedMentionVisible } from "./use-mention-files";
 import { QueueList } from "./composer-queue-list";
+import { usePromptSuggestion } from "./use-prompt-suggestion";
 import { WorkspaceSwitcher } from "./composer-workspace-switcher";
 
 export {
@@ -150,6 +151,10 @@ export interface ComposerProps {
   onCommandPaletteOpen?: () => void;
   /** Set on a view-only remote device: the host would refuse every control. */
   readOnly?: boolean;
+  /** Predicts the next message for the ghost text; absent when the backend cannot. */
+  onSuggestNextInput?: (sessionId: string) => Promise<string | null>;
+  /** The latest turn that ended normally. A new object is a new completion. */
+  turnCompletion?: { sessionId: string };
 }
 
 export const Composer = memo(function Composer({
@@ -176,6 +181,8 @@ export const Composer = memo(function Composer({
   onCycleThinking,
   onCommandPaletteOpen,
   readOnly = false,
+  onSuggestNextInput,
+  turnCompletion,
 }: ComposerProps) {
   const [value, setValue] = useState(() => composerSnapshots.get(sessionId)?.value ?? "");
   const [images, setImages] = useState(() => composerSnapshots.get(sessionId)?.images ?? []);
@@ -305,6 +312,27 @@ export const Composer = memo(function Composer({
   const mentionIndex =
     mentionSelection.query === mentionQuery ? mentionSelection.index : 0;
   const mentionPaletteRef = useRef<HTMLDivElement>(null);
+  const suggestion = usePromptSuggestion({
+    context: {
+      sessionId,
+      draftEmpty: value.length === 0,
+      hasAttachments: images.length > 0 || files.length > 0,
+      queued: pendingQueue.length > 0,
+      running,
+      popupOpen: paletteOpen || mentionOpen,
+      readOnly,
+    },
+    request: readOnly ? undefined : onSuggestNextInput,
+  });
+  // A completion that was already on the shell when this composer mounted, or that
+  // a session switch left behind, is not a new turn end.
+  const { trigger: triggerSuggestion } = suggestion;
+  const handledCompletionRef = useRef(turnCompletion);
+  useEffect(() => {
+    if (turnCompletion === handledCompletionRef.current) return;
+    handledCompletionRef.current = turnCompletion;
+    if (turnCompletion?.sessionId === sessionId) triggerSuggestion();
+  }, [turnCompletion, sessionId, triggerSuggestion]);
   const paletteRequestedRef = useRef(false);
   useEffect(() => {
     if (!paletteOpen) {
@@ -823,6 +851,7 @@ export const Composer = memo(function Composer({
       setAttachmentError(t("보기 전용 기기입니다. 조작은 데스크톱에서 해주세요."));
       return;
     }
+    suggestion.dismiss();
     const content = (textareaRef.current?.value ?? value).trim();
     if (
       content &&
@@ -1122,6 +1151,27 @@ export const Composer = memo(function Composer({
       event.nativeEvent.isComposing ||
       event.keyCode === 229 ||
       composingRef.current;
+    if (
+      suggestion.text !== null &&
+      event.key === "Tab" &&
+      !composing &&
+      !event.shiftKey &&
+      !event.metaKey &&
+      !event.ctrlKey &&
+      !event.altKey
+    ) {
+      // Accepting fills the draft and nothing more: sending stays the user's call.
+      event.preventDefault();
+      const accepted = suggestion.accept();
+      if (accepted !== null) {
+        setValue(accepted);
+        setCaret(accepted.length);
+        requestAnimationFrame(() =>
+          textareaRef.current?.setSelectionRange(accepted.length, accepted.length),
+        );
+      }
+      return;
+    }
     const mentionAction = mentionOpen
       ? mentionKeyAction(
           {
@@ -1153,6 +1203,7 @@ export const Composer = memo(function Composer({
       return;
     }
     if (event.key === "Escape" || event.key === "Esc") {
+      suggestion.dismiss();
       setWorkspaceOpen(false);
       setConfigMenu(null);
       if (matchingCommands.length > 0) setValue("");
@@ -1331,9 +1382,11 @@ export const Composer = memo(function Composer({
         <small className="composer-hint">{configNotice}</small>
       )}
       {draftUrl && <LinkPreviewCard url={draftUrl} compact />}
+      <div className="composer-field">
       <textarea
         ref={textareaRef}
         aria-label={t`${sessionTitle}에게 메시지 보내기`}
+        aria-describedby={suggestion.text !== null ? "composer-suggestion-hint" : undefined}
         placeholder={readOnly ? t("보기 전용 기기입니다") : t("무엇이든 요청하세요")}
         rows={1}
         value={value}
@@ -1350,6 +1403,7 @@ export const Composer = memo(function Composer({
         onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
         onCompositionStart={() => {
           composingRef.current = true;
+          suggestion.dismiss();
         }}
         onCompositionEnd={() => {
           composingRef.current = false;
@@ -1375,6 +1429,17 @@ export const Composer = memo(function Composer({
         }}
         onKeyDown={handleKeyDown}
       />
+      {suggestion.text !== null && (
+        <>
+          <span className="composer-ghost" aria-hidden="true">
+            {suggestion.text}
+          </span>
+          <small className="composer-ghost-hint" id="composer-suggestion-hint">
+            {t("Tab으로 받기 · Esc로 닫기")}
+          </small>
+        </>
+      )}
+      </div>
       {(matchingCommands.length > 0 ||
         (commandsPending && commandQuery !== null)) && (
         <CommandList
