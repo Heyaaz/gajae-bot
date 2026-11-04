@@ -9,6 +9,7 @@ import {
   markUpdated,
   nowLabel,
   PendingPermission,
+  PermissionResponse,
   readableSessionTitle,
   receiptSubagentStatus,
   SessionConfigOption,
@@ -877,18 +878,14 @@ export function patchTool(host: StreamHost, toolId: string, patch: Partial<ToolA
 }
 
 /**
- * Records a tool call that is waiting on an approval decision.
- *
- * A broker-hosted session host cannot ask an external controller for a decision,
- * so nothing calls this over a live channel any more; the session's permission
- * mode is set instead (see `applyPermissionMode`). It stays because a transcript
- * row can still report a tool as awaiting approval, and the window has to show
- * that state and be able to clear it on cancel.
+ * Records a tool call that is waiting on an approval decision: a request GJC's
+ * external approval channel listed (see `PermissionChannels`). Settles when the
+ * window, a remote device, or GJC withdrawing the request decides it.
  */
 export function requestPermission(
   host: StreamHost,
   request: PendingPermission["request"],
-): Promise<{ outcome: { outcome: string; optionId?: string } }> {
+): Promise<PermissionResponse> {
   const { toolCall } = request;
   host.upsertTool(request.sessionId, {
     sessionUpdate: "tool_call_update",

@@ -147,7 +147,7 @@ export interface TranscriptProps {
   toolViewMode?: ToolViewMode;
   revealItemId?: string;
   onRevealComplete?: (itemId: string) => void;
-  onResolveTool: (toolId: string, optionId: string) => void;
+  onResolveTool: (toolId: string, optionId: string, comment?: string) => void;
   onAnswerQuestion?: (
     gateId: string,
     submission: QuestionSubmission,

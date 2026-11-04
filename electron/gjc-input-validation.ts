@@ -299,7 +299,11 @@ export function toolDecision(value: unknown): ToolDecision {
   ) {
     throw new Error("Tool decision optionId is invalid");
   }
-  return { optionId: optionId.trim() };
+  const comment = (value as { comment?: unknown }).comment;
+  if (comment !== undefined && (typeof comment !== "string" || comment.length > 4096))
+    throw new Error("Tool decision comment is invalid");
+  const trimmed = typeof comment === "string" ? comment.trim() : "";
+  return { optionId: optionId.trim(), ...(trimmed ? { comment: trimmed } : {}) };
 }
 
 export function gitPaths(value: unknown): string[] {

@@ -263,7 +263,7 @@ export class RemoteAgentBackend implements AgentBackend {
   }
 
   async resolveToolCall(toolId: string, decision: ToolDecision): Promise<void> {
-    await this.client.resolveToolCall(toolId, decision.optionId);
+    await this.client.resolveToolCall(toolId, decision);
   }
 
   async answerQuestion(

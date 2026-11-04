@@ -2274,6 +2274,25 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+.tool-card > footer.tool-card-reject-comment {
+  padding-top: 0;
+  border-top: 0;
+}
+.tool-card-reject-comment input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--text-primary);
+  font-size: 12px;
+  background: transparent;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+}
+.tool-card-reject-comment input:focus-visible {
+  outline: 2px solid rgba(240, 100, 22, 0.7);
+  outline-offset: 1px;
+}
 .tool-card-auto-deny {
   border-top-color: rgba(238, 123, 123, 0.2);
 }

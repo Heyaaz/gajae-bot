@@ -164,16 +164,6 @@ export async function readTranscriptTail(
   }
 }
 
-/**
- * A tool call awaiting the user's approval decision.
- *
- * Broker-hosted session hosts have no reverse channel to an external controller:
- * `permission.request` is a host-to-client operation the CLI cannot carry, so a
- * session left in `prompt` mode fails its tool calls with "no permission provider
- * is connected" instead of asking. Gajae therefore sets the session's permission
- * mode explicitly (see `applyPermissionMode`) and only tracks a pending decision
- * for the approvals GJC records in the transcript itself.
- */
 export function textFromContent(content: ContentBlock): string {
   if (content.type === "text") return content.text;
   if (content.type === "audio") return "[Audio attachment]";

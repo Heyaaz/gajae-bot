@@ -124,8 +124,8 @@ the newest as fit in 12 KiB. One question is answered at a time. Each session ke
 own questions until the window closes. In a narrow window the panel covers the
 conversation. A remote device sends `/btw` as before and gets the answer as a
 conversation row. `/btw` is never held behind a running turn. Side chat needs
-a GJC that advertises `btw.ask`; GJC 0.19.2 does not, and the panel says so instead
-of taking a question.
+a GJC that advertises `btw.ask` (0.19.3 or later); on an older GJC the panel says
+so instead of taking a question.
 
 ## File mentions
 
@@ -274,11 +274,24 @@ The Settings permission field is applied after create or resume with the public
 broker-hosted session's `allow` mode. There is no environment variable on a
 desktop-owned agent child because Gajae has no agent child.
 
-The session CLI has no reverse permission-request channel to the desktop. When
-interactive prompting is selected, Gajae therefore fails closed instead of
-silently granting tools: the broker-hosted session is placed in deny mode. This
-can move back to an interactive prompt only when GJC exposes a public external
-permission-answer operation.
+`매번 확인` (prompt) uses GJC's external approval channel, which gjc/0.19.3 and
+later advertise. Gajae turns it on with `permission.channel.set` for each session
+it hosts, so a tool call that needs approval waits instead of failing:
+
+- The call's card shows the request with GJC's options (allow once, always allow,
+  reject, always reject). A rejection can carry a note, which GJC hands the agent
+  as the tool's result.
+- While the session runs, Gajae lists waiting requests every 0.75 s over one
+  `gjc sdk serve --stdio` relay per session, and answers with `permission.respond`.
+- GJC drops a request it waited 60 s on, or one whose turn was stopped. The card
+  then stops waiting and the call's own result shows what happened.
+- A remote device with control permission answers the same card; a view device
+  cannot.
+- Always allow and always reject are GJC's own per-tool choices for that session.
+
+On a GJC without the channel there is still no way to ask, so Gajae fails closed
+instead of silently granting tools: the session is placed in deny mode, and denied
+cards point to the setting.
 
 ## Open a past session
 

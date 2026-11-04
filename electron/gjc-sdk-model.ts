@@ -293,7 +293,13 @@ export interface PendingPermission {
       kind: PermissionOption["kind"];
     }>;
   };
-  resolve: (response: { outcome: { outcome: string; optionId?: string } }) => void;
+  resolve: (response: PermissionResponse) => void;
+}
+
+export interface PermissionResponse {
+  outcome: { outcome: string; optionId?: string };
+  /** Why a rejection was chosen; GJC hands it to the agent as the tool's result. */
+  comment?: string;
 }
 
 export interface GjcControllerOptions {

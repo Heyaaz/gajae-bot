@@ -124,6 +124,7 @@ import {
   projectThoughtChunk,
   projectToolStream,
   reconcileTailTerminalState,
+  requestPermission,
   startTailFollower,
   startToolObserver,
   stopTailFollower,
@@ -273,6 +274,7 @@ import {
 } from "./gjc-sdk-questions.js";
 import { askSideQuestion, executeSdkSlashCommand } from "./gjc-sdk-slash-commands.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
+import { PermissionChannels } from "./gjc-sdk-permissions.js";
 import { gjcHostProcess, stopGjcHostProcess, type GjcHostProcess } from "./gjc-host-process.js";
 import {
   commitChanges,
@@ -549,6 +551,24 @@ export class GjcSdkController {
   private readonly modelProfiles = new Map<string, AgentConfigOptionValue[]>();
   private readonly explicitSessionThinking = new Map<string, string>();
   private readonly pendingPermissions = new Map<string, PendingPermission>();
+  private readonly permissionChannels = new PermissionChannels({
+    relayTransport: (sessionId) => {
+      if (!this.cli) throw new Error("GJC is not connected");
+      return { executable: this.cli.executable, env: this.cli.env, cwd: this.repoFor(sessionId) };
+    },
+    sessionActive: (sessionId) => {
+      const status = this.sessions.get(sessionId)?.status;
+      return status === "starting" || status === "running" || status === "waiting";
+    },
+    requestPermission: (request) => requestPermission(this.streamHost, request),
+    dropPermission: (toolId) => {
+      const pending = this.pendingPermissions.get(toolId);
+      if (!pending) return;
+      this.pendingPermissions.delete(toolId);
+      pending.resolve({ outcome: { outcome: "cancelled" } });
+      this.patchTool(toolId, { status: "pending", permissionOptions: undefined });
+    },
+  });
   private readonly artifactWrites = new Map<string, Promise<void>>();
   private readonly artifactSessionIds = new Map<string, Set<string>>();
   private readonly deletingSessions = new Set<string>();
@@ -1166,6 +1186,10 @@ export class GjcSdkController {
             items: event.items.map(projectTranscriptItemForDelivery),
           });
           break;
+        case "session.updated":
+          options.emit(event);
+          this.permissionChannels.sync(event.session.id);
+          break;
         default:
           options.emit(event);
       }
@@ -1219,6 +1243,7 @@ export class GjcSdkController {
     for (const pending of this.pendingPermissions.values())
       pending.resolve({ outcome: { outcome: "cancelled" } });
     this.pendingPermissions.clear();
+    this.permissionChannels.dispose();
     // No resident process to stop: dropping the client is the whole teardown, and
     // the next call rebuilds it against the new runtime.
     this.cli = undefined;
@@ -1834,6 +1859,7 @@ export class GjcSdkController {
     this.pendingPermissions.delete(toolId);
     pending.resolve({
       outcome: { outcome: "selected", optionId: option.optionId },
+      ...(decision.comment ? { comment: decision.comment } : {}),
     });
     this.patchTool(toolId, {
       status: option.kind.startsWith("allow") ? "approved" : "denied",
@@ -2109,6 +2135,7 @@ export class GjcSdkController {
     this.desktopTranscriptBaselines.clear();
     this.routeProbes.clear();
     this.permissionModeApplied.clear();
+    this.permissionChannels.dispose();
     for (const sessionId of this.toolObservers.keys())
       this.stopTailFollower(sessionId);
     for (const sessionId of this.tailControllers.keys())
@@ -2173,6 +2200,7 @@ export class GjcSdkController {
       pending.resolve({ outcome: { outcome: "cancelled" } });
     }
     this.pendingPermissions.clear();
+    this.permissionChannels.dispose();
     this.routeProbes.clear();
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
@@ -2413,31 +2441,44 @@ export class GjcSdkController {
    * permission mode, set through the `permission_mode.set` control operation and
    * defaulting to `allow`.
    *
-   * Fail-closed note: the host has no reverse channel to ask an external
-   * controller for a decision (`permission.request` is a host-to-client operation
-   * the session CLI cannot carry). A session left in `prompt` mode therefore
-   * *rejects* tool calls with "no permission provider is connected" rather than
-   * prompting anyone. So `prompt` and `deny` are both mapped to the host's `deny`,
-   * which refuses the tool call with a decision the transcript records, instead of
-   * silently granting what the user did not approve. `always-allow` maps to
-   * `allow`. If GJC ever gains a way to answer a permission request from an
-   * external controller, `prompt` should move to it rather than to `deny`.
+   * `prompt` turns on GJC's external approval channel (gjc/0.19.3) where the
+   * session advertises it: a tool call that needs approval waits as a request the
+   * window lists and answers (see `PermissionChannels`). A GJC without the channel
+   * leaves a `prompt` session rejecting tool calls with "no permission provider is
+   * connected", so there `prompt` is mapped to the host's `deny` instead, which
+   * refuses with a decision the transcript records rather than silently granting
+   * what the user did not approve. `always-allow` and `auto` map to `allow`, and an
+   * explicit allow outranks a channel left on from an earlier `prompt`.
    */
   private async applyPermissionMode(sessionId: string): Promise<void> {
     if (this.permissionModeApplied.has(sessionId)) return;
-    const mode =
+    const allow =
       this.permissionHandling === "always-allow" ||
-      this.permissionHandling === "auto"
-        ? "always-allow"
-        : "deny";
+      this.permissionHandling === "auto";
     const cli = await this.requireCli();
-    await cli.rawControl(
-      sessionId,
-      "permission_mode.set",
-      { mode },
-      { repo: this.repoFor(sessionId) },
-    );
+    const repo = this.repoFor(sessionId);
+    if (!allow && (await this.sdkOperations(sessionId)).has("permission.channel.set")) {
+      await cli.rawControl(sessionId, "permission.channel.set", { enabled: true }, { repo });
+      this.permissionChannels.watch(sessionId);
+      this.markApprovalChannel(sessionId, true);
+    } else {
+      await cli.rawControl(
+        sessionId,
+        "permission_mode.set",
+        { mode: allow ? "always-allow" : "deny" },
+        { repo },
+      );
+      this.markApprovalChannel(sessionId, false);
+    }
     this.permissionModeApplied.add(sessionId);
+  }
+
+  private markApprovalChannel(sessionId: string, on: boolean): void {
+    const session = this.sessions.get(sessionId);
+    if (!session || Boolean(session.approvalChannel) === on) return;
+    if (on) session.approvalChannel = true;
+    else delete session.approvalChannel;
+    this.emitEvent({ type: "session.updated", session: { ...session } });
   }
 
   private scheduleReconnect(): void {
