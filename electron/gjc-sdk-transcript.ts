@@ -1172,13 +1172,19 @@ export function customMessageTitle(customType: unknown): string {
   return "시스템 메시지";
 }
 
+function skillName(details: unknown): string | undefined {
+  if (!details || typeof details !== "object") return undefined;
+  const { name } = details as Record<string, unknown>;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+
 /** The `/skill:<name> <args>` request a `skill-prompt` record's details describe. */
 function skillRequest(details: unknown): string | undefined {
-  if (!details || typeof details !== "object") return undefined;
-  const { name, args } = details as Record<string, unknown>;
-  if (typeof name !== "string" || !name.trim()) return undefined;
+  const name = skillName(details);
+  if (!name) return undefined;
+  const { args } = details as Record<string, unknown>;
   const request = typeof args === "string" ? args.trim() : "";
-  return request ? `/skill:${name.trim()} ${request}` : `/skill:${name.trim()}`;
+  return request ? `/skill:${name} ${request}` : `/skill:${name}`;
 }
 
 export function sharedTranscriptItems(
@@ -1297,6 +1303,7 @@ export function sharedTranscriptItems(
         // of `/skill:<name> <args>` finds its durable twin instead of drifting below
         // the reply.
         const skill = sourceType === "skill-prompt" ? skillRequest(row.details) : undefined;
+        const promptSkill = sourceType === "skill-prompt" ? skillName(row.details) : undefined;
         if (skill)
           items.push({
             id: `shared-message-${sourceId}`,
@@ -1315,6 +1322,7 @@ export function sharedTranscriptItems(
           createdAt,
           ...(sourceType ? { sourceType } : {}),
           ...(row.display === false ? { runtimeHidden: true } : {}),
+          ...(promptSkill ? { skillName: promptSkill } : {}),
         });
       }
       continue;

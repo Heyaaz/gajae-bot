@@ -3735,6 +3735,7 @@ describe("runtime activity visibility", () => {
     ]);
     expect(sharedTranscriptItems("s1", [{ ...record, details: { name: "greet", args: "" } }])[0])
       .toMatchObject({ role: "user", content: "/skill:greet" });
+    expect(items[1]).toMatchObject({ kind: "system", skillName: "greet" });
 
     const { internals } = harness();
     internals.transcripts.set("s1", [

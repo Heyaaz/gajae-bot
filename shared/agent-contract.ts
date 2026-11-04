@@ -727,6 +727,12 @@ export interface SystemNoticeActivity {
    */
   runtimeHidden?: boolean;
   /**
+   * The skill a `skill-prompt` row expanded, from the record's own `details.name`.
+   * The expanded body's text says nothing reliable about which skill it is: its first
+   * heading can be a template line the skill fills in later.
+   */
+  skillName?: string;
+  /**
    * The phases behind an app-owned todo snapshot (`sourceType: "todo.list"`), kept in
    * the shape the runtime returned them so the card can render the list itself instead
    * of the snapshot's raw JSON.

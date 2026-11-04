@@ -290,6 +290,7 @@ export const MESSAGES: Readonly<Record<string, string>> = {
   "스킬 및 명령어": "Skills and commands",
   "스킬 불러오는 중…": "Loading skills…",
   "스킬 지침": "Skill instructions",
+  "{0} 지침": "{0} instructions",
   "스킬 호출: {0}": "Skill call: {0}",
   "승인": "Approve",
   "승인 대기": "Waiting for approval",

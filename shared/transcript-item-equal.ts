@@ -133,6 +133,7 @@ export function transcriptItemEqual(
         left.createdAt === right.createdAt &&
         left.sourceType === right.sourceType &&
         left.runtimeHidden === right.runtimeHidden &&
+        left.skillName === right.skillName &&
         left.observedAt === right.observedAt &&
         sameList(left.todoPhases, right.todoPhases, (phase, other) =>
           phase.name === other.name &&
