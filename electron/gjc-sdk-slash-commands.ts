@@ -53,7 +53,7 @@ export interface SlashCommandHost {
     sessionId: string,
     operation: SlashControlOperation,
     input: Record<string, unknown>,
-    options?: { confirm?: boolean },
+    options?: { confirm?: boolean; timeoutMs?: number },
   ): Promise<Record<string, unknown> | undefined>;
   deleteSession(sessionId: string): Promise<void>;
   sessionConfigRow(sessionId: string): Promise<Record<string, unknown> | undefined>;
@@ -71,6 +71,14 @@ export interface SlashCommandHost {
  * Asks GJC a side question from the session's own context. GJC answers without a
  * turn and stores nothing, so this may run while a turn is live.
  */
+/**
+ * GJC gives a /btw answer up to 120 s (`BTW_STREAM_TOTAL_TIMEOUT_MS`). The CLI's
+ * default 8 s request budget gave up first on any slower answer and reported only
+ * that the outcome was uncertain, so the call waits a little past GJC's own limit
+ * and a slow answer ends in GJC's timeout message instead.
+ */
+const SIDE_QUESTION_TIMEOUT_MS = 125_000;
+
 export async function askSideQuestion(
   host: Pick<SlashCommandHost, "sdkOperations" | "controlSession">,
   sessionId: string,
@@ -78,7 +86,12 @@ export async function askSideQuestion(
 ): Promise<string> {
   if (!(await host.sdkOperations(sessionId)).has("btw.ask"))
     throw new Error("/btw is unavailable in this GJC runtime (btw.ask is not advertised)");
-  const result = await host.controlSession(sessionId, "btw.ask", { question });
+  const result = await host.controlSession(
+    sessionId,
+    "btw.ask",
+    { question },
+    { timeoutMs: SIDE_QUESTION_TIMEOUT_MS },
+  );
   const reply = typeof result?.reply === "string" ? result.reply.trim() : "";
   if (!reply) throw new Error("GJC returned no /btw answer");
   return reply;
