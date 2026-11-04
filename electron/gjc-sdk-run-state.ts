@@ -1,10 +1,13 @@
 import { stat } from "node:fs/promises";
 import { type FSWatcher, watch } from "node:fs";
 import type { AgentEvent, AgentSession } from "../shared/agent-contract.js";
+import type { SessionMetadataStore } from "./session-metadata-store.js";
 import {
   LIVE_EVIDENCE_GRACE_MS,
   PENDING_ASYNC_RECONCILE_INTERVAL_MS,
+  markUpdated,
   persistedTurnState,
+  readableSessionTitle,
   readTranscriptTail,
 } from "./gjc-sdk-foundation.js";
 import path from "node:path";
@@ -45,6 +48,11 @@ export interface RunStateHost {
   readonly sharedSessionWatchers: Map<string, FSWatcher>;
   readonly generation: number;
   lastDiscovered: AgentSession[];
+  readonly runRevisions: Map<string, number>;
+  readonly cancellingSessions: Set<string>;
+  readonly completionDeferredSessions: Set<string>;
+  readonly sessionMetadata?: SessionMetadataStore;
+  hasAnswerableQuestion(sessionId: string): boolean;
 }
 
 /**
@@ -569,4 +577,104 @@ export async function republishRunState(host: RunStateHost, sessionId: string): 
       : row,
   );
   host.emitEvent({ type: "session.updated", session: { ...session } });
+}
+
+export function currentRunRevision(host: RunStateHost, sessionId: string): number {
+  return (
+    host.runRevisions.get(sessionId) ??
+    host.sessions.get(sessionId)?.runRevision ??
+    0
+  );
+}
+
+export function advanceRunRevision(host: RunStateHost, sessionId: string): number {
+  const revision = currentRunRevision(host, sessionId) + 1;
+  host.runRevisions.set(sessionId, revision);
+  const session = host.sessions.get(sessionId);
+  if (session) session.runRevision = revision;
+  return revision;
+}
+
+export function updateSessionStatus(
+  host: RunStateHost,
+  sessionId: string,
+  status: AgentSession["status"],
+  options?: { announce?: boolean },
+): void {
+  const session = host.sessions.get(sessionId);
+  if (status === "running" && host.locallyAbortedSessions.has(sessionId))
+    return;
+  // Any running status published here -- this window's own prompt, steer, or
+  // release round trip, or a tail frame announcing a turn -- is the freshest
+  // account of work this process holds. Recording it gives the transcript the
+  // grace window to catch up before it is allowed to overrule the row.
+  if (status === "running") recordLiveEvidence(host, sessionId);
+  // An ask gate is still waiting on a person. Idle and running reports keep
+  // arriving from the tail while that is true; the sidebar stays on waiting
+  // until the card settles. A failure and a cancel still win.
+  if (
+    host.hasAnswerableQuestion(sessionId) &&
+    !host.cancellingSessions.has(sessionId) &&
+    !host.locallyAbortedSessions.has(sessionId) &&
+    status !== "failed" &&
+    (status === "running" || status === "idle")
+  )
+    status = "waiting";
+  // Any running -> idle transition is a finished turn, and the finish is what
+  // the user is waiting for, so the announcement lives here rather than at each
+  // callsite. A session owned by a terminal reaches idle through the persisted
+  // transcript watcher, which is why announcing only from sendMessage left
+  // those runs finishing silently.
+  //
+  // A session this window prompted before discovery listed it has no record
+  // here yet; its turn still ran, so the announcement does not depend on one.
+  //
+  // A cancel is excluded: the user performed it and is already looking at the
+  // window, so telling them about it is noise.
+  const previous = session?.status ?? "running";
+  const owesCompletion =
+    previous === "running" ||
+    (previous === "unknown" &&
+      host.completionDeferredSessions.has(sessionId));
+  if (status === "unknown" && previous === "running")
+    host.completionDeferredSessions.add(sessionId);
+  else if (status !== "unknown")
+    host.completionDeferredSessions.delete(sessionId);
+  // Unknown is not a finish. A later idle verdict is the one completion notice
+  // for the running turn whose job list could not be read.
+  const finishedTurn =
+    options?.announce !== false &&
+    status === "idle" &&
+    owesCompletion &&
+    !host.cancellingSessions.has(sessionId) &&
+    !host.locallyAbortedSessions.has(sessionId);
+  if (session) {
+    if (session.status !== status) advanceRunRevision(host, sessionId);
+    session.status = status;
+    markUpdated(session);
+    host.emitEvent({ type: "session.updated", session: { ...session } });
+  }
+  if (finishedTurn) emitActivity(host, sessionId, "completed");
+}
+
+export function emitActivity(
+  host: RunStateHost,
+  sessionId: string,
+  category: Extract<AgentEvent, { type: "session.activity" }>["category"],
+): void {
+  // A session this window prompted may not be in the discovered set yet. The
+  // outcome still has to be announced, so an unknown session falls back to a
+  // readable title rather than swallowing the notification.
+  const session = host.sessions.get(sessionId);
+  if (session) {
+    session.unread = true;
+    host.sessionMetadata?.setUnread(sessionId, true);
+  }
+  host.emitEvent({
+    type: "session.activity",
+    sessionId,
+    title: session?.title ?? readableSessionTitle(sessionId, undefined),
+    unread: true,
+    category,
+  });
 }

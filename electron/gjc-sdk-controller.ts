@@ -204,8 +204,11 @@ import {
   sessionParentId,
 } from "./gjc-sdk-discovery.js";
 import {
+  advanceRunRevision,
   clearRunningLatches,
+  currentRunRevision,
   discoveredRunState,
+  emitActivity,
   liveEvidenceQuiet,
   reconciledAsyncJobIds,
   recordLiveEvidence,
@@ -215,6 +218,7 @@ import {
   settleQuietRunningRow,
   syncRunStateWatchers,
   transcriptStartedNewWork,
+  updateSessionStatus,
 } from "./gjc-sdk-run-state.js";
 import {
   type FilesHost,
@@ -670,6 +674,7 @@ export class GjcSdkController {
     get sessionQuestions() { return controller.sessionQuestions; },
     get questionRefreshes() { return controller.questionRefreshes; },
     get disposed() { return controller.disposed; },
+    hasAnswerableQuestion: (sessionId) => controller.hasAnswerableQuestion(sessionId),
     get configuredExecutable() { return controller.configuredExecutable; },
     set configuredExecutable(value) { controller.configuredExecutable = value; },
     get connectionState() { return controller.connectionState; },
@@ -2062,21 +2067,7 @@ export class GjcSdkController {
     sessionId: string,
     category: Extract<AgentEvent, { type: "session.activity" }>["category"],
   ): void {
-    // A session this window prompted may not be in the discovered set yet. The
-    // outcome still has to be announced, so an unknown session falls back to a
-    // readable title rather than swallowing the notification.
-    const session = this.sessions.get(sessionId);
-    if (session) {
-      session.unread = true;
-      this.sessionMetadata?.setUnread(sessionId, true);
-    }
-    this.emitEvent({
-      type: "session.activity",
-      sessionId,
-      title: session?.title ?? readableSessionTitle(sessionId, undefined),
-      unread: true,
-      category,
-    });
+    return emitActivity(this.host, sessionId, category);
   }
 
   private finalizeAssistantMessage(sessionId: string): void {
@@ -2118,19 +2109,11 @@ export class GjcSdkController {
   }
 
   private currentRunRevision(sessionId: string): number {
-    return (
-      this.runRevisions.get(sessionId) ??
-      this.sessions.get(sessionId)?.runRevision ??
-      0
-    );
+    return currentRunRevision(this.host, sessionId);
   }
 
   private advanceRunRevision(sessionId: string): number {
-    const revision = this.currentRunRevision(sessionId) + 1;
-    this.runRevisions.set(sessionId, revision);
-    const session = this.sessions.get(sessionId);
-    if (session) session.runRevision = revision;
-    return revision;
+    return advanceRunRevision(this.host, sessionId);
   }
 
   private updateSessionStatus(
@@ -2138,60 +2121,7 @@ export class GjcSdkController {
     status: AgentSession["status"],
     options?: { announce?: boolean },
   ): void {
-    const session = this.sessions.get(sessionId);
-    if (status === "running" && this.locallyAbortedSessions.has(sessionId))
-      return;
-    // Any running status published here -- this window's own prompt, steer, or
-    // release round trip, or a tail frame announcing a turn -- is the freshest
-    // account of work this process holds. Recording it gives the transcript the
-    // grace window to catch up before it is allowed to overrule the row.
-    if (status === "running") this.recordLiveEvidence(sessionId);
-    // An ask gate is still waiting on a person. Idle and running reports keep
-    // arriving from the tail while that is true; the sidebar stays on waiting
-    // until the card settles. A failure and a cancel still win.
-    if (
-      this.hasAnswerableQuestion(sessionId) &&
-      !this.cancellingSessions.has(sessionId) &&
-      !this.locallyAbortedSessions.has(sessionId) &&
-      status !== "failed" &&
-      (status === "running" || status === "idle")
-    )
-      status = "waiting";
-    // Any running -> idle transition is a finished turn, and the finish is what
-    // the user is waiting for, so the announcement lives here rather than at each
-    // callsite. A session owned by a terminal reaches idle through the persisted
-    // transcript watcher, which is why announcing only from sendMessage left
-    // those runs finishing silently.
-    //
-    // A session this window prompted before discovery listed it has no record
-    // here yet; its turn still ran, so the announcement does not depend on one.
-    //
-    // A cancel is excluded: the user performed it and is already looking at the
-    // window, so telling them about it is noise.
-    const previous = session?.status ?? "running";
-    const owesCompletion =
-      previous === "running" ||
-      (previous === "unknown" &&
-        this.completionDeferredSessions.has(sessionId));
-    if (status === "unknown" && previous === "running")
-      this.completionDeferredSessions.add(sessionId);
-    else if (status !== "unknown")
-      this.completionDeferredSessions.delete(sessionId);
-    // Unknown is not a finish. A later idle verdict is the one completion notice
-    // for the running turn whose job list could not be read.
-    const finishedTurn =
-      options?.announce !== false &&
-      status === "idle" &&
-      owesCompletion &&
-      !this.cancellingSessions.has(sessionId) &&
-      !this.locallyAbortedSessions.has(sessionId);
-    if (session) {
-      if (session.status !== status) this.advanceRunRevision(sessionId);
-      session.status = status;
-      markUpdated(session);
-      this.emitEvent({ type: "session.updated", session: { ...session } });
-    }
-    if (finishedTurn) this.emitActivity(sessionId, "completed");
+    return updateSessionStatus(this.host, sessionId, status, options);
   }
 
   /**
