@@ -28,6 +28,32 @@ const OUTPUT_DETAILS_SEPARATOR = "\n\ndetails\n";
 const TRUNCATED_OUTPUT_STUB = /^\[Output truncated/u;
 const PATCH_FILE_HEADER = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gmu;
 
+/** The window receives a long tool body as a cut-off preview ending in this note. */
+const BODY_PREVIEW_NOTE = /\s*\[Preview truncated; full content available as artifact\]$/u;
+const JSON_STRING_FIELD = /"([\w-]+)"\s*:\s*"((?:[^"\\]|\\.)*)/gu;
+
+function decodeJsonString(raw: string): string {
+  const whole = raw.replace(/\\(?:u[0-9a-fA-F]{0,3})?$/u, "");
+  try {
+    return JSON.parse(`"${whole}"`) as string;
+  } catch {
+    return whole;
+  }
+}
+
+/**
+ * The string fields that arrived before a preview cut the JSON off. The first
+ * occurrence of a key wins, and a value the cut ran through keeps what arrived.
+ */
+function previewRecord(text: string): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  for (const match of text.matchAll(JSON_STRING_FIELD)) {
+    const [, key, raw] = match;
+    if (key && raw !== undefined && !(key in record)) record[key] = decodeJsonString(raw);
+  }
+  return record;
+}
+
 function parseInput(command: string | undefined): ToolInput {
   const text = command?.trim();
   if (!text) return {};
@@ -38,12 +64,15 @@ function parseInput(command: string | undefined): ToolInput {
   } catch {
     // A plain-text command is already readable.
   }
+  if (text.startsWith("{") && BODY_PREVIEW_NOTE.test(text))
+    return { record: previewRecord(text.replace(BODY_PREVIEW_NOTE, "")), text };
   return { text };
 }
 
 function isStructuredJson(text: string): boolean {
   const value = text.trim();
   if (!/^[[{]/u.test(value)) return false;
+  if (BODY_PREVIEW_NOTE.test(value)) return true;
   try {
     JSON.parse(value);
     return true;
