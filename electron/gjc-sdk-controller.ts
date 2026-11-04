@@ -227,6 +227,7 @@ import {
   settleOpenQuestions,
 } from "./gjc-sdk-questions.js";
 import { askSideQuestion, executeSdkSlashCommand, type SlashCommandHost } from "./gjc-sdk-slash-commands.js";
+import { PromptSuggestionSetting, suggestNextInput } from "./gjc-sdk-prompt-suggestion.js";
 import { GjcSdkState } from "./gjc-sdk-state.js";
 import { deleteSessionThroughCli } from "./gjc-cli-session-delete.js";
 import {
@@ -285,6 +286,7 @@ type ControllerHost =
 export class GjcSdkController extends GjcSdkState {
   private workspace: string;
   private configuredExecutable?: string;
+  private readonly promptSuggestionSetting = new PromptSuggestionSetting(() => this.resolveExecutable());
   private modelPreset: AgentControlPreferences["modelPreset"];
   private permissionHandling: AgentControlPreferences["permissionHandling"];
   private readonly sessionMetadata?: SessionMetadataStore;
@@ -744,6 +746,7 @@ export class GjcSdkController extends GjcSdkState {
   }
 
   applyLiveSettings(changes: readonly GjcSettingChange[]): Promise<void> {
+    this.promptSuggestionSetting.invalidate();
     return applyLiveSettings(this.host, changes);
   }
 
@@ -753,6 +756,18 @@ export class GjcSdkController extends GjcSdkState {
 
   askSideQuestion(sessionId: string, question: string): Promise<string> {
     return askSideQuestion(this.host, sessionId, question);
+  }
+
+  suggestNextInput(sessionId: string): Promise<string | null> {
+    return suggestNextInput(
+      {
+        promptSuggestionsEnabled: () => this.promptSuggestionSetting.enabled(),
+        sdkOperations: (id) => this.host.sdkOperations(id),
+        controlSession: (id, operation, input, options) =>
+          this.controlSession(id, operation, input, options),
+      },
+      sessionId,
+    );
   }
 
   compactSession(sessionId: string): Promise<void> {

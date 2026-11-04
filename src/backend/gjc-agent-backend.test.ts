@@ -143,6 +143,9 @@ class FakeGjcBridge implements GjcDesktopBridge {
   async askSideQuestion(_sessionId: string, _question: string): Promise<string> {
     return "";
   }
+  async suggestNextInput(_sessionId: string): Promise<string | null> {
+    return null;
+  }
   async controlRetry(_sessionId: string, _action: "now" | "abort"): Promise<void> {}
   async compactSession(_sessionId: string): Promise<void> {}
   async queueFollowUp(

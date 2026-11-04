@@ -1032,6 +1032,11 @@ export interface GjcDesktopBridge {
   cycleThinking(sessionId: string): Promise<string | undefined>;
   /** `/btw`: GJC's answer from the session's context, kept out of the transcript. */
   askSideQuestion(sessionId: string, question: string): Promise<string>;
+  /**
+   * The user's likely next message, predicted from the session's context, or null.
+   * Null covers the setting being off, a runtime without `btw.ask`, and a failure.
+   */
+  suggestNextInput(sessionId: string): Promise<string | null>;
   controlRetry(sessionId: string, action: "now" | "abort"): Promise<void>;
   compactSession(sessionId: string): Promise<void>;
   queueFollowUp(sessionId: string, input: MessageInput): Promise<MessageDelivery>;
