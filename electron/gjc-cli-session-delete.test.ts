@@ -116,6 +116,94 @@ describe("deleteSessionThroughCli", () => {
     expect(gjc.sent).toEqual(["/session delete", "\r", "\r", "/session delete", "\r", "\r"]);
   });
 
+  it("keeps GJC running after the transcript is gone until GJC reports the deletion", async () => {
+    let transcript = true;
+    const gjc = fakeGjc((keys, screen) => {
+      if (keys === "/session delete") screen(COMPLETION);
+      else if (keys === "\r" && gjc.sent.at(-2) === "/session delete") screen(prompt("Yes"));
+      else if (keys === "\r") {
+        // The transcript goes first; the store lock is released and reported later.
+        transcript = false;
+        setTimeout(() => screen("\x1b[2mCurrent session transcript and artifacts deleted\x1b[0m"), 4_000);
+      }
+    });
+    const deletion = deleteSessionThroughCli({
+      executable: "/bin/gjc",
+      cwd: "/repo",
+      sessionPath: "/s1.jsonl",
+      env: {},
+      spawn: gjc.spawn,
+      transcriptExists: async () => transcript,
+    });
+    let settled = false;
+    void deletion.then(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(transcript).toBe(false);
+    expect(gjc.kills).toEqual([]);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(5_000);
+    await expect(deletion).resolves.toBeUndefined();
+    expect(gjc.kills).toEqual(["SIGTERM"]);
+  });
+
+  it("stops GJC a grace period after the transcript is gone when no report comes", async () => {
+    let transcript = true;
+    let goneAt = 0;
+    let stoppedAt = 0;
+    const gjc = fakeGjc((keys, screen) => {
+      if (keys === "/session delete") screen(COMPLETION);
+      else if (keys === "\r" && gjc.sent.at(-2) === "/session delete") screen(prompt("Yes"));
+      else if (keys === "\r") {
+        transcript = false;
+        goneAt = Date.now();
+      }
+    });
+    const spawn = vi.fn((...args: Parameters<typeof gjc.spawn>) => {
+      const terminal = gjc.spawn(...args);
+      return {
+        ...terminal,
+        kill: (signal?: string) => {
+          stoppedAt ||= Date.now();
+          terminal.kill(signal);
+        },
+      };
+    });
+    const deletion = deleteSessionThroughCli({
+      executable: "/bin/gjc",
+      cwd: "/repo",
+      sessionPath: "/s1.jsonl",
+      env: {},
+      spawn,
+      transcriptExists: async () => transcript,
+      completionGraceMs: 3_000,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(deletion).resolves.toBeUndefined();
+    expect(stoppedAt - goneAt).toBeGreaterThanOrEqual(3_000);
+    expect(stoppedAt - goneAt).toBeLessThan(3_500);
+  });
+
+  it("counts a deletion whose transcript is gone as done when the overall time runs out", async () => {
+    let transcript = true;
+    const gjc = fakeGjc((keys, screen) => {
+      if (keys === "/session delete") screen(COMPLETION);
+      else if (keys === "\r" && gjc.sent.at(-2) === "/session delete") screen(prompt("Yes"));
+      else if (keys === "\r") transcript = false;
+    });
+    const deletion = deleteSessionThroughCli({
+      executable: "/bin/gjc",
+      cwd: "/repo",
+      sessionPath: "/s1.jsonl",
+      env: {},
+      spawn: gjc.spawn,
+      transcriptExists: async () => transcript,
+      timeoutMs: 6_000,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(deletion).resolves.toBeUndefined();
+    expect(gjc.kills).toEqual(["SIGTERM"]);
+  });
+
   it("never answers a deletion prompt that does not have Yes selected", async () => {
     const gjc = fakeGjc((keys, screen) => {
       if (keys === "/session delete") screen(COMPLETION);
