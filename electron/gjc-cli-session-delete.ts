@@ -20,6 +20,13 @@ import { spawn as spawnNative } from "node-pty";
  * other dialog gets Esc, and Yes is chosen only on GJC's own deletion prompt with
  * Yes already selected. Success is the transcript gone from disk; GJC is stopped
  * either way, so the empty session it opens after deleting is never used.
+ *
+ * The transcript goes first: GJC still clears the artifacts and its tombstone
+ * and releases the delete's store lock after that, then reports the deletion.
+ * A GJC stopped in between exits through its signal cleanup without releasing
+ * the lock, and the next GJC to touch the store waits out the lock's 60s lease
+ * (gjc/0.19.3). So GJC is stopped only once it reported the deletion, or a grace
+ * period after the transcript went in case that report changed wording.
  */
 
 export interface CliDeleteTerminal {
@@ -46,6 +53,8 @@ export interface CliDeleteOptions {
   timeoutMs?: number;
   quietMs?: number;
   busyRetryMs?: number;
+  /** How long GJC may run on after the transcript is gone without reporting the deletion. */
+  completionGraceMs?: number;
 }
 
 /**
@@ -59,6 +68,8 @@ export class CliDeleteError extends Error {
     readonly reason: "timeout" | "exited" | "unexpected-dialog" | "busy",
     message: string,
     readonly stage?: CliDeleteStage,
+    /** The end of what GJC printed since the last key, for diagnosing a stall. */
+    readonly screen?: string,
   ) {
     super(message);
     this.name = "CliDeleteError";
@@ -66,6 +77,9 @@ export class CliDeleteError extends Error {
 }
 
 const DELETE_PROMPT = "Delete current session transcript and artifacts?";
+// Shown once the store operation returned, its lock released (gjc/0.19.2–0.19.3).
+const DELETED_STATUS = "Current session transcript and artifacts deleted";
+const COMPLETION_GRACE_MS = 10_000;
 const COMMAND = "/session delete";
 const SELECTION_POINTER = /❯\s*(\S+)/gu;
 const YES_SELECTED = /❯\s*Yes/u;
@@ -84,6 +98,7 @@ const MAX_DIALOG_DISMISSALS = 3;
 const MAX_SUBMITS = 2;
 const POLL_MS = 100;
 const KILL_GRACE_MS = 2_000;
+const SCREEN_TAIL = 4_000;
 
 const stripTerminalControls = (text: string): string =>
   text.replace(
@@ -136,6 +151,7 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
   const transcriptExists = options.transcriptExists ?? fileExists;
   const timeoutMs = options.timeoutMs ?? 45_000;
   const quietMs = options.quietMs ?? 1_000;
+  const completionGraceMs = options.completionGraceMs ?? COMPLETION_GRACE_MS;
   const terminal = spawn(options.executable, ["--resume", options.sessionPath, "--no-mcp", "--no-lsp"], {
     name: "xterm-256color",
     cols: 120,
@@ -154,6 +170,7 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
     let checking = false;
     let exited = false;
     let settled = false;
+    let transcriptGoneAt: number | undefined;
     const startedAt = Date.now();
 
     const send = (keys: string): void => {
@@ -208,18 +225,34 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
     const poll = setInterval(() => {
       if (settled || checking) return;
       if (Date.now() - startedAt > timeoutMs) {
-        finish(new CliDeleteError("timeout", `GJC가 ${Math.round(timeoutMs / 1000)}초 안에 세션 삭제를 끝내지 못했습니다.`, stage));
+        // The transcript is already gone; only GJC's own report is missing.
+        if (transcriptGoneAt !== undefined) {
+          finish();
+          return;
+        }
+        finish(
+          new CliDeleteError(
+            "timeout",
+            `GJC가 ${Math.round(timeoutMs / 1000)}초 안에 세션 삭제를 끝내지 못했습니다.`,
+            stage,
+            fresh.slice(-SCREEN_TAIL),
+          ),
+        );
         return;
       }
-      if (stage === "confirmed" && stripTerminalControls(fresh).includes(MIGRATION_BUSY)) {
+      const visibleSinceConfirm = stage === "confirmed" ? stripTerminalControls(fresh) : "";
+      if (visibleSinceConfirm.includes(MIGRATION_BUSY)) {
         finish(new CliDeleteError("busy", "GJC가 다른 세션 저장소 작업이 끝나지 않아 삭제를 거부했습니다."));
         return;
       }
       if (stage === "confirmed") {
+        const reported = visibleSinceConfirm.includes(DELETED_STATUS);
         checking = true;
         void transcriptExists(options.sessionPath).then((present) => {
           checking = false;
-          if (!present) finish();
+          if (present) return;
+          transcriptGoneAt ??= Date.now();
+          if (reported || Date.now() - transcriptGoneAt >= completionGraceMs) finish();
         });
         return;
       }

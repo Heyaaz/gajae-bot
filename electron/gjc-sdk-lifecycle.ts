@@ -662,6 +662,7 @@ async function performDeleteSession(
         error.reason === "timeout" && error.stage
           ? `${CLI_DELETE_FAILURES.timeout} (${CLI_DELETE_TIMEOUT_STAGES[error.stage]})`
           : CLI_DELETE_FAILURES[error.reason],
+        { cause: error },
       );
     }
     if (lifecycleInputRefused(error) || lifecycleLegacyHistoryAmbiguous(error)) {
