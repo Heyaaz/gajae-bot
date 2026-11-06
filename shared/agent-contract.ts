@@ -795,6 +795,7 @@ export type AgentEvent =
   | { type: "connection.updated"; connection: BackendConnection }
   | { type: "session.created"; session: AgentSession }
   | { type: "session.updated"; session: AgentSession }
+  /** Remove the live rail row (also hide/retirement); not proof of history deletion. */
   | { type: "session.deleted"; sessionId: string }
   | { type: "transcript.appended"; item: TranscriptItem }
   | { type: "transcript.invalidated"; sessionId: string }

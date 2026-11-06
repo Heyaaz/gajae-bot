@@ -427,6 +427,7 @@ export class GjcSdkController extends GjcSdkState {
     set generation(value) { controller.generation = value; },
     get lastDiscovered() { return controller.lastDiscovered; },
     set lastDiscovered(value) { controller.lastDiscovered = value; },
+    get discoveredLiveSessions() { return controller.discoveredLiveSessions; },
     brokerSessions: (options) => controller.brokerSessions(options),
     get sessionMetadata() { return controller.sessionMetadata; },
     liveRouteReachable: (row) => controller.liveRouteReachable(row),

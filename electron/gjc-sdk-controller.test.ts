@@ -386,6 +386,95 @@ describe("history opening with an unavailable endpoint", () => {
   });
 });
 
+describe("confirmed inactive discovery rows", () => {
+  it.each([
+    { live: false, deleted: false },
+    { live: true, deleted: true },
+  ])("removes a previously listed row on broker evidence %j without deleting history", async (liveness) => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      const old = { sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 1 };
+      cli.listSessions.mockResolvedValue([old] as never);
+      expect((await controller.listSessions()).map((row) => row.id)).toEqual(["s1"]);
+      const transcript = [{ id: "saved", sessionId: "s1", kind: "system", content: "Keep history" }];
+      internals.transcripts.set("s1", transcript);
+      emit.mockClear();
+
+      cli.listSessions.mockResolvedValue([
+        { ...old, ...liveness },
+        { ...old, sessionId: "s2" },
+      ] as never);
+      expect((await controller.listSessions()).map((row) => row.id)).toEqual(["s2"]);
+      expect(emit).toHaveBeenCalledWith({ type: "session.deleted", sessionId: "s1" });
+      expect(internals.transcripts.get("s1")).toBe(transcript);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
+      emit.mockClear();
+      // Reopening this saved row for reading must not be evicted on every poll.
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+    } finally { controller.dispose(); }
+  });
+
+  it("keeps history-only rows that have never been broker-live", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.sessions.set("s1", { ...session(), attachment: "terminal-only" });
+      cli.listSessions.mockResolvedValue([
+        { sessionId: "s1", live: false, deleted: false, repo: "/repo" },
+      ] as never);
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+    } finally { controller.dispose(); }
+  });
+
+  it("remembers liveness across an omission until explicit retirement arrives", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      const row = { sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 1 };
+      cli.listSessions.mockResolvedValue([row] as never);
+      await controller.listSessions();
+      cli.listSessions.mockResolvedValue([]);
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+      cli.listSessions.mockResolvedValue([{ ...row, live: false }] as never);
+      await controller.listSessions();
+      expect(emit).toHaveBeenCalledWith({ type: "session.deleted", sessionId: "s1" });
+    } finally { controller.dispose(); }
+  });
+
+  it.each(["missing", "failed", "unreachable", "timeout"])("does not announce a removal for %s discovery evidence", async (evidence) => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.sessions.set("s1", session());
+      internals.lastDiscovered = [session()];
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      if (evidence === "failed") cli.listSessions.mockRejectedValue(new Error("broker read failed"));
+      else if (evidence !== "missing") {
+        cli.listSessions.mockResolvedValue([
+          { sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 0 },
+        ] as never);
+        cli.queryItems.mockRejectedValue(new SdkCliError(
+          evidence === "unreachable" ? "endpoint_stale" : "timeout", evidence,
+        ));
+      }
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+    } finally { controller.dispose(); }
+  });
+});
+
 describe("0.18.12 tool stream", () => {
   it("retains the app's confirmed cancellation notice across durable refresh", () => {
     const { controller, internals } = harness();
