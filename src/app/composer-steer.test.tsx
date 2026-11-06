@@ -12,6 +12,8 @@ import {
 } from "./composer";
 import { submitComposerInput } from "./composer-session";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 async function mount(overrides: Partial<ComposerProps> = {}) {
   const sessionId = crypto.randomUUID();
   saveComposerQueue(sessionId, [
@@ -34,6 +36,168 @@ async function mount(overrides: Partial<ComposerProps> = {}) {
     await act(async () => root.unmount()); node.remove(); saveComposerQueue(sessionId, []);
   } };
 }
+
+async function type(input: HTMLTextAreaElement, text: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, text);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+}
+
+async function pressEnter(input: HTMLTextAreaElement, init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+  await act(async () => { input.dispatchEvent(event); });
+  return event;
+}
+
+async function nextFrame() {
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 30)); });
+}
+
+describe("running composer Enter", () => {
+  it.each(["queue", "steer"] as const)("applies the %s preference to an actual keydown", async (preference) => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const test = await mount({ runningSubmission: preference });
+    try {
+      await act(async () => saveComposerQueue(test.sessionId, []));
+      const input = test.node.querySelector("textarea")!;
+      input.focus();
+      await type(input, "change course");
+      expect((await pressEnter(input)).defaultPrevented).toBe(true);
+      expect(input.value).toBe("");
+      expect(test.cancel).not.toHaveBeenCalled();
+      expect(test.flush).not.toHaveBeenCalled();
+      if (preference === "queue") {
+        expect(test.send).not.toHaveBeenCalled();
+        expect(composerQueue(test.sessionId)).toEqual([
+          expect.objectContaining({ text: "change course", mode: "followUp" }),
+        ]);
+      } else {
+        expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "/steer change course", images: [], files: [] });
+        expect(composerQueue(test.sessionId)).toEqual([]);
+      }
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it("keeps a plain Enter behind an existing queue under the steer preference", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const test = await mount({ runningSubmission: "steer" });
+    try {
+      const input = test.node.querySelector("textarea")!;
+      await type(input, "after those");
+      await pressEnter(input);
+      expect(composerQueue(test.sessionId).map((entry) => entry.text)).toEqual([
+        "change direction", "keep waiting", "after those",
+      ]);
+      expect(test.send).not.toHaveBeenCalled();
+      expect(test.flush).not.toHaveBeenCalled();
+      expect(test.cancel).not.toHaveBeenCalled();
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it("releases the queued draft on a blank second Enter through flush, not cancel", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const test = await mount();
+    try {
+      await act(async () => saveComposerQueue(test.sessionId, []));
+      const input = test.node.querySelector("textarea")!;
+      input.focus();
+      await type(input, "change course");
+      await pressEnter(input);
+      await nextFrame();
+      expect(document.activeElement).toBe(input);
+      expect(composerQueue(test.sessionId)).toHaveLength(1);
+      expect((await pressEnter(input)).defaultPrevented).toBe(true);
+      expect(test.flush).toHaveBeenCalledTimes(1);
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "change course", images: [], files: [] });
+      expect(test.flush.mock.invocationCallOrder[0]).toBeLessThan(test.send.mock.invocationCallOrder[0]!);
+      expect(test.cancel).not.toHaveBeenCalled();
+      expect(composerQueue(test.sessionId)).toEqual([]);
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it("restores textarea focus after submitting with the send button", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const test = await mount();
+    try {
+      await act(async () => saveComposerQueue(test.sessionId, []));
+      const input = test.node.querySelector("textarea")!;
+      await type(input, "change course");
+      const button = test.node.querySelector<HTMLButtonElement>("button[type=submit]")!;
+      button.focus();
+      await act(async () => button.click());
+      await nextFrame();
+      expect(document.activeElement).toBe(input);
+      expect(composerQueue(test.sessionId)).toHaveLength(1);
+      await pressEnter(input);
+      expect(test.flush).toHaveBeenCalledTimes(1);
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "change course", images: [], files: [] });
+      expect(test.cancel).not.toHaveBeenCalled();
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it("keeps queued work blocked when the flush rejects", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const flush = vi.fn(async () => { throw new Error("flush failed"); });
+    const test = await mount({ onFlushQueued: flush });
+    try {
+      const input = test.node.querySelector("textarea")!;
+      await pressEnter(input);
+      expect(flush).toHaveBeenCalledTimes(1);
+      expect(test.send).not.toHaveBeenCalled();
+      expect(test.cancel).not.toHaveBeenCalled();
+      expect(composerQueue(test.sessionId)[0]).toMatchObject({ id: "first", blocked: true });
+      expect(test.node.querySelector(".composer-error")?.textContent).toContain("flush failed");
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it("keeps an IME follow-up from submitting twice or releasing the queue", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const test = await mount();
+    try {
+      await act(async () => saveComposerQueue(test.sessionId, []));
+      const input = test.node.querySelector("textarea")!;
+      input.focus();
+      await act(async () => { input.dispatchEvent(new Event("compositionstart", { bubbles: true })); });
+      await type(input, "변경해 주세요");
+      expect((await pressEnter(input, { isComposing: true })).defaultPrevented).toBe(true);
+      await act(async () => { input.dispatchEvent(new Event("compositionend", { bubbles: true })); });
+      await pressEnter(input);
+      await nextFrame();
+      expect(composerQueue(test.sessionId)).toEqual([
+        expect.objectContaining({ text: "변경해 주세요", mode: "followUp" }),
+      ]);
+      expect(input.value).toBe("");
+      expect(test.send).not.toHaveBeenCalled();
+      expect(test.flush).not.toHaveBeenCalled();
+      expect(test.cancel).not.toHaveBeenCalled();
+
+      // The current follow-up window also consumes a blank keydown after the frame.
+      expect((await pressEnter(input)).defaultPrevented).toBe(true);
+      expect(test.flush).not.toHaveBeenCalled();
+      clock.mockReturnValue(10_101);
+      await pressEnter(input);
+      expect(test.flush).toHaveBeenCalledTimes(1);
+      expect(test.send).toHaveBeenCalledExactlyOnceWith({ text: "변경해 주세요", images: [], files: [] });
+      expect(composerQueue(test.sessionId)).toEqual([]);
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it("leaves Shift+Enter to the textarea without sending or releasing", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    const test = await mount();
+    try {
+      const input = test.node.querySelector("textarea")!;
+      await type(input, "still editing");
+      expect((await pressEnter(input, { shiftKey: true })).defaultPrevented).toBe(false);
+      expect(input.value).toBe("still editing");
+      expect(composerQueue(test.sessionId)).toHaveLength(2);
+      expect(test.send).not.toHaveBeenCalled();
+      expect(test.flush).not.toHaveBeenCalled();
+      expect(test.cancel).not.toHaveBeenCalled();
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+});
 
 describe("queued message Send now", () => {
   async function submit(test: Awaited<ReturnType<typeof mount>>, text: string) {
