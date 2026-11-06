@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import type { SignInMethod } from '../shared/onboarding.js'
 
 export type SignInEvent =
   | { type: 'open-url'; url: string; instructions?: string }
@@ -82,6 +83,7 @@ export type SpawnSignIn = (executable: string, args: string[], env: Record<strin
 export interface SignInOptions {
   executable: string
   provider: string
+  method: SignInMethod
   env: Record<string, string>
   onEvent: (event: SignInEvent) => void
   spawn?: SpawnSignIn
@@ -123,7 +125,7 @@ export class GjcSignIn {
         emit(this.parser.end())
         if (this.cancelled) reject(new Error('Sign-in cancelled'))
         else if (code === 0) resolve()
-        else reject(new Error(lastLine(diagnostics) ?? `GJC sign-in exited with code ${code}`))
+        else reject(new Error(signInFailureMessage(diagnostics, options.method) ?? `GJC sign-in exited with code ${code}`))
       })
     })
   }
@@ -138,10 +140,22 @@ export class GjcSignIn {
   }
 }
 
-function lastLine(text: string): string | undefined {
-  return text
+const REJECTED_API_KEY = /\b401\b|incorrect|expired|invalid api key/iu
+const UNCAUGHT_PREFIX = /^\[Uncaught Exception\]\s*/u
+const ERROR_LINE = /^\w*Error:/u
+
+/**
+ * Why a sign-in died, from what GJC wrote to stderr: the error line first, a stack
+ * and the "crash recorded at <path>" pointer after it. A rejected API key is
+ * reworded, since the provider's reply says what its server saw, not what to do.
+ */
+export function signInFailureMessage(diagnostics: string, method: SignInMethod): string | undefined {
+  const lines = diagnostics
     .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('at '))
-    .at(-1)
+    .map((line) => line.trim().replace(UNCAUGHT_PREFIX, ''))
+    .filter((line) => line && !line.startsWith('at ') && !line.startsWith('crash recorded at'))
+  const reason = lines.find((line) => ERROR_LINE.test(line)) ?? lines.at(-1)
+  if (reason && method === 'api-key' && REJECTED_API_KEY.test(reason))
+    return 'API 키가 맞지 않습니다. 키를 다시 확인해 주세요.'
+  return reason?.replace(/^Error:\s*/u, '')
 }

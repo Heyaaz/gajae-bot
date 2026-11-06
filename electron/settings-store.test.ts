@@ -74,7 +74,7 @@ describe('SettingsStore', () => {
     const workspace = temporaryDirectory()
     expect(parsePreferences({ modelPreset: '', permissionHandling: 'unsafe' }, workspace)).toEqual({
       workspace,
-      workspaceLabel: 'Private workspace',
+      workspaceLabel: '내 작업 공간',
       modelPreset: 'codex-medium',
       permissionHandling: 'prompt',
       gjcExecutable: '',
@@ -145,7 +145,7 @@ describe('SettingsStore', () => {
       thoughtsExpanded: true,
     })
 
-    expect(saved).toEqual({ workspace, workspaceLabel: 'Private workspace', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: false, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue', newSessionKind: 'app' })
+    expect(saved).toEqual({ workspace, workspaceLabel: '내 작업 공간', modelPreset: 'my-custom-profile', permissionHandling: 'auto', gjcExecutable: executable, thoughtsExpanded: false, toolViewMode: 'reasoning', notificationPreferences: DEFAULT_NOTIFICATION_PREFERENCES, desktopIntegration: DEFAULT_DESKTOP_INTEGRATION, language: 'ko', runningSubmission: 'queue', newSessionKind: 'app' })
     expect(new SettingsStore(userData, root).get()).toEqual(saved)
     expect(store.setWorkspaceLabel('Renamed workspace')).toBe('Renamed workspace')
     expect(new SettingsStore(userData, root).get().workspaceLabel).toBe('Renamed workspace')

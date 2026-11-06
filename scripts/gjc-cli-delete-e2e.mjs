@@ -122,6 +122,13 @@ try {
     version, deletedThroughCli: true, sessionId, elapsedMs, brokerRows: after.length,
     heldSession: { sessionId: held.sessionId, terminal: holder.terminal, terminalExit, elapsedMs: heldElapsedMs },
   }, null, 2))
+} catch (error) {
+  // A CLI delete failure carries the stage it stopped at and the end of what GJC
+  // printed (#197); without them a rare stall cannot be told apart from a slow one.
+  const cause = error?.cause
+  if (cause?.stage || cause?.screen)
+    console.error(JSON.stringify({ stage: cause.stage, screen: cause.screen }))
+  throw error
 } finally {
   controller?.dispose()
   // The broker and session hosts run from this root and write into it while they

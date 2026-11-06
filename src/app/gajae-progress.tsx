@@ -13,8 +13,9 @@ import {
   type TurnApproval,
   type TurnClock,
 } from "../transcript-utils";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useContext, useEffect, useRef, useState } from "react";
 import { t, useLanguage } from "../i18n";
+import { LoginHintContext } from "./login-hint";
 import { formatDuration } from "./format";
 import type { SessionRetry } from "../backend/types";
 
@@ -204,6 +205,10 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
   onRetry,
 }: GajaeProgressRowProps) {
   useLanguage();
+  const { needsSignIn, openLogin } = useContext(LoginHintContext);
+  // A turn that fails on a Mac with no signed-in provider failed for that reason;
+  // GJC's own error says nothing the user can act on.
+  const loginCause = kind === "error" && needsSignIn && openLogin !== undefined;
   const rootRef = useRef<HTMLDivElement>(null);
   const [spriteReady, setSpriteReady] = useState(false);
   const [labelIndex, setLabelIndex] = useState(0);
@@ -223,7 +228,9 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
     kind === "tool" ||
     kind === "approval" ||
     (kind === "done" && !summary);
-  const shownLabel = rotates
+  const shownLabel = loginCause
+    ? t("로그인한 AI가 없어 실행하지 못했어요")
+    : rotates
     ? t(ROTATING_WORK_LABELS[labelIndex] ?? ROTATING_WORK_LABELS[0])
     : (label ?? (kind === "done" ? t("완료") : ""));
 
@@ -346,6 +353,11 @@ export const GajaeProgressRow = memo(function GajaeProgressRow({
                 {t("허용")} </button>
             )}
           </span>
+        )}
+        {loginCause && (
+          <button type="button" className="gajae-progress-button is-allow" onClick={openLogin}>
+            {t("AI 로그인")}
+          </button>
         )}
         {kind === "error" && onRetry && (
           <button type="button" className="gajae-progress-button" onClick={onRetry}>

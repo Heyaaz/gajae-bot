@@ -9,6 +9,23 @@ import type {
 
 export const SESSION_PROGRESS_SCHEMA = "gjc.project_progress.v1";
 
+/**
+ * The workflow skills `gjc state clear --mode` ends. Verified against gjc/0.19.3,
+ * which answers any other mode with "unknown --mode".
+ */
+export const ENDABLE_WORKFLOWS = [
+  "deep-interview",
+  "ralplan",
+  "ultragoal",
+  "autoresearch",
+] as const;
+
+export type EndableWorkflow = (typeof ENDABLE_WORKFLOWS)[number];
+
+export function endableWorkflow(skill: string): EndableWorkflow | undefined {
+  return ENDABLE_WORKFLOWS.find((mode) => mode === skill);
+}
+
 const SEVERITIES = new Set<unknown>([
   "info",
   "warning",

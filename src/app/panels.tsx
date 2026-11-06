@@ -512,7 +512,7 @@ export function AutomationPanel({
             onChange={(event) => setWorktree(event.target.checked)}
           />
           <span>
-            <strong>{t("별도 worktree에서 실행")}</strong>
+            <strong>{t("별도 복사본에서 실행")}</strong>
             <small>
               {t("예약 작업이 현재 작업 폴더를 직접 건드리지 않게 격리합니다.")} </small>
           </span>

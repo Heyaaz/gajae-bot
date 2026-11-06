@@ -100,12 +100,54 @@ describe('OnboardingService', () => {
     expect(isDone()).toBe(true)
   })
 
+  it('says a dismissed setup still needs a sign-in while GJC has no models, and not once it has', async () => {
+    const none = service({
+      gjc: '/Users/me/.local/bin/gjc',
+      done: true,
+      models: listed('No models available. Set API keys in environment variables.\n'),
+    })
+    await expect(none.onboarding.pendingStep()).resolves.toBeNull()
+    await expect(none.onboarding.needsSignIn()).resolves.toBe(true)
+    const signedIn = service({ gjc: '/Users/me/.local/bin/gjc', done: true, models: listed('Canonical models\nglm-4.7  zai/glm-4.7\n') })
+    await expect(signedIn.onboarding.needsSignIn()).resolves.toBe(false)
+    await expect(service({ done: true }).onboarding.needsSignIn()).resolves.toBe(false)
+  })
+
+  const LOGIN = 'printf "Open this URL in your browser:\\nhttps://claude.ai/oauth/authorize\\n\\n"; echo "Credentials saved"'
+
+  it('adds a provider later without changing the model the user already uses', async () => {
+    const { onboarding, calls } = service({
+      gjc: '/Users/me/.local/bin/gjc',
+      done: true,
+      models: listed('Canonical models\nglm-4.7  zai/glm-4.7\n'),
+      loginScript: LOGIN,
+    })
+    await expect(onboarding.startSignIn('anthropic', () => undefined)).resolves.toEqual({ switchedModel: false })
+    expect(calls.filter((call) => call.startsWith('preset'))).toEqual([])
+  })
+
+  it('gives a dismissed setup its provider’s model profile on the first sign-in afterwards', async () => {
+    const { onboarding, calls } = service({
+      gjc: '/Users/me/.local/bin/gjc',
+      done: true,
+      models: listed('No models available. Set API keys in environment variables.\n'),
+      loginScript: LOGIN,
+    })
+    await expect(onboarding.startSignIn('anthropic', () => undefined)).resolves.toEqual({ switchedModel: true })
+    expect(calls).toContain('preset claude-opus')
+  })
+
   it('keeps setup open when the login fails', async () => {
     const { onboarding, calls, isDone } = service({
       gjc: '/Users/me/.local/bin/gjc',
-      loginScript: 'echo "Error: Invalid API key" >&2; exit 1',
+      loginScript: [
+        'echo "[Uncaught Exception] Error: Z.AI API key validation failed (401): token expired or incorrect" >&2',
+        'echo "    at login (cli.js:1:1)" >&2',
+        'echo "[Uncaught Exception] crash recorded at /Users/me/.gjc/agent/gjc-crash.log" >&2',
+        'exit 1',
+      ].join('; '),
     })
-    await expect(onboarding.startSignIn('zai', () => undefined)).rejects.toThrow('Invalid API key')
+    await expect(onboarding.startSignIn('zai', () => undefined)).rejects.toThrow('API 키가 맞지 않습니다')
     expect(calls).toEqual([])
     expect(isDone()).toBe(false)
   })

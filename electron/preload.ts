@@ -417,6 +417,8 @@ const gjc: GjcDesktopBridge = Object.freeze({
     sessionId: string,
     operation: import("../shared/agent-contract.js").GoalOperation,
   ) => ipcRenderer.invoke(GJC_IPC.operateGoal, sessionId, operation),
+  endWorkflow: (sessionId: string, skill: string) =>
+    ipcRenderer.invoke(GJC_IPC.endWorkflow, sessionId, skill),
   listSubagents: (sessionId: string) =>
     ipcRenderer.invoke(GJC_IPC.listSubagents, sessionId),
   refreshRuntimeState: (sessionId: string) =>
@@ -449,6 +451,8 @@ const settings: SettingsDesktopBridge = Object.freeze({
   getPreferences: () => ipcRenderer.invoke(SETTINGS_IPC.getPreferences),
   chooseWorkspace: (currentPath: string) =>
     ipcRenderer.invoke(SETTINGS_IPC.chooseWorkspace, currentPath),
+  inspectWorkspace: (workspace: string) =>
+    ipcRenderer.invoke(SETTINGS_IPC.inspectWorkspace, workspace),
   isNativeFile: (file: File) => Boolean(webUtils.getPathForFile(file)),
   prepareImages: (files: File[]) =>
     ipcRenderer.invoke(SETTINGS_IPC.prepareImages, files.map((file) => ({
@@ -649,6 +653,7 @@ const parallel: ParallelDesktopBridge = Object.freeze({
 });
 const onboarding: OnboardingDesktopBridge = Object.freeze({
   pendingStep: () => ipcRenderer.invoke(ONBOARDING_IPC.pendingStep),
+  needsSignIn: () => ipcRenderer.invoke(ONBOARDING_IPC.needsSignIn),
   installGjc: () => ipcRenderer.invoke(ONBOARDING_IPC.installGjc),
   signIn: (providerId: string) => ipcRenderer.invoke(ONBOARDING_IPC.signIn, providerId),
   answer: (text: string) => ipcRenderer.invoke(ONBOARDING_IPC.answer, text),

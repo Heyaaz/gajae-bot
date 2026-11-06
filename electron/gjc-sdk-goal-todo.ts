@@ -1,6 +1,7 @@
 import type { SdkControlOperation } from "./gjc-sdk-control.js";
 import type { AgentEvent, AgentSession, GoalOperation, GoalSnapshot, SessionProgress, SubagentSnapshot, SystemNoticeActivity, TranscriptItem } from "../shared/agent-contract.js";
-import { parseSessionProgress } from "../shared/session-progress.js";
+import { endableWorkflow, parseSessionProgress } from "../shared/session-progress.js";
+import type { GjcSdkCli } from "./gjc-sdk-cli.js";
 import {
   boundedJson,
   cloneTranscriptItem,
@@ -233,6 +234,49 @@ export async function operateGoal(
     op: operation,
   });
   return getGoal(host, sessionId);
+}
+
+/** The controller members ending a workflow reads on top of the goal reads. */
+export interface WorkflowEndHost extends GoalTodoHost {
+  requireCli(): Promise<GjcSdkCli>;
+  repoFor(sessionId: string): string;
+}
+
+/**
+ * Ends one active workflow: clears its state through GJC, stops the turn still
+ * running for it, and reads the progress snapshot back.
+ *
+ * The state goes first. A workflow left active keeps GJC's stop gate continuing
+ * the turn, so stopping the turn before clearing could be undone by the gate.
+ * The snapshot is the check: GJC's own account must no longer list the workflow.
+ */
+export async function endWorkflow(
+  host: WorkflowEndHost,
+  sessionId: string,
+  skill: string,
+  stopRun: () => Promise<void>,
+): Promise<GoalSnapshot> {
+  const mode = endableWorkflow(skill);
+  if (!mode) throw new Error("끝낼 수 없는 워크플로입니다.");
+  const cli = await host.requireCli();
+  await cli.clearWorkflow(sessionId, mode, { repo: host.repoFor(sessionId) });
+  clearProgress(host, sessionId);
+  let stopFailure: unknown;
+  if (host.sessions.get(sessionId)?.status === "running") {
+    try {
+      await stopRun();
+    } catch (error) {
+      stopFailure = error;
+    }
+  }
+  const snapshot = await getGoal(host, sessionId);
+  if (snapshot.progress?.workflows.some((workflow) => workflow.skill === mode))
+    throw new Error("GJC가 워크플로를 끝냈다고 답했지만 아직 진행 중으로 보입니다.");
+  if (stopFailure)
+    throw new Error(
+      "워크플로는 끝냈지만 진행 중이던 응답을 멈췄는지 확인하지 못했습니다. 중지 버튼으로 다시 시도해 주세요.",
+    );
+  return snapshot;
 }
 
 /**

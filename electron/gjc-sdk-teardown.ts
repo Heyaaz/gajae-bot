@@ -36,6 +36,7 @@ export interface TeardownHost {
   readonly desktopTranscriptBaselines: Clearable;
   readonly detachTimers: Map<string, ReturnType<typeof setTimeout>>;
   readonly dirtyTranscriptRows: Clearable;
+  readonly discoveredLiveSessions: Clearable;
   readonly discoveredRunStates: Clearable;
   readonly echoedPromptTexts: Clearable;
   readonly explicitSessionThinking: Clearable;
@@ -126,6 +127,7 @@ export function disposeController(host: TeardownHost): void {
   host.startup = undefined;
   host.startupSessionRows = undefined;
   host.invalidateBrokerIndexCache();
+  host.discoveredLiveSessions.clear();
   for (const timer of host.commandRefreshTimers.values()) clearTimeout(timer);
   host.commandRefreshTimers.clear();
   host.commandRefreshAttempts.clear();
@@ -242,6 +244,7 @@ export function resetForRuntimeChange(host: TeardownHost): void {
   // the next call rebuilds it against the new runtime.
   host.cli = undefined;
   host.startup = undefined;
+  host.discoveredLiveSessions.clear();
   host.routeProbes.clear();
   host.permissionModeApplied.clear();
   for (const sessionId of host.toolObservers.keys())

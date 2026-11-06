@@ -196,6 +196,37 @@ describe("settings dialog language", () => {
   });
 });
 
+describe("settings AI sign-in entry", () => {
+  const dialog = (onLogin?: () => void) => {
+    vi.stubGlobal("window", { agentControlDesktop: undefined });
+    return renderToStaticMarkup(
+      createElement(SettingsDialog, {
+        connection: { state: "connected", backend: "gjc", label: "GJC", detail: "", workspace: "/tmp" },
+        thoughtsExpanded: false,
+        onToggleThoughtsExpanded: () => undefined,
+        onClose: () => undefined,
+        onSaved: () => undefined,
+        updateStatus: null,
+        updateBusy: null,
+        updateError: "",
+        onCheckUpdate: () => undefined,
+        onInstallUpdate: () => undefined,
+        onLogin,
+      }),
+    );
+  };
+
+  it("offers the sign-in and provider add on the GJC tab when the host can run it", () => {
+    const markup = dialog(() => undefined);
+    expect(markup).toContain("AI 로그인 / 제공자 추가");
+    expect(markup).toContain(">AI 로그인<");
+  });
+
+  it("leaves it out where the host cannot", () => {
+    expect(dialog()).not.toContain("제공자 추가");
+  });
+});
+
 describe("settings reasoning-card toggle", () => {
   it("applies the window's preference at once instead of waiting in the runtime save", async () => {
     // A whole-object save no longer carries display fields, so a checkbox that only

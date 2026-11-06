@@ -386,6 +386,95 @@ describe("history opening with an unavailable endpoint", () => {
   });
 });
 
+describe("confirmed inactive discovery rows", () => {
+  it.each([
+    { live: false, deleted: false },
+    { live: true, deleted: true },
+  ])("removes a previously listed row on broker evidence %j without deleting history", async (liveness) => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      const old = { sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 1 };
+      cli.listSessions.mockResolvedValue([old] as never);
+      expect((await controller.listSessions()).map((row) => row.id)).toEqual(["s1"]);
+      const transcript = [{ id: "saved", sessionId: "s1", kind: "system", content: "Keep history" }];
+      internals.transcripts.set("s1", transcript);
+      emit.mockClear();
+
+      cli.listSessions.mockResolvedValue([
+        { ...old, ...liveness },
+        { ...old, sessionId: "s2" },
+      ] as never);
+      expect((await controller.listSessions()).map((row) => row.id)).toEqual(["s2"]);
+      expect(emit).toHaveBeenCalledWith({ type: "session.deleted", sessionId: "s1" });
+      expect(internals.transcripts.get("s1")).toBe(transcript);
+      expect(cli.rawGlobal).not.toHaveBeenCalled();
+      emit.mockClear();
+      // Reopening this saved row for reading must not be evicted on every poll.
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+    } finally { controller.dispose(); }
+  });
+
+  it("keeps history-only rows that have never been broker-live", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.sessions.set("s1", { ...session(), attachment: "terminal-only" });
+      cli.listSessions.mockResolvedValue([
+        { sessionId: "s1", live: false, deleted: false, repo: "/repo" },
+      ] as never);
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+    } finally { controller.dispose(); }
+  });
+
+  it("remembers liveness across an omission until explicit retirement arrives", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      const row = { sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 1 };
+      cli.listSessions.mockResolvedValue([row] as never);
+      await controller.listSessions();
+      cli.listSessions.mockResolvedValue([]);
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+      cli.listSessions.mockResolvedValue([{ ...row, live: false }] as never);
+      await controller.listSessions();
+      expect(emit).toHaveBeenCalledWith({ type: "session.deleted", sessionId: "s1" });
+    } finally { controller.dispose(); }
+  });
+
+  it.each(["missing", "failed", "unreachable", "timeout"])("does not announce a removal for %s discovery evidence", async (evidence) => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    try {
+      internals.sessions.set("s1", session());
+      internals.lastDiscovered = [session()];
+      internals.locateSharedTranscriptFile = vi.fn(async () => undefined);
+      internals.discoveredRunState = vi.fn(async () => "idle");
+      internals.sessionParentId = vi.fn(async () => undefined);
+      if (evidence === "failed") cli.listSessions.mockRejectedValue(new Error("broker read failed"));
+      else if (evidence !== "missing") {
+        cli.listSessions.mockResolvedValue([
+          { sessionId: "s1", live: true, deleted: false, repo: "/repo", endpointGeneration: 0 },
+        ] as never);
+        cli.queryItems.mockRejectedValue(new SdkCliError(
+          evidence === "unreachable" ? "endpoint_stale" : "timeout", evidence,
+        ));
+      }
+      await controller.listSessions();
+      expect(emit.mock.calls.filter(([event]) => event.type === "session.deleted")).toEqual([]);
+    } finally { controller.dispose(); }
+  });
+});
+
 describe("0.18.12 tool stream", () => {
   it("retains the app's confirmed cancellation notice across durable refresh", () => {
     const { controller, internals } = harness();
@@ -458,6 +547,29 @@ describe("0.18.12 tool stream", () => {
       internals.installTranscript("s1", [{ ...tool(), status: "completed", output: "DURABLE" }]);
       expect(tool().output).toBe("DURABLE");
       expect(internals.toolSnapshots.get("s1").size).toBe(0);
+    } finally { controller.dispose(); }
+  });
+
+  it("keeps a tool waiting on approval on its card when the session file is read again", async () => {
+    const { controller, internals, event, tool } = streamHarness();
+    try {
+      event("tool_execution_start", { args: { command: "echo hi" } });
+      const options = [
+        { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+        { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+      ] as const;
+      const decided = internals.permissionChannels.host.requestPermission({
+        sessionId: "s1",
+        toolCall: { toolCallId: "t1", toolName: "bash", title: "echo hi", command: "echo hi" },
+        options,
+      });
+      expect(tool()).toMatchObject({ status: "approval-required" });
+      internals.installTranscript("s1", [{ ...tool(), status: "running", permissionOptions: undefined, output: undefined }]);
+      expect(tool()).toMatchObject({ status: "approval-required", permissionOptions: options });
+      await controller.resolveToolCall("t1", { optionId: "allow_once" });
+      await expect(decided).resolves.toMatchObject({ outcome: { outcome: "selected", optionId: "allow_once" } });
+      internals.installTranscript("s1", [{ ...tool(), status: "running", permissionOptions: undefined }]);
+      expect(tool()).toMatchObject({ status: "running" });
     } finally { controller.dispose(); }
   });
 
@@ -1557,6 +1669,80 @@ describe("GjcSdkController CLI seam", () => {
     await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
     expect(internals.sessions.get("s1")?.status).toBe("running");
     expect(internals.liveRunningSessions.has("s1")).toBe(true);
+  });
+
+  describe("a stop GJC cannot confirm itself", () => {
+    const lostAnswer = () =>
+      new SdkCliError(
+        "uncertain_after_send",
+        "The request was sent but its outcome is uncertain. Reconcile before any replay.",
+      );
+    const noTurn = {
+      ok: true,
+      selection: "owned",
+      turn: "no_active_turn",
+      terminal: "terminal_no_effect",
+    };
+
+    function runningSession(hostActivity: "idle" | "active") {
+      const fixture = harness();
+      fixture.internals.sessions.set("s1", { ...session(), status: "running" });
+      fixture.internals.sessionCwds.set("s1", "/repo");
+      fixture.internals.transcripts.set("s1", []);
+      (fixture.cli.inspectSession as any).mockResolvedValue({
+        live: true,
+        repo: "/repo",
+        activityState: hostActivity,
+      });
+      return fixture;
+    }
+
+    it("settles the window when the stop's answer was lost but the host went idle", async () => {
+      const { controller, cli, internals } = runningSession("idle");
+      (cli.rawControl as any).mockRejectedValue(lostAnswer());
+      await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+      expect(internals.sessions.get("s1")?.status).toBe("idle");
+      expect(internals.transcripts.get("s1")).toEqual([
+        expect.objectContaining({ kind: "notice", title: "작업 취소됨" }),
+      ]);
+    });
+
+    it("settles a stale running row when GJC has no turn and the host is idle", async () => {
+      const { controller, cli, internals } = runningSession("idle");
+      (cli.rawControl as any).mockResolvedValue(noTurn);
+      await expect(controller.cancelRun("s1")).resolves.toBeUndefined();
+      expect(internals.sessions.get("s1")?.status).toBe("idle");
+      expect(internals.locallyAbortedSessions.has("s1")).toBe(true);
+      // The turn may have ended by itself, so no stop is claimed.
+      expect(internals.transcripts.get("s1")).toEqual([]);
+    });
+
+    it("keeps the run and says so in Korean, without the raw reply, while the host is active", async () => {
+      const { controller, cli, internals } = runningSession("active");
+      (cli.rawControl as any).mockResolvedValue(noTurn);
+      const failure = await controller.cancelRun("s1").catch((error: Error) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/작업 중지를 확정하지 못했습니다/u);
+      expect((failure as Error).message).not.toMatch(/[{}]|no_active_turn|terminal_no_effect/u);
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    });
+
+    it("reports a lost stop answer in Korean while the host is still active", async () => {
+      const { controller, cli, internals } = runningSession("active");
+      (cli.rawControl as any).mockRejectedValue(lostAnswer());
+      const failure = await controller.cancelRun("s1").catch((error: Error) => error);
+      expect((failure as Error).message).toMatch(/작업 중지를 확정하지 못했습니다/u);
+      expect((failure as Error).message).not.toMatch(/outcome is uncertain|replay/u);
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    });
+
+    it("does not call the host idle while this window's own prompt is still being accepted", async () => {
+      const { controller, cli, internals } = runningSession("idle");
+      internals.activePromptSessions.add("s1");
+      (cli.rawControl as any).mockResolvedValue(noTurn);
+      await expect(controller.cancelRun("s1")).rejects.toThrow(/작업 중지를 확정하지 못했습니다/u);
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    });
   });
 
   it("preserves a new run when an older tail settlement returns idle", async () => {
@@ -3199,6 +3385,50 @@ describe("SDK slash commands", () => {
     controller.dispose();
   });
 
+  it("hands a session whose runtime lists nothing an empty palette instead of a wait", async () => {
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    (cli.queryItems as any).mockResolvedValue([]);
+    await controller.refreshSessionContext("s1");
+    expect(
+      emit.mock.calls.filter(([event]) => event.type === "session.commands").map(([event]) => event.commands),
+    ).toEqual([[]]);
+    controller.dispose();
+  });
+
+  it("tells the palette the command read failed until a retry brings the list", async () => {
+    vi.useFakeTimers();
+    const emit = vi.fn();
+    const { controller, cli, internals } = harness({ emit });
+    internals.sessions.set("s1", session());
+    internals.sessionCwds.set("s1", "/repo");
+    let down = true;
+    (cli.queryItems as any).mockImplementation(async (_id: string, query: string) => {
+      if (query !== "runtime.capabilities") return [];
+      if (down) throw new Error("capabilities down");
+      return capabilityRows("session.metadata");
+    });
+    try {
+      await expect(controller.refreshSessionContext("s1")).rejects.toThrow("명령 목록을 받지 못했습니다");
+      await expect(controller.refreshSessionContext("s1")).rejects.toThrow("명령 목록을 받지 못했습니다");
+      down = false;
+      await vi.advanceTimersByTimeAsync(COMMAND_REFRESH_RETRY_BASE_MS);
+      expect(
+        emit.mock.calls.some(
+          ([event]) =>
+            event.type === "session.commands" &&
+            event.commands.some((command: { name: string }) => command.name === "session"),
+        ),
+      ).toBe(true);
+      await expect(controller.refreshSessionContext("s1")).resolves.toBeUndefined();
+    } finally {
+      controller.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it("opens the model picker with its profiles from one read pass", async () => {
     const emit = vi.fn();
     const { controller, cli, internals } = harness({ emit });
@@ -3712,6 +3942,7 @@ describe("runtime activity visibility", () => {
     ]);
     expect(sharedTranscriptItems("s1", [{ ...record, details: { name: "greet", args: "" } }])[0])
       .toMatchObject({ role: "user", content: "/skill:greet" });
+    expect(items[1]).toMatchObject({ kind: "system", skillName: "greet" });
 
     const { internals } = harness();
     internals.transcripts.set("s1", [

@@ -31,6 +31,24 @@ function oneLine(value: string): string {
   return value.replace(/\s+/gu, " ").trim();
 }
 
+/**
+ * The question prompt with its line breaks kept.
+ *
+ * Skill prompts such as the deep-interview topology check are written as a
+ * header line, a numbered list, and a closing ask. Collapsing them into one
+ * line leaves the card a single wall of text, so only runs of spaces inside a
+ * line and runs of blank lines are squeezed.
+ */
+function questionText(value: string): string {
+  return value
+    .replace(/\r\n?/gu, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/gu, " ").trim())
+    .join("\n")
+    .replace(/\n{3,}/gu, "\n\n")
+    .trim();
+}
+
 function statusForTag(tag: QuestionGateTag): QuestionStatus {
   if (tag === "accepted") return "answered";
   if (tag === "quarantined") return "cancelled";
@@ -85,7 +103,7 @@ export function questionFromGateRecord(
   const tag = tagValue as QuestionGateTag;
   const title = typeof context.title === "string" ? context.title : "";
   const prompt = typeof context.prompt === "string" ? context.prompt : "";
-  const question = oneLine(title || prompt);
+  const question = questionText(title || prompt);
   if (!question) return undefined;
   const options = Array.isArray(value.options)
     ? value.options.flatMap((entry) => {

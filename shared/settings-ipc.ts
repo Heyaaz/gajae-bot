@@ -3,6 +3,7 @@ import type { ImageAttachment, SessionWorkLink, WorktreePull } from "./agent-con
 export const SETTINGS_IPC = {
   getPreferences: "agent-control:settings:get-preferences",
   chooseWorkspace: "agent-control:settings:choose-workspace",
+  inspectWorkspace: "agent-control:settings:inspect-workspace",
   prepareImages: "agent-control:settings:prepare-images",
   prepareFiles: "agent-control:settings:prepare-files",
   discardAttachments: "agent-control:settings:discard-attachments",
@@ -30,6 +31,14 @@ export const SETTINGS_IPC = {
   environmentCheckDue: "agent-control:settings:environment-check-due",
   quickInputShortcutStatus: "agent-control:settings:quick-input-shortcut-status",
 } as const;
+
+/** What the new-session dialog needs to know about the folder it is about to start in. */
+export interface WorkspaceInspection {
+  /** A folder holding far more than one project: home, Documents, Desktop, Downloads, or the root. */
+  broad: boolean;
+  /** Whether the folder is inside a git repository. */
+  git: boolean;
+}
 
 export const DESKTOP_IPC = {
   cycleEffort: "gajae:shortcut:cycle-effort",

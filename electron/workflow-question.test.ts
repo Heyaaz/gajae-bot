@@ -138,13 +138,20 @@ describe("workflow question mapping", () => {
     expect(question?.options[1]).not.toHaveProperty("recommended");
   });
 
-  it("reads a one-line prompt, multi, and diagnostic tags", () => {
+  it("reads a prompt with its line breaks, multi, and diagnostic tags", () => {
     expect(
       questionFromGateRecord("s1", gateRow({
-        context: { prompt: "  Ship\nit?  ", stage_state: { multi: true } },
+        context: { prompt: "  Ship   it?  ", stage_state: { multi: true } },
         options: [{ label: "A" }, { label: "B" }],
       }))?.question,
     ).toBe("Ship it?");
+    expect(
+      questionFromGateRecord("s1", gateRow({
+        context: {
+          prompt: "\r\nRound 0 | Topology  \r\n1. calc:  core\n\n\n\n- Artifacts: a\nRight?\n",
+        },
+      }))?.question,
+    ).toBe("Round 0 | Topology\n1. calc: core\n\n- Artifacts: a\nRight?");
     expect(
       questionFromGateRecord("s1", gateRow({
         context: { title: "Pick", stage_state: { multi: true } },
@@ -432,6 +439,31 @@ describe("workflow question controller", () => {
       cli.queryItems.mockResolvedValue([]);
       expect(await controller.listPendingQuestions("s1")).toEqual([]);
       expect(internals.questionById("s1", "g1").status).toBe("answered");
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("shows the question an ask opens when GJC relays only the ask's start", async () => {
+    const { controller, cli, internals } = harness();
+    cli.queryItems.mockResolvedValueOnce([]);
+    try {
+      internals.projectToolStream("s1", "tool_execution_start", {
+        event: {
+          type: "tool_execution_start",
+          toolCallId: "ask-1",
+          toolName: "ask",
+          args: { questions: [{ id: "topology", question: "Ship it?" }] },
+        },
+      });
+      await vi.waitFor(() =>
+        expect(internals.questionById("s1", "g1")).toMatchObject({
+          status: "pending",
+          answerable: true,
+          question: "Ship it?",
+        }),
+      );
+      expect(internals.sessions.get("s1").status).toBe("waiting");
     } finally {
       controller.dispose();
     }

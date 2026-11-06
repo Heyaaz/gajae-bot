@@ -152,9 +152,9 @@ Run the installer in Terminal:
 curl -fsSL https://raw.githubusercontent.com/Heyaaz/gajae-bot/main/install.sh | sh
 ```
 
-With Node.js installed, `npx gajae` does the same. Either one downloads the
-latest release, checks its SHA-256, puts `Gajae.app` in `/Applications` (or
-`~/Applications` if that is not writable) and opens it. Run it again to update.
+The installer downloads the latest release, checks its SHA-256, puts
+`Gajae.app` in `/Applications` (or `~/Applications` if that is not writable)
+and opens it. Run it again to update.
 
 The app is not notarized yet. macOS blocks a copy downloaded in a browser, so
 use the installer rather than the ZIP on the releases page.

@@ -4,7 +4,9 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import type { AgentControlPreferences, FileAttachment, ImageAttachment, UiLanguage } from '../shared/agent-contract.js'
-import { SETTINGS_IPC } from '../shared/settings-ipc.js'
+import { SETTINGS_IPC, type WorkspaceInspection } from '../shared/settings-ipc.js'
+import { isGitRepository } from './git-exclude.js'
+import { broadFolders, isBroadWorkspace } from './workspace-scope.js'
 import type { DesktopIntegrationPreferences } from '../shared/desktop-integration.js'
 import type { SettingsStore } from './settings-store.js'
 import type { AttachmentStore } from './attachment-store.js'
@@ -35,6 +37,18 @@ const FILE_MIME_TYPES: Readonly<Record<string, string>> = {
   '.sh': 'text/x-shellscript', '.bash': 'text/x-shellscript', '.zsh': 'text/x-shellscript', '.fish': 'text/x-shellscript',
   '.sql': 'application/sql', '.graphql': 'application/graphql', '.ini': 'text/plain', '.conf': 'text/plain',
   '.config': 'text/plain', '.properties': 'text/plain',
+}
+
+/** Electron's own answer decides alongside $HOME, since the default workspace comes from `app.getPath('documents')`. */
+function knownBroadFolders(): string[] {
+  const reported = ['home', 'documents', 'desktop', 'downloads'].flatMap((name) => {
+    try {
+      return [app.getPath(name as 'home')]
+    } catch {
+      return []
+    }
+  })
+  return [...reported, ...broadFolders(homedir())]
 }
 
 export async function pickerDirectory(candidate: unknown, fallbackDirectory?: string): Promise<string> {
@@ -134,11 +148,15 @@ export function registerSettingsIpcHandlers(
     const current = typeof currentPath === 'string' && path.isAbsolute(currentPath) ? path.dirname(currentPath) : undefined
     const defaultPath = await pickerDirectory(current)
     const selected = await dialog.showOpenDialog(security.owner(event), {
-      title: 'Choose Gajae project',
+      title: hostText('프로젝트 폴더 선택'),
       defaultPath,
       properties: ['openDirectory', 'dontAddToRecent'],
     })
     return selected.canceled ? null : selected.filePaths[0] ?? null
+  }))
+  ipcMain.handle(SETTINGS_IPC.inspectWorkspace, security.guarded(async (_event, workspace: unknown): Promise<WorkspaceInspection> => {
+    if (typeof workspace !== 'string' || !path.isAbsolute(workspace)) return { broad: false, git: false }
+    return { broad: isBroadWorkspace(workspace, knownBroadFolders()), git: await isGitRepository(workspace) }
   }))
   ipcMain.handle(SETTINGS_IPC.prepareImages, security.guarded(async (event, records: unknown) => {
     if (!Array.isArray(records) || records.some((value) => !value || typeof value !== 'object' || typeof (value as { path?: unknown }).path !== 'string' || !path.isAbsolute((value as { path: string }).path))) {

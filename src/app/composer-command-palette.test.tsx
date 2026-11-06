@@ -72,7 +72,7 @@ describe("composer slash palette loading", () => {
   });
 
   it("shows the pending load in the palette instead of an empty skill list", async () => {
-    const test = await mount({ commandsPending: true });
+    const test = await mount({ commandsLoad: "loading" });
     try {
       await type(test.node, "/");
       expect(test.node.querySelector(".command-palette")?.textContent).toContain(
@@ -105,6 +105,54 @@ describe("composer slash palette loading", () => {
     }
   });
 
+  describe("/login", () => {
+    const commands = [{ name: "login", description: "AI 로그인 / 제공자 추가" }];
+
+    it("opens the app's sign-in from the palette and never sends it to the model", async () => {
+      const onLogin = vi.fn();
+      const test = await mount({ commands, onLogin });
+      try {
+        await type(test.node, "/log");
+        const item = [...test.node.querySelectorAll<HTMLButtonElement>(".command-palette-item")].find(
+          (button) => button.textContent?.includes("/login"),
+        );
+        expect(item).toBeDefined();
+        await act(async () => item!.click());
+        expect(onLogin).toHaveBeenCalledTimes(1);
+        expect(test.send).not.toHaveBeenCalled();
+        expect(test.node.querySelector("textarea")!.value).toBe("");
+      } finally {
+        await test.close();
+      }
+    });
+
+    it("opens the sign-in when typed in full and sent, with or without a provider name", async () => {
+      const onLogin = vi.fn();
+      const test = await mount({ commands, onLogin });
+      try {
+        for (const text of ["/login", "/login zai"]) {
+          await type(test.node, text);
+          const form = test.node.querySelector("form")!;
+          await act(async () => form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+        }
+        expect(onLogin).toHaveBeenCalledTimes(2);
+        expect(test.send).not.toHaveBeenCalled();
+      } finally {
+        await test.close();
+      }
+    });
+
+    it("is not offered where the host cannot run a sign-in", async () => {
+      const test = await mount({ commands });
+      try {
+        await type(test.node, "/log");
+        expect(test.node.querySelector(".command-palette")).toBeNull();
+      } finally {
+        await test.close();
+      }
+    });
+  });
+
   it("labels the model button with the selected profile immediately", async () => {
     const test = await mount({
       commands: [],
@@ -127,6 +175,24 @@ describe("composer slash palette loading", () => {
       expect(
         test.node.querySelector(".composer-model button strong")?.textContent,
       ).toBe("Profile Two");
+    } finally {
+      await test.close();
+    }
+  });
+});
+
+describe("composer slash palette load failure", () => {
+  it("says the skill list could not be loaded instead of loading forever", async () => {
+    const test = await mount({ commandsLoad: "failed" });
+    try {
+      await type(test.node, "/");
+      const palette = test.node.querySelector(".command-palette")?.textContent ?? "";
+      expect(palette).toContain("스킬 목록을 불러오지 못했어요");
+      expect(palette).not.toContain("스킬 불러오는 중");
+      await type(test.node, "/skill:whip");
+      expect(
+        test.node.querySelector(".command-palette-loading")?.textContent,
+      ).toContain("스킬 목록을 불러오지 못했어요");
     } finally {
       await test.close();
     }

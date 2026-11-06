@@ -6,6 +6,7 @@ import { transcriptDelivery } from "../shared/transcript-item-equal.js";
 import { selectTranscriptPage, transcriptSyncWindow } from "../shared/transcript-page.js";
 import { ImageDataUrlCache } from "./image-data-cache.js";
 import {
+  awaitingApproval,
   cloneTranscriptItem,
   compactionRecordCount,
   composeTranscriptRows,
@@ -17,6 +18,7 @@ import {
   LIVE_TOOL_STATUSES,
   missingSessionError,
   nowLabel,
+  type PendingPermission,
   persistedModelState,
   persistedTurnState,
   precedingSharedRow,
@@ -143,6 +145,7 @@ export interface TranscriptStoreHost {
   readonly activeAssistantMessages: Map<string, string>;
   readonly activeThoughts: Map<string, string>;
   readonly sessionQuestions: Map<string, Map<string, QuestionActivity>>;
+  readonly pendingPermissions: Map<string, PendingPermission>;
   watchedTranscripts: Set<string> | undefined;
   readonly detachTimers: Map<string, ReturnType<typeof setTimeout>>;
   readonly attachedSessions: Set<string>;
@@ -840,6 +843,11 @@ export function installTranscript(
   for (const question of host.sessionQuestions.get(sessionId)?.values() ?? []) {
     if (!composed.some((item) => item.id === question.id))
       composed.push(cloneTranscriptItem(question));
+  }
+  for (const [toolId, pending] of host.pendingPermissions) {
+    if (pending.request.sessionId !== sessionId) continue;
+    const index = composed.findIndex((item) => item.kind === "tool" && item.id === toolId);
+    if (index >= 0) composed[index] = { ...(composed[index] as ToolActivity), ...awaitingApproval(pending) };
   }
   if (host.terminalOnlySessions.has(sessionId) && !composed.some((item) => item.id === `terminal-only-${sessionId}`))
     composed.push(terminalOnlyNotice(sessionId));

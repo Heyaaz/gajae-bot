@@ -16,9 +16,9 @@ export const SESSION_GROUP_ORDER: readonly SessionGroupId[] = [
 ];
 
 export const SESSION_GROUP_LABELS: Record<SessionGroupId, string> = {
-  "needs-input": "Needs input",
-  working: "Working",
-  completed: "Done",
+  "needs-input": "입력 필요",
+  working: "작업 중",
+  completed: "완료",
 };
 
 /** Rows a group shows before the rest move behind 더 보기. */

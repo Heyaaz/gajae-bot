@@ -135,7 +135,7 @@ function promptHasPayload(
   const name = /^\/([^\s]+)/u.exec(text)?.[1]?.toLowerCase();
   if (!name) return false;
   if (name.startsWith("skill:")) return true;
-  if (["abort", "compact", "new", "model", "models", "effort", "fast"].includes(name))
+  if (["abort", "compact", "new", "login", "model", "models", "effort", "fast"].includes(name))
     return false;
   return !isImmediateSdkCommandSubmission(text, commands, false);
 }

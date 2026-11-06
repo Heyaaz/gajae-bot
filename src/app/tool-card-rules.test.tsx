@@ -96,9 +96,25 @@ describe("approval card command rules", () => {
     },
   );
 
+  it("names GJC's choices in Korean by kind and keeps the name of a kind it does not know", () => {
+    const { container } = render(
+      bash({
+        permissionOptions: [
+          { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
+          { optionId: "allow_always", kind: "allow_always", name: "Always allow" },
+          { optionId: "reject_once", kind: "reject_once", name: "Reject" },
+          { optionId: "reject_always", kind: "reject_always", name: "Always reject" },
+          { optionId: "later", kind: "allow_later" as never, name: "Allow later" },
+        ],
+      }),
+    );
+    const labels = [...container.querySelectorAll(".permission-options button")].map((node) => node.textContent);
+    expect(labels).toEqual(["이번만 허용", "항상 허용", "거절", "항상 거절", "Allow later"]);
+  });
+
   it("keeps the plain option buttons free of a rule", () => {
     const { container, onResolve } = render(bash());
-    act(() => button(container, "Allow once").click());
+    act(() => button(container, "이번만 허용").click());
     expect(onResolve).toHaveBeenCalledWith("call-1", "allow_once", undefined);
   });
 

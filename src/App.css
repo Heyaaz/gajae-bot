@@ -793,6 +793,18 @@
   color: var(--text-tertiary);
   font-size: 12px;
 }
+/* Without these the button keeps the browser's own face, which in the dark theme is
+   a mid gray the inherited tertiary text color disappears into. */
+.sidebar-empty button {
+  padding: 5px 12px;
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--overlay) 6%, var(--bg-sidebar));
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.sidebar-empty button:hover {
+  background: var(--bg-hover);
+}
 
 .composer-files {
   display: flex;
@@ -1081,6 +1093,16 @@
 .profile-row small {
   color: var(--text-tertiary);
   font-size: 10px;
+}
+.profile-login-link {
+  padding: 0;
+  color: var(--warning);
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
 }
 .gjc-version-warning {
   margin-top: 2px;
@@ -2034,6 +2056,12 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.skill-invocation-args.is-clamped {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 1;
+}
 .message-images {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 230px));
@@ -2203,6 +2231,28 @@
   background: var(--bg-code);
   border-radius: 6px;
   white-space: nowrap;
+}
+.tool-target {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  margin: 0 11px 10px 50px;
+  font-size: 11px;
+}
+.tool-target-path {
+  min-width: 0;
+  color: var(--text-primary);
+  font:
+    11px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
+  overflow-wrap: anywhere;
+}
+.tool-target-detail {
+  color: var(--text-secondary);
 }
 .tool-output-preview {
   margin: -3px 11px 10px 50px;
@@ -2472,6 +2522,15 @@
   color: var(--warning);
   font-size: 10px;
   line-height: 1.45;
+}
+.broad-workspace-warning {
+  margin: 10px 0 0;
+  padding: 9px 11px;
+  color: var(--warning);
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--warning);
+  border-radius: 8px;
 }
 .isolation-options input[type="text"],
 .isolation-options input:not([type]) {
@@ -3459,6 +3518,38 @@ button.diff-line-number:hover {
   color: var(--text-tertiary);
   font-size: 12px;
 }
+.empty-conversation__examples {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  justify-items: center;
+}
+.empty-conversation__examples > span {
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+.empty-conversation__examples ul {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.empty-conversation__examples button {
+  padding: 6px 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: color-mix(in srgb, var(--overlay) 4%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.empty-conversation__examples button:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
 .empty-conversation__meta {
   display: grid;
   gap: 12px;
@@ -3615,13 +3706,60 @@ button.diff-line-number:hover {
 .question-card-kind {
   margin: 0;
 }
+.question-card-text {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+}
+/* A long prompt scrolls inside the pinned card so the choices stay in view. */
+.question-banner .question-card-text {
+  max-height: min(42vh, 420px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+.question-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+}
+.question-card-meta span {
+  padding: 1px 7px;
+  color: var(--text-secondary);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--overlay) 6%, transparent);
+  border-radius: 999px;
+}
+/* The listing above the ask: normal weight, its line breaks kept. */
+.question-card-context {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 .question-card-line {
   margin: 0;
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.5;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+.question-card--settled .question-card-text {
+  gap: 4px;
+}
+.question-card--settled .question-card-context {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 11.5px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 .question-card--settled .question-card-line {
   color: var(--text-secondary);
@@ -4312,6 +4450,27 @@ button.diff-line-number:hover {
   font-size: 9px;
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+.workflow-status-end {
+  margin-left: auto;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 9px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.workflow-status-verdict + .workflow-status-end {
+  margin-left: 0;
+}
+.workflow-status-end:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+.workflow-status-end:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 .workflow-status-summary,
 .workflow-status-more {
@@ -6593,6 +6752,46 @@ button.diff-line-number:hover {
 .onboarding-link {
   color: var(--accent-bright);
   font-size: 12px;
+}
+.onboarding-help-entry {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  background: none;
+  border: 0;
+}
+.onboarding-help-entry:hover {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.button-primary.onboarding-signup {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}
+.onboarding-signup-list {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.onboarding-signup-list a {
+  color: var(--accent-bright);
+  font-size: 12px;
+}
+.onboarding-details > .onboarding-link,
+.onboarding-details > .onboarding-answer {
+  display: block;
+  margin-top: 8px;
+}
+.onboarding-details > .onboarding-answer {
+  display: grid;
 }
 .onboarding-answer {
   display: grid;

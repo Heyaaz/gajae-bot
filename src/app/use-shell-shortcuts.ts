@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { DEFAULT_SESSION_TITLE } from "../../shared/session-title";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import type { AgentSession, BackendConnection, TranscriptItem } from "../backend/types";
 import type { NewSessionPrefill } from "../../shared/settings-ipc";
@@ -94,8 +95,19 @@ export function useShellShortcuts(context: ShellShortcutsContext): void {
             return;
           }
           const workspace = selectedSession?.workspace || connection.workspace;
-          if (workspace) createSession({ title: "새 Gajae 세션", workspace });
-          else openNewSessionDialog();
+          if (!workspace) {
+            openNewSessionDialog();
+            return;
+          }
+          // A broad folder is never started silently; the dialog warns first.
+          const settings = window.agentControlDesktop?.settings;
+          void (settings ? settings.inspectWorkspace(workspace) : Promise.resolve({ broad: false })).then(
+            (info) =>
+              info.broad
+                ? openNewSessionDialog()
+                : createSession({ title: DEFAULT_SESSION_TITLE, workspace }),
+            () => openNewSessionDialog(),
+          );
           return;
         }
         if (shortcut.type === "open") {

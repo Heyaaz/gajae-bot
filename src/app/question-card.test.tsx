@@ -6,6 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QuestionActivity, QuestionSubmission } from "../backend/types";
 import { QuestionBanner, QuestionCard } from "./question-card";
+import { questionParts } from "./question-parts";
 
 function question(overrides: Partial<QuestionActivity> = {}): QuestionActivity {
   return {
@@ -71,6 +72,51 @@ describe("question card", () => {
       );
     });
   }
+
+  it("splits a deep-interview prompt into its round header, listing, and ask", async () => {
+    const prompt = [
+      "Round 0 | 토폴로지 확인 | Ambiguity: 아직 채점 전",
+      "이렇게 3개의 최상위 컴포넌트로 이해했습니다:",
+      "1. 계산기 코어 (calc.js)",
+      "2. 추가 기능 (미정)",
+      "확정 의도(Locked intent):",
+      "- Artifacts: artifact:calc-module",
+      "이 토폴로지와 확정 의도가 맞습니까?",
+    ].join("\n");
+    expect(questionParts(prompt)).toEqual({
+      meta: ["Round 0", "토폴로지 확인", "Ambiguity: 아직 채점 전"],
+      context: prompt.split("\n").slice(1, -1).join("\n"),
+      ask: "이 토폴로지와 확정 의도가 맞습니까?",
+    });
+    const view = await render(card(question({ question: prompt })));
+    expect([...view.querySelectorAll(".question-card-meta span")].map((el) => el.textContent))
+      .toEqual(["Round 0", "토폴로지 확인", "Ambiguity: 아직 채점 전"]);
+    expect(view.querySelector(".question-card-context")?.textContent).toContain("1. 계산기 코어 (calc.js)\n2.");
+    expect(view.querySelector(".question-card-line")?.textContent).toBe("이 토폴로지와 확정 의도가 맞습니까?");
+    const group = view.querySelector('[role="radiogroup"]');
+    const label = view.querySelector(`[id="${group?.getAttribute("aria-labelledby") ?? ""}"]`);
+    expect(label?.textContent).toContain("Ambiguity");
+    expect(label?.textContent).toContain("맞습니까?");
+  });
+
+  it("keeps a one-line or list-ending prompt whole", () => {
+    expect(questionParts("Ship it?")).toEqual({ meta: [], context: "", ask: "Ship it?" });
+    expect(questionParts("Round 3 | Goal\nWhat first?")).toEqual({
+      meta: ["Round 3", "Goal"],
+      context: "",
+      ask: "What first?",
+    });
+    expect(questionParts("Pick one:\n- A\n- B")).toEqual({
+      meta: [],
+      context: "Pick one:\n- A\n- B",
+      ask: "",
+    });
+    expect(questionParts("Round 1 | only a header")).toEqual({
+      meta: [],
+      context: "",
+      ask: "Round 1 | only a header",
+    });
+  });
 
   it("submits a single choice immediately and shows the recommended hint", async () => {
     const onAnswer = vi.fn();

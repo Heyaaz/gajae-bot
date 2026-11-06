@@ -87,6 +87,7 @@ import {
   type SdkControlOperation,
   sendMessage,
   steerSession,
+  type StopOutcome,
 } from "./gjc-sdk-control.js";
 import {
   appendTranscript,
@@ -189,12 +190,14 @@ import {
 import {
   clearProgress,
   clearTodoPoll,
+  endWorkflow,
   getGoal,
   type GoalTodoHost,
   listSubagents,
   operateGoal,
   readTodoRecords,
   requestProgressRefresh,
+  type WorkflowEndHost,
 } from "./gjc-sdk-goal-todo.js";
 export {
   TODO_EVENT_POLL_BASE_MS,
@@ -219,6 +222,7 @@ import {
   answerQuestion,
   hasAnswerableQuestion,
   listPendingQuestions,
+  followAskGate,
   projectWorkflowGate,
   questionById,
   type QuestionHost,
@@ -271,6 +275,7 @@ type ControllerHost =
   QuestionHost &
   CommandPaletteHost &
   GoalTodoHost &
+  WorkflowEndHost &
   SessionConfigHost &
   FilesHost &
   RunStateHost &
@@ -422,6 +427,7 @@ export class GjcSdkController extends GjcSdkState {
     set generation(value) { controller.generation = value; },
     get lastDiscovered() { return controller.lastDiscovered; },
     set lastDiscovered(value) { controller.lastDiscovered = value; },
+    get discoveredLiveSessions() { return controller.discoveredLiveSessions; },
     brokerSessions: (options) => controller.brokerSessions(options),
     get sessionMetadata() { return controller.sessionMetadata; },
     liveRouteReachable: (row) => controller.liveRouteReachable(row),
@@ -530,6 +536,7 @@ export class GjcSdkController extends GjcSdkState {
     get tailCheckpoints() { return controller.tailCheckpoints; },
     get tailEventPositions() { return controller.tailEventPositions; },
     refreshWorkflowQuestions: (sessionId) => refreshWorkflowQuestions(controller.host, sessionId),
+    followAskGate: (sessionId, toolCallId) => followAskGate(controller.host, sessionId, toolCallId),
     projectToolStream: (sessionId, kind, payload) => controller.projectToolStream(sessionId, kind, payload),
     projectMessageChunk: (sessionId, role, update) => controller.projectMessageChunk(sessionId, role, update),
     refreshTranscriptFromFile: (sessionId) => controller.refreshTranscriptFromFile(sessionId),
@@ -886,9 +893,7 @@ export class GjcSdkController extends GjcSdkState {
     return cancelRun(this.host, sessionId);
   }
 
-  private fireAbort(
-    sessionId: string,
-  ): Promise<"owned" | "plain" | "no_active_turn"> {
+  private fireAbort(sessionId: string): Promise<StopOutcome> {
     return fireAbort(this.host, sessionId);
   }
 
@@ -978,6 +983,10 @@ export class GjcSdkController extends GjcSdkState {
     operation: GoalOperation,
   ): Promise<GoalSnapshot> {
     return operateGoal(this.host, sessionId, operation);
+  }
+
+  endWorkflow(sessionId: string, skill: string): Promise<GoalSnapshot> {
+    return endWorkflow(this.host, sessionId, skill, () => this.cancelRun(sessionId));
   }
 
   listSubagents(sessionId: string): Promise<SubagentSnapshot[]> {

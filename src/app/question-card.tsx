@@ -3,6 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Check, CircleHelp, ClipboardCheck } from "lucide-react";
 import type { QuestionActivity, QuestionSubmission } from "../backend/types";
 import { t, useLanguage } from "../i18n";
+import { questionParts } from "./question-parts";
 
 export interface QuestionCardProps {
   item: QuestionActivity;
@@ -36,8 +37,25 @@ function statusLabel(status: QuestionActivity["status"]): string {
   return t("답변을 기다리고 있어요");
 }
 
+function QuestionText({ text, id }: { text: string; id?: string }) {
+  const { meta, context, ask } = questionParts(text);
+  return (
+    <div className="question-card-text" id={id}>
+      {meta.length > 0 && (
+        <p className="question-card-meta">
+          {meta.map((part, index) => (
+            <span key={index}>{part}</span>
+          ))}
+        </p>
+      )}
+      {context && <p className="question-card-context">{context}</p>}
+      {ask && <p className="question-card-line">{ask}</p>}
+    </div>
+  );
+}
+
 /**
- * One ask gate: a single line, choice buttons, and a free-text other field.
+ * One ask gate: the prompt, choice buttons, and a free-text other field.
  *
  * Number keys 1–9 select, Enter submits, and Escape clears the free-text
  * field. A settled card keeps only the result.
@@ -91,7 +109,7 @@ export function QuestionCard({
         aria-live="polite"
       >
         {head()}
-        <p className="question-card-line">{item.question}</p>
+        <QuestionText text={item.question} />
         <p className="question-card-result">
           {answered && <Check size={12} aria-hidden />}
           {elsewhere
@@ -176,7 +194,7 @@ export function QuestionCard({
         {item.approval ? t("계획 승인 요청") : t("새 질문")}: {item.question}
       </p>
       {head(item.multi ? t("여러 개 고를 수 있어요") : undefined)}
-      <p className="question-card-line" id={labelId}>{item.question}</p>
+      <QuestionText text={item.question} id={labelId} />
       {item.options.length > 0 && (
         <div
           className="question-card-options"

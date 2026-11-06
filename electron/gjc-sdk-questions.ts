@@ -8,6 +8,7 @@ import {
   workflowGateRecord,
 } from "../shared/workflow-question.js";
 import { cloneTranscriptItem, nowLabel, sameTranscriptItem, transcriptTime } from "./gjc-sdk-foundation.js";
+import { LIVE_TOOL_STATUSES } from "./gjc-sdk-transcript.js";
 
 /** The controller members the workflow question projection reads and writes. */
 export interface QuestionHost {
@@ -106,6 +107,38 @@ async function loadWorkflowQuestions(host: QuestionHost, sessionId: string): Pro
     return question ? [withQuestionClock(question)] : [];
   });
   applyQuestionSnapshot(host, sessionId, incoming);
+}
+
+/** Waits between gate-list reads while an ask runs without a question on screen. */
+const ASK_GATE_RETRY_MS = [0, 250, 500, 1_000, 2_000, 4_000, 8_000];
+
+function toolRunning(host: QuestionHost, sessionId: string, toolCallId: string): boolean {
+  return (host.transcripts.get(sessionId) ?? []).some(
+    (item) => item.kind === "tool" && item.id === toolCallId && LIVE_TOOL_STATUSES.has(item.status),
+  );
+}
+
+/**
+ * Reads the gate list after an ask starts until its question is on screen.
+ *
+ * GJC 0.19.3 does not relay `workflow_gate` to the observer, so the ask's own
+ * start is the only signal, and the gate is written a moment after it.
+ */
+export async function followAskGate(
+  host: QuestionHost,
+  sessionId: string,
+  toolCallId: string,
+): Promise<void> {
+  for (const delay of ASK_GATE_RETRY_MS) {
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (
+      host.disposed ||
+      !toolRunning(host, sessionId, toolCallId) ||
+      hasAnswerableQuestion(host, sessionId)
+    )
+      return;
+    await refreshWorkflowQuestions(host, sessionId);
+  }
 }
 
 function withQuestionClock(question: QuestionActivity): QuestionActivity {

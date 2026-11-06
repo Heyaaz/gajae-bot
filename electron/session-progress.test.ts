@@ -341,3 +341,91 @@ describe("session.progress reads", () => {
     }
   });
 });
+
+describe("ending a workflow", () => {
+  function endHarness(options?: { stillListed?: boolean; stopAnswer?: unknown }) {
+    const base = harness(["goal.list/get", "session.progress"]);
+    const { internals, queryItems } = base;
+    let cleared = false;
+    const clearWorkflow = vi.fn(async () => {
+      cleared = true;
+    });
+    const rawControl = vi.fn(async () => options?.stopAnswer ?? { turn: "stopped" });
+    queryItems.mockImplementation(async (_sessionId: string, query: string) => {
+      if (query === "session.progress") {
+        const snapshot = progressSnapshotV1();
+        const activeWork = snapshot.activeWork as { workflows: Array<{ skill: string }> };
+        if (cleared && !options?.stillListed)
+          activeWork.workflows = activeWork.workflows.filter((workflow) => workflow.skill !== "ralplan");
+        return [snapshot];
+      }
+      if (query === "goal.list/get") return [{ enabled: false }];
+      return [];
+    });
+    internals.cli = { ...internals.cli, clearWorkflow, rawControl, inspectSession: vi.fn(async () => ({ live: true })) };
+    internals.sessionCwds.set("s1", "/repo");
+    internals.transcripts.set("s1", []);
+    return { ...base, clearWorkflow, rawControl };
+  }
+
+  it("clears the workflow before it stops the turn and returns a snapshot without it", async () => {
+    const { controller, internals, clearWorkflow, rawControl } = endHarness();
+    try {
+      // The cached snapshot still lists ralplan; the fresh read must not replay it.
+      await controller.getGoal("s1");
+      const goal = await controller.endWorkflow("s1", "ralplan");
+      expect(goal.progress?.workflows.map((workflow) => workflow.skill)).toEqual(["autoresearch"]);
+      expect(clearWorkflow).toHaveBeenCalledExactlyOnceWith("s1", "ralplan", { repo: "/repo" });
+      expect(rawControl).toHaveBeenCalledOnce();
+      expect(clearWorkflow.mock.invocationCallOrder[0]).toBeLessThan(rawControl.mock.invocationCallOrder[0]!);
+      expect(internals.sessions.get("s1")?.status).toBe("idle");
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("leaves an idle session's turn alone", async () => {
+    const { controller, internals, rawControl } = endHarness();
+    internals.sessions.get("s1").status = "idle";
+    try {
+      await controller.endWorkflow("s1", "ralplan");
+      expect(rawControl).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("refuses a skill GJC cannot clear without touching the session", async () => {
+    const { controller, clearWorkflow, rawControl } = endHarness();
+    try {
+      await expect(controller.endWorkflow("s1", "bogus")).rejects.toThrow("끝낼 수 없는 워크플로입니다.");
+      expect(clearWorkflow).not.toHaveBeenCalled();
+      expect(rawControl).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("does not claim the workflow ended while GJC still lists it", async () => {
+    const { controller } = endHarness({ stillListed: true });
+    try {
+      await expect(controller.endWorkflow("s1", "ralplan")).rejects.toThrow("아직 진행 중으로 보입니다");
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("says so when the turn behind the ended workflow could not be confirmed stopped", async () => {
+    const { controller, internals } = endHarness({
+      stopAnswer: { ok: true, selection: "owned", turn: "no_active_turn", terminal: "terminal_no_effect" },
+    });
+    try {
+      await expect(controller.endWorkflow("s1", "ralplan")).rejects.toThrow(
+        "워크플로는 끝냈지만 진행 중이던 응답을 멈췄는지 확인하지 못했습니다",
+      );
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+    } finally {
+      controller.dispose();
+    }
+  });
+});

@@ -7,6 +7,7 @@ import type {
   TranscriptItem,
 } from "../backend/types";
 import { getLanguage, t } from "../i18n";
+import { isDefaultSessionTitle } from "../../shared/session-title";
 import type { ParallelGroup } from "../../shared/parallel-run";
 
 
@@ -113,13 +114,13 @@ export function formatDuration(ms: number): string {
 }
 
 export function statusLabel(status: AgentSession["status"], phase?: string): string {
-  if (phase === "compacting") return "Compacting";
-  if (status === "starting") return "Starting";
-  if (status === "running") return "Working";
-  if (status === "waiting") return "Needs input";
-  if (status === "failed") return "Failed";
+  if (phase === "compacting") return t("대화 정리 중");
+  if (status === "starting") return t("시작하는 중");
+  if (status === "running") return t("작업 중");
+  if (status === "waiting") return t("입력 필요");
+  if (status === "failed") return t("실패");
   if (status === "unknown") return t("상태 확인 불가");
-  return "Idle";
+  return t("쉬는 중");
 }
 
 export function parallelStateLabel(state: ParallelGroup["state"]): string {
@@ -150,7 +151,7 @@ export function directoryName(value: string): string {
 
 /** The backend stores the default draft title in Korean; display it in the UI language. */
 export function sessionTitleText(title: string): string {
-  return title === "새 Gajae 세션" ? t("새 Gajae 세션") : title;
+  return isDefaultSessionTitle(title) ? t("새 세션") : title;
 }
 
 export function toolDisplayName(name: string): string {
@@ -225,6 +226,7 @@ export const BUNDLED_GJC_COMMANDS: AgentCommand[] = [
   { name: "abort", description: "진행 중인 작업 중단" },
   { name: "compact", description: "현재 세션 context 압축" },
   { name: "new", description: "이 workspace에서 새 세션 시작" },
+  { name: "login", description: "AI 로그인 / 제공자 추가" },
   { name: "model", description: "세션 모델 프로필 선택" },
   { name: "effort", description: "추론 effort 변경 (단축키: ⇧⇥)" },
 ];
