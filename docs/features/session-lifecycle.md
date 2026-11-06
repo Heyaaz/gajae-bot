@@ -6,6 +6,16 @@ execution, fork it, rename it, remove it from the rail, or delete its saved hist
 rail lists live sessions; the history picker reads saved sessions from the same directory
 the GJC CLI uses, so a session that has no live broker row is still reachable.
 
+Terminal GJC `/new` retires the old live row even when it is selected in Gajae.
+Discovery removes it only on explicit broker evidence (`live:false` or `deleted:true`);
+a temporary list omission, failed scan or route probe does not evict the selected
+conversation. Each observed live-to-retired transition removes the row only once,
+so a conversation explicitly reopened from history remains readable. This does not
+delete saved history or aliases. The replacement CLI
+session appears on the next discovery refresh (window focus or the visible-window
+15-second poll). Build and run `npm run gjc:cli-new-e2e` to check the real CLI,
+broker and renderer with selected/unselected old rows in an isolated profile.
+
 ## Sub-features
 
 - `SESSION-CREATE` — create a live session in a workspace, optionally in a managed worktree.

@@ -347,6 +347,8 @@ export abstract class GjcSdkState {
   // list instead, or skipping a scan resurrects dead sessions in the sidebar.
   protected lastDiscovered: AgentSession[] = [];
   protected lastLiveFingerprint: string | undefined;
+  /** Broker-live IDs awaiting explicit retirement, even across incomplete discovery. */
+  protected readonly discoveredLiveSessions = new Set<string>();
 
   protected readonly routeProbes = new Map<string, { at: number; reachable: boolean }>();
 

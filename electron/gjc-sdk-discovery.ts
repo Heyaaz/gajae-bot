@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import type { AgentSession } from "../shared/agent-contract.js";
+import type { AgentEvent, AgentSession } from "../shared/agent-contract.js";
 import type { SessionMetadataStore } from "./session-metadata-store.js";
 import { GjcSdkCli, isSessionUnreachable, type SdkSessionRow } from "./gjc-sdk-cli.js";
 import {
@@ -48,6 +48,8 @@ export interface DiscoveryHost {
     reuseUnchangedIndex?: boolean;
   }): Promise<SdkSessionRow[] | undefined>;
   lastDiscovered: AgentSession[];
+  readonly discoveredLiveSessions: Set<string>;
+  readonly emitEvent: (event: AgentEvent) => void;
   readonly sessionMetadata: SessionMetadataStore | undefined;
   liveRouteReachable(row: SdkSessionRow): Promise<boolean>;
   readonly terminalOnlySessions: Set<string>;
@@ -112,6 +114,27 @@ export async function discoverSessions(host: DiscoveryHost): Promise<AgentSessio
   host.sessionMetadata?.forgetHiddenOutside(
     new Set(brokerRows.map((session) => session.sessionId)),
   );
+  const knownIds = new Set([
+    ...host.sessions.keys(),
+    ...host.lastDiscovered.map((session) => session.id),
+  ]);
+  for (const row of brokerRows) {
+    if (row.live && !row.deleted) {
+      host.discoveredLiveSessions.add(row.sessionId);
+    } else if (
+      (row.live === false || row.deleted === true) &&
+      host.discoveredLiveSessions.delete(row.sessionId) &&
+      knownIds.has(row.sessionId)
+    ) {
+      // The selected row survives a mere discovery omission. Explicit broker
+      // retirement (including CLI /new) must instead remove it through the same
+      // rail-removal event used by hide. Do not delete history, aliases or runtime
+      // state here, and do not infer retirement from a failed scan/route probe.
+      // Consume each live -> dead transition once: a user may later reopen the
+      // same saved conversation in history-only mode and keep reading it.
+      host.emitEvent({ type: "session.deleted", sessionId: row.sessionId });
+    }
+  }
   const liveRows: SdkSessionRow[] = [];
   for (const session of brokerRows) {
     if (!session.live || session.deleted || host.sessionMetadata?.isHidden(session.sessionId)) {
