@@ -280,9 +280,17 @@ Older GJC versions are unsupported. After updating GJC, restart running `gjc` /
 If the CLI rejects the `operator` field, the app reports failure instead of pretending the run stopped.
 
 Steer itself is unchanged in GJC. The desktop uses `raw control` with the existing
-`turn.steer` operation. Empty Enter only aborts so the Composer's held work is
-consumed once through steering (steer-on-interrupt). Do not dequeue and
-`abort_and_prompt` the same text.
+`turn.steer` operation. Empty Enter interrupts before releasing the Composer's
+held work in order. After a confirmed stop the input starts a new prompt; when
+the host cannot confirm a stop and still reports running, it is steered into that
+turn instead. Do not dequeue and `abort_and_prompt` the same text.
+
+Held input stays visible until the send is acknowledged. While acknowledgement
+is pending, the entry cannot be edited, discarded, reordered or sent again.
+Escape/Stop may discard unsent entries, but must retain an unresolved handoff.
+An uncertain rejection keeps that input blocked for review rather than retrying
+automatically. Repeated blank Enter cannot overlap an interrupt or release.
+
 
 ## Lifecycle receipts
 

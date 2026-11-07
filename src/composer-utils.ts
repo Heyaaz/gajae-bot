@@ -216,6 +216,8 @@ export interface PendingRequest {
   files: FileAttachment[];
   /** A rejected send may already have been accepted. Only the user may resubmit it. */
   blocked?: true;
+  /** Claimed by a release, but still visible until delivery is acknowledged. */
+  sending?: true;
 }
 
 export function normalizeComposerText(value: string): string {
@@ -235,7 +237,7 @@ export function withoutReleasedRequest(
 export function nextRequestToRelease(
   pending: readonly PendingRequest[],
 ): PendingRequest | undefined {
-  return pending[0]?.blocked ? undefined : pending[0];
+  return pending[0]?.blocked || pending[0]?.sending ? undefined : pending[0];
 }
 
 // Hand held requests over one at a time, oldest first.
@@ -243,7 +245,8 @@ export function nextRequestToRelease(
 // The queue lives behind a ref because the loop awaits between sends, and React
 // only refreshes a ref on render -- which lands after the await. Reading the
 // rendered value re-selected the request that was just sent and steered it a
-// second time, so the entry is claimed from the live queue *before* awaiting.
+// second time. Claim the visible entry before awaiting, then remove it only
+// after acceptance; another release cannot overtake an in-flight head.
 // A rejected send does not prove that the runtime never accepted it. Preserve its
 // text but block further releases until the user reviews/removes the request.
 export async function releaseRequests(queue: {
@@ -256,11 +259,12 @@ export async function releaseRequests(queue: {
     if (!queue.canSend()) return;
     const next = nextRequestToRelease(queue.read());
     if (!next) return;
-    queue.write(withoutReleasedRequest(queue.read(), next.id));
+    queue.write(queue.read().map((entry) => entry.id === next.id ? { ...entry, sending: true } : entry));
     try {
       await queue.send(next);
+      queue.write(withoutReleasedRequest(queue.read(), next.id));
     } catch {
-      queue.write([{ ...next, blocked: true }, ...queue.read()]);
+      queue.write(queue.read().map((entry) => entry.id === next.id ? { ...next, blocked: true } : entry));
       return;
     }
   }
@@ -290,7 +294,8 @@ export function canMoveRequest(
   const from = pending.findIndex((entry) => entry.id === id);
   const to = from + offset;
   return from >= 0 && to >= 0 && to < pending.length &&
-    !pending[from]!.blocked && !pending[to]!.blocked;
+    !pending[from]!.blocked && !pending[to]!.blocked &&
+    !pending[from]!.sending && !pending[to]!.sending;
 }
 
 /** Swap one held request with its neighbour so it is released earlier or later. */

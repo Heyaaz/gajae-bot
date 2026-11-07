@@ -26,7 +26,7 @@ export function QueueList({ queue: pendingQueue, readOnly, onMove, onPull, onDis
                 onPull={() => onPull(entry.id)}
                 onDiscard={() => onDiscard(entry.id)}
                 onSendNow={() => { void onSendNow(entry.id); }}
-                disabled={readOnly} />
+                disabled={readOnly || entry.sending === true} />
             ))}
           </div>
           {pendingQueue[0]?.blocked && <small role="status">

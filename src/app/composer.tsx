@@ -367,22 +367,23 @@ export const Composer = memo(function Composer({
   const effortValueRef = useRef(currentEffort);
   effortValueRef.current = currentEffort;
 
+  function discardUnsentQueue(owner: string): void {
+    // Stop and Escape may discard unsent work, never an unresolved handoff.
+    const pending = composerQueue(owner).filter((entry) => entry.sending);
+    saveComposerQueue(owner, pending);
+    if (draftSessionRef.current !== owner) return;
+    pendingQueueRef.current = pending;
+    setPendingQueue(pending);
+    saveComposerSnapshot(composerSnapshots, owner, {
+      value: valueRef.current,
+      images: imagesRef.current,
+      files: filesRef.current,
+      pendingQueue: pending,
+    });
+  }
+
   function discardQueueAfterCancel(owner: string): void {
-    void cancelBeforeQueueDiscard(onCancel, () => {
-      if (draftSessionRef.current !== owner) {
-        saveComposerQueue(owner, []);
-        return;
-      }
-      pendingQueueRef.current = [];
-      saveComposerQueue(owner, []);
-      setPendingQueue([]);
-      saveComposerSnapshot(composerSnapshots, owner, {
-        value: valueRef.current,
-        images: imagesRef.current,
-        files: filesRef.current,
-        pendingQueue: [],
-      });
-    }).catch(() => undefined);
+    void cancelBeforeQueueDiscard(onCancel, () => discardUnsentQueue(owner)).catch(() => undefined);
   }
 
   function restoreRejectedSubmission(
@@ -816,15 +817,18 @@ export const Composer = memo(function Composer({
   async function sendQueuedEntryNow(id: string): Promise<void> {
     if (readOnly || releasingQueues.has(sessionId)) return;
     const entry = pendingQueueRef.current.find((request) => request.id === id);
-    if (!entry || entry.blocked) return;
+    if (!entry || entry.blocked || entry.sending) return;
     const owner = sessionId;
     releasingQueues.add(owner);
+    saveComposerQueue(owner, composerQueue(owner).map((request) =>
+      request.id === id ? { ...request, sending: true } : request,
+    ));
     try {
       await onSend({ text: running ? `/steer ${entry.text}` : entry.text, images: entry.images, files: entry.files });
       saveComposerQueue(owner, withoutReleasedRequest(composerQueue(owner), id));
     } catch (error) {
       saveComposerQueue(owner, composerQueue(owner).map((request) =>
-        request.id === id ? { ...request, blocked: true } : request,
+        request.id === id ? { ...entry, blocked: true } : request,
       ));
       if (mountedRef.current && draftSessionRef.current === owner)
         setAttachmentError(humanErrorMessage(error));
@@ -1232,7 +1236,7 @@ export const Composer = memo(function Composer({
       if (matchingCommands.length > 0) setValue("");
       if (running && !event.metaKey && !event.ctrlKey && !event.altKey)
         discardQueueAfterCancel(sessionId);
-      else setPendingQueue([]);
+      else discardUnsentQueue(sessionId);
       return;
     }
     // Pulling a held request back is decided before anything else that watches the
