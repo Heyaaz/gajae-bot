@@ -4861,6 +4861,50 @@ describe("shared terminal session control", () => {
     controller.dispose();
   });
 
+  it.each([
+    { turn: "no_active_turn", observed: "running" },
+    { turn: "uncertain", observed: "running" },
+    { turn: "no_active_turn", observed: undefined },
+    { turn: "uncertain", observed: undefined },
+  ])("releases held input as a steer after $turn with observed=$observed", async ({ turn, observed }) => {
+    const { controller, cli, internals } = harness();
+    try {
+      internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });
+      internals.attachedSessions.add("s1");
+      internals.discoveredRunState = vi.fn(async () => observed);
+      internals.executeSdkSlashCommand = vi.fn(async () => false);
+      internals.controlSession = vi.fn(async (_id: string, operation: string) =>
+        operation === "turn.abort" ? { turn } : { accepted: true },
+      );
+      internals.querySessionItems = vi.fn(async () => [{ status: "accepted" }]);
+
+      await controller.flushQueuedNow("s1");
+      expect(internals.sessions.get("s1")?.status).toBe("running");
+      await expect(controller.sendMessage("s1", {
+        text: "change direction", images: [], files: [],
+      })).resolves.toBe("steer");
+      expect(internals.controlSession).toHaveBeenCalledWith("s1", "turn.steer", {
+        text: "change direction", clientRef: expect.any(String),
+      });
+      expect(cli.send).not.toHaveBeenCalled();
+    } finally { controller.dispose(); }
+  });
+
+  it.each([
+    { turn: "stopped", observed: "running", reads: 0 },
+    { turn: "uncertain", observed: "idle", reads: 1 },
+  ])("settles the released row only with stop/idle evidence: $turn, $observed", async ({ turn, observed, reads }) => {
+    const { controller, internals } = harness();
+    try {
+      internals.sessions.set("s1", { ...session(), status: "running" });
+      internals.controlSession = vi.fn(async () => ({ turn }));
+      internals.discoveredRunState = vi.fn(async () => observed);
+      await controller.flushQueuedNow("s1");
+      expect(internals.sessions.get("s1")?.status).toBe("idle");
+      expect(internals.discoveredRunState).toHaveBeenCalledTimes(reads);
+    } finally { controller.dispose(); }
+  });
+
   it("falls back to the ordinary abort for a Stop the operator route refuses", async () => {
     const { controller, cli, internals } = harness();
     internals.sessions.set("s1", { ...session(), ownership: "external", status: "running" });

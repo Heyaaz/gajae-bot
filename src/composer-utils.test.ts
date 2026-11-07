@@ -210,6 +210,30 @@ describe("composer-owned pending queue", () => {
     expect(live).toEqual([]);
   });
 
+  it("retains in-flight input until acceptance and prevents overlapping release from overtaking it", async () => {
+    let live: PendingRequest[] = [request("a", "first"), request("b", "second")];
+    let accept!: () => void;
+    const accepted = new Promise<void>((resolve) => { accept = resolve; });
+    const sent: string[] = [];
+    const queue = {
+      canSend: () => true,
+      read: () => live,
+      write: (pending: PendingRequest[]) => { live = pending; },
+      send: async (entry: PendingRequest) => {
+        sent.push(entry.id);
+        if (entry.id === "a") await accepted;
+      },
+    };
+    const first = releaseRequests(queue);
+    await releaseRequests(queue);
+    const beforeAcceptance = { ids: live.map((entry) => entry.id), sent: [...sent] };
+    accept();
+    await first;
+    expect(beforeAcceptance).toEqual({ ids: ["a", "b"], sent: ["a"] });
+    expect(sent).toEqual(["a", "b"]);
+    expect(live).toEqual([]);
+  });
+
   it("drains the whole queue in order", async () => {
     let live: PendingRequest[] = [
       request("a", "first"),

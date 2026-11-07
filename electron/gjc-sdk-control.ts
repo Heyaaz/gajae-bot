@@ -570,21 +570,18 @@ export async function flushQueuedNow(host: ControlHost, sessionId: string): Prom
     // probe could not reach still throws (see controlSession).
     let stopped = false;
     try {
-      await abortOwnedThroughControl(host, sessionId);
-      stopped = true;
+      stopped = (await abortOwnedThroughControl(host, sessionId)) === "stopped";
     } catch (error) {
       if (!(error instanceof OwnedStopUnavailableError)) throw error;
     }
-    // A release only marks the row running when a turn could not be stopped. A
-    // confirmed stop means the turn is over, and a host that never granted this
-    // window the operator Stop is answered by the transcript instead. Publishing
-    // running unconditionally was how a release against an already finished row
-    // left it looking mid-turn: every later message then arrived as a steer
-    // behind a turn that had ended, which is the queue the user watched swallow
-    // their text.
-    const stillRunning =
-      !stopped && (await host.discoveredRunState(sessionId)) === "running";
-    host.updateSessionStatus(sessionId, stillRunning ? "running" : "idle", {
+    // Only a typed stop confirmation ends the turn. no_active_turn and a lost
+    // answer do not: the released input must still steer a CLI turn that is
+    // running. A fresh idle observation can settle it, but an unavailable read
+    // preserves the last known state rather than turning uncertainty into idle.
+    const status = stopped
+      ? "idle"
+      : (await host.discoveredRunState(sessionId)) ?? host.sessions.get(sessionId)?.status ?? "idle";
+    host.updateSessionStatus(sessionId, status, {
       announce: false,
     });
     return true;

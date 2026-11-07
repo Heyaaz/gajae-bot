@@ -99,10 +99,13 @@ open; `MAP_ROOT` is exported.
   ```bash
   cu "In Gajae, with a queue chip visibly held, click the empty composer and press Enter once. Save $MAP_ROOT/evidence/TURN-QUEUE-03.png. Report whether the chip disappeared, whether the current turn was interrupted, and whether the held text appeared as a user bubble."
   ```
-  Observable: the open turn is aborted through the owned-stop path, the held request is
-  released in order, and the chip disappears. Depending on whether the host confirmed
+  Observable: the app requests an owned stop, releases the held request in order,
+  and removes the chip only after acceptance. Depending on whether the host confirmed
   the stop, the released text arrives as a new prompt or as a steer; record which one the
-  transcript shows instead of assuming. A `작업 취소됨` notice may appear.
+  transcript shows instead of assuming. `no_active_turn` or an uncertain/lost answer
+  does not confirm termination: a still-running CLI turn must receive the held text as
+  a steer. An unavailable state read preserves the last known state; a fresh idle
+  observation may settle it. A `작업 취소됨` notice may appear.
 
 - **TURN-STEER — steer an open turn.**
   Action: while a slow base turn runs, submit `/steer` text.
