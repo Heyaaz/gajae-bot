@@ -151,6 +151,70 @@ describe("running composer Enter", () => {
     } finally { await test.close(); clock.mockRestore(); }
   });
 
+  it("ignores repeated Enter throughout interrupt and acknowledgement without losing queue order", async () => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    let finishFlush!: () => void;
+    let accept!: () => void;
+    const interrupted = new Promise<void>((resolve) => { finishFlush = resolve; });
+    const acknowledged = new Promise<undefined>((resolve) => { accept = () => resolve(undefined); });
+    const flush = vi.fn(() => interrupted);
+    const send = vi.fn<ComposerProps["onSend"]>(async () => { if (send.mock.calls.length === 1) await acknowledged; });
+    const test = await mount({ onSend: send, onFlushQueued: flush });
+    try {
+      const input = test.node.querySelector("textarea")!;
+      await pressEnter(input);
+      await pressEnter(input);
+      expect(flush).toHaveBeenCalledOnce();
+      expect(send).not.toHaveBeenCalled();
+      expect(composerQueue(test.sessionId).map((entry) => entry.id)).toEqual(["first", "second"]);
+
+      await act(async () => finishFlush());
+      expect(send).toHaveBeenCalledExactlyOnceWith({ text: "change direction", images: [], files: [] });
+      expect(composerQueue(test.sessionId)[0]).toMatchObject({ id: "first", sending: true });
+      const actions = [...test.node.querySelectorAll<HTMLButtonElement>(".composer-queue-item:first-child button")];
+      expect(actions.length).toBeGreaterThan(0);
+      expect(actions.every((button) => button.disabled)).toBe(true);
+      await pressEnter(input);
+      expect(flush).toHaveBeenCalledOnce();
+      expect(send).toHaveBeenCalledOnce();
+
+      await act(async () => accept());
+      expect(send.mock.calls.map(([request]) => request.text)).toEqual(["change direction", "keep waiting"]);
+      expect(composerQueue(test.sessionId)).toEqual([]);
+      expect(test.cancel).not.toHaveBeenCalled();
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
+  it.each([
+    { running: false, metaKey: false, direct: false },
+    { running: true, metaKey: false, direct: false },
+    { running: true, metaKey: true, direct: false },
+    { running: true, metaKey: false, direct: true },
+  ])("retains unresolved input after Escape ($running/$metaKey/$direct)", async ({ running, metaKey, direct }) => {
+    const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
+    let reject!: (error: Error) => void;
+    const pending = new Promise<undefined>((_, fail) => { reject = fail; });
+    const send = vi.fn(() => pending);
+    const test = await mount({ running, onSend: send });
+    try {
+      const input = test.node.querySelector("textarea")!;
+      if (direct) await act(async () => test.node.querySelector<HTMLButtonElement>(".composer-queue-send")!.click());
+      else await pressEnter(input);
+      expect(send).toHaveBeenCalledOnce();
+      await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", metaKey, bubbles: true })); });
+      expect(composerQueue(test.sessionId).map((entry) => entry.text)).toEqual(["change direction"]);
+      expect(test.node.querySelector<HTMLButtonElement>(".composer-queue-pull")?.disabled).toBe(true);
+      await act(async () => { reject(new Error("acceptance unknown")); });
+      expect(composerQueue(test.sessionId)).toEqual([
+        expect.objectContaining({ text: "change direction", blocked: true }),
+      ]);
+      expect(composerQueue(test.sessionId)[0]?.sending).toBeUndefined();
+      await pressEnter(input);
+      expect(send).toHaveBeenCalledOnce();
+      expect(test.cancel).toHaveBeenCalledTimes(running && !metaKey ? 1 : 0);
+    } finally { await test.close(); clock.mockRestore(); }
+  });
+
   it("keeps an IME follow-up from submitting twice or releasing the queue", async () => {
     const clock = vi.spyOn(performance, "now").mockReturnValue(10_000);
     const test = await mount();
