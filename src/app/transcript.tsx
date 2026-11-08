@@ -389,6 +389,10 @@ export function Transcript({
   const [, forceRender] = useReducer((tick: number) => tick + 1, 0);
   const virtualizer = useVirtualizer({
     useFlushSync: false,
+    // A question switching to its multiline editor resizes the viewport and
+    // measured rows together. Schedule layout writes outside the observer's
+    // current delivery cycle rather than feeding another resize into that cycle.
+    useAnimationFrameWithResizeObserver: true,
     onChange: (_instance, sync) => {
       if (sync && !measuringInCommitRef.current) flushSync(forceRender);
     },

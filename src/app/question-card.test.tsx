@@ -8,6 +8,8 @@ import type { QuestionActivity, QuestionSubmission } from "../backend/types";
 import { QuestionBanner, QuestionCard } from "./question-card";
 import { questionParts } from "./question-parts";
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
 function question(overrides: Partial<QuestionActivity> = {}): QuestionActivity {
   return {
     id: "g1",
@@ -138,6 +140,19 @@ describe("question card", () => {
     expect(gateId).toBe("g1");
     expect(submission).toEqual({ selected: ["Yes"] });
     expect(idempotencyKey).toMatch(/^gajae-gate-g1-/u);
+  });
+
+  it("keeps the nonce when a question ID is long", async () => {
+    const onAnswer = vi.fn();
+    const item = question({ id: "g".repeat(300) });
+    const first = await render(card(item, onAnswer));
+    await act(async () => (first.querySelector("button") as HTMLButtonElement).click());
+    const second = await render(card(item, onAnswer));
+    await act(async () => (second.querySelector("button") as HTMLButtonElement).click());
+    const keys = onAnswer.mock.calls.map((call) => call[2] as string);
+    expect(keys[0]?.length).toBeLessThanOrEqual(200);
+    expect(keys[1]?.length).toBeLessThanOrEqual(200);
+    expect(keys[0]).not.toBe(keys[1]);
   });
 
   it("toggles a multi-select and submits the chosen labels", async () => {

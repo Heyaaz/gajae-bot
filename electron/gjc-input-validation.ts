@@ -1,6 +1,7 @@
 import { statSync } from "node:fs";
 import path from "node:path";
 import type {
+  CliQuestionAnswer,
   CreateSessionInput,
   FileAttachment,
   ImageAttachment,
@@ -262,11 +263,11 @@ function optionalQuestionText(value: unknown, label: string): string | undefined
   return value;
 }
 
-/** The answer a question card submits. Schema checks happen against the gate. */
+/** Shared IPC/remote shape checks; authority is validated against the live question. */
 export function questionSubmission(value: unknown): QuestionSubmission {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("Question answer is required");
-  const record = value as { selected?: unknown; custom?: unknown; clarify?: unknown };
+  const record = value as { selected?: unknown; custom?: unknown; clarify?: unknown; cli?: unknown };
   if (
     !Array.isArray(record.selected) ||
     record.selected.length > 32 ||
@@ -275,6 +276,30 @@ export function questionSubmission(value: unknown): QuestionSubmission {
     throw new Error("Question selection is invalid");
   const custom = optionalQuestionText(record.custom, "Custom answer");
   const clarify = optionalQuestionText(record.clarify, "Clarification");
+  if (record.cli !== undefined) {
+    if (record.selected.length || custom !== undefined || clarify !== undefined ||
+        !record.cli || typeof record.cli !== "object" || Array.isArray(record.cli))
+      throw new Error("CLI question answer is invalid");
+    const cli = record.cli as Record<string, unknown>;
+    if (Object.keys(cli).length !== 2 || !Object.hasOwn(cli, "requestId") || !Object.hasOwn(cli, "answer") || typeof cli.requestId !== "string" ||
+        !cli.requestId.trim() || cli.requestId.length > 512 ||
+        !cli.answer || typeof cli.answer !== "object" || Array.isArray(cli.answer))
+      throw new Error("CLI question answer is invalid");
+    const input = cli.answer as Record<string, unknown>;
+    if (Object.keys(input).length !== 2 || !Object.hasOwn(input, "kind"))
+      throw new Error("CLI question answer is invalid");
+    let answer: CliQuestionAnswer;
+    if (input.kind === "value" && Object.hasOwn(input, "value") &&
+        typeof input.value === "string" && input.value.length <= 8_000) {
+      answer = { kind: "value", value: input.value };
+    } else if (input.kind === "control" && Object.hasOwn(input, "controlId") &&
+        typeof input.controlId === "string" && input.controlId.length > 0 && input.controlId.length <= 512) {
+      answer = { kind: "control", controlId: input.controlId };
+    } else {
+      throw new Error("CLI question answer is invalid");
+    }
+    return { selected: [], cli: { requestId: cli.requestId, answer } };
+  }
   return {
     selected: record.selected.map((item) => item.trim()).filter(Boolean),
     ...(custom !== undefined ? { custom } : {}),

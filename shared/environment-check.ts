@@ -4,12 +4,7 @@ import { GJC_MINIMUM_VERSION } from "./gjc-version.js";
 export const BUN_MINIMUM_VERSION = "1.4.0";
 
 export type EnvironmentCheckId =
-  | "bun"
-  | "gjc"
-  | "provider-login"
-  | "model-preset"
-  | "gh"
-  | "tailscale";
+  "bun" | "gjc" | "provider-login" | "model-preset" | "gh" | "tailscale";
 
 /** Why a check is not ok. The renderer words it; the host only names it. */
 export type EnvironmentProblem =
@@ -19,6 +14,7 @@ export type EnvironmentProblem =
   | "unknown-preset"
   | "signed-out"
   | "no-provider"
+  | "provider-unreadable"
   | "not-running";
 
 export const ENVIRONMENT_MINIMUM_VERSIONS: Partial<
@@ -36,6 +32,8 @@ export type EnvironmentCheckRow = {
   id: EnvironmentCheckId;
   required: boolean;
   detail?: string;
+  /** Model availability does not establish authentication or connection kind. */
+  providerAuthentication?: "unknown";
 } & (
   | { status: "ok" }
   | {

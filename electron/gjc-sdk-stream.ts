@@ -227,8 +227,22 @@ export function startToolObserver(host: StreamHost, sessionId: string): void {
   const controller = new AbortController();
   host.toolObservers.set(sessionId, controller);
   void host.refreshWorkflowQuestions(sessionId);
+  // Ordinary terminal asks publish no workflow_gate observer event. Keep their
+  // authoritative selector/editor snapshot current while an ask or card is open,
+  // including local answers and edits after the initial tool-start retry ends.
+  const questionTimer = setInterval(() => {
+    if (host.disposed || controller.signal.aborted) return;
+    const pending = (host.transcripts.get(sessionId) ?? []).some((item) =>
+      (item.kind === "tool" && item.name.toLowerCase() === "ask" && LIVE_TOOL_STATUSES.has(item.status)) ||
+      (item.kind === "question" && item.answerable),
+    );
+    if (pending) void host.refreshWorkflowQuestions(sessionId);
+  }, 2_000);
   const detached = new Promise<void>((resolve) => {
-    controller.signal.addEventListener("abort", () => resolve(), { once: true });
+    controller.signal.addEventListener("abort", () => {
+      clearInterval(questionTimer);
+      resolve();
+    }, { once: true });
   });
   void (async () => {
     while (!host.disposed && !controller.signal.aborted && host.attachedSessions.has(sessionId)) {
@@ -246,6 +260,7 @@ export function startToolObserver(host: StreamHost, sessionId: string): void {
       if (!controller.signal.aborted) await tailReadPause(detached);
     }
   })().finally(() => {
+    clearInterval(questionTimer);
     if (host.toolObservers.get(sessionId) === controller) host.toolObservers.delete(sessionId);
   });
 }
@@ -335,6 +350,7 @@ export function projectToolStream(host: StreamHost, sessionId: string, kind: str
   if (snapshots.size > 256) snapshots.delete(snapshots.keys().next().value!);
   if (kind === "tool_execution_start" && value.toolName === "ask")
     void host.followAskGate(sessionId, value.toolCallId);
+  if (ended && value.toolName === "ask") void host.refreshWorkflowQuestions(sessionId);
   if (
     ended &&
     value.isError === true &&

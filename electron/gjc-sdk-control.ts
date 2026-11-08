@@ -71,6 +71,7 @@ export type SdkControlOperation =
   | "runtime.reload"
   | "auth.login"
   | "btw.ask"
+  | "ask.answer"
   | "workflow.gate_answer";
 
 /** What a settlement query reads: skill turns have their own `turn.result` kind. */

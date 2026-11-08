@@ -32,7 +32,9 @@ function launch() {
   fs.mkdirSync(home, { recursive: true })
   const electron = require(path.join(appPath, 'node_modules/electron'))
   const environment = Object.fromEntries(
-    Object.entries(process.env).filter(([name]) => !/^(GJC_|AGENT_CONTROL_|GAJAE_)/u.test(name)),
+    Object.entries(process.env).filter(
+      ([name]) => !/^(GJC_|AGENT_CONTROL_|GAJAE_)/u.test(name),
+    ),
   )
   const child = spawn(electron, ['.'], {
     cwd: appPath,
@@ -53,7 +55,8 @@ function launch() {
   child.stdout.on('data', (chunk) => {
     output += chunk
     for (const line of output.split('\n').slice(0, -1))
-      if (line.startsWith(REPORT_PREFIX)) report = JSON.parse(line.slice(REPORT_PREFIX.length))
+      if (line.startsWith(REPORT_PREFIX))
+        report = JSON.parse(line.slice(REPORT_PREFIX.length))
       else if (line.trim()) console.log(line)
     output = output.slice(output.lastIndexOf('\n') + 1)
   })
@@ -68,7 +71,8 @@ function launch() {
       // pkill exits 1 when nothing matched.
     }
     console.log(JSON.stringify(report ?? { error: 'no report' }, null, 2))
-    if (report?.passed && !process.argv.includes('--keep')) fs.rmSync(root, { recursive: true, force: true })
+    if (report?.passed && !process.argv.includes('--keep'))
+      fs.rmSync(root, { recursive: true, force: true })
     else console.log(`kept ${root}`)
     process.exit(code === 0 && report?.passed ? 0 : 1)
   })
@@ -81,7 +85,10 @@ agent="$GJC_CODING_AGENT_DIR"
 case "$1" in
   --version) echo "gjc/0.19.2" ;;
   models)
-    if [ -f "$agent/credential" ]; then echo "Canonical models"; echo "glm-4.7  zai/glm-4.7"
+    if [ -f "$agent/credential" ]; then
+      echo "Provider models"
+      echo "provider  model    context  max-out  thinking  images"
+      echo "zai       glm-4.7  128K     16K      -         no"
     else echo "No models available. Set API keys in environment variables."; fi ;;
   auth-broker)
     [ "$3" = "zai" ] || { echo "Error: unexpected provider $3" >&2; exit 2; }
@@ -114,7 +121,8 @@ function drive() {
   const assert = (condition, message) => {
     if (!condition) throw new Error(message)
   }
-  const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+  const wait = (milliseconds) =>
+    new Promise((resolve) => setTimeout(resolve, milliseconds))
   async function until(condition, message, timeout = 15_000) {
     const deadline = Date.now() + timeout
     for (;;) {
@@ -139,18 +147,25 @@ function drive() {
       const url = String(input)
       if (!url.includes('Yeachan-Heo/gajae-code')) return realFetch(input, init)
       requested.push(url)
-      if (url.endsWith('/releases/latest')) return Response.json({ tag_name: 'v0.19.2' })
+      if (url.endsWith('/releases/latest'))
+        return Response.json({ tag_name: 'v0.19.2' })
       if (url.endsWith('/gajae-release-binaries.sha256'))
-        return new Response(`${digest}  gjc-darwin-arm64\n${digest}  gjc-darwin-x64\n`)
+        return new Response(
+          `${digest}  gjc-darwin-arm64\n${digest}  gjc-darwin-x64\n`,
+        )
       if (/\/gjc-darwin-(arm64|x64)$/u.test(url))
-        return new Response(binary, { headers: { 'content-length': String(binary.byteLength) } })
+        return new Response(binary, {
+          headers: { 'content-length': String(binary.byteLength) },
+        })
       return new Response('not found', { status: 404 })
     }
   }
 
-  const window = () => BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+  const window = () =>
+    BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
   const run = (script) => window().webContents.executeJavaScript(script)
-  const text = () => run('document.querySelector(".onboarding")?.textContent ?? ""')
+  const text = () =>
+    run('document.querySelector(".onboarding")?.textContent ?? ""')
   const click = (label) =>
     run(`(() => {
       const button = [...document.querySelectorAll(".onboarding button")].find((b) => b.textContent.includes(${JSON.stringify(label)}));
@@ -168,34 +183,76 @@ function drive() {
 
   app.whenReady().then(async () => {
     try {
-      await until(() => window() && run('Boolean(document.querySelector(".app-shell"))'), 'shell rendered', 30_000)
-      await until(async () => (await text()).includes('GJC'), 'first-run setup opened on the install step')
+      await until(
+        () => window() && run('Boolean(document.querySelector(".app-shell"))'),
+        'shell rendered',
+        30_000,
+      )
+      await until(
+        async () => (await text()).includes('GJC'),
+        'first-run setup opened on the install step',
+      )
       step('install step shown', await text())
       await shot('1-install')
       assert(!fs.existsSync(installed), 'no gjc before install')
 
       assert(await click('GJC 설치'), 'install button')
-      await until(async () => (await text()).includes('어떤 AI를 쓰시나요?'), 'provider list after install', real ? 480_000 : 15_000)
+      await until(
+        async () => (await text()).includes('어떤 AI를 쓰시나요?'),
+        'provider list after install',
+        real ? 480_000 : 15_000,
+      )
       assert(fs.statSync(installed).mode & 0o100, 'installed gjc is executable')
-      step('installed', { path: installed.replace(home, '~'), bytes: fs.statSync(installed).size })
-      if (!real) step('release requests', requested.map((url) => url.replace(/^https:\/\/[^/]+/u, '')))
+      step('installed', {
+        path: installed.replace(home, '~'),
+        bytes: fs.statSync(installed).size,
+      })
+      if (!real)
+        step(
+          'release requests',
+          requested.map((url) => url.replace(/^https:\/\/[^/]+/u, '')),
+        )
       await shot('2-providers')
 
       if (real) {
         assert(await click('Claude Pro/Max'), 'Claude provider')
-        await until(() => run('Boolean(document.querySelector(".onboarding-answer input"))'), 'GJC asked for the code', 60_000)
-        step('real login reached its question', (await text()).includes('받은 코드를 붙여 넣으세요'))
-        assert(opened.length === 1 && new URL(opened[0]).host === 'claude.ai', 'login page handed to the browser')
+        await until(
+          () =>
+            run('Boolean(document.querySelector(".onboarding-answer input"))'),
+          'GJC asked for the code',
+          60_000,
+        )
+        step(
+          'real login reached its question',
+          (await text()).includes('받은 코드를 붙여 넣으세요'),
+        )
+        assert(
+          opened.length === 1 && new URL(opened[0]).host === 'claude.ai',
+          'login page handed to the browser',
+        )
         step('browser asked to open', new URL(opened[0]).host)
         await shot('3-real-sign-in')
         assert(await click('다른 AI 고르기'), 'cancel the real login')
-        await until(async () => (await text()).includes('어떤 AI를 쓰시나요?'), 'back to providers after cancel')
+        await until(
+          async () => (await text()).includes('어떤 AI를 쓰시나요?'),
+          'back to providers after cancel',
+        )
         step('real login cancelled')
       } else {
         assert(await click('Z.AI GLM Coding Plan'), 'Z.AI provider')
-        await until(() => run('Boolean(document.querySelector(".onboarding-answer input"))'), 'API key field')
-        assert(opened[0] === 'https://z.ai/manage-apikey/apikey-list', 'API key page handed to the browser')
-        step('key field type', await run('document.querySelector(".onboarding-answer input").type'))
+        await until(
+          () =>
+            run('Boolean(document.querySelector(".onboarding-answer input"))'),
+          'API key field',
+        )
+        assert(
+          opened[0] === 'https://z.ai/manage-apikey/apikey-list',
+          'API key page handed to the browser',
+        )
+        step(
+          'key field type',
+          await run('document.querySelector(".onboarding-answer input").type'),
+        )
         await shot('3-api-key')
         const typeKey = (key) =>
           run(`(() => {
@@ -205,36 +262,77 @@ function drive() {
           })()`)
         await typeKey('sk-wrong')
         assert(await click('확인'), 'submit wrong key')
-        await until(async () => (await text()).includes('로그인하지 못했습니다'), 'wrong key rejected')
+        await until(
+          async () => (await text()).includes('로그인하지 못했습니다'),
+          'wrong key rejected',
+        )
         const rejection = await text()
-        assert(rejection.includes('API 키가 맞지 않습니다'), `rejected key explained, got: ${rejection}`)
-        assert(!rejection.includes('crash recorded'), 'the crash log pointer is not shown')
+        assert(
+          rejection.includes('API 키가 맞지 않습니다'),
+          `rejected key explained, got: ${rejection}`,
+        )
+        assert(
+          !rejection.includes('crash recorded'),
+          'the crash log pointer is not shown',
+        )
         step('wrong key message', rejection)
         await shot('3b-wrong-key')
         assert(await click('다시 시도'), 'retry sign-in')
-        await until(() => run('Boolean(document.querySelector(".onboarding-answer input"))'), 'API key field again')
+        await until(
+          () =>
+            run('Boolean(document.querySelector(".onboarding-answer input"))'),
+          'API key field again',
+        )
         await typeKey('sk-smoke')
         assert(await click('확인'), 'submit key')
-        await until(async () => (await text()).includes('준비됐습니다'), 'ready after sign-in')
+        await until(
+          async () => (await text()).includes('준비됐습니다'),
+          'ready after sign-in',
+        )
         await shot('4-ready')
         const settings = JSON.parse(
-          fs.readFileSync(path.join(process.env.GAJAE_USER_DATA_DIR, 'agent-control-settings.json'), 'utf8'),
+          fs.readFileSync(
+            path.join(
+              process.env.GAJAE_USER_DATA_DIR,
+              'agent-control-settings.json',
+            ),
+            'utf8',
+          ),
         )
-        assert(settings.modelPreset === 'glm-medium', `provider profile saved, got ${settings.modelPreset}`)
+        assert(
+          settings.modelPreset === 'glm-medium',
+          `provider profile saved, got ${settings.modelPreset}`,
+        )
         step('model profile saved', settings.modelPreset)
         const state = JSON.parse(
-          fs.readFileSync(path.join(process.env.GAJAE_USER_DATA_DIR, 'agent-control-desktop-state.json'), 'utf8'),
+          fs.readFileSync(
+            path.join(
+              process.env.GAJAE_USER_DATA_DIR,
+              'agent-control-desktop-state.json',
+            ),
+            'utf8',
+          ),
         )
         assert(state.onboarded === true, 'setup remembered as done')
         assert(await click('첫 대화 시작'), 'start conversation')
-        await until(() => run('!document.querySelector(".onboarding") && Boolean(document.querySelector(".modal-backdrop"))'), 'new conversation dialog')
+        await until(
+          () =>
+            run(
+              '!document.querySelector(".onboarding") && Boolean(document.querySelector(".modal-backdrop"))',
+            ),
+          'new conversation dialog',
+        )
         step('new conversation dialog opened')
         await shot('5-new-conversation')
-        const again = await run('window.agentControlDesktop.onboarding.pendingStep()')
+        const again = await run(
+          'window.agentControlDesktop.onboarding.pendingStep()',
+        )
         assert(again === null, 'setup does not open again')
         step('pending step afterwards', again)
       }
-      process.stdout.write(`${REPORT_PREFIX}${JSON.stringify({ passed: true, real, steps, screenshots: root })}\n`)
+      process.stdout.write(
+        `${REPORT_PREFIX}${JSON.stringify({ passed: true, real, steps, screenshots: root })}\n`,
+      )
       app.exit(0)
     } catch (error) {
       await shot('failure').catch(() => undefined)

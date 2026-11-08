@@ -21,14 +21,62 @@ export const RECOMMENDED_SIGN_IN_PROVIDER_ID = "openai-codex";
  * has a built-in model profile for, so signing in is all a new user does.
  */
 export const SIGN_IN_PROVIDERS: readonly SignInProvider[] = [
-  { id: "openai-codex", name: "ChatGPT Plus/Pro", method: "browser", preset: "codex-medium", signUpUrl: "https://chatgpt.com/" },
-  { id: "anthropic", name: "Claude Pro/Max", method: "browser", preset: "claude-opus", signUpUrl: "https://claude.ai/" },
-  { id: "cursor", name: "Cursor", method: "browser", preset: "cursor-medium", signUpUrl: "https://cursor.com/" },
-  { id: "xai", name: "Grok (xAI)", method: "browser", preset: "grok-46-medium", signUpUrl: "https://grok.com/" },
-  { id: "kimi-code", name: "Kimi Code", method: "browser", preset: "kimi-coding-plan-medium", signUpUrl: "https://www.kimi.com/code" },
-  { id: "zai", name: "Z.AI GLM Coding Plan", method: "api-key", preset: "glm-medium", signUpUrl: "https://z.ai/subscribe" },
-  { id: "minimax-code", name: "MiniMax Coding Plan", method: "api-key", preset: "minimax-medium", signUpUrl: "https://platform.minimax.io/" },
-  { id: "opencode-go", name: "OpenCode Go", method: "api-key", preset: "opencodego", signUpUrl: "https://opencode.ai/go" },
+  {
+    id: "openai-codex",
+    name: "ChatGPT Plus/Pro",
+    method: "browser",
+    preset: "codex-medium",
+    signUpUrl: "https://chatgpt.com/",
+  },
+  {
+    id: "anthropic",
+    name: "Claude Pro/Max",
+    method: "browser",
+    preset: "claude-opus",
+    signUpUrl: "https://claude.ai/",
+  },
+  {
+    id: "cursor",
+    name: "Cursor",
+    method: "browser",
+    preset: "cursor-medium",
+    signUpUrl: "https://cursor.com/",
+  },
+  {
+    id: "xai",
+    name: "Grok (xAI)",
+    method: "browser",
+    preset: "grok-46-medium",
+    signUpUrl: "https://grok.com/",
+  },
+  {
+    id: "kimi-code",
+    name: "Kimi Code",
+    method: "browser",
+    preset: "kimi-coding-plan-medium",
+    signUpUrl: "https://www.kimi.com/code",
+  },
+  {
+    id: "zai",
+    name: "Z.AI GLM Coding Plan",
+    method: "api-key",
+    preset: "glm-medium",
+    signUpUrl: "https://z.ai/subscribe",
+  },
+  {
+    id: "minimax-code",
+    name: "MiniMax Coding Plan",
+    method: "api-key",
+    preset: "minimax-medium",
+    signUpUrl: "https://platform.minimax.io/",
+  },
+  {
+    id: "opencode-go",
+    name: "OpenCode Go",
+    method: "api-key",
+    preset: "opencodego",
+    signUpUrl: "https://opencode.ai/go",
+  },
 ];
 
 /** What first-run setup still has to do, or null when nothing is left. */
@@ -58,7 +106,7 @@ export const ONBOARDING_IPC = {
 
 export interface OnboardingDesktopBridge {
   pendingStep(): Promise<OnboardingStep | null>;
-  /** GJC is installed but has no signed-in provider, whether or not first-run setup was dismissed. */
+  /** GJC has no available provider connection, including credentialless routes, even after setup was dismissed. */
   needsSignIn(): Promise<boolean>;
   /** Resolves with the installed version once the runtime has reconnected to it. */
   installGjc(): Promise<{ version: string }>;

@@ -13,7 +13,7 @@ import {
 } from "../shared/environment-check.js";
 import { compareGjcVersions } from "../shared/gjc-version.js";
 import { SIGN_IN_PROVIDERS } from "../shared/onboarding.js";
-import { hasNoSignedInProvider } from "./provider-login.js";
+import { readProviderAvailability } from "./provider-login.js";
 import {
   findExecutable,
   firstExecutable,
@@ -32,7 +32,10 @@ export type CommandRunner = (
 
 /** Everything a check may look at, injected so tests describe a machine instead of reading this one. */
 export interface EnvironmentProbeContext {
-  locate(name: string, extraCandidates?: readonly string[]): Promise<string | undefined>;
+  locate(
+    name: string,
+    extraCandidates?: readonly string[],
+  ): Promise<string | undefined>;
   locateGjc(): Promise<string | undefined>;
   /** Whether the file starts with `#!`, i.e. needs an interpreter to run. */
   isScript(executable: string): Promise<boolean>;
@@ -45,6 +48,7 @@ export interface EnvironmentProbeContext {
 interface Finding<P extends EnvironmentProblem> {
   problem?: P;
   detail?: string;
+  providerAuthentication?: EnvironmentCheckRow["providerAuthentication"];
 }
 
 /**
@@ -63,7 +67,9 @@ interface EnvironmentCheckDefinition<P extends EnvironmentProblem> {
 
 export interface EnvironmentCheck {
   id: EnvironmentCheckId;
-  check(context: EnvironmentProbeContext): Promise<EnvironmentCheckRow | undefined>;
+  check(
+    context: EnvironmentProbeContext,
+  ): Promise<EnvironmentCheckRow | undefined>;
 }
 
 function defineCheck<P extends EnvironmentProblem>(
@@ -86,6 +92,9 @@ function row<P extends EnvironmentProblem>(
     id: definition.id,
     required: definition.required,
     ...(finding.detail ? { detail: finding.detail } : {}),
+    ...(finding.providerAuthentication
+      ? { providerAuthentication: finding.providerAuthentication }
+      : {}),
   };
   if (!finding.problem) return { ...base, status: "ok" };
   return {
@@ -105,7 +114,8 @@ const BUN_INSTALL = "curl -fsSL https://bun.sh/install | bash";
 // package is a source/development channel and is not kept current.
 const GJC_INSTALL =
   "curl -fsSL https://raw.githubusercontent.com/Yeachan-Heo/gajae-code/main/scripts/install.sh | sh";
-const TAILSCALE_APP_CLI = "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
+const TAILSCALE_APP_CLI =
+  "/Applications/Tailscale.app/Contents/MacOS/Tailscale";
 
 async function versionFinding(
   context: EnvironmentProbeContext,
@@ -134,7 +144,9 @@ export function configuredProfileIds(source: string): string[] {
       inProfiles = /^profiles:\s*$/u.test(line);
       continue;
     }
-    const id = inProfiles ? /^ {2}([^\s#][^:]*):\s*$/u.exec(line)?.[1] : undefined;
+    const id = inProfiles
+      ? /^ {2}([^\s#][^:]*):\s*$/u.exec(line)?.[1]
+      : undefined;
     if (id) ids.push(id.trim().replace(/^["']|["']$/gu, ""));
   }
   return ids;
@@ -172,18 +184,28 @@ export const ENVIRONMENT_CHECKS: readonly EnvironmentCheck[] = [
   }),
   defineCheck({
     id: "provider-login",
-    // Without a signed-in provider every session fails, so this is a blocker, not
-    // advice. The row is only about a GJC that is there: a missing one is the gjc
-    // row's problem.
+    // A model catalog can include credentialless proxies; it proves no login state.
     required: true,
     applies: async (context) => Boolean(await context.locateGjc()),
-    probe: async (context): Promise<Finding<"no-provider">> => {
+    probe: async (
+      context,
+    ): Promise<Finding<"no-provider" | "provider-unreadable">> => {
       const gjc = await context.locateGjc();
-      return gjc && (await hasNoSignedInProvider(context.run, gjc))
-        ? { problem: "no-provider" }
-        : {};
+      const availability = gjc
+        ? await readProviderAvailability(context.run, gjc)
+        : undefined;
+      if (!availability) return { problem: "provider-unreadable" };
+      return {
+        ...(!availability.hasAvailableModels
+          ? { problem: "no-provider" as const }
+          : {}),
+        providerAuthentication: availability.connectionKind,
+      };
     },
-    fixes: { "no-provider": "gjc auth-broker login <provider>" },
+    fixes: {
+      "no-provider": "gjc auth-broker login <provider>",
+      "provider-unreadable": "gjc models",
+    },
   }),
   defineCheck({
     id: "model-preset",
@@ -325,7 +347,8 @@ export function hostEnvironmentContext(settings: {
       readFile(
         path.join(
           path.resolve(
-            process.env.GJC_CODING_AGENT_DIR ?? path.join(homedir(), ".gjc/agent"),
+            process.env.GJC_CODING_AGENT_DIR ??
+              path.join(homedir(), ".gjc/agent"),
           ),
           "models.yml",
         ),

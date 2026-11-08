@@ -161,6 +161,15 @@ export function transcriptItemEqual(
         left.answerSummary === right.answerSummary &&
         left.error === right.error &&
         left.runtimeTurnId === right.runtimeTurnId &&
+        left.cli?.requestId === right.cli?.requestId &&
+        left.cli?.interaction === right.cli?.interaction &&
+        left.cli?.editor?.title === right.cli?.editor?.title &&
+        left.cli?.editor?.prefill === right.cli?.editor?.prefill &&
+        left.cli?.rejectionRevision === right.cli?.rejectionRevision &&
+        sameList(left.cli?.selectedOptions, right.cli?.selectedOptions, (label, other) => label === other) &&
+        sameList(left.cli?.controls, right.cli?.controls, (control, other) =>
+          control.id === other.id && control.label === other.label && control.enabled === other.enabled,
+        ) &&
         sameList(
           left.options,
           right.options,

@@ -3,6 +3,7 @@ import type { KeyboardEvent } from "react";
 import { Check, CircleHelp, ClipboardCheck } from "lucide-react";
 import type { QuestionActivity, QuestionSubmission } from "../backend/types";
 import { t, useLanguage } from "../i18n";
+import { CliQuestionCard } from "./cli-question-card";
 import { questionParts } from "./question-parts";
 
 export interface QuestionCardProps {
@@ -26,13 +27,16 @@ function questionIdempotencyKey(gateId: string): string {
     typeof crypto !== "undefined" && "randomUUID" in crypto
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
-  return `gajae-gate-${gateId.replace(/[^A-Za-z0-9._:-]/gu, "")}-${nonce}`.slice(0, 200);
+  const prefix = "gajae-gate-";
+  const safeId = gateId.replace(/[^A-Za-z0-9._:-]/gu, "").slice(0, 200 - prefix.length - nonce.length - 1);
+  return `${prefix}${safeId}-${nonce}`;
 }
 
 function statusLabel(status: QuestionActivity["status"]): string {
   if (status === "answered") return t("답변함");
   if (status === "cancelled") return t("취소됨");
   if (status === "timeout") return t("시간 초과");
+  if (status === "closed") return t("질문이 종료됐어요");
   if (status === "rejected") return t("다시 답해 주세요");
   return t("답변을 기다리고 있어요");
 }
@@ -61,6 +65,29 @@ function QuestionText({ text, id }: { text: string; id?: string }) {
  * field. A settled card keeps only the result.
  */
 export function QuestionCard({
+  item,
+  onAnswer,
+  autoFocus = false,
+  answeredAbove = false,
+}: QuestionCardProps) {
+  const open = item.answerable && (item.status === "pending" || item.status === "rejected");
+  if (item.cli && open && !answeredAbove) {
+    return (
+      <CliQuestionCard
+        key={JSON.stringify([item.id, item.cli.requestId])}
+        item={item}
+        cli={item.cli}
+        onAnswer={onAnswer}
+        autoFocus={autoFocus}
+        QuestionText={QuestionText}
+        idempotencyKey={questionIdempotencyKey}
+      />
+    );
+  }
+  return <WorkflowQuestionCard item={item} onAnswer={onAnswer} autoFocus={autoFocus} answeredAbove={answeredAbove} />;
+}
+
+function WorkflowQuestionCard({
   item,
   onAnswer,
   autoFocus = false,
