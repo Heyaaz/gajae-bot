@@ -1,5 +1,6 @@
 import type { SdkControlOperation } from "./gjc-sdk-control.js";
 import type { AgentEvent, AgentSession, QuestionActivity, QuestionSubmission, TranscriptItem } from "../shared/agent-contract.js";
+import { questionFromInteractiveRecord, validInteractiveAnswer } from "../shared/interactive-question.js";
 import {
   buildGateAnswer,
   gateAnswerRejection,
@@ -16,6 +17,9 @@ export interface QuestionHost {
   readonly questionRefreshes: Map<string, Promise<void>>;
   readonly questionAnswers: Map<string, Promise<void>>;
   readonly disposed: boolean;
+  readonly generation: number;
+  currentRunRevision(sessionId: string): number;
+  sdkOperations(sessionId: string, options?: { strict?: boolean }): Promise<Set<string>>;
   querySessionItems(
     sessionId: string,
     query: string,
@@ -72,7 +76,7 @@ export function hasAnswerableQuestion(host: QuestionHost, sessionId: string): bo
 }
 
 /**
- * Re-reads `workflow.gates.list` and projects question rows.
+ * Re-reads workflow gates and advertised ordinary CLI asks independently.
  *
  * Overlapping reads share one request. A failure leaves the cards already
  * on screen; the next event or attach tries again.
@@ -90,23 +94,42 @@ export function refreshWorkflowQuestions(host: QuestionHost, sessionId: string):
 
 async function loadWorkflowQuestions(host: QuestionHost, sessionId: string): Promise<void> {
   if (host.disposed) return;
-  let rows: unknown[] = [];
+  const generation = host.generation;
+  let revision = host.currentRunRevision(sessionId);
+  const isCurrent = () => !host.disposed && generation === host.generation && revision === host.currentRunRevision(sessionId);
   try {
-    rows = await host.querySessionItems(
+    const rows = await host.querySessionItems(
       sessionId,
       "workflow.gates.list",
       {},
       { strict: true },
     );
+    if (!isCurrent()) return;
+    const incoming = rows.flatMap((row) => {
+      const question = questionFromGateRecord(sessionId, row);
+      return question ? [withQuestionClock(question)] : [];
+    });
+    applyQuestionSnapshot(host, sessionId, incoming, "workflow");
+    revision = host.currentRunRevision(sessionId);
   } catch {
-    return;
+    // Preserve the workflow snapshot on failure.
   }
-  if (host.disposed) return;
-  const incoming = rows.flatMap((row) => {
-    const question = questionFromGateRecord(sessionId, row);
-    return question ? [withQuestionClock(question)] : [];
-  });
-  applyQuestionSnapshot(host, sessionId, incoming);
+  if (!isCurrent()) return;
+  try {
+    const operations = await host.sdkOperations(sessionId, { strict: true });
+    if (!operations.has("ask.requests.list")) return;
+    const rows = await host.querySessionItems(sessionId, "ask.requests.list", {}, { strict: true });
+    if (!isCurrent()) return;
+    const incoming: QuestionActivity[] = [];
+    for (const row of rows) {
+      const question = questionFromInteractiveRecord(sessionId, row);
+      if (!question || incoming.some((item) => item.id === question.id)) return;
+      incoming.push(withQuestionClock(question));
+    }
+    applyQuestionSnapshot(host, sessionId, incoming, "cli");
+  } catch {
+    // Capability and ordinary ask failures preserve the ordinary snapshot.
+  }
 }
 
 /** Waits between gate-list reads while an ask runs without a question on screen. */
@@ -154,24 +177,31 @@ function applyQuestionSnapshot(
   host: QuestionHost,
   sessionId: string,
   incoming: readonly QuestionActivity[],
+  domain: "workflow" | "cli",
 ): void {
   const seen = new Set<string>();
   for (const row of incoming) {
     seen.add(row.id);
     const key = questionKey(sessionId, row.id);
+    const acceptanceKey = row.cli ? questionKey(sessionId, `${row.id}\0${row.cli.requestId}`) : key;
     host.observedQuestions.delete(key);
     const previous = questionById(host, sessionId, row.id);
+    const sameInteraction = !row.cli || previous?.cli?.requestId === row.cli.requestId;
     let next: QuestionActivity = previous
       ? {
           ...row,
           createdAt: previous.createdAt,
-          ...(previous.answerSummary
+          ...(sameInteraction && previous.answerSummary
             ? { answerSummary: previous.answerSummary }
             : {}),
         }
       : row;
+    if (sameInteraction && next.cli && previous?.cli?.rejectionRevision !== undefined) {
+      next = { ...next, cli: { ...next.cli, rejectionRevision: previous.cli.rejectionRevision } };
+    }
     if (
       previous?.status === "rejected" &&
+      sameInteraction &&
       row.tag === "pending" &&
       row.answerable
     ) {
@@ -182,24 +212,31 @@ function applyQuestionSnapshot(
         ...(previous.error ? { error: previous.error } : {}),
       };
     }
-    if (host.acceptedQuestions.has(key) && row.tag === "pending") {
+    // A read already in flight when the question closes must not resurrect the
+    // same interaction. A new CLI interaction ID can reopen a revisited question.
+    if (previous && sameInteraction && !previous.answerable && row.tag === "pending" &&
+        (previous.status === "cancelled" || previous.status === "timeout" || previous.status === "closed")) {
+      next = { ...next, status: previous.status, answerable: false, error: undefined };
+    }
+    if (host.acceptedQuestions.has(acceptanceKey) && row.tag === "pending") {
       next = {
         ...next,
         status: "answered",
         answerable: false,
         error: undefined,
-        ...(previous?.answerSummary
+        ...(sameInteraction && previous?.answerSummary
           ? { answerSummary: previous.answerSummary }
           : {}),
       };
     }
-    if (row.tag !== "pending") host.acceptedQuestions.delete(key);
+    if (row.tag !== "pending") host.acceptedQuestions.delete(acceptanceKey);
     writeQuestion(host, next, {
       announce:
         !previous && next.answerable && next.status === "pending",
     });
   }
   for (const previous of host.sessionQuestions.get(sessionId)?.values() ?? []) {
+    if ((previous.cli ? "cli" : "workflow") !== domain) continue;
     if (seen.has(previous.id)) continue;
     if (
       !previous.answerable &&
@@ -212,7 +249,7 @@ function applyQuestionSnapshot(
       host.observedQuestions.delete(key);
       continue;
     }
-    const status = questionAbsenceStatus(host, sessionId);
+    const status = previous.cli ? "closed" : questionAbsenceStatus(host, sessionId);
     writeQuestion(host, {
       ...previous,
       status,
@@ -362,6 +399,73 @@ export function projectWorkflowGate(
   void refreshWorkflowQuestions(host, sessionId);
 }
 
+async function refreshAfterInteractiveAnswer(host: QuestionHost, sessionId: string): Promise<void> {
+  const inflight = host.questionRefreshes.get(sessionId);
+  if (inflight) await inflight;
+  await refreshWorkflowQuestions(host, sessionId);
+}
+
+function rejectInteractiveAnswer(host: QuestionHost, question: QuestionActivity, error: string): void {
+  if (!question.cli || !question.answerable) return;
+  writeQuestion(host, {
+    ...question,
+    status: "rejected",
+    answerable: true,
+    error,
+    cli: { ...question.cli, rejectionRevision: (question.cli.rejectionRevision ?? 0) + 1 },
+  });
+  syncQuestionWait(host, question.sessionId);
+}
+
+async function submitInteractiveAnswer(
+  host: QuestionHost,
+  question: QuestionActivity,
+  submission: QuestionSubmission,
+  idempotencyKey: string,
+): Promise<void> {
+  const { sessionId, id } = question;
+  const requestId = question.cli!.requestId;
+  if (!submission.cli || submission.cli.requestId !== requestId) {
+    await refreshAfterInteractiveAnswer(host, sessionId);
+    return;
+  }
+  if (!question.answerable || (question.status !== "pending" && question.status !== "rejected")) return;
+  if (!validInteractiveAnswer(question, submission.cli.answer)) {
+    rejectInteractiveAnswer(host, question, "유효한 답변을 선택해 주세요.");
+    return;
+  }
+  const answer = submission.cli.answer;
+  try {
+    const result = await host.controlSession(sessionId, "ask.answer", { id: requestId, answer }, { idempotencyKey });
+    const settlement = result?.settlement;
+    const resolution = settlement && typeof settlement === "object" && !Array.isArray(settlement)
+      ? settlement as Record<string, unknown> : undefined;
+    const current = questionById(host, sessionId, id);
+    if (result?.id === requestId && result.sessionId === sessionId && resolution?.kind === "commit") {
+      host.acceptedQuestions.add(questionKey(sessionId, `${id}\0${requestId}`));
+      if (current?.cli?.requestId === requestId) {
+        writeQuestion(host, {
+          ...current,
+          status: "answered",
+          answerable: false,
+          error: undefined,
+          answerSummary: answer.kind === "value" ? answer.value : current.cli.selectedOptions.join(", "),
+        });
+        syncQuestionWait(host, sessionId);
+      }
+    } else if (result?.id === requestId && result.sessionId === sessionId && resolution?.kind === "invalid" && current?.cli?.requestId === requestId) {
+      rejectInteractiveAnswer(host, current,
+        typeof resolution.reason === "string" ? resolution.reason : "답이 거부되었습니다. 다시 입력해 주세요.");
+    }
+  } catch (error) {
+    const current = questionById(host, sessionId, id);
+    if (current?.cli?.requestId === requestId && current.answerable) {
+      rejectInteractiveAnswer(host, current, error instanceof Error ? error.message : String(error));
+    }
+  }
+  await refreshAfterInteractiveAnswer(host, sessionId);
+}
+
 export async function submitQuestionAnswer(
   host: QuestionHost,
   sessionId: string,
@@ -371,6 +475,8 @@ export async function submitQuestionAnswer(
 ): Promise<void> {
   const question = questionById(host, sessionId, gateId);
   if (!question) throw new Error("질문을 찾지 못했습니다.");
+  if (question.cli) return submitInteractiveAnswer(host, question, submission, idempotencyKey);
+  if (submission.cli) throw new Error("질문 유형이 일치하지 않습니다.");
   if (
     !question.answerable ||
     (question.status !== "pending" && question.status !== "rejected")
@@ -445,8 +551,8 @@ export async function submitQuestionAnswer(
 /**
  * Pending and rejected ask cards for one session.
  *
- * `workflow.gates.list` is the source of truth. The stdio `workflow_gate`
- * event only wakes this read.
+ * The public workflow/ask lists are authoritative. Events and the attached
+ * observer only wake these reads; tool input is never an answer binding.
  */
 export async function listPendingQuestions(host: QuestionHost, sessionId: string): Promise<QuestionActivity[]> {
   await refreshWorkflowQuestions(host, sessionId);
@@ -458,11 +564,13 @@ export async function listPendingQuestions(host: QuestionHost, sessionId: string
 }
 
 /**
- * Answers one ask gate through `workflow.gate_answer`.
+ * Answers a workflow gate or an exact ordinary CLI interaction.
  *
  * The first submission for a gate wins. A second caller waits for that
  * attempt and then sees the settled card, so a desktop click and a remote
- * click cannot both commit. A `rejected` resolution stays on the card.
+ * click cannot both commit. CLI requests are fenced by interaction, not logical
+ * card: a newly published toggle/editor may arrive before the old ACK returns.
+ * A `rejected` resolution stays on the card.
  */
 export function answerQuestion(
   host: QuestionHost,
@@ -471,7 +579,7 @@ export function answerQuestion(
   submission: QuestionSubmission,
   idempotencyKey: string,
 ): Promise<void> {
-  const key = questionKey(sessionId, gateId);
+  const key = questionKey(sessionId, submission.cli ? `${gateId}\0${submission.cli.requestId}` : gateId);
   const inflight = host.questionAnswers.get(key);
   if (inflight) return inflight;
   const run = submitQuestionAnswer(

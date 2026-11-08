@@ -8,8 +8,9 @@ import type { EnvironmentReport } from "../../shared/environment-check";
 import { setLanguageMode } from "../i18n";
 import { EnvironmentCheckPanel } from "./environment-check-panel";
 
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT =
-  true;
+(
+  globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }
+).IS_REACT_ACT_ENVIRONMENT = true;
 
 let root: Root | undefined;
 
@@ -40,7 +41,12 @@ const cleanMac: EnvironmentReport = {
       detail: "0.18.11 · /Users/me/.local/bin/gjc",
       fix: "bun add -g gajae-code@latest",
     },
-    { id: "model-preset", required: false, status: "ok", detail: "codex-medium" },
+    {
+      id: "model-preset",
+      required: false,
+      status: "ok",
+      detail: "codex-medium",
+    },
     {
       id: "gh",
       required: false,
@@ -52,12 +58,20 @@ const cleanMac: EnvironmentReport = {
   ],
 };
 
-async function render(checkEnvironment: () => Promise<EnvironmentReport>, onLogin?: () => void) {
+async function render(
+  checkEnvironment: () => Promise<EnvironmentReport>,
+  onLogin?: () => void,
+) {
   const container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   await act(async () => {
-    root!.render(createElement(EnvironmentCheckPanel, { bridge: { checkEnvironment }, onLogin }));
+    root!.render(
+      createElement(EnvironmentCheckPanel, {
+        bridge: { checkEnvironment },
+        onLogin,
+      }),
+    );
   });
   return container;
 }
@@ -71,7 +85,9 @@ function rowText(container: HTMLElement, status: string): string[] {
 describe("EnvironmentCheckPanel", () => {
   it("shows each row's state, reason and fix command", async () => {
     const container = await render(async () => cleanMac);
-    expect(container.textContent).toContain("필수 항목 중 준비되지 않은 것이 있습니다");
+    expect(container.textContent).toContain(
+      "필수 항목 중 준비되지 않은 것이 있습니다",
+    );
     expect(rowText(container, "missing")).toEqual([
       expect.stringContaining("설치되어 있지 않거나 PATH에서 찾지 못했습니다"),
     ]);
@@ -79,22 +95,33 @@ describe("EnvironmentCheckPanel", () => {
     expect(gjc).toContain("0.18.12 이상이 필요합니다");
     expect(gjc).toContain("0.18.11 · /Users/me/.local/bin/gjc");
     expect(gh).toContain("선택");
-    expect([...container.querySelectorAll(".environment-row-fix code")].map((code) => code.textContent)).toEqual([
+    expect(
+      [...container.querySelectorAll(".environment-row-fix code")].map(
+        (code) => code.textContent,
+      ),
+    ).toEqual([
       "curl -fsSL https://bun.sh/install | bash",
       "bun add -g gajae-code@latest",
       "gh auth login",
     ]);
-    expect(container.querySelectorAll(".environment-row--ok .environment-row-fix")).toHaveLength(0);
+    expect(
+      container.querySelectorAll(".environment-row--ok .environment-row-fix"),
+    ).toHaveLength(0);
   });
 
-  it("offers the app's own sign-in, not a terminal command, when no AI provider is signed in", async () => {
+  it("offers the app's own sign-in when no AI models are available", async () => {
     const onLogin = vi.fn();
     const container = await render(
       async () => ({
         ready: false,
         checkedAtMs: 1,
         rows: [
-          { id: "gjc", required: true, status: "ok", detail: "0.19.3 · /Users/me/.local/bin/gjc" },
+          {
+            id: "gjc",
+            required: true,
+            status: "ok",
+            detail: "0.19.3 · /Users/me/.local/bin/gjc",
+          },
           {
             id: "provider-login",
             required: true,
@@ -107,13 +134,64 @@ describe("EnvironmentCheckPanel", () => {
       onLogin,
     );
     const [row] = rowText(container, "warning");
-    expect(row).toContain("로그인한 AI 제공자");
-    expect(row).toContain("로그인한 AI 제공자가 없어 대화를 시작할 수 없습니다");
-    expect(container.textContent).toContain("필수 항목 중 준비되지 않은 것이 있습니다");
+    expect(row).toContain("AI 모델 가용성");
+    expect(row).toContain(
+      "사용 가능한 AI 모델이 없습니다. AI에 로그인하거나 프록시 연결을 설정하세요",
+    );
+    expect(container.textContent).toContain(
+      "필수 항목 중 준비되지 않은 것이 있습니다",
+    );
     expect(container.querySelector(".environment-row-fix code")).toBeNull();
-    const login = [...container.querySelectorAll("button")].find((button) => button.textContent === "AI 로그인");
+    const login = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "AI 로그인",
+    );
     await act(async () => login!.click());
     expect(onLogin).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not claim model availability establishes authentication", async () => {
+    const container = await render(
+      async () => ({
+        ready: true,
+        checkedAtMs: 1,
+        rows: [
+          {
+            id: "provider-login",
+            required: true,
+            status: "ok",
+            providerAuthentication: "unknown",
+          },
+        ],
+      }),
+      vi.fn(),
+    );
+    expect(rowText(container, "ok")[0]).toContain(
+      "로그인 상태 및 자격증명 종류는 확인하지 않음",
+    );
+    expect(container.querySelector(".environment-row-fix")).toBeNull();
+  });
+
+  it("reports a failed connection query without claiming sign-in is missing", async () => {
+    const container = await render(
+      async () => ({
+        ready: false,
+        checkedAtMs: 1,
+        rows: [
+          {
+            id: "provider-login",
+            required: true,
+            status: "warning",
+            problem: "provider-unreadable",
+            fix: "gjc update",
+          },
+        ],
+      }),
+      vi.fn(),
+    );
+    expect(rowText(container, "warning")[0]).toContain(
+      "AI 모델 목록을 확인하지 못했습니다. 다시 점검하세요",
+    );
+    expect(container.querySelector(".button-primary")).toBeNull();
   });
 
   it("copies the exact fix command", async () => {
@@ -124,7 +202,9 @@ describe("EnvironmentCheckPanel", () => {
       ".environment-row--missing .environment-row-fix button",
     );
     await act(async () => copy!.click());
-    expect(writeText).toHaveBeenCalledWith("curl -fsSL https://bun.sh/install | bash");
+    expect(writeText).toHaveBeenCalledWith(
+      "curl -fsSL https://bun.sh/install | bash",
+    );
   });
 
   it("checks again on request and reports readiness in English", async () => {
@@ -142,7 +222,9 @@ describe("EnvironmentCheckPanel", () => {
         })),
       });
     const container = await render(check);
-    expect(container.textContent).toContain("Some required items are not ready");
+    expect(container.textContent).toContain(
+      "Some required items are not ready",
+    );
     const again = [...container.querySelectorAll("button")].find(
       (button) => button.textContent === "Check again",
     );

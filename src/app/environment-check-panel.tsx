@@ -14,13 +14,16 @@ import { MessageCopyButton } from "./primitives";
 const CHECK_LABELS: Record<EnvironmentCheckId, () => string> = {
   bun: () => "Bun",
   gjc: () => "GJC",
-  "provider-login": () => t("로그인한 AI 제공자"),
+  "provider-login": () => t("AI 모델 가용성"),
   "model-preset": () => t("기본 모델 프로필"),
   gh: () => t("GitHub CLI 로그인"),
   tailscale: () => "Tailscale",
 };
 
-const PROBLEM_TEXT: Record<EnvironmentProblem, (row: EnvironmentCheckRow) => string> = {
+const PROBLEM_TEXT: Record<
+  EnvironmentProblem,
+  (row: EnvironmentCheckRow) => string
+> = {
   "not-found": () => t("설치되어 있지 않거나 PATH에서 찾지 못했습니다"),
   "too-old": (row) =>
     t`${ENVIRONMENT_MINIMUM_VERSIONS[row.id] ?? ""} 이상이 필요합니다`,
@@ -29,7 +32,12 @@ const PROBLEM_TEXT: Record<EnvironmentProblem, (row: EnvironmentCheckRow) => str
     t("models.yml에 없는 프로필입니다. GJC 내장 프로필이면 그대로 동작합니다"),
   "signed-out": () => t("로그인되어 있지 않습니다"),
   "not-running": () => t("설치되어 있지만 연결되어 있지 않습니다"),
-  "no-provider": () => t("로그인한 AI 제공자가 없어 대화를 시작할 수 없습니다"),
+  "no-provider": () =>
+    t(
+      "사용 가능한 AI 모델이 없습니다. AI에 로그인하거나 프록시 연결을 설정하세요",
+    ),
+  "provider-unreadable": () =>
+    t("AI 모델 목록을 확인하지 못했습니다. 다시 점검하세요"),
 };
 
 const STATUS_ICONS = {
@@ -38,7 +46,13 @@ const STATUS_ICONS = {
   warning: CircleAlert,
 } as const;
 
-function EnvironmentRow({ row, onLogin }: { row: EnvironmentCheckRow; onLogin?: () => void }) {
+function EnvironmentRow({
+  row,
+  onLogin,
+}: {
+  row: EnvironmentCheckRow;
+  onLogin?: () => void;
+}) {
   const Icon = STATUS_ICONS[row.status];
   return (
     <div className={`environment-row environment-row--${row.status}`}>
@@ -49,11 +63,20 @@ function EnvironmentRow({ row, onLogin }: { row: EnvironmentCheckRow; onLogin?: 
           {!row.required && <em>{t("선택")}</em>}
         </strong>
         {row.status !== "ok" && <small>{PROBLEM_TEXT[row.problem](row)}</small>}
-        {row.detail && <code className="environment-row-detail">{row.detail}</code>}
+        {row.providerAuthentication === "unknown" && (
+          <small>{t("로그인 상태 및 자격증명 종류는 확인하지 않음")}</small>
+        )}
+        {row.detail && (
+          <code className="environment-row-detail">{row.detail}</code>
+        )}
         {row.status !== "ok" &&
           (row.problem === "no-provider" && onLogin ? (
             <span className="environment-row-fix">
-              <button type="button" className="button-primary" onClick={onLogin}>
+              <button
+                type="button"
+                className="button-primary"
+                onClick={onLogin}
+              >
                 {t("AI 로그인")}
               </button>
             </span>
@@ -140,7 +163,9 @@ export function EnvironmentCheckPanel({
             </button>
           </span>
         </div>
-        {report?.rows.map((row) => <EnvironmentRow key={row.id} row={row} onLogin={onLogin} />)}
+        {report?.rows.map((row) => (
+          <EnvironmentRow key={row.id} row={row} onLogin={onLogin} />
+        ))}
       </div>
       <p className="settings-note">
         {t("필요한 명령을 복사해 터미널에서 실행한 뒤 다시 점검하세요.")}

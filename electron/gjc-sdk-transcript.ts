@@ -189,7 +189,16 @@ export function cloneTranscriptItem(item: TranscriptItem): TranscriptItem {
   if (item.kind === "plan")
     return { ...item, entries: item.entries.map((entry) => ({ ...entry })) };
   if (item.kind === "question")
-    return { ...item, options: item.options.map((option) => ({ ...option })) };
+    return {
+      ...item,
+      options: item.options.map((option) => ({ ...option })),
+      ...(item.cli ? { cli: {
+        ...item.cli,
+        selectedOptions: [...item.cli.selectedOptions],
+        controls: item.cli.controls.map((control) => ({ ...control })),
+        ...(item.cli.editor ? { editor: { ...item.cli.editor } } : {}),
+      } } : {}),
+    };
   if (item.kind !== "message" || !item.images) return { ...item };
   return { ...item, images: item.images.map((image) => ({ ...image })) };
 }

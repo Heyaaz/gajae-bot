@@ -3828,7 +3828,8 @@ button.diff-line-number:hover {
 }
 .question-option:focus-visible,
 .question-submit:focus-visible,
-.question-other input:focus-visible {
+.question-other input:focus-visible,
+.question-other textarea:focus-visible {
   outline: 2px solid rgba(240, 100, 22, 0.7);
   outline-offset: 1px;
 }
@@ -3871,21 +3872,30 @@ button.diff-line-number:hover {
   min-width: 0;
   gap: 6px;
 }
-.question-other input {
+.question-other input,
+.question-other textarea {
   min-width: 0;
   flex: 1 1 auto;
-  height: 32px;
-  padding: 0 10px;
   color: var(--text-primary);
   font-size: 12px;
   background: transparent;
   border: 1px dashed var(--border-strong);
   border-radius: 8px;
 }
-.question-other input:not(:placeholder-shown) {
+.question-other input {
+  height: 32px;
+  padding: 0 10px;
+}
+.question-other textarea {
+  padding: 6px 10px;
+  resize: vertical;
+}
+.question-other input:not(:placeholder-shown),
+.question-other textarea:not(:placeholder-shown) {
   border-style: solid;
 }
-.question-other input::placeholder {
+.question-other input::placeholder,
+.question-other textarea::placeholder {
   color: var(--text-tertiary);
 }
 .question-submit {

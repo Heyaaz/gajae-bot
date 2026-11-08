@@ -33,13 +33,21 @@ export interface CliDeleteTerminal {
   write(data: string): void;
   kill(signal?: string): void;
   onData(listener: (data: string) => void): { dispose(): void };
-  onExit(listener: (event: { exitCode: number; signal?: number }) => void): { dispose(): void };
+  onExit(listener: (event: { exitCode: number; signal?: number }) => void): {
+    dispose(): void;
+  };
 }
 
 export type SpawnCliDeleteTerminal = (
   file: string,
   args: string[],
-  options: { name: string; cols: number; rows: number; cwd: string; env: Record<string, string> },
+  options: {
+    name: string;
+    cols: number;
+    rows: number;
+    cwd: string;
+    env: Record<string, string>;
+  },
 ) => CliDeleteTerminal;
 
 export interface CliDeleteOptions {
@@ -85,6 +93,11 @@ const SELECTION_POINTER = /❯\s*(\S+)/gu;
 const YES_SELECTED = /❯\s*Yes/u;
 const EDITOR_READY = "Type your message";
 const DIALOG_HINT = "Esc cancel";
+// With no model configured GJC can open this selector over the first editor.
+// Its filter accepts `/session delete` as ordinary text, never as a command.
+function isModelSelector(text: string): boolean {
+  return text.includes("Models:") && text.includes("(tab to cycle)");
+}
 // GJC refuses the delete while another process holds a session-store lock. A
 // host stopped with SIGTERM can exit before releasing its lock, and GJC reclaims
 // a dead owner's lock only once its 60s lease runs out (gjc/0.19.2). By then GJC
@@ -99,6 +112,9 @@ const MAX_SUBMITS = 2;
 const POLL_MS = 100;
 const KILL_GRACE_MS = 2_000;
 const SCREEN_TAIL = 4_000;
+const OSC_BACKGROUND_QUERY = "\x1b]11;?\x07";
+const DEVICE_ATTRIBUTES_QUERY = "\x1b[c";
+const DEVICE_ATTRIBUTES_REPLY = "\x1b[?1;2c";
 
 const stripTerminalControls = (text: string): string =>
   text.replace(
@@ -111,7 +127,9 @@ const stripTerminalControls = (text: string): string =>
 /** The typed command is on screen with nothing selectable but its own completion. */
 function editorHoldsCommand(text: string): boolean {
   if (!text.includes(COMMAND)) return false;
-  return [...text.matchAll(SELECTION_POINTER)].every((match) => match[1] === "delete");
+  return [...text.matchAll(SELECTION_POINTER)].every(
+    (match) => match[1] === "delete",
+  );
 }
 
 async function fileExists(file: string): Promise<boolean> {
@@ -123,9 +141,12 @@ async function fileExists(file: string): Promise<boolean> {
   }
 }
 
-function terminalEnvironment(source: NodeJS.ProcessEnv): Record<string, string> {
+function terminalEnvironment(
+  source: NodeJS.ProcessEnv,
+): Record<string, string> {
   const env: Record<string, string> = {};
-  for (const [key, value] of Object.entries(source)) if (typeof value === "string") env[key] = value;
+  for (const [key, value] of Object.entries(source))
+    if (typeof value === "string") env[key] = value;
   env.TERM = "xterm-256color";
   // GJC skips its first-run onboarding dialog under automation; on an agent dir
   // that never ran the TUI it otherwise opens over the editor and swallows the
@@ -134,14 +155,22 @@ function terminalEnvironment(source: NodeJS.ProcessEnv): Record<string, string> 
   return env;
 }
 
-export async function deleteSessionThroughCli(options: CliDeleteOptions): Promise<void> {
+export async function deleteSessionThroughCli(
+  options: CliDeleteOptions,
+): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
       return await deleteOnce(options);
     } catch (error) {
-      if (!(error instanceof CliDeleteError) || error.reason !== "busy" || attempt >= MAX_BUSY_ATTEMPTS)
+      if (
+        !(error instanceof CliDeleteError) ||
+        error.reason !== "busy" ||
+        attempt >= MAX_BUSY_ATTEMPTS
+      )
         throw error;
-      await new Promise((resolve) => setTimeout(resolve, options.busyRetryMs ?? BUSY_RETRY_MS));
+      await new Promise((resolve) =>
+        setTimeout(resolve, options.busyRetryMs ?? BUSY_RETRY_MS),
+      );
     }
   }
 }
@@ -152,13 +181,17 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
   const timeoutMs = options.timeoutMs ?? 45_000;
   const quietMs = options.quietMs ?? 1_000;
   const completionGraceMs = options.completionGraceMs ?? COMPLETION_GRACE_MS;
-  const terminal = spawn(options.executable, ["--resume", options.sessionPath, "--no-mcp", "--no-lsp"], {
-    name: "xterm-256color",
-    cols: 120,
-    rows: 40,
-    cwd: options.cwd,
-    env: terminalEnvironment(options.env),
-  });
+  const terminal = spawn(
+    options.executable,
+    ["--resume", options.sessionPath, "--no-mcp", "--no-lsp"],
+    {
+      name: "xterm-256color",
+      cols: 120,
+      rows: 40,
+      cwd: options.cwd,
+      env: terminalEnvironment(options.env),
+    },
+  );
 
   return new Promise<void>((resolve, reject) => {
     let stage: CliDeleteStage = "starting";
@@ -170,6 +203,7 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
     let checking = false;
     let exited = false;
     let settled = false;
+    let pendingControl = "";
     let transcriptGoneAt: number | undefined;
     const startedAt = Date.now();
 
@@ -205,8 +239,40 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
     };
 
     const output = terminal.onData((data) => {
-      fresh += data;
-      lastOutputAt = Date.now();
+      let outputText = "";
+      let replies = 0;
+      for (const char of data) {
+        if (!pendingControl) {
+          if (char === "\x1b") pendingControl = char;
+          else outputText += char;
+          continue;
+        }
+        pendingControl += char;
+        const kind = pendingControl[1];
+        const complete =
+          kind === "["
+            ? pendingControl.length > 2 && char >= "@" && char <= "~"
+            : kind === "]"
+              ? char === "\x07" || pendingControl.endsWith("\x1b\\")
+              : pendingControl.length >= 2;
+        if (!complete && pendingControl.length < SCREEN_TAIL) continue;
+        if (pendingControl === DEVICE_ATTRIBUTES_QUERY) replies += 1;
+        else if (
+          pendingControl !== OSC_BACKGROUND_QUERY &&
+          pendingControl !== "\x1b]11;?\x1b\\"
+        )
+          outputText += pendingControl;
+        pendingControl = "";
+      }
+      if (outputText) {
+        fresh += outputText;
+        lastOutputAt = Date.now();
+      }
+      // Declare OSC 11 unsupported: GJC consumes this DA1 sentinel, stops its
+      // appearance polling, and leaves terminal appearance undetected. Answer all
+      // DA1 queries (including the separate sixel probe) without sending keys.
+      for (let i = 0; i < replies; i += 1)
+        terminal.write(DEVICE_ATTRIBUTES_REPLY);
     });
     const exit = terminal.onExit(() => {
       exited = true;
@@ -216,7 +282,10 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
         void transcriptExists(options.sessionPath).then((present) =>
           finish(
             present
-              ? new CliDeleteError("exited", "GJC가 세션 삭제 전에 종료됐습니다.")
+              ? new CliDeleteError(
+                  "exited",
+                  "GJC가 세션 삭제 전에 종료됐습니다.",
+                )
               : undefined,
           ),
         );
@@ -240,9 +309,15 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
         );
         return;
       }
-      const visibleSinceConfirm = stage === "confirmed" ? stripTerminalControls(fresh) : "";
+      const visibleSinceConfirm =
+        stage === "confirmed" ? stripTerminalControls(fresh) : "";
       if (visibleSinceConfirm.includes(MIGRATION_BUSY)) {
-        finish(new CliDeleteError("busy", "GJC가 다른 세션 저장소 작업이 끝나지 않아 삭제를 거부했습니다."));
+        finish(
+          new CliDeleteError(
+            "busy",
+            "GJC가 다른 세션 저장소 작업이 끝나지 않아 삭제를 거부했습니다.",
+          ),
+        );
         return;
       }
       if (stage === "confirmed") {
@@ -252,17 +327,26 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
           checking = false;
           if (present) return;
           transcriptGoneAt ??= Date.now();
-          if (reported || Date.now() - transcriptGoneAt >= completionGraceMs) finish();
+          if (reported || Date.now() - transcriptGoneAt >= completionGraceMs)
+            finish();
         });
         return;
       }
-      if (Date.now() - lastOutputAt < quietMs) return;
+      if (pendingControl || Date.now() - lastOutputAt < quietMs) return;
       // Stripped here rather than per chunk: a chunk can end inside an escape.
       const visible = stripTerminalControls(fresh);
       const prompted = visible.includes(DELETE_PROMPT);
-      if (!prompted && visible.includes(DIALOG_HINT)) {
+      if (
+        !prompted &&
+        (visible.includes(DIALOG_HINT) || isModelSelector(visible))
+      ) {
         if (dismissals >= MAX_DIALOG_DISMISSALS) {
-          finish(new CliDeleteError("unexpected-dialog", "GJC가 세션 삭제 전에 닫을 수 없는 확인 창을 띄웠습니다."));
+          finish(
+            new CliDeleteError(
+              "unexpected-dialog",
+              "GJC가 세션 삭제 전에 닫을 수 없는 확인 창을 띄웠습니다.",
+            ),
+          );
           return;
         }
         dismissals += 1;
@@ -274,12 +358,21 @@ function deleteOnce(options: CliDeleteOptions): Promise<void> {
         send(COMMAND);
       } else if (stage === "typed" && prompted) {
         if (!YES_SELECTED.test(visible)) {
-          finish(new CliDeleteError("unexpected-dialog", "GJC의 삭제 확인 창에서 Yes가 선택되어 있지 않았습니다."));
+          finish(
+            new CliDeleteError(
+              "unexpected-dialog",
+              "GJC의 삭제 확인 창에서 Yes가 선택되어 있지 않았습니다.",
+            ),
+          );
           return;
         }
         stage = "confirmed";
         send("\r");
-      } else if (stage === "typed" && submits < MAX_SUBMITS && editorHoldsCommand(visible)) {
+      } else if (
+        stage === "typed" &&
+        submits < MAX_SUBMITS &&
+        editorHoldsCommand(visible)
+      ) {
         submits += 1;
         send("\r");
       }

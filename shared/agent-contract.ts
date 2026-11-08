@@ -630,13 +630,16 @@ export interface BranchSummaryActivity {
  * Lifecycle of one gjc ask question.
  *
  * `rejected` stays open: the host refused the body, and the same card takes
- * another answer. Quarantined and accepted diagnostic rows are not answerable.
+ * another answer. `closed` means the public pending list no longer contains a
+ * CLI interaction, without claiming it was answered or cancelled elsewhere.
+ * Quarantined and accepted diagnostic rows are not answerable.
  */
 export type QuestionStatus =
   | "pending"
   | "answered"
   | "cancelled"
   | "timeout"
+  | "closed"
   | "rejected";
 
 export type QuestionGateTag = "pending" | "quarantined" | "accepted";
@@ -647,8 +650,24 @@ export interface QuestionOption {
   recommended?: boolean;
 }
 
+/** One interaction from the session-owned `ask.requests.list` public surface. */
+export interface CliQuestionState {
+  requestId: string;
+  /** Local completed-rejection counter; unchanged pending reads cannot unlock a send. */
+  rejectionRevision?: number;
+  interaction: "selector" | "custom_editor" | "clarification_editor";
+  selectedOptions: string[];
+  controls: { id: string; label: string; enabled: boolean }[];
+  editor?: { title: string; prefill?: string };
+}
+
+export type CliQuestionAnswer =
+  | { kind: "value"; value: string }
+  | { kind: "control"; controlId: string };
+
 /**
- * What the user sends. The controller turns this into the gate answer schema.
+ * What the user sends. Workflow selections use the gate answer schema; ordinary
+ * CLI questions carry an exact request-bound typed interaction in `cli`.
  *
  * `clarify` is the third schema shape. A non-blank `custom` is the free-text
  * path. Otherwise `selected` is the chosen labels.
@@ -657,10 +676,12 @@ export interface QuestionSubmission {
   selected: string[];
   custom?: string;
   clarify?: string;
+  /** Bind a CLI answer to the exact interaction the user saw, never a newer one. */
+  cli?: { requestId: string; answer: CliQuestionAnswer };
 }
 
 export interface QuestionActivity {
-  /** gjc `gate_id`. The list row's `pending:<gate_id>` id is not this. */
+  /** Workflow gate ID, or `cli-ask:<questionId>` for one logical CLI question. */
   id: string;
   kind: "question";
   sessionId: string;
@@ -682,6 +703,8 @@ export interface QuestionActivity {
   /** Schema rejection. The card stays open. */
   error?: string;
   runtimeTurnId?: string;
+  /** Present only for ordinary CLI questions; workflow gates use their existing schema. */
+  cli?: CliQuestionState;
 }
 
 /**
@@ -1074,7 +1097,7 @@ export interface GjcDesktopBridge {
     submission: QuestionSubmission,
     idempotencyKey: string,
   ): Promise<void>;
-  /** Pending and rejected question cards. The gates list is the source. */
+  /** Pending/rejected cards from workflow gates and supported session-owned CLI asks. */
   listPendingQuestions(sessionId: string): Promise<QuestionActivity[]>;
   markSessionRead(sessionId: string): Promise<void>;
   getDiff(sessionId: string): Promise<DiffSnapshot>;

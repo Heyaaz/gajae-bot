@@ -2,7 +2,10 @@ import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { launchCheckSatisfied, type EnvironmentCheckRow } from "../shared/environment-check.js";
+import {
+  launchCheckSatisfied,
+  type EnvironmentCheckRow,
+} from "../shared/environment-check.js";
 import {
   checkEnvironment,
   configuredProfileIds,
@@ -28,9 +31,12 @@ function context(machine: Machine): EnvironmentProbeContext {
   return {
     locate: async (name, extra = []) =>
       machine.executables[name] ??
-      extra.find((candidate) => Object.values(machine.executables).includes(candidate)),
+      extra.find((candidate) =>
+        Object.values(machine.executables).includes(candidate),
+      ),
     locateGjc: async () => machine.executables.gjc,
-    isScript: async (executable) => machine.scripts?.includes(executable) ?? false,
+    isScript: async (executable) =>
+      machine.scripts?.includes(executable) ?? false,
     run: async (executable, args) =>
       machine.answers[`${executable} ${args.join(" ")}`] ?? { found: false },
     modelPreset: machine.modelPreset ?? "codex-medium",
@@ -64,7 +70,9 @@ const ready: Machine = {
   answers: {
     "/Users/me/.bun/bin/bun --version": ok("1.4.0\n"),
     "/Users/me/.local/bin/gjc --version": ok("gjc/0.19.0\n"),
-    "/Users/me/.local/bin/gjc models": ok("Canonical models\ngpt-5  openai-codex/gpt-5\n"),
+    "/Users/me/.local/bin/gjc models": ok(
+      "Provider models\nprovider      model  context  max-out  thinking  images\nopenai-codex  gpt-5  128K     16K      -         no\n",
+    ),
     "/opt/homebrew/bin/gh auth status --hostname github.com": ok(
       "",
       "github.com\n  ✓ Logged in to github.com account octo (keyring)\n",
@@ -75,7 +83,9 @@ const ready: Machine = {
   },
 };
 
-async function rows(machine: Machine): Promise<Record<string, EnvironmentCheckRow>> {
+async function rows(
+  machine: Machine,
+): Promise<Record<string, EnvironmentCheckRow>> {
   const report = await checkEnvironment(context(machine), () => 7);
   return Object.fromEntries(report.rows.map((row) => [row.id, row]));
 }
@@ -92,10 +102,17 @@ describe("checkEnvironment", () => {
       ["gh", "ok", "github.com · octo"],
       ["tailscale", "ok", "Running"],
     ]);
+    expect(
+      report.rows.find((row) => row.id === "provider-login")
+        ?.providerAuthentication,
+    ).toBe("unknown");
   });
 
   it("asks for Bun only when GJC is a launcher script that runs on it", async () => {
-    const found = await rows({ ...ready, scripts: ["/Users/me/.local/bin/gjc"] });
+    const found = await rows({
+      ...ready,
+      scripts: ["/Users/me/.local/bin/gjc"],
+    });
     expect(found.bun).toMatchObject({
       status: "ok",
       required: true,
@@ -122,18 +139,22 @@ describe("checkEnvironment", () => {
     ]);
   });
 
-  it("blocks readiness while GJC has no signed-in provider, and says how to sign in", async () => {
+  it("blocks readiness while GJC has no available models, and says how to sign in", async () => {
     const report = await checkEnvironment(
       context({
         ...ready,
         answers: {
           ...ready.answers,
-          "/Users/me/.local/bin/gjc models": ok("No models available. Set API keys in environment variables.\n"),
+          "/Users/me/.local/bin/gjc models": ok(
+            "No models available. Set API keys in environment variables.\n",
+          ),
         },
       }),
     );
     expect(report.ready).toBe(false);
-    expect(report.rows.find((row) => row.id === "provider-login")).toMatchObject({
+    expect(
+      report.rows.find((row) => row.id === "provider-login"),
+    ).toMatchObject({
       required: true,
       status: "warning",
       problem: "no-provider",
@@ -146,20 +167,58 @@ describe("checkEnvironment", () => {
         ...ready,
         answers: {
           ...ready.answers,
-          "/Users/me/.local/bin/gjc models": ok("No models available. Set API keys in environment variables.\n"),
+          "/Users/me/.local/bin/gjc models": ok(
+            "No models available. Set API keys in environment variables.\n",
+          ),
         },
       }),
     );
     expect(launchCheckSatisfied(unsigned.rows)).toBe(true);
-    const clean = await checkEnvironment(context({ executables: {}, answers: {} }));
+    const clean = await checkEnvironment(
+      context({ executables: {}, answers: {} }),
+    );
     expect(launchCheckSatisfied(clean.rows)).toBe(false);
   });
 
-  it("does not guess at a provider when GJC cannot list its models", async () => {
+  it("reports an unknown model catalog as a warning, not a successful provider check", async () => {
     const answers = { ...ready.answers };
     delete answers["/Users/me/.local/bin/gjc models"];
     const found = await rows({ ...ready, answers });
-    expect(found["provider-login"]).toMatchObject({ status: "ok" });
+    expect(found["provider-login"]).toMatchObject({
+      status: "warning",
+      problem: "provider-unreadable",
+      fix: "gjc models",
+    });
+  });
+
+  it("does not infer sign-in from a credentialless proxy's model catalog", async () => {
+    const found = await rows({
+      ...ready,
+      answers: {
+        ...ready.answers,
+        "/Users/me/.local/bin/gjc models": ok(
+          "Provider models\nprovider   model  context  max-out  thinking  images\nopencodex  gpt-5  128K     16K      -         no\n",
+        ),
+      },
+    });
+    expect(found["provider-login"]).toMatchObject({
+      status: "ok",
+      providerAuthentication: "unknown",
+    });
+  });
+
+  it("does not call a malformed successful listing an empty model catalog", async () => {
+    const found = await rows({
+      ...ready,
+      answers: {
+        ...ready.answers,
+        "/Users/me/.local/bin/gjc models": ok("Initializing...\n"),
+      },
+    });
+    expect(found["provider-login"]).toMatchObject({
+      status: "warning",
+      problem: "provider-unreadable",
+    });
   });
 
   it("holds GJC and bun to their minimum versions", async () => {
@@ -172,7 +231,11 @@ describe("checkEnvironment", () => {
         "/Users/me/.local/bin/gjc --version": ok("gjc/0.18.11\n"),
       },
     });
-    expect(found.bun).toMatchObject({ status: "warning", problem: "too-old", fix: "bun upgrade" });
+    expect(found.bun).toMatchObject({
+      status: "warning",
+      problem: "too-old",
+      fix: "bun upgrade",
+    });
     expect(found.gjc).toMatchObject({
       status: "warning",
       problem: "too-old",
@@ -189,7 +252,10 @@ describe("checkEnvironment", () => {
       executables: { ...ready.executables, bun: "" },
       answers: {
         ...ready.answers,
-        "/Users/me/.local/bin/gjc --version": failed(127, "env: bun: No such file or directory"),
+        "/Users/me/.local/bin/gjc --version": failed(
+          127,
+          "env: bun: No such file or directory",
+        ),
       },
     });
     expect(found.bun).toMatchObject({ status: "missing" });
@@ -210,7 +276,9 @@ describe("checkEnvironment", () => {
       "    model_mapping:",
       "      default: ocx/gpt:medium",
     ].join("\n");
-    const custom = await checkEnvironment(context({ ...ready, modelPreset: "goat", modelsFile }));
+    const custom = await checkEnvironment(
+      context({ ...ready, modelPreset: "goat", modelsFile }),
+    );
     expect(custom.rows.find((row) => row.id === "model-preset")).toMatchObject({
       status: "ok",
       detail: "goat · models.yml",
@@ -219,16 +287,21 @@ describe("checkEnvironment", () => {
       context({ ...ready, modelPreset: "local-proxy", modelsFile }),
     );
     expect(unknown.ready).toBe(true);
-    expect(unknown.rows.find((row) => row.id === "model-preset")).toMatchObject({
-      status: "warning",
-      problem: "unknown-preset",
-      detail: "local-proxy",
-    });
+    expect(unknown.rows.find((row) => row.id === "model-preset")).toMatchObject(
+      {
+        status: "warning",
+        problem: "unknown-preset",
+        detail: "local-proxy",
+      },
+    );
   });
 
   it("knows the profile first-run setup picked for a provider", async () => {
     const found = await rows({ ...ready, modelPreset: "claude-opus" });
-    expect(found["model-preset"]).toMatchObject({ status: "ok", detail: "claude-opus" });
+    expect(found["model-preset"]).toMatchObject({
+      status: "ok",
+      detail: "claude-opus",
+    });
   });
 
   it("keeps gh and tailscale optional when they are not ready", async () => {
@@ -244,15 +317,18 @@ describe("checkEnvironment", () => {
             1,
             "You are not logged into any GitHub hosts.",
           ),
-          "/Applications/Tailscale.app/Contents/MacOS/Tailscale status --json": ok(
-            JSON.stringify({ BackendState: "Stopped" }),
-          ),
+          "/Applications/Tailscale.app/Contents/MacOS/Tailscale status --json":
+            ok(JSON.stringify({ BackendState: "Stopped" })),
         },
       }),
     );
     expect(report.ready).toBe(true);
     const found = Object.fromEntries(report.rows.map((row) => [row.id, row]));
-    expect(found.gh).toMatchObject({ status: "warning", problem: "signed-out", fix: "gh auth login" });
+    expect(found.gh).toMatchObject({
+      status: "warning",
+      problem: "signed-out",
+      fix: "gh auth login",
+    });
     expect(found.tailscale).toMatchObject({
       status: "warning",
       problem: "not-running",
@@ -266,7 +342,16 @@ describe("configuredProfileIds", () => {
   it("reads only the keys under the top-level profiles section", () => {
     expect(
       configuredProfileIds(
-        ["providers:", "  codex-lb:", "profiles:", '  "dusk":', "    display_name: dusk", "  goat:", "other:", "  x:"].join("\n"),
+        [
+          "providers:",
+          "  codex-lb:",
+          "profiles:",
+          '  "dusk":',
+          "    display_name: dusk",
+          "  goat:",
+          "other:",
+          "  x:",
+        ].join("\n"),
       ),
     ).toEqual(["dusk", "goat"]);
   });
@@ -279,8 +364,12 @@ describe("host lookups", () => {
   chmodSync(tool, 0o755);
 
   it("finds an executable on the runtime PATH and prefers a configured GJC", async () => {
-    await expect(findExecutable("gajae-env-tool", directory)).resolves.toBe(tool);
-    await expect(findExecutable("gajae-env-absent", directory)).resolves.toBeUndefined();
+    await expect(findExecutable("gajae-env-tool", directory)).resolves.toBe(
+      tool,
+    );
+    await expect(
+      findExecutable("gajae-env-absent", directory),
+    ).resolves.toBeUndefined();
     await expect(resolveGjcExecutable(tool)).resolves.toBe(tool);
   });
 
@@ -293,19 +382,30 @@ describe("host lookups", () => {
   });
 
   it("tells an absent command from one that failed, and never waits on stdin", async () => {
-    await expect(runCommand(path.join(directory, "absent"), [])).resolves.toEqual({ found: false });
-    await expect(runCommand("/bin/sh", ["-c", "echo out; exit 3"])).resolves.toMatchObject({
+    await expect(
+      runCommand(path.join(directory, "absent"), []),
+    ).resolves.toEqual({ found: false });
+    await expect(
+      runCommand("/bin/sh", ["-c", "echo out; exit 3"]),
+    ).resolves.toMatchObject({
       found: true,
       exitCode: 3,
       stdout: "out\n",
     });
-    await expect(runCommand("/bin/cat", [])).resolves.toMatchObject({ found: true, exitCode: 0 });
+    await expect(runCommand("/bin/cat", [])).resolves.toMatchObject({
+      found: true,
+      exitCode: 0,
+    });
   });
 
   it("remembers a passed check across launches", () => {
     const userData = mkdtempSync(path.join(tmpdir(), "gajae-env-state-"));
-    expect(new DesktopStateStore(userData).get().environmentReady).toBeUndefined();
+    expect(
+      new DesktopStateStore(userData).get().environmentReady,
+    ).toBeUndefined();
     new DesktopStateStore(userData).update({ environmentReady: true });
-    expect(new DesktopStateStore(userData).get()).toEqual({ environmentReady: true });
+    expect(new DesktopStateStore(userData).get()).toEqual({
+      environmentReady: true,
+    });
   });
 });

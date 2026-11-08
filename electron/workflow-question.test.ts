@@ -113,6 +113,7 @@ function harness(gates: unknown[] = [gateRow()]) {
   internals.cli = cli;
   internals.startup = Promise.resolve();
   internals.generation = 1;
+  internals.sdkOperations = vi.fn(async () => new Set<string>());
   internals.sessions.set("s1", session());
   return { controller, cli, internals, emit };
 }

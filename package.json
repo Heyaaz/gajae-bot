@@ -51,6 +51,7 @@
     "gjc:matrix": "node scripts/gjc-matrix.mjs",
     "gjc:cli-delete-e2e": "node scripts/gjc-cli-delete-e2e.mjs",
     "gjc:cli-new-e2e": "electron scripts/gjc-cli-new-e2e.mjs",
+    "gjc:cli-ask-e2e": "electron scripts/gjc-cli-ask-e2e.mjs",
     "verify:gjc": "npm run build && npm run desktop:gjc-smoke && node scripts/gjc-sdk-e2e.mjs",
     "preview": "vite preview"
   },

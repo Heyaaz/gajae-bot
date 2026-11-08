@@ -16,6 +16,17 @@ session appears on the next discovery refresh (window focus or the visible-windo
 15-second poll). Build and run `npm run gjc:cli-new-e2e` to check the real CLI,
 broker and renderer with selected/unselected old rows in an isolated profile.
 
+The hidden CLI used for fenced saved-session deletion answers terminal capability
+queries without clearing its pending screen or treating replies as user keys.
+GJC 0.20.0 can open its model selector over the first editor when no model is
+configured. The driver dismisses that selector before typing or submitting
+`/session delete`; otherwise the command becomes the selector's search text.
+Only GJC's exact deletion prompt with Yes already selected is confirmed. The
+45-second per-attempt timeout and transcript-removal proof remain unchanged.
+`node scripts/gjc-cli-delete-e2e.mjs` checks the actual CLI with an isolated HOME,
+including a saved session and one held by an explicitly authorized terminal host;
+it does not drive the app's context-menu or native confirmation entry points.
+
 ## Sub-features
 
 - `SESSION-CREATE` — create a live session in a workspace, optionally in a managed worktree.

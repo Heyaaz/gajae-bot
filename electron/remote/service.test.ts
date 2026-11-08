@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   REMOTE_API,
   REMOTE_OPERATION_ACCESS,
@@ -138,6 +138,20 @@ function fakeHost(): RemoteOperationsHost & { calls: string[] } {
 }
 
 describe("remote operation surface", () => {
+  it("forwards the exact CLI interaction binding and multiline answer through shared validation", async () => {
+    const host = fakeHost();
+    const answer = vi.fn(async () => undefined);
+    host.answerQuestion = answer;
+    const submission = {
+      selected: [],
+      cli: { requestId: "opaque-request-1", answer: { kind: "value", value: "  first line\nsecond line  " } },
+    };
+    await runRemoteOperation(host, "answer-question", { sessionId: "s-1", gateId: "cli-ask:q1" }, {
+      submission, idempotencyKey: "gajae-gate-12345678",
+    });
+    expect(answer).toHaveBeenCalledExactlyOnceWith("s-1", "cli-ask:q1", submission, "gajae-gate-12345678");
+  });
+
   it("declares an access level for every operation", () => {
     for (const operation of OPERATIONS) {
       expect(REMOTE_OPERATION_ACCESS[operation]).toMatch(/^(view|control)$/u);

@@ -1,5 +1,34 @@
 import { describe, expect, it } from "vitest";
-import { toolDecision } from "./gjc-input-validation.js";
+import { questionSubmission, toolDecision } from "./gjc-input-validation.js";
+
+describe("questionSubmission", () => {
+  it.each([
+    { kind: "value", value: "  exact option  " },
+    { kind: "value", value: "first line\nsecond line\n" },
+    { kind: "control", controlId: "navigation_forward" },
+  ])("preserves request binding and exact CLI interaction values: %j", (answer) => {
+    const submission = { selected: [], cli: { requestId: "request-1", answer } };
+    expect(questionSubmission(submission)).toEqual(submission);
+  });
+
+  it.each([
+    null, [], {}, { requestId: "", answer: { kind: "value", value: "A" } },
+    { requestId: "request-1", answer: { kind: "value", value: "A", extra: true } },
+    { requestId: "request-1", answer: { kind: "control", controlId: 1 } },
+    { requestId: "request-1", answer: { kind: "value", value: "A".repeat(8_001) } },
+    { requestId: "request-1", answer: { kind: "other", value: "A" } },
+    { requestId: "request-1", answer: { kind: "value", value: "A" }, extra: true },
+  ])("rejects malformed CLI answer %j at both public entry points", (cli) => {
+    expect(() => questionSubmission({ selected: [], cli })).toThrow("CLI question");
+  });
+
+  it("rejects mixed workflow and CLI answers instead of silently discarding either", () => {
+    const cli = { requestId: "request-1", answer: { kind: "value", value: "A" } };
+    expect(() => questionSubmission({ selected: ["A"], cli })).toThrow();
+    expect(() => questionSubmission({ selected: [], custom: "text", cli })).toThrow();
+    expect(() => questionSubmission({ selected: [], clarify: "why?", cli })).toThrow();
+  });
+});
 
 describe("toolDecision", () => {
   it("keeps a rejection note and drops a blank one", () => {

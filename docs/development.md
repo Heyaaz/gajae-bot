@@ -123,6 +123,25 @@ Card typography: every text element inside a card sets its own size. An unstyled
 `<p>` or `<small>` inherits the browser's 16px default, which renders larger than
 the card's own title in a UI whose body text is 9–12px.
 
+## Model availability and authentication
+
+First-run setup and environment checks use the sessionless `gjc models` catalog
+only to determine whether models are available. A nonempty catalog can come from
+a credentialless proxy; it does not prove sign-in, valid credentials, or a working
+provider request. The shared probe returns `{ hasAvailableModels, connectionKind:
+"unknown" }`, or `undefined` when the command fails or the output is unrecognized.
+Environment checks report that failure as unknown rather than ready or signed out.
+Unknown results do not permanently complete first-run setup or justify changing an
+existing default model during a later login.
+
+GJC 0.20.0's paginated `providers.list/active` query (Q29) can distinguish local
+credential-based and credentialless connections, but it requires an exact live
+session. There is no confirmed sessionless equivalent. Setup must not create a
+session just to query it, select an unrelated existing session, or infer connection
+kind from model names. A future use of Q29 must receive the relevant session
+explicitly and traverse all pages; local credential evidence still does not
+validate a credential with the provider's server.
+
 ## GJC SDK session CLI compatibility
 
 <!-- gjc-matrix:start -->
@@ -291,6 +310,12 @@ Escape/Stop may discard unsent entries, but must retain an unresolved handoff.
 An uncertain rejection keeps that input blocked for review rather than retrying
 automatically. Repeated blank Enter cannot overlap an interrupt or release.
 
+**Verified on 0.19.3.** The isolated `--enter-only` CLI/renderer scenario confirms
+the base provider stream is interrupted (not naturally completed), the follow-up
+reaches the provider and transcript exactly once, and acceptance precedes queue
+removal. The fixture stream spans the 15-second discovery interval so session
+startup is not confused with Enter handling. This does not verify an installed
+Gajae bundle or ordinary CLI ask support.
 
 ## Lifecycle receipts
 
@@ -313,6 +338,44 @@ On 0.18.12 the broker logs `mismatches:["readBack:shape"]` when one unrelated
 ledger row exceeds its JSON field bound (for example a large `cleanup_pending`
 response), which makes every terminal read-back look rejected. Do not edit the
 ledger to clear it; the broker index is the recovery authority.
+
+## Ordinary terminal CLI questions
+
+Workflow/headless questions continue to use `workflow.gates.list` and
+`workflow.gate_answer`. Ordinary questions in an attended terminal use the
+separate public `ask.requests.list` / `ask.answer` contract from upstream
+[#7609](https://github.com/Yeachan-Heo/gajae-code/issues/7609). **GJC 0.19.3
+does not implement this contract.** An installed version number or the old
+declaration of `ask.answer` is not proof of support: the host must advertise
+`ask.requests.list` in `runtime.capabilities`. Restart existing CLI session
+hosts after installing a version containing the upstream change.
+
+One stable `questionId` owns the card; the separate opaque interaction `id`
+rotates after toggles and selector/editor/navigation transitions. Every answer
+carries the exact interaction the user saw. Multi-select options toggle one at
+a time; a supplied enabled Done/Next control completes the selection. Other
+and clarification enter the supplied editor rather than synthesizing a gate.
+Only a matching `settlement.kind: "commit"` marks the card answered. A complete
+empty snapshot can close a card, but cannot prove an answer or cancellation;
+failed or malformed reads preserve the previous state. The attached observer
+refreshes open asks so local terminal answers and edits are also reflected.
+
+Credential-free real CLI/renderer coverage uses a local streaming model fixture
+with isolated HOME, agent directory, app profile and workspace:
+
+```bash
+npm run build
+GJC_BIN=/path/to/gjc-with-7609 npm run gjc:cli-ask-e2e
+```
+
+The provider is deterministic test data; the CLI TUI, public SDK transport,
+controller and built renderer are real. The suite also sends a held follow-up
+with Enter, releases it with blank Enter, and checks acceptance precedes queue
+removal and the instruction reaches the CLI exactly once. Use
+`npm run gjc:cli-ask-e2e -- --enter-only` for that scenario alone.
+A local patched-source test is not
+evidence that the installed release supports the API. Keep publication blocked
+until the required host support and the app integration are both verified.
 
 ## Do not
 

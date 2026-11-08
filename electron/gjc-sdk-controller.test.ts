@@ -2980,7 +2980,7 @@ describe("SDK slash commands", () => {
           cli.queryItems.mock.calls.map(
             (call) => (call as readonly unknown[])[1],
           ),
-        ).toEqual(["workflow.gates.list"]);
+        ).toEqual(["workflow.gates.list", "runtime.capabilities"]);
       });
     } finally {
       controller.dispose();

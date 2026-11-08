@@ -1,8 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { GjcSdkCli } from "./gjc-sdk-cli.js";
+import { startToolObserver, stopTailFollower, type StreamHost } from "./gjc-sdk-stream.js";
+import type { TranscriptItem } from "../shared/agent-contract.js";
 
 async function fixture(source: string) {
   const root = await mkdtemp(path.join(tmpdir(), "gajae-observer-test-"));
@@ -14,6 +16,40 @@ async function fixture(source: string) {
 }
 
 describe("SDK tool observer transport", () => {
+  it("refreshes open CLI asks after discovery and stops polling on detach", async () => {
+    vi.useFakeTimers();
+    const refresh = vi.fn(async () => undefined);
+    const transcripts = new Map<string, TranscriptItem[]>([["s1", []]]);
+    const host = {
+      disposed: false, attachedSessions: new Set(["s1"]),
+      toolObservers: new Map(), toolSnapshots: new Map(), tailControllers: new Map(),
+      tailReads: new Map(), tailCheckpoints: new Map(), tailEventPositions: new Map(),
+      transcripts, refreshWorkflowQuestions: refresh,
+      repoFor: () => "/repo",
+      requireCli: async () => ({ observeTools: async (_id: string, _receive: unknown, signal: AbortSignal) =>
+        new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true })),
+      }),
+    } as unknown as StreamHost;
+    try {
+      startToolObserver(host, "s1");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      transcripts.set("s1", [{
+        id: "ask-1", sessionId: "s1", kind: "tool", name: "ask", description: "ask",
+        status: "running", output: "", createdAt: "now",
+      }]);
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(refresh).toHaveBeenCalledTimes(11);
+      stopTailFollower(host, "s1");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(refresh).toHaveBeenCalledTimes(11);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      stopTailFollower(host, "s1");
+      vi.useRealTimers();
+    }
+  });
+
   it("forwards SDK live reply snapshots instead of filtering them out", async () => {
     const test = await fixture(`
       process.stdout.write('{"type":"hello"}\\n');
